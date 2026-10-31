@@ -9,8 +9,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - run: bash test/lint.sh
@@ -20,22 +20,22 @@ jobs:
     strategy:
       matrix: { node: [20, 22, 24] }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: "${{ matrix.node }}" }
       - run: npm test
 
   shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: bash test/shell/run.sh
 
   # macOS ships bash 3.2 as /bin/bash; the controller must work there.
   bash32:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: |
           docker run --rm -v "$PWD":/src:ro bash:3.2 bash -c '
             apk add -q --no-cache openssh-client jq coreutils openssl >/dev/null
@@ -44,8 +44,8 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - run: /bin/bash --version | head -1
       - run: BASH_UNDER_TEST=/bin/bash /bin/bash test/shell/run.sh

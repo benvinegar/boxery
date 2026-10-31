@@ -27,9 +27,11 @@ before(() => {
 host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.avm) host=$1; shift ;; *) shift ;; esac; done
 [ "$host" = "fakevm.avm" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
-cd "${vmroot}" && HOME="${vmroot}" exec bash -c "$cmd"
+cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,
 	);
+	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec "$@"\n`);
+	chmodSync(path.join(bin, "setsid"), 0o755);
 	writeFileSync(path.join(bin, "agentvm"), `#!/usr/bin/env bash\necho "stub agentvm $*"\n[ "$1" = ls ] && printf 'NAME STATE\\nfakevm running\\n'\nexit 0\n`);
 	chmodSync(path.join(bin, "ssh"), 0o755);
 	chmodSync(path.join(bin, "agentvm"), 0o755);
