@@ -35,7 +35,7 @@ Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at an
 - **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
 - **Works with your agent.** A native [pi](https://pi.dev) extension, plus an MCP server for Claude Code, Cursor, opencode and other MCP clients.
 - **Credentials stay home.** VMs never see your LLM keys. Each VM gets a revocable token, and a host-side proxy swaps in the real credential.
-- **Grant access deliberately.** Each VM gets only what you grant it: your ssh-agent, specific env vars, specific files. Grants are off by default and live in tmpfs.
+- **Grant access deliberately.** Each VM gets only what you grant it: specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, specific env vars or files. Grants are off by default.
 - **Share a pool safely.** Several agents can lease VMs from a shared pool with exclusive, expiring leases. A VM is wiped back to a clean snapshot when its lease ends.
 - **No daemon on your laptop.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
 
@@ -147,7 +147,7 @@ Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so 
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command |
-| [Grants](docs/grants.md) | Give a VM your ssh-agent, env vars, or files |
+| [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
 | [Backends](host/backends/README.md) | libvirt, Lima, and the backend contract |

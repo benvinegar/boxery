@@ -90,4 +90,14 @@ got=$(cat "$tmp"/acq.* | awk '{print $1}' | sort)
 
 "$H" pool rm pet >/dev/null 2>&1 && bad "pool rm of a non-pool VM" || ok "pool rm rejects non-pool VMs"
 
-echo; echo "passed: $pass  failed: $fail"; ((fail == 0))
+# --- lease reset clears edge routes (the next holder must not inherit them)
+for l in $(cat "$tmp"/acq.* | awk '{print $2}'); do "$H" release "$l" >/dev/null 2>&1 || true; done
+out=$(echo "$K1" | "$H" acquire --holder edge 2>/dev/null) || true; set -- $out
+if [[ -n ${1:-} ]]; then
+	echo '{"api.example.com":{"headers":{"Authorization":"Bearer x"}}}' | "$H" edge-set "$1" >/dev/null 2>&1
+	[[ -f $BOXERY_CONF/edge/$1.json ]] || bad "edge-set on leased VM"
+	"$H" release "$2" >/dev/null 2>&1
+	[[ ! -f $BOXERY_CONF/edge/$1.json ]] && ok "release clears edge routes" || bad "edge routes survived release"
+else bad "acquire for edge test"; fi
+
+echo "passed: $pass  failed: $fail"; ((fail == 0))

@@ -11,6 +11,7 @@ boxery is built for **one trusted owner running untrusted-ish agents**: the agen
 | ✅ The internet | Through libvirt's NAT network (or Lima's user network) |
 | ✅ LLM providers | Only through the host proxy, with a per-VM token |
 | ✅ What you [grant](grants.md) | ssh-agent, env vars, files: only while granted |
+| 🔒 `http:`/`github` grant secrets | never: the host proxy injects them per request; the VM can use but not read them |
 | ❌ Your real LLM keys / OAuth tokens | They stay on the host |
 | ❌ Your laptop | No inbound path. ssh goes laptop → host → VM. |
 | ⚠️ The host's sshd | Reachable on the NAT network (keys required). See [limits](#known-limits). |
@@ -40,7 +41,7 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
 
 - **Shared NAT network.** VMs share libvirt's `default` network. They can reach the internet and the host's sshd, but not the proxy port. For stricter isolation, give them a dedicated network with nwfilter rules (on the [roadmap](../ARCHITECTURE.md#roadmap-re-ordered-after-review)).
 - **Proxy spend.** A guest with root can read its own token and spend through the proxy. That's the same blast radius as handing it an API key, except the token is revocable per VM and logged. Per-VM budgets are planned.
-- **Grants are readable.** Anything granted can be read by whatever runs in the VM. Grant dev-scoped credentials only.
+- **Pushed grants are readable.** `env:`/`file:` values (and the ssh-agent while connected) can be used or read by whatever runs in the VM. Grant dev-scoped credentials only, and prefer `http:` grants, whose values stay on the host.
 - **One host.** No multi-host scheduling yet.
 
 Found a security issue? Please report it privately through [GitHub security advisories](https://github.com/benvinegar/boxery/security/advisories/new) rather than a public issue.

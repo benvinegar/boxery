@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Controller in local mode against the fake backend: setup, new/ls/rm, grants storage + apply script.
-# shellcheck disable=SC1090  # sources the generated env.sh under test
+# shellcheck disable=SC1090,SC2154  # sources the generated env.sh under test (vars come from it)
 # The "VM" is a local directory; an ssh stub executes remote scripts locally with HOME=that dir.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -52,6 +52,40 @@ if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted";
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $BOXERY_HOME/grants/w1 ]] && ! grep -q '^Host w1.boxery' "$BOXERY_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
+
+# --- edge (http:) grants: secret goes to the host proxy's route file, never into the VM
+"$A" new e1 >/dev/null 2>&1
+mkdir -p "$tmp/vms/e1/home/.boxery"; printf 'e1:tok123' >"$tmp/vms/e1/home/.boxery/token"
+export EDGE_SECRET='ghp_EDGESECRET42'
+"$A" grant e1 github --cmd 'printf %s "$EDGE_SECRET"' http:registry.npmjs.org --cmd 'echo npm_EDGE2' http:api.example.com --auth header:X-Api-Key --cmd 'echo k3y' --readonly >/dev/null 2>&1 && ok "grant http + github preset" || bad "grant http: $("$A" grant e1 github --cmd 'printf %s "$EDGE_SECRET"' 2>&1)"
+routes=$BOXERY_CONF/edge/e1.json
+[[ -f $routes ]] && ok "edge routes written on the host" || bad "no $routes"
+[[ $(stat -c %a "$routes" 2>/dev/null || stat -f %Lp "$routes") == 600 ]] && ok "route file is 0600" || bad "route mode"
+want_basic="Basic $(printf 'x-access-token:%s' "$EDGE_SECRET" | base64 | tr -d '\n')"
+[[ $(jq -r '.hosts["github.com"].headers.Authorization' "$routes") == "$want_basic" ]] && ok "github.com: basic x-access-token" || bad "github.com header: $(jq -c . "$routes")"
+[[ $(jq -r '.hosts["api.github.com"].headers.Authorization' "$routes") == "Bearer $EDGE_SECRET" ]] && ok "api.github.com: bearer" || bad "api.github.com header"
+[[ $(jq -r '.hosts["api.example.com"].headers["X-Api-Key"]' "$routes") == k3y && $(jq -r '.hosts["api.example.com"].readonly' "$routes") == true ]] && ok "custom header + readonly" || bad "api.example.com route"
+! grep -rqs -e "$EDGE_SECRET" -e npm_EDGE2 -e k3y "$tmp/vms/e1" "$tmp/run" && ok "no edge secret anywhere in the VM (disk or tmpfs)" || bad "edge secret leaked into the VM: $(grep -rls -e "$EDGE_SECRET" "$tmp/vms/e1" "$tmp/run")"
+! grep -qs -e "$EDGE_SECRET" "$BOXERY_HOME/grants/e1" && ok "grant store holds the command, not the value" || bad "value in grant store"
+(. "$envsh"; [[ $BOXERY_EDGE == http://127.0.0.1:8088/edge/e1%3Atok123 && $npm_config_registry == "$BOXERY_EDGE/registry.npmjs.org/" ]]) && ok "BOXERY_EDGE + npm registry exported" || bad "env.sh: $(cat "$envsh")"
+gc=$tmp/run/boxery/gitconfig
+grep -q 'insteadOf = https://github.com/' "$gc" && grep -q '/edge/e1%3Atok123/github.com/' "$gc" && ok "git insteadOf for github.com" || bad "gitconfig: $(cat "$gc" 2>/dev/null)"
+HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -qxF "$gc" && ok "gitconfig included once" || bad "include.path"
+"$A" grants e1 apply --quiet >/dev/null 2>&1; [[ $(HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -c .) == 1 ]] && ok "re-apply doesn't duplicate the include" || bad "include duplicated"
+"$A" grants e1 | grep -q 'http:github.com.*basic:x-access-token' && ok "grants lists http routes" || bad "grants output"
+for badspec in http:127.0.0.1 http:localhost http:api.example.com:8443 http:https://x.com http:x.com/path "http:a b.com" http:-x.com; do
+	if "$A" grant e1 "$badspec" --cmd 'echo x' >/dev/null 2>&1; then bad "accepted $badspec"; else ok "rejected $badspec"; fi
+done
+if "$A" grant e1 http:ok.example.com >/dev/null 2>&1; then bad "http grant without --cmd accepted"; else ok "http grant requires --cmd"; fi
+if "$A" grant e1 http:ok.example.com --auth header:Host --cmd 'echo x' >/dev/null 2>&1; then bad "header:Host accepted"; else ok "reserved header names rejected"; fi
+if "$A" grant e1 env:X --readonly >/dev/null 2>&1; then bad "--readonly on env accepted"; else ok "--readonly only for http"; fi
+"$A" revoke e1 github >/dev/null 2>&1
+[[ $(jq -r '.hosts | keys | join(",")' "$routes") == api.example.com,registry.npmjs.org ]] && ok "revoke github drops both hosts" || bad "after revoke: $(jq -c .hosts "$routes")"
+! grep -q 'github.com' "$gc" && ok "revoke removes the git rewrite" || bad "gitconfig still has github"
+"$A" revoke e1 all >/dev/null 2>&1; "$A" grants e1 apply --quiet >/dev/null 2>&1
+[[ ! -f $routes ]] && ok "revoke all clears the host routes" || bad "routes left: $(cat "$routes")"
+"$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
+"$A" rm e1 >/dev/null 2>&1; [[ ! -f $routes ]] && ok "rm deletes edge routes" || bad "routes survived rm"
 
 # --- leases from the controller (local mode → fake backend)
 if node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null; then

@@ -62,4 +62,16 @@ BOXERY_FAKE_FAIL_NEW=1 expect_fail "backend failure during new fails" "$H" new f
 jq -e 'has("f1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "failed new revokes its token" || bad "token left behind by failed new"
 [[ ! -d $BOXERY_FAKE_DIR/f1 ]] && ok "failed new removes the half-created VM" || bad "half-created VM left"
 
-echo; echo "passed: $pass  failed: $fail"; ((fail == 0))
+echo; # --- edge-set validation
+"$H" new edg >/dev/null 2>&1
+echo '{"api.example.com":{"headers":{"Authorization":"Bearer x"},"readonly":true}}' | "$H" edge-set edg >/dev/null 2>&1 && [[ -f $BOXERY_CONF/edge/edg.json ]] && ok "edge-set writes routes" || bad "edge-set"
+for bad in '{"127.0.0.1":{}}' '{"localhost":{}}' '{"x.com:8080":{}}' '{"X.COM":{}}' '{"a.com":{"headers":{"Host":"evil"}}}' '{"a.com":{"headers":{"Bad Name":"v"}}}' '{"a.com":{"headers":{"A":"v\r\nInjected: 1"}}}' '{"a.com":{"readonly":"yes"}}' 'not json' '[]'; do
+	if echo "$bad" | "$H" edge-set edg >/dev/null 2>&1; then bad "edge-set accepted: $bad"; else ok "edge-set rejects $(printf %s "$bad" | cut -c1-40)"; fi
+done
+[[ $(jq -r '.hosts | keys[0]' "$BOXERY_CONF/edge/edg.json") == api.example.com ]] && ok "rejected input left routes intact" || bad "routes clobbered"
+if echo '{}' | "$H" edge-set nosuchvm >/dev/null 2>&1; then bad "edge-set on missing VM"; else ok "edge-set needs an existing VM"; fi
+echo '{}' | "$H" edge-set edg >/dev/null 2>&1 && [[ ! -f $BOXERY_CONF/edge/edg.json ]] && ok "edge-set {} clears" || bad "clear"
+echo '{"a.example.com":{"headers":{}}}' | "$H" edge-set edg >/dev/null 2>&1; "$H" rm edg >/dev/null 2>&1
+[[ ! -f $BOXERY_CONF/edge/edg.json ]] && ok "rm deletes edge routes" || bad "rm left routes"
+
+echo "passed: $pass  failed: $fail"; ((fail == 0))

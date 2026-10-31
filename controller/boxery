@@ -155,7 +155,8 @@ cmd_forward() { # NAME PORT [LOCALPORT]
 
 grant_file() { echo "$GRANTS_DIR/$1"; }
 has_grant() { [ -f "$(grant_file "$1")" ] && awk -F'\t' -v k="$2" '$1==k{f=1} END{exit !f}' "$(grant_file "$1")"; }
-has_pushed_grants() { [ -f "$(grant_file "$1")" ] && awk -F'\t' '$1=="env"||$1=="file"{f=1} END{exit !f}' "$(grant_file "$1")"; }
+has_pushed_grants() { [ -f "$(grant_file "$1")" ] && awk -F'\t' '$1=="env"||$1=="file"||$1=="http"{f=1} END{exit !f}' "$(grant_file "$1")"; }
+edge_marker() { echo "$GRANTS_DIR/.$1.edge"; }   # exists while the host holds edge routes for NAME
 
 grants_lock() { # NAME cmd...: serialize local grant-store edits (mkdir is atomic everywhere)
 	l="$GRANTS_DIR/.$1.lock"; mkdir -p "$GRANTS_DIR"; i=0
@@ -185,11 +186,40 @@ abs_path() { # resolve a local path (file must exist)
 	echo "$d/$(basename "$1")"
 }
 
-# grant_spec NAME SPEC [CMD] [dry]: validate (and unless dry, store) one grant.
+valid_edge_host() { # DNS name with a dot; no IPs, ports, userinfo or paths (mirrors the proxy's check)
+	case $1 in "" | *[!a-z0-9.-]* | .* | *. | *..* | -* | *-) return 1 ;; *.*) ;; *) return 1 ;; esac
+	case ${1##*.} in *[!a-z]* | ?) return 1 ;; esac
+	[ ${#1} -le 253 ]
+}
+valid_edge_auth() { # bearer | basic:USER | header:NAME
+	case $1 in
+	bearer) ;;
+	basic:?*) case ${1#basic:} in *[!A-Za-z0-9._@+-]*) return 1 ;; esac ;;
+	header:?*) case ${1#header:} in *[!A-Za-z0-9-]*) return 1 ;; esac
+		case $(printf %s "${1#header:}" | tr 'A-Z' 'a-z') in host | content-length | connection | transfer-encoding | te | upgrade | proxy-connection | keep-alive | trailer) return 1 ;; esac ;;
+	*) return 1 ;;
+	esac
+}
+
+# grant_spec NAME SPEC [CMD] [dry] [AUTH] [RO]: validate (and unless dry, store) one grant.
 #   ssh-agent | env:VAR | file:LOCAL[=REMOTE]   (REMOTE default: project/<basename>, relative to /home/agent)
+#   http:HOST [--auth bearer|basic:USER|header:NAME] --cmd CMD [--readonly]   (edge-injected: value stays off the VM)
+#   github [--readonly]   = http:github.com (basic:x-access-token) + http:api.github.com (bearer), from `gh auth token`
 grant_spec() {
-	n=$1; spec=$2; cmd=${3:-}; dry=${4:-}
+	n=$1; spec=$2; cmd=${3:-}; dry=${4:-}; auth=${5:-}; ro=${6:-}
+	case $spec in http:* | github) ;; *) [ -z "$auth$ro" ] || die "--auth/--readonly only apply to http: grants" ;; esac
 	case $spec in
+	github)
+		[ -z "$auth" ] || die "the github preset sets its own --auth"
+		grant_spec "$n" http:github.com "${cmd:-gh auth token}" "$dry" basic:x-access-token "$ro"
+		grant_spec "$n" http:api.github.com "${cmd:-gh auth token}" "$dry" bearer "$ro" ;;
+	http:*)
+		hst=${spec#http:}; auth=${auth:-bearer}
+		valid_edge_host "$hst" || die "invalid host '$hst' (a DNS name like api.example.com; no scheme, port, path or IP)"
+		valid_edge_auth "$auth" || die "invalid --auth '$auth' (bearer | basic:USER | header:NAME)"
+		[ -n "$cmd" ] || die "http:$hst needs --cmd CMD (run on this machine at apply time to get the secret, e.g. --cmd 'gh auth token')"
+		case $cmd in *"$TAB"* | *"$NL"*) die "--cmd must be a single line" ;; esac
+		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" http "$hst" "$auth;$ro;$cmd" ;;
 	ssh-agent)
 		[ -z "$cmd" ] || die "--cmd only applies to env grants"
 		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" ssh-agent "" "" ;;
@@ -209,13 +239,13 @@ grant_spec() {
 		case "/$rem/" in */../* | *"$TAB"* | *"$NL"*) die "invalid remote path: $rem" ;; esac
 		case "$abs" in *"$TAB"* | *"$NL"*) die "invalid local path: $abs" ;; esac
 		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" file "$abs" "$rem" ;;
-	*) die "unknown grant '$spec' (use ssh-agent, env:VAR or file:LOCAL[=REMOTE])" ;;
+	*) die "unknown grant '$spec' (use ssh-agent, env:VAR, file:LOCAL[=REMOTE], http:HOST or github)" ;;
 	esac
 }
 
 grants_summary() { # NAME → "ssh-agent,env:X,file:project/.env"
 	f=$(grant_file "$1"); [ -f "$f" ] || { echo "-"; return; }
-	awk -F'\t' '{ s = ($1=="ssh-agent") ? "ssh-agent" : ($1=="env") ? "env:" $2 : "file:" $3; out = out (out ? "," : "") s } END{print out ? out : "-"}' "$f"
+	awk -F'\t' '{ s = ($1=="ssh-agent") ? "ssh-agent" : ($1=="env") ? "env:" $2 : ($1=="http") ? "http:" $2 : "file:" $3; out = out (out ? "," : "") s } END{print out ? out : "-"}' "$f"
 }
 
 env_value() { # VAR CMD → value on stdout
@@ -226,6 +256,47 @@ env_value() { # VAR CMD → value on stdout
 	fi
 	[ -n "$v" ] || { warn "grant env:$1: no value on this machine (set it, or: boxery grant VM env:$1 --cmd '...'); skipped"; return 1; }
 	printf '%s' "$v"
+}
+
+json_str() { # value → JSON string (refuses control characters rather than escaping them)
+	case $1 in *[[:cntrl:]]*) return 1 ;; esac
+	printf '"%s"' "$(printf %s "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+b64() { printf %s "$1" | base64 | tr -d '\n'; }
+
+# Edge routes JSON for the host proxy: {"HOST": {"headers": {...}, "readonly": bool}, ...}.
+# Each distinct --cmd runs once per apply (the github preset shares one `gh auth token`).
+edge_routes_json() {
+	f=$(grant_file "$1"); out=""; cache_k=""; cache_v=""
+	[ -f "$f" ] || { echo '{}'; return; }
+	while IFS="$TAB" read -r kind hst extra; do
+		[ "$kind" = http ] || continue
+		auth=${extra%%;*}; r=${extra#*;}; ro=${r%%;*}; cmd=${r#*;}
+		if [ "$cmd" = "$cache_k" ]; then v=$cache_v
+		else
+			v=$(sh -c "$cmd" </dev/null) || { warn "grant http:$hst: command failed: $cmd; skipped"; continue; }
+			v=$(printf %s "$v" | tr -d '\r\n'); cache_k=$cmd; cache_v=$v
+		fi
+		[ -n "$v" ] || { warn "grant http:$hst: '$cmd' printed nothing; skipped"; continue; }
+		case $auth in
+		bearer) hn=Authorization; hv="Bearer $v" ;;
+		basic:*) hn=Authorization; hv="Basic $(b64 "${auth#basic:}:$v")" ;;
+		header:*) hn=${auth#header:}; hv=$v ;;
+		esac
+		jv=$(json_str "$hv") || { warn "grant http:$hst: value has control characters; skipped"; continue; }
+		out="$out${out:+,}\"$hst\":{\"headers\":{\"$hn\":$jv},\"readonly\":$([ "$ro" = ro ] && echo true || echo false)}"
+	done <"$f"
+	echo "{$out}"
+}
+
+edge_apply() { # NAME: push (or clear) the VM's edge routes on the host
+	m=$(edge_marker "$1")
+	if [ -f "$(grant_file "$1")" ] && grep -q "^http$TAB" "$(grant_file "$1")"; then
+		edge_routes_json "$1" | h edge-set "$1" >/dev/null || { warn "could not set edge routes for $1 on the host"; return 1; }
+		: >"$m"
+	elif [ -f "$m" ]; then
+		echo '{}' | h edge-set "$1" >/dev/null && rm -f "$m"
+	fi
 }
 
 # Script run in the VM (stdin of `bash -s`): reconciles the tmpfs state to exactly the current grants.
@@ -241,7 +312,16 @@ R=$RT/boxery
 mkdir -p "$R/files"
 # One apply at a time per VM (concurrent attach/revoke must not interleave staging files).
 exec 9>"$R/.lock"; if command -v flock >/dev/null; then flock 9; fi
-: >"$R/env.sh.new"; : >"$R/links.new"; : >"$R/targets.new"
+: >"$R/env.sh.new"; : >"$R/links.new"; : >"$R/targets.new"; : >"$R/gitconfig.new"
+# Edge grants: the VM only learns *where* to send requests; the host proxy adds the credential.
+TOK=$(cat "$HOME/.boxery/token" 2>/dev/null || cat "$HOME/.agentvm/token" 2>/dev/null || true)
+EDGE="http://127.0.0.1:8088/edge/$(printf %s "$TOK" | sed 's/:/%3A/')"
+put_edge() {
+	[ -n "$TOK" ] || { echo "boxery: no proxy token in the VM; http grants unavailable" >&2; return 0; }
+	grep -q '^export BOXERY_EDGE=' "$R/env.sh.new" || printf 'export BOXERY_EDGE=%q\n' "$EDGE" >>"$R/env.sh.new"
+	printf '[url "%s/%s/"]\n\tinsteadOf = https://%s/\n' "$EDGE" "$1" "$1" >>"$R/gitconfig.new"
+	[ "$1" != registry.npmjs.org ] || printf 'export npm_config_registry=%q\n' "$EDGE/registry.npmjs.org/" >>"$R/env.sh.new"
+}
 put_env() { v=$(printf %s "$2" | base64 -d); printf 'export %s=%q\n' "$1" "$v" >>"$R/env.sh.new"; }
 put_file() {
 	d=$1; case "$d" in /*) ;; *) d=$HOME/$d ;; esac
@@ -265,6 +345,7 @@ EOF
 			case $kind in
 			env) v=$(env_value "$a" "$b") || continue
 				printf 'put_env %s %s\n' "$a" "$(printf %s "$v" | base64 | tr -d '\n')" ;;
+			http) printf 'put_edge %s\n' "$a" ;;
 			file) [ -r "$a" ] || { warn "grant file:$a: not readable; skipped"; continue; }
 				printf 'put_file %s %s\n' "$(printf %q "$b")" "$(base64 <"$a" | tr -d '\n')" ;;
 			esac
@@ -272,6 +353,11 @@ EOF
 	fi
 	cat <<'EOF'
 mv "$R/env.sh.new" "$R/env.sh"
+mv "$R/gitconfig.new" "$R/gitconfig"
+# git ignores a missing include, so this one-time line is harmless after revoke or reboot.
+if [ -s "$R/gitconfig" ] && ! git config --global --get-all include.path 2>/dev/null | grep -qxF "$R/gitconfig"; then
+	git config --global --add include.path "$R/gitconfig"
+fi
 if [ -f "$R/links" ]; then
 	while IFS= read -r old; do
 		grep -qxF "$old" "$R/links.new" && continue
@@ -286,11 +372,12 @@ for rc in "$HOME/.profile" "$HOME/.bashrc"; do
 	touch "$rc"
 	grep -q 'boxery-grants' "$rc" || { printf '%s\n' "$hook" | cat - "$rc" >"$rc.boxery" && cat "$rc.boxery" >"$rc" && rm -f "$rc.boxery"; }
 done
-echo "boxery: grants applied ($(grep -c . "$R/env.sh" || true) env, $(grep -c . "$R/links" || true) files)"
+echo "boxery: grants applied ($(grep -c . "$R/env.sh" || true) env, $(grep -c . "$R/links" || true) files, $(grep -c insteadOf "$R/gitconfig" || true) http)"
 EOF
 }
 
 grants_apply() { # NAME [--quiet]
+	edge_apply "$1" || true
 	out=$(build_apply_script "$1" | vm_ssh "$1.boxery" 'bash -s' 2>&1) || { warn "could not apply grants to $1: $out"; return 1; }
 	[ "${2:-}" = --quiet ] || echo "==> $out"
 }
@@ -311,11 +398,18 @@ grants_changed() {
 
 cmd_grant() { # NAME SPEC... [--cmd CMD]
 	need_host; need_vm "${1:-}"; n=$1; shift
-	[ $# -gt 0 ] || die "usage: boxery grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE] ..."
+	[ $# -gt 0 ] || die "usage: boxery grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE] | http:HOST --cmd CMD [--auth A] [--readonly] | github ..."
 	while [ $# -gt 0 ]; do
-		spec=$1; shift; cmd=""
-		if [ "${1:-}" = --cmd ]; then cmd=${2:-}; shift 2 || die "--cmd needs a value"; fi
-		grant_spec "$n" "$spec" "$cmd"
+		spec=$1; shift; cmd=""; auth=""; ro=""
+		while [ $# -gt 0 ]; do
+			case $1 in
+			--cmd) [ $# -ge 2 ] || die "--cmd needs a value"; cmd=$2; shift 2 ;;
+			--auth) [ $# -ge 2 ] || die "--auth needs a value"; auth=$2; shift 2 ;;
+			--readonly) ro=ro; shift ;;
+			*) break ;;
+			esac
+		done
+		grant_spec "$n" "$spec" "$cmd" "" "$auth" "$ro"
 		echo "==> granted $spec to $n"
 	done
 	case $(grants_summary "$n") in *ssh-agent*) echo "==> note: processes in $n can use your ssh keys while you're connected. Trusted VMs only." ;; esac
@@ -329,6 +423,9 @@ cmd_revoke() { # NAME SPEC...|all
 		case $spec in
 		all) rm -f "$(grant_file "$n")"; echo "==> revoked all grants for $n" ;;
 		ssh-agent) [ "$(grants_lock "$n" grant_del "$n" ssh-agent "")" -gt 0 ] && echo "==> revoked ssh-agent" || warn "no ssh-agent grant" ;;
+		http:*) [ "$(grants_lock "$n" grant_del "$n" http "${spec#http:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
+		github) c=0; for gh_h in github.com api.github.com; do c=$((c + $(grants_lock "$n" grant_del "$n" http "$gh_h"))); done
+			[ $c -gt 0 ] && echo "==> revoked github" || warn "no github grant" ;;
 		env:*) [ "$(grants_lock "$n" grant_del "$n" env "${spec#env:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
 		file:*) k=${spec#file:}; [ -e "$k" ] && k=$(abs_path "$k")
 			[ "$(grants_lock "$n" grant_del "$n" file "$k")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
@@ -349,6 +446,7 @@ cmd_grants() { # NAME [apply [--quiet]]
 		ssh-agent) echo "  ssh-agent   forward your local ssh agent" ;;
 		env) echo "  env:$a${b:+   (from: $b)}" ;;
 		file) echo "  file:$a → /home/agent/${b#/home/agent/}" ;;
+		http) au=${b%%;*}; r=${b#*;}; echo "  http:$a   ($au, from: ${r#*;})$([ "${r%%;*}" = ro ] && echo "  read-only")   value injected by the host proxy; never in the VM" ;;
 		esac
 	done <"$f"
 }
@@ -455,6 +553,7 @@ cmd_release() { # NAME|LEASE
 	drop_master "$name"
 	h release "$id" || warn "host did not release $id (already expired?); forgetting it locally"
 	rm -f "$f" "$LEASES_DIR/$id.key" "$LEASES_DIR/$id.key.pub"
+	rm -f "$(grant_file "$name")" "$(edge_marker "$name")"   # grants were for this lease; the host reset clears edge routes
 	write_ssh_config
 	echo "==> released $name"
 }
@@ -518,10 +617,12 @@ usage() {
 		leases                          your leases;  pool add|rm|ls (admin, on the host)
 		grant NAME SPEC... [--cmd CMD]  give a VM access to something on this machine:
 		                                  ssh-agent | env:VAR | file:LOCAL[=REMOTE]
+		                                  http:HOST --cmd CMD [--auth bearer|basic:USER|header:NAME] [--readonly]
+		                                  github [--readonly]   (http: grants never put the secret in the VM)
 		revoke NAME SPEC...|all         take it away (pushed values are deleted from the VM)
 		grants NAME [apply]             show grants / push them again
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
-		proxy-log [N]                   recent LLM proxy requests on the host
+		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
 	EOF
 }
 
@@ -529,7 +630,7 @@ cmd=${1:-help}; [ $# -gt 0 ] && shift
 migrate_legacy_agent_forward
 case $cmd in
 setup) cmd_setup "$@" ;;
-rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")"; write_ssh_config ;;
+rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")" "$(edge_marker "${1:-x}")"; write_ssh_config ;;
 stop) need_host; drop_master "${1:-}"; h stop "$@"; drop_master "${1:-}" ;;
 start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if has_pushed_grants "${1:-x}"; then grants_apply "$1" || true; fi ;;
 # a revert restores the snapshot's tmpfs too: always reconcile to the current grants

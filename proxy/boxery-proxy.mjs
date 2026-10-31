@@ -5,6 +5,7 @@
 //   /openai/*  -> https://api.openai.com/*            (OPENAI_API_KEY)
 //   /anthropic/* -> https://api.anthropic.com/*       (ANTHROPIC_API_KEY)
 //   /ollama/*  -> http://127.0.0.1:11434/*            (no auth)
+//   /edge/<token>/<host>/*  -> https://<host>/*       (headers granted to this VM: `boxery grant VM http:HOST`)
 //
 // Auth from VM: "Authorization: Bearer <token>" or "x-api-key: <token>".
 // <token> is "name:secret" or a JWT-shaped string whose payload carries {"boxery":"name:secret"} (legacy key: "avm")
@@ -46,6 +47,17 @@ function b64urlJson(s) {
 	return JSON.parse(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
 }
 
+/** "name:secret" → VM name if it matches tokens.json, else null. */
+function vmForCred(cred) {
+	if (typeof cred !== "string") return null;
+	const i = cred.indexOf(":");
+	if (i < 1) return null;
+	const name = cred.slice(0, i);
+	const secret = cred.slice(i + 1);
+	const tokens = readTokens();
+	return Object.hasOwn(tokens, name) && secret && tokens[name] === secret ? name : null;
+}
+
 /** Returns the VM name for a valid token, else null. */
 function authenticate(req) {
 	let raw = req.headers["x-api-key"] ?? "";
@@ -62,13 +74,7 @@ function authenticate(req) {
 			return null;
 		}
 	}
-	if (typeof cred !== "string") return null;
-	const i = cred.indexOf(":");
-	if (i < 1) return null;
-	const name = cred.slice(0, i);
-	const secret = cred.slice(i + 1);
-	const tokens = readTokens();
-	return tokens[name] && tokens[name] === secret ? name : null;
+	return vmForCred(cred);
 }
 
 // ---- Codex OAuth (shared with host pi's auth.json) ----
@@ -176,6 +182,7 @@ async function handle(req, res) {
 	const url = new URL(req.url, "http://x");
 	if (url.pathname === "/healthz") return res.end("ok\n");
 	const [, routeName, ...rest] = url.pathname.split("/");
+	if (routeName === "edge") return handleEdge(req, res, url, rest, started);
 	const route = routes[routeName];
 	if (!route) {
 		res.writeHead(404).end("unknown route\n");
@@ -256,6 +263,113 @@ async function handle(req, res) {
 		n > 0 ? active.set(vm, n) : active.delete(vm);
 	}
 }
+// ---- edge grants: per-VM credential injection for arbitrary HTTPS APIs ----
+// Routes are written by `boxery-host edge-set NAME` into $CONF/edge/NAME.json:
+//   {"hosts": {"github.com": {"headers": {"authorization": "Basic …"}, "readonly": false}, …}}
+// The token rides in the path (git/npm can't add a header for a base URL); it is never logged.
+const EDGE_DIR = path.join(CONF, "edge");
+const EDGE_UPSTREAM = process.env.BOXERY_EDGE_UPSTREAM; // tests only: send every edge request here instead of https://HOST
+const EDGE_MAX_BODY = Number(process.env.BOXERY_PROXY_EDGE_MAX_BODY ?? 1024 * 1024 * 1024);
+export const EDGE_HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
+const EDGE_STRIP = new Set(["authorization", "proxy-authorization", "cookie", "x-api-key"]);
+
+function edgeRoutes(vm) {
+	try {
+		const j = JSON.parse(fs.readFileSync(path.join(EDGE_DIR, `${vm}.json`), "utf8"));
+		return j && typeof j.hosts === "object" ? j.hosts : {};
+	} catch {
+		return {};
+	}
+}
+
+/** Read-only routes allow fetching (incl. git clone/fetch) but nothing that changes state. */
+export function edgeReadAllowed(method, p, search) {
+	if (method === "GET" || method === "HEAD") return !/[?&]service=git-receive-pack(&|$)/.test(search);
+	return method === "POST" && p.endsWith("/git-upload-pack");
+}
+
+async function handleEdge(req, res, url, rest, started) {
+	const [rawTok, host, ...tail] = rest;
+	const vm = vmForCred(decodeURIComponent(rawTok ?? ""));
+	const fail = (code, msg) => {
+		res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ error: msg }) + "\n");
+		log(vm ?? "-", "EDGE", code, req.method, host && EDGE_HOST_RE.test(host) ? host : "?", msg);
+	};
+	if (!vm) return fail(401, "invalid boxery token");
+	if (!host || !EDGE_HOST_RE.test(host)) return fail(400, "bad host");
+	const route = edgeRoutes(vm)[host];
+	if (!route || typeof route !== "object") return fail(403, `${host} is not granted to this VM (boxery grant ${vm} http:${host})`);
+	const subpath = "/" + tail.join("/");
+	if (route.readonly && !edgeReadAllowed(req.method, subpath, url.search)) return fail(403, `read-only grant: ${req.method} not allowed`);
+	if (Number(req.headers["content-length"] ?? 0) > EDGE_MAX_BODY) return fail(413, "request body too large");
+	if ((active.get(vm) ?? 0) >= LIMITS.perVm) {
+		res.writeHead(429, { "retry-after": "2" }).end("too many concurrent requests for this VM\n");
+		return;
+	}
+	active.set(vm, (active.get(vm) ?? 0) + 1);
+	const ac = new AbortController();
+	const timer = setTimeout(() => ac.abort(new Error("request exceeded time limit")), LIMITS.maxMs);
+	let done = false;
+	res.on("close", () => {
+		if (!done) ac.abort(new Error("client disconnected"));
+	});
+	const inject = Object.entries(route.headers ?? {}).filter(([k, v]) => typeof v === "string" && /^[A-Za-z0-9-]+$/.test(k) && !/[\r\n]/.test(v));
+	try {
+		const h = new Headers();
+		for (const [k, v] of Object.entries(req.headers)) {
+			if (HOP.has(k) || EDGE_STRIP.has(k) || v == null) continue;
+			h.set(k, Array.isArray(v) ? v.join(", ") : v);
+		}
+		for (const [k, v] of inject) h.set(k, v);
+		const target = `${EDGE_UPSTREAM ?? `https://${host}`}${subpath}${url.search}`;
+		const hasBody = !["GET", "HEAD"].includes(req.method);
+		let seen = 0;
+		const body = hasBody
+			? Readable.toWeb(
+					req.pipe(
+						new Transform({
+							transform(chunk, _e, cb) {
+								seen += chunk.length;
+								if (seen > EDGE_MAX_BODY) return cb(new Error("request body too large"));
+								cb(null, chunk);
+							},
+						}),
+					),
+				)
+			: undefined;
+		const up = await fetch(target, { method: req.method, headers: h, body, duplex: hasBody ? "half" : undefined, redirect: "manual", signal: ac.signal });
+		const outHeaders = {};
+		up.headers.forEach((v, k) => {
+			if (!HOP.has(k) && k !== "content-encoding" && k !== "set-cookie") outHeaders[k] = v;
+		});
+		// Redirects aren't followed (credentials must not travel to another host). A redirect to another
+		// granted host is rewritten back through the edge; anything else goes to the client untouched.
+		const loc = up.headers.get("location");
+		if (loc) {
+			try {
+				const L = new URL(loc, `https://${host}${subpath}`);
+				const routes = edgeRoutes(vm);
+				if (L.protocol === "https:" && !L.port && Object.hasOwn(routes, L.hostname))
+					outHeaders.location = `http://${req.headers.host ?? "127.0.0.1:8088"}/edge/${rawTok}/${L.hostname}${L.pathname}${L.search}`;
+			} catch {}
+		}
+		res.writeHead(up.status, outHeaders);
+		if (up.body && req.method !== "HEAD") await pipeline(Readable.fromWeb(up.body), res);
+		else res.end();
+		done = true;
+		log(vm, "EDGE", req.method, host, subpath, up.status, `${Date.now() - started}ms`);
+	} catch (e) {
+		const msg = ac.signal.aborted ? String(ac.signal.reason?.message ?? "aborted") : e.message;
+		log(vm, msg === "client disconnected" ? "closed-by-client" : "ERROR", "EDGE", req.method, host, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
+		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+		if (!res.writableEnded) res.end(JSON.stringify({ error: msg }) + "\n");
+	} finally {
+		clearTimeout(timer);
+		const n = (active.get(vm) ?? 1) - 1;
+		n > 0 ? active.set(vm, n) : active.delete(vm);
+	}
+}
+
 process.on("uncaughtException", (e) => log("uncaught", e?.message));
 // Refuse websocket upgrades so clients fall back to SSE.
 server.on("upgrade", (_req, sock) => sock.end("HTTP/1.1 426 Upgrade Required\r\nconnection: close\r\n\r\n"));

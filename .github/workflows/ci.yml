@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           docker run --rm -v "$PWD":/src:ro bash:3.2 bash -c '
-            apk add -q --no-cache openssh-client jq coreutils openssl nodejs perl >/dev/null
+            apk add -q --no-cache openssh-client jq coreutils openssl nodejs perl git >/dev/null
             cp -r /src /w && cd /w && bash test/shell/run.sh'
 
   macos:

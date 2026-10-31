@@ -125,13 +125,14 @@ Example profiles: `plain` (just the desktop), `modem` (Docker, Node 24, pnpm, co
 
 #### 3. Secrets: v0 built as **grants** (see README)
 
-`boxery grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]`. The controller stores names and paths only; values are read at apply time and pushed into the VM's `/run/user/<uid>/boxery` tmpfs, then reconciled on every apply (grant/revoke, new, start, revert, attach, ssh, pi selecting the VM). ssh-agent = per-VM `ForwardAgent`. This implements the "laptop pushes on acquire" row below for env vars and files. Still planned: leases calling it on acquire, the host-side 1Password fallback, and per-grant approval prompts.
+`boxery grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]`. The controller stores names and paths only; values are read at apply time and pushed into the VM's `/run/user/<uid>/boxery` tmpfs, then reconciled on every apply (grant/revoke, new, start, revert, attach, ssh, pi selecting the VM). ssh-agent = per-VM `ForwardAgent`. This implements the "laptop pushes on acquire" row below for env vars and files. `http:HOST` / `github` grants (#2, plan in `docs/plans/2026-10-31-edge-grants.md`) generalize the LLM proxy: values are resolved on the controller and pushed to the host proxy, never into the VM; the guest reaches `127.0.0.1:8088/edge/<vm-token>/<host>/…` via git `insteadOf` / npm registry config. Still planned: leases calling it on acquire, the host-side 1Password fallback, and per-grant approval prompts.
 
 
 
 | Kind | Where it lives | How it gets there |
 |---|---|---|
 | LLM credentials | host only | proxy; VMs hold a per-VM token (revoked on rm) |
+| HTTP API tokens (GitHub, npm, …) | host proxy route file, per VM | `boxery grant VM http:HOST --cmd …` / `github`; injected per request at the edge; cleared on rm and lease reset |
 | Build-time tokens (npm registry, container registry) | the build VM only, while it runs | the host injects short-lived/scoped tokens into a throwaway **builder** VM; the template is produced from a fresh export, not the builder's disk; build logs are not shell-traced. Prefer token-free paths (e.g. build the Postgres image from source) |
 | App runtime secrets (`.env`) | VM tmpfs during a lease (best effort) | laptop pushes over ssh to `/run/user/<uid>/boxery/secrets/`; symlinked into the repo; gone on reset |
 | Fallback (no laptop, e.g. cron jobs) | host | host fetches from 1Password (`op`, service account) and pushes the same way |

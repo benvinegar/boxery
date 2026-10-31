@@ -140,6 +140,7 @@ lease_set_keys() { # NAME [PUBKEY]
 # RESETTING(gen) → revert to the clean snapshot → FREE (or BROKEN if anything fails).
 lease_reset() { # NAME GEN
 	local name=$1 gen=$2 ok=0 ep h p
+	edge_clear "$name"   # the next holder must not inherit this holder's credential routes
 	# Every backend step runs in a subshell: backends `die` (exit) on failure, and a failed reset must
 	# still reach the BROKEN transition below instead of leaving the row stuck in RESETTING.
 	if ( backend_revert "$name" "$POOL_SNAP" ) 2>/dev/null; then
@@ -430,6 +431,7 @@ cmd_rm() {
 	is_pool "$1" && die "$1 is a pool VM; run: boxery-host pool rm $1 (after its lease ends)"
 	backend_rm "$1"
 	token_del "$1"
+	edge_clear "$1"
 	log "$1 removed (proxy token revoked)"
 }
 
@@ -449,6 +451,35 @@ cmd_revert() {
 	log "$1 reverted to $2"
 }
 
+# ---------------------------------------------------------------- edge grants
+# Per-VM HTTP credential routes for the proxy's /edge/ path (values never enter the VM).
+# stdin: {"HOST": {"headers": {"Name": "value"}, "readonly": bool}, …}   ({} clears)
+EDGE_DIR=$CONF/edge
+edge_clear() { rm -f "$EDGE_DIR/$1.json"; }
+cmd_edge_set() {
+	valid_name "${1:-}"
+	backend_exists "$1" || die "no such VM: $1"
+	local in tmp
+	in=$(head -c 262144) || die "could not read routes"
+	# Same host/header rules as the proxy; reject anything that could smuggle a header or hit an IP/port.
+	jq -e '
+		type == "object" and (to_entries | all(
+			(.key | test("^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\\.[a-z]{2,63}$")) and
+			(.value | type == "object") and
+			((.value.readonly // false) | type == "boolean") and
+			((.value.headers // {}) | type == "object" and (to_entries | all(
+				(.key | test("^[A-Za-z0-9-]{1,64}$")) and
+				(.key | ascii_downcase | IN("host", "content-length", "connection", "transfer-encoding", "te", "upgrade", "proxy-connection", "keep-alive", "trailer") | not) and
+				(.value | type == "string" and (test("[\r\n\u0000]") | not) and length <= 8192)
+			)))
+		))' <<<"$in" >/dev/null 2>&1 || die "edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)"
+	mkdir -p "$EDGE_DIR"; chmod 700 "$EDGE_DIR"
+	if [[ $(jq length <<<"$in") == 0 ]]; then edge_clear "$1"; log "$1: edge routes cleared"; return; fi
+	tmp=$(mktemp "$EDGE_DIR/.$1.XXXX"); chmod 600 "$tmp"
+	jq -c '{hosts: .}' <<<"$in" >"$tmp" && mv "$tmp" "$EDGE_DIR/$1.json"
+	log "$1: edge routes → $(jq -r 'keys | join(", ")' <<<"$in")"
+}
+
 cmd_proxy_log() {
 	if [[ $(uname) == Darwin ]]; then tail -n "${1:-30}" "$HOME/Library/Logs/$PROXY_UNIT.log"
 	else journalctl --user -u "$PROXY_UNIT" -n "${1:-30}" --no-pager -o cat; fi
@@ -465,7 +496,8 @@ usage() {
 		  ls | ip NAME | start NAME | stop NAME | rm NAME
 		  snap NAME [SNAP] | snaps NAME | revert NAME SNAP
 		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
-		  proxy-log [N]             recent LLM proxy requests
+		  proxy-log [N]             recent LLM + edge proxy requests
+		  edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
 		  pool add NAME | rm NAME [--force] | ls     shared pool of leasable VMs
 		  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
@@ -493,6 +525,7 @@ snap) cmd_snap "$@" ;;
 snaps) cmd_snaps "$@" ;;
 revert) cmd_revert "$@" ;;
 proxy-log) cmd_proxy_log "$@" ;;
+edge-set) cmd_edge_set "$@" ;;
 pool) cmd_pool "$@" ;;
 acquire) cmd_acquire "$@" ;;
 renew) cmd_renew "$@" ;;
