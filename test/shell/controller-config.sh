@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local-only config regression test; no network or VM needed.
 set -eu
-CLI="$(cd "$(dirname "$0")" && pwd)/agentvm"
+CLI="$(cd "$(dirname "$0")/../.." && pwd)/controller/agentvm"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export AGENTVM_HOME="$tmp/config"

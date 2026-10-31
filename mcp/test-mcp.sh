@@ -36,13 +36,13 @@ AGENTVM_MCP_TOKEN=$tok node "$S" --http "127.0.0.1:$port" --vm "$VM" 2>/dev/null
 trap 'kill $pid 2>/dev/null || true' EXIT
 for _ in $(seq 50); do curl -fs "127.0.0.1:$port/healthz" >/dev/null && break; sleep 0.1; done
 U="http://127.0.0.1:$port/mcp"; H=(-H "content-type: application/json" -H "accept: application/json, text/event-stream")
-[[ $(curl -s -o /dev/null -w %{http_code} "${H[@]}" -d "$init" "$U") == 401 ]] && ok "no token → 401" || bad "no token"
-[[ $(curl -s -o /dev/null -w %{http_code} "${H[@]}" -H "authorization: Bearer $tok" -H "origin: https://evil.example" -d "$init" "$U") == 403 ]] && ok "foreign Origin → 403" || bad origin
+[[ $(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" -d "$init" "$U") == 401 ]] && ok "no token → 401" || bad "no token"
+[[ $(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" -H "authorization: Bearer $tok" -H "origin: https://evil.example" -d "$init" "$U") == 403 ]] && ok "foreign Origin → 403" || bad origin
 sid=$(curl -s -D - -o /dev/null "${H[@]}" -H "authorization: Bearer $tok" -d "$init" "$U" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}' | tr -d '\r')
 [[ -n $sid ]] && ok "initialize → Mcp-Session-Id" || bad "no session id"
 res=$(curl -s "${H[@]}" -H "authorization: Bearer $tok" -H "mcp-session-id: $sid" -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"vm_bash","arguments":{"command":"hostname"}}}' "$U")
 [[ $(jq -r '.result.content[0].text' <<<"$res") == "$VM"* ]] && ok "vm_bash over http" || bad "http vm_bash: $res"
-[[ $(curl -s -o /dev/null -w %{http_code} "${H[@]}" -H "authorization: Bearer $tok" -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}' "$U") == 404 ]] && ok "missing session → 404" || bad "missing session"
+[[ $(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" -H "authorization: Bearer $tok" -d '{"jsonrpc":"2.0","id":3,"method":"tools/list"}' "$U") == 404 ]] && ok "missing session → 404" || bad "missing session"
 
 echo; echo "passed: $pass  failed: $fail"
 ((fail == 0))

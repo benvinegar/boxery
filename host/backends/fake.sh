@@ -1,0 +1,21 @@
+# shellcheck shell=bash disable=SC2154
+# agentvm backend: fake (tests only). VMs are directories under $AGENTVM_FAKE_DIR; ssh endpoints point
+# at a port that is never contacted (tests stub ssh). Exercises the dispatcher + contract without VMs.
+FAKE=${AGENTVM_FAKE_DIR:?AGENTVM_FAKE_DIR must be set for the fake backend}
+backend_check() { :; }
+backend_init() { mkdir -p "$FAKE"; }
+backend_proxy_services() { :; }
+guest_proxy_upstream() { echo "TCP:fake-gateway:$PROXY_PORT"; }
+backend_build_base() { mkdir -p "$FAKE"; touch "$FAKE/.base"; }
+backend_has_base() { [[ -f $FAKE/.base ]]; }
+backend_exists() { [[ -d $FAKE/$1 ]]; }
+backend_new() { mkdir -p "$FAKE/$1"; echo running >"$FAKE/$1/state"; cp "$5" "$FAKE/$1/user-data"; echo "$2 $3 $4" >"$FAKE/$1/size"; }
+backend_list() { local d; for d in "$FAKE"/*/; do [[ -d $d ]] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(cat "$d/state")" "127.0.0.1:2222" "1GiB"; done; }
+backend_ssh_endpoint() { backend_exists "$1" || die "no such vm: $1"; [[ $(cat "$FAKE/$1/state") == running ]] || die "$1 is not running"; echo "127.0.0.1 2222"; }
+backend_wait_endpoint() { echo "127.0.0.1 2222"; }
+backend_start() { echo running >"$FAKE/$1/state"; }
+backend_stop() { echo "shut off" >"$FAKE/$1/state"; }
+backend_rm() { backend_exists "$1" || die "no such vm: $1"; rm -rf "${FAKE:?}/$1"; }
+backend_snap() { cp -r "$FAKE/$1" "$FAKE/.snap-$1-$2"; }
+backend_snaps() { ls -d "$FAKE"/.snap-"$1"-* 2>/dev/null | sed "s#.*/.snap-$1-##"; }
+backend_revert() { [[ -d $FAKE/.snap-$1-$2 ]] || die "no snapshot $2"; }

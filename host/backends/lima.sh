@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2154  # sourced by host/agentvm-host (provides die/log/need/SSH_OPTS/…)
 # agentvm backend: Lima (macOS or Linux). Sourced by host/agentvm-host.
 # Contract: see host/backends/README.md.
 #
@@ -63,8 +64,7 @@ backend_build_base() {
 	limactl start "$LIMA_BASE" --timeout 20m >/dev/null 2>"$tmp/start.log" || { tail -20 "$tmp/start.log" >&2; die "limactl start failed"; }
 	log "installing the desktop image (XFCE, VNC, Chromium/Chrome, node, pi, opencode; ~5-10 min)"
 	# Reuse the libvirt build script: extract agentvm-build.sh + write_files from the cloud-config and run them.
-	local ep; ep=$(backend_ssh_endpoint base)
-	lima_apply_cloudconfig "${ep% *}" "${ep#* }" "$ROOT/image/base-user-data.yaml" build || die "base build failed (see output above)"
+	lima_apply_cloudconfig "$ROOT/image/base-user-data.yaml" build || die "base build failed (see output above)"
 	limactl stop "$LIMA_BASE" >/dev/null
 	rm -rf "$tmp"
 	log "base image ready: Lima instance $LIMA_BASE"
@@ -72,8 +72,8 @@ backend_build_base() {
 
 # Apply a cloud-config's write_files (+ for "build": run /usr/local/sbin/agentvm-build.sh; for "vm": runcmd)
 # over ssh. Lima owns the instance's own cloud-init seed, so we replay ours as root.
-lima_apply_cloudconfig() { # HOST PORT FILE build|vm
-	local h=$1 p=$2 f=$3 mode=$4
+lima_apply_cloudconfig() { # FILE build|vm [NAME]
+	local f=$1 mode=$2
 	node -e '
 		const fs = require("fs");
 		const yaml = fs.readFileSync(process.argv[1], "utf8");
@@ -118,7 +118,7 @@ lima_apply_cloudconfig() { # HOST PORT FILE build|vm
 		# its own key at boot, so nothing else to do. Make the agent user's runtime services start on boot:
 		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo loginctl enable-linger agent' || true
 	else
-		ssh -F "$HOME/.lima/$(linst "$5")/ssh.config" "lima-$(linst "$5")" 'sudo bash -s' <"$f.files.sh" || return 1
+		ssh -F "$HOME/.lima/$(linst "$3")/ssh.config" "lima-$(linst "$3")" 'sudo bash -s' <"$f.files.sh" || return 1
 	fi
 	rm -f "$f.files.sh"
 }
@@ -134,7 +134,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
 		die "limactl clone failed"
 	limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "limactl start $i failed"
 	# Per-VM identity: replay the generated cloud-config (files + runcmd) as root over Lima's ssh.
-	lima_apply_cloudconfig x x "$userdata" vm "$name" || die "applying per-VM config failed"
+	lima_apply_cloudconfig "$userdata" vm "$name" || die "applying per-VM config failed"
 	local sshcfg="$HOME/.lima/$i/ssh.config"
 	# authorized keys (host mgmt key + registered controller keys), hostname, then the runcmd steps.
 	awk '/^ssh_authorized_keys:/{f=1;next} f&&/^  - /{sub(/^  - /,""); gsub(/^"|"$/,""); print; next} f{f=0}' "$userdata" |
@@ -160,9 +160,9 @@ backend_ssh_endpoint() {
 	echo "127.0.0.1 $(jq -r .sshLocalPort <<<"$j")"
 }
 backend_wait_endpoint() {
-	local i
-	for i in $(seq 120); do
-		local j; j=$(lima_json "$(linst "$1")")
+	local j
+	for _ in $(seq 120); do
+		j=$(lima_json "$(linst "$1")")
 		if [[ $(jq -r .status <<<"$j") == Running && $(jq -r .sshLocalPort <<<"$j") != 0 ]]; then echo "127.0.0.1 $(jq -r .sshLocalPort <<<"$j")"; return; fi
 		sleep 1
 	done

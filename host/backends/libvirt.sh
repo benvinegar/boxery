@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2154  # sourced by host/agentvm-host (provides die/log/need/SSH_OPTS/…)
 # agentvm backend: libvirt/KVM (Linux). Sourced by host/agentvm-host.
 # Contract: see host/backends/README.md.
 
@@ -23,8 +24,8 @@ vm_ip() {
 }
 
 wait_ip() {
-	local ip i
-	for i in $(seq 180); do ip=$(vm_ip "$1"); [[ -n $ip ]] && { echo "$ip"; return; }; sleep 1; done
+	local ip
+	for _ in $(seq 180); do ip=$(vm_ip "$1"); [[ -n $ip ]] && { echo "$ip"; return; }; sleep 1; done
 	die "timed out waiting for $1 to get an IP"
 }
 

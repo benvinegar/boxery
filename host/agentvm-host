@@ -8,7 +8,7 @@ set -euo pipefail
 resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
 CONF=${AGENTVM_CONF:-$HOME/.config/agentvm}
-CACHE=${AGENTVM_CACHE:-$HOME/.cache/agentvm}
+export CACHE=${AGENTVM_CACHE:-$HOME/.cache/agentvm}   # used by backends
 # Settings persisted by `init` (backend, proxy port/unit). Explicit env vars win over the file.
 if [ -f "$CONF/host.env" ]; then
 	while IFS='=' read -r k v; do
@@ -34,8 +34,7 @@ host_pubkey() {
 vm_ssh_cmd() { local h=$1 p=$2; shift 2; ssh "${SSH_OPTS[@]}" -p "$p" "agent@$h" "$@"; }
 
 wait_ssh() { # HOST [PORT]
-	local i
-	for i in $(seq 180); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
+	for _ in $(seq 180); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
 	die "timed out waiting for ssh on $1:${2:-22}"
 }
 
@@ -59,9 +58,11 @@ token_del() {
 }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
+# shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
 agentvm_seed() { # NAME → path of a user-data file
 	local name=$1 tmp; tmp=$(mktemp -d)
-	local secret; secret=$(openssl rand -hex 24)
+	local secret
+	secret=$(openssl rand -hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token (is openssl installed?)"
 	token_set "$name" "$secret"
 	local cred="$name:$secret"
 	# The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token.

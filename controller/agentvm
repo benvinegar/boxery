@@ -6,6 +6,7 @@ set -eu
 CONF_DIR="${AGENTVM_HOME:-$HOME/.agentvm}"
 CONF_FILE="$CONF_DIR/config"
 SSH_CONF="$CONF_DIR/ssh_config"
+# shellcheck source=/dev/null
 [ -f "$CONF_FILE" ] && . "$CONF_FILE"
 HOST="${AGENTVM_HOST:-${HOST:-}}"   # ssh destination of the VM host, e.g. you@hornet (tailscale name)
 HOST_BIN="${AGENTVM_HOST_BIN:-${HOST_BIN:-~/.local/bin/agentvm-host}}"
@@ -22,6 +23,7 @@ need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
 need_host() { [ -n "$HOST" ] || die "not configured; run: agentvm setup user@host"; }
 # HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
 is_local() { [ "$HOST" = local ]; }
+# shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
 local_host_bin() { case $HOST_BIN in "~/"*) echo "$HOME/${HOST_BIN#\~/}" ;; *) echo "$HOST_BIN" ;; esac; }
 h() {
 	need_host
