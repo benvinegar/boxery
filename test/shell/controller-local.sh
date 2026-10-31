@@ -8,6 +8,8 @@ A=$ROOT/controller/boxery
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 export BOXERY_CONF=$tmp/hostconf BOXERY_HOME=$tmp/ctl BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms
 export BOXERY_HOST_BIN=$ROOT/host/boxery-host BOXERY_RUNTIME_DIR=$tmp/run
+# Keep git's "global" config inside the fake VM home: never touch the real ~/.config/git/config.
+export XDG_CONFIG_HOME=$tmp/xdg GIT_CONFIG_NOSYSTEM=1; unset GIT_CONFIG_GLOBAL
 mkdir -p "$tmp/bin" "$BOXERY_CONF" "$tmp/run" "$tmp/home/.ssh"
 echo "ssh-ed25519 AAAAtest mgmt" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 echo "ssh-ed25519 AAAAme me@laptop" >"$tmp/home/.ssh/id_ed25519.pub"; touch "$tmp/home/.ssh/id_ed25519"
@@ -71,7 +73,7 @@ want_basic="Basic $(printf 'x-access-token:%s' "$EDGE_SECRET" | base64 | tr -d '
 gc=$tmp/run/boxery/gitconfig
 grep -q 'insteadOf = https://github.com/' "$gc" && grep -q '/edge/e1%3Atok123/github.com/' "$gc" && ok "git insteadOf for github.com" || bad "gitconfig: $(cat "$gc" 2>/dev/null)"
 HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -qxF "$gc" && ok "gitconfig included once" || bad "include.path"
-"$A" grants e1 apply --quiet >/dev/null 2>&1; [[ $(HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -c .) == 1 ]] && ok "re-apply doesn't duplicate the include" || bad "include duplicated"
+"$A" grants e1 apply --quiet >/dev/null 2>&1; [[ $(HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -c .) == 1 ]] && ok "re-apply does not duplicate the include" || bad "include duplicated"
 "$A" grants e1 | grep -q 'http:github.com.*basic:x-access-token' && ok "grants lists http routes" || bad "grants output"
 for badspec in http:127.0.0.1 http:localhost http:api.example.com:8443 http:https://x.com http:x.com/path "http:a b.com" http:-x.com; do
 	if "$A" grant e1 "$badspec" --cmd 'echo x' >/dev/null 2>&1; then bad "accepted $badspec"; else ok "rejected $badspec"; fi
