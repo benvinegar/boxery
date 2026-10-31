@@ -1,6 +1,6 @@
 # boxery architecture
 
-Status: **v0 built** (VMs, proxy, controller CLI, e2e test). Everything under "Planned" is design only.
+Status: **built**: VMs, credential proxy, controller CLI, pi extension, MCP server, grants, and the shared pool with leases (see [docs/pool.md](docs/pool.md)). Profiles and the rest of "Planned" are design only, and some of the lease design below (gateway key, `--keep`, profiles) is not implemented yet. User-facing docs: [docs/](docs/README.md).
 
 ## Goals
 
