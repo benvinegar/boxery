@@ -117,6 +117,28 @@ echo "== snapshot / revert"
 "$A" run "$VM" 'rm -f ~/project/answer.txt'
 "$A" revert "$VM" e2e >/dev/null
 check "revert restored answer.txt" "$A" run "$VM" 'test -f ~/project/answer.txt'
+[[ $("$A" run "$VM" hostname) == "$VM" ]] && ok "revert kept the VM's identity" || bad "hostname after revert"
+"$A" rm "${VM}s" >/dev/null 2>&1 || true
+"$A" new "${VM}s" --from "$VM@e2e" >/dev/null && check "new --from a snapshot has its files" "$A" run "${VM}s" 'test -f ~/project/answer.txt' || bad "new --from"
+"$A" rm "${VM}s" >/dev/null 2>&1 || true
+
+echo "== fork (running VM → 2 copies)"
+"$A" run "$VM" 'echo fork-me > ~/project/fork.txt'
+t0=$(date +%s)
+if "$A" fork "$VM" "${VM}a" "${VM}b" >/dev/null; then
+	ok "forked into 2 in $(($(date +%s) - t0))s"
+	for f in "${VM}a" "${VM}b"; do
+		r=$("$A" run "$f" 'echo "$(hostname) $(cat ~/project/fork.txt) $(curl -fsS 127.0.0.1:8088/healthz)"')
+		[[ $r == "$f fork-me ok" ]] && ok "$f: own hostname, src's files, proxy works" || bad "$f: $r"
+	done
+	"$A" run "${VM}a" 'echo only-a > ~/project/a.txt'
+	check "forks are independent" "$A" run "${VM}b" '! test -e ~/project/a.txt'
+	check "source kept running" "$A" run "$VM" true
+	[[ $("$A" run "${VM}a" 'cat /etc/machine-id') != $("$A" run "${VM}b" 'cat /etc/machine-id') ]] && ok "forks have distinct machine-ids" || bad "same machine-id"
+else
+	bad "fork"
+fi
+"$A" rm "${VM}a" >/dev/null 2>&1 || true; "$A" rm "${VM}b" >/dev/null 2>&1 || true
 
 echo "== rm"
 "$A" rm "$VM" >/dev/null && ok "removed" || bad "rm"

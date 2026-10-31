@@ -35,13 +35,21 @@ boxery start demo | stop demo
 boxery rm demo                               # also revokes its LLM proxy token
 ```
 
-### Snapshots
+### Snapshots and forks
 
 ```bash
-boxery snap demo before-refactor             # ~2 s
+boxery fork demo try-a try-b                 # copy demo (running or not) into 2 new VMs, ~15–25 s   [--grants]
+boxery snap demo before-refactor             # ~1 s, the VM keeps running
 boxery snaps demo [--json]
-boxery revert demo before-refactor
+boxery revert demo before-refactor           # VM keeps its name, address and token
+boxery new demo2 --from demo@before-refactor # a new VM from a snapshot
+boxery snap-rm demo before-refactor
+boxery images                                # every snapshot on the host
 ```
+
+A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
+
+Snapshots and forks are built on one backend primitive, the image (a copy of a VM's disk named `VM@LABEL`). They hold disk state only, never memory, so secrets pushed by grants (tmpfs) are never captured. `rm` removes a VM's snapshots too. Snapshots made by boxery versions before images are still listed (marked legacy) and can be reverted or deleted. How each backend implements images: [backends](../host/backends/README.md#images-one-primitive-for-snapshots-forks-and-pool-resets).
 
 ### Shell and in-VM agents
 
@@ -99,9 +107,10 @@ boxery proxy-log [N]                         # which VM called which LLM provide
 init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
 build-base                      build the golden desktop image (one time)
 add-key < key.pub               authorize a controller's ssh key for new VMs
-new NAME [--cpus N --mem MiB --disk GiB]
+new NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
+fork SRC DST... [--cpus N --mem MiB --disk GiB]
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
-snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
+snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
 proxy-log [N]
 
@@ -196,11 +205,11 @@ tmux sessions in the VM (agents started by `attach` / `prompt`).
 
 #### `boxery snaps NAME --json`
 
-Snapshots of a VM, passed through from `boxery-host snaps NAME --json`.
+Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `created` and `size` are `null` for legacy snapshots.
 
 ```json
 [
-{"name":"before-refactor"}
+{"name":"before-refactor","created":"2026-10-31T19:28:31","size":"173MiB","legacy":false}
 ]
 ```
 
@@ -212,7 +221,7 @@ Same objects as `boxery ls --json` without `grants` (grants live on the controll
 
 #### `boxery-host snaps NAME --json`
 
-`[{"name": …}]`, from the backend's `backend_snap_names`.
+`[{"name", "created", "size", "legacy"}]`, from the backend's `backend_images` (and `backend_legacy_snaps`).
 
 #### `boxery-host pool ls --json`
 

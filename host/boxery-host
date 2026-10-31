@@ -26,6 +26,10 @@ need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1' (use [a-z][a-z0-9-]*)"; }
 valid_snap() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid snapshot name '$1'"; }
 valid_num() { [[ $2 =~ ^[0-9]+$ ]] || die "$1 must be a number"; }
+# Images are immutable disk states, named VM@LABEL: snapshots (`snap demo s1` → demo@s1), the pool's
+# clean state (NAME@boxery-clean) and short-lived fork sources (SRC@fork-…). See host/backends/README.md.
+valid_image() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid image name '$1'"; }
+image_exists() { backend_images | cut -f1 | grep -xF "$1" >/dev/null; }   # not grep -q: an early exit + pipefail = false negative
 MGMT_KEY=$CONF/mgmt_ed25519   # host's own passwordless key for managing VMs (works without an ssh-agent)
 host_pubkey() {
 	[[ -f $MGMT_KEY ]] || ssh-keygen -q -t ed25519 -N "" -C "boxery-host@$(hostname)" -f "$MGMT_KEY"
@@ -102,6 +106,12 @@ boxery_seed() { # NAME → path of a user-data file
 		echo "ssh_pwauth: false"
 		echo "ssh_authorized_keys:"
 		while IFS= read -r k; do printf '  - %s\n' "$(jq -Rn --arg k "$k" '$k')"; done <<<"$keys"
+		# First boot of this instance (also when the disk came from another VM: fork): start with no
+		# authorized keys (cloud-init's ssh module merges into the existing file, and a fork's disk carries
+		# its source's keys) and a fresh machine-id. bootcmd runs before sshd starts.
+		echo "bootcmd:"
+		echo "  - [cloud-init-per, instance, boxery-keys, sh, -c, 'rm -f /home/agent/.ssh/authorized_keys']"
+		echo "  - [cloud-init-per, instance, boxery-machine-id, sh, -c, 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null']"
 		echo "write_files:"
 		printf '  - path: /etc/boxery/proxy-upstream\n    content: %s\n' "$(guest_proxy_upstream)"
 		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".boxery/token:cred"; do
@@ -120,7 +130,7 @@ boxery_seed() { # NAME → path of a user-data file
 
 # ---------------------------------------------------------------- leases (pool VMs)
 # State machine + fencing live in host/boxery-leases.mjs (SQLite). This file does the side effects:
-# installing a lease's ssh key in the VM, and resetting the VM to its clean snapshot.
+# installing a lease's ssh key in the VM, and resetting the VM to its clean image (NAME@boxery-clean).
 
 POOL_SNAP=boxery-clean
 leases() { node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-leases.mjs" "$CONF/leases.db" "$@"; }
@@ -130,7 +140,7 @@ is_pool() { # 0 = pool VM, 1 = not; dies on a lease-store error rather than gues
 }
 
 # authorized_keys in the VM := host management key (+ the lease holder's key). This is the fence:
-# a VM in the pool accepts nobody else, and resetting it (snapshot revert) drops the lease key again.
+# a VM in the pool accepts nobody else, and resetting it (reimage from its clean image) drops the lease key again.
 lease_set_keys() { # NAME [PUBKEY]
 	local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
 	{ host_pubkey; [[ -z ${2:-} ]] || printf '%s\n' "$2"; } |
@@ -150,18 +160,35 @@ ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state → 
 		split("\n") | map(select(length > 0) | split("\t") |
 			{name: .[0], state: (.[1] | nz), addr: (.[2] | nz), disk: (.[3] | nz), lease: ($p[.[0]] // null)}) | '"$JSON_ARRAY"
 }
-snaps_json() { # NAME → [{name}]
-	local names; names=$(backend_snap_names "$1") || exit 1
-	jq -R -s -r "split(\"\\n\") | map(select(length > 0) | {name: .}) | $JSON_ARRAY" <<<"$names"
+snaps_json() { # NAME → [{name, created, size, legacy}]   (cmd_snaps' tab lines)
+	local lines; lines=$(snaps_lines "$1") || exit 1
+	jq -R -s -r "split(\"\\n\") | map(select(length > 0) | split(\"\\t\") |
+		{name: .[0], created: (if .[1] == \"(legacy)\" then null else .[1] end), size: (if .[2] == \"-\" then null else .[2] end), legacy: (.[1] == \"(legacy)\")}) | $JSON_ARRAY" <<<"$lines"
 }
 
-# RESETTING(gen) → revert to the clean snapshot → FREE (or BROKEN if anything fails).
+# Put VM NAME back to image IMAGE (its own snapshot or clean state). Pre-image VMs may still have a
+# backend-internal snapshot of that label (libvirt: pool VMs added before images existed).
+restore_vm() { # NAME LABEL
+	if image_exists "$1@$2"; then backend_reimage "$1" "$1@$2"
+	elif declare -F backend_legacy_revert >/dev/null && backend_legacy_revert "$1" "$2"; then :
+	else die "no snapshot $2 for $1"; fi
+}
+
+# authorized_keys in a pet VM := host management key + every registered controller key.
+pet_set_keys() { # NAME
+	local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+	local keys; keys=$( { host_pubkey; cat "$CONF/authorized_keys" 2>/dev/null || true; } | sort -u | grep -v '^$' || true)
+	printf '%s\n' "$keys" |
+		vm_ssh_cmd "$h" "$p" 'umask 077; mkdir -p ~/.ssh && cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys'
+}
+
+# RESETTING(gen) → reimage from the clean image → FREE (or BROKEN if anything fails).
 lease_reset() { # NAME GEN
 	local name=$1 gen=$2 ok=0 ep h p
 	edge_clear "$name"   # the next holder must not inherit this holder's credential routes
 	# Every backend step runs in a subshell: backends `die` (exit) on failure, and a failed reset must
 	# still reach the BROKEN transition below instead of leaving the row stuck in RESETTING.
-	if ( backend_revert "$name" "$POOL_SNAP" ) 2>/dev/null; then
+	if ( with_vm_lock "$name" restore_vm "$name" "$POOL_SNAP" ) 2>/dev/null; then
 		ep=$( backend_wait_endpoint "$name" ) && h=${ep% *} && p=${ep#* } &&
 			( BOXERY_SSH_WAIT_TRIES=${BOXERY_SSH_WAIT_TRIES:-45} wait_ssh "$h" "$p" ) 2>/dev/null &&
 			vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null 2>&1; true" &&
@@ -186,19 +213,18 @@ cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 		# nobody keeps access through a connection opened before the VM joined the pool.
 		vm_ssh_cmd "$h" "$p" 'sudo pkill -u agent -x sshd 2>/dev/null; sudo pkill -f "^sshd: agent" 2>/dev/null; true' || true
 		sleep 1
-		if declare -F backend_snap_rm >/dev/null; then backend_snap_rm "$1" "$POOL_SNAP" 2>/dev/null || true; fi
-		backend_snap "$1" "$POOL_SNAP"
+		vm_ssh_cmd "$h" "$p" 'sync' || true
+		if image_exists "$1@$POOL_SNAP"; then backend_image_rm "$1@$POOL_SNAP"; fi
+		if declare -F backend_legacy_snap_rm >/dev/null; then backend_legacy_snap_rm "$1" "$POOL_SNAP" || true; fi
+		with_vm_lock "$1" backend_capture "$1" "$1@$POOL_SNAP"
 		leases add "$1" >/dev/null
 		log "$1 added to the pool (only lease holders can reach it now)" ;;
 	rm)
 		valid_name "${1:-}"
 		leases remove "$1" ${2:+"$2"} >/dev/null
 		# back to a pet: registered controller keys may log in again
-		if backend_ssh_endpoint "$1" >/dev/null 2>&1; then
-			local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
-			{ host_pubkey; cat "$CONF/authorized_keys" 2>/dev/null; } | sort -u | grep -v '^$' |
-				vm_ssh_cmd "$h" "$p" 'umask 077; cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys' || true
-		fi
+		if backend_ssh_endpoint "$1" >/dev/null 2>&1; then pet_set_keys "$1" || true; fi
+		if image_exists "$1@$POOL_SNAP"; then backend_image_rm "$1@$POOL_SNAP" || true; fi
 		log "$1 removed from the pool" ;;
 	ls)
 		local j; j=$(pool_json) || die "lease store error"
@@ -390,32 +416,58 @@ cmd_add_key() { # pubkey on stdin
 
 cmd_build_base() { backend_check; backend_build_base; }
 
-cmd_new() {
-	local name="" cpus=4 mem=8192 disk=40
+# Per-VM lock for operations that read or replace a VM's disk (snap, fork, revert, pool reset, rm).
+# Runs CMD in a subshell (backends `die` = exit) and always releases the lock. A lock whose owner
+# died is taken over.
+with_vm_lock() { # NAME cmd...
+	local l=$CONF/locks/$1 i rc=0; mkdir -p "$CONF/locks"
+	for i in $(seq 1200); do
+		mkdir "$l" 2>/dev/null && break
+		if [[ -f $l/pid ]] && ! kill -0 "$(cat "$l/pid" 2>/dev/null)" 2>/dev/null; then rm -rf "$l"; continue; fi
+		((i == 1200)) && die "$1 is busy (lock $l)"
+		sleep 0.5
+	done
+	echo $$ >"$l/pid"
+	shift; ( "$@" ) || rc=$?
+	rm -rf "$l"
+	return $rc
+}
+
+cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
+	local name="" cpus=4 mem=8192 disk=40 from=""
 	while (($#)); do
 		case $1 in
 		--cpus) valid_num "$1" "${2:-}"; cpus=$2; shift 2 ;;
 		--mem) valid_num "$1" "${2:-}"; mem=$2; shift 2 ;;
 		--disk) valid_num "$1" "${2:-}"; disk=$2; shift 2 ;;
+		--from) valid_image "${2:-}"; from=$2; shift 2 ;;
 		-*) die "unknown flag $1" ;;
 		*) name=$1; shift ;;
 		esac
 	done
-	[[ -n $name ]] || die "usage: new NAME [--cpus N] [--mem MiB] [--disk GiB]"
+	[[ -n $name ]] || die "usage: new NAME [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE]"
 	valid_name "$name"
 	backend_exists "$name" && die "$name already exists"
 	backend_has_base || die "no base image; run: boxery-host build-base"
+	[[ -z $from ]] || image_exists "$from" || die "no such image: $from (boxery-host images)"
 	local userdata; userdata=$(boxery_seed "$name")
 	# If anything below fails (including die → exit), revoke the token minted for this VM and drop
 	# the half-created VM. EXIT, not ERR: die exits without firing ERR. Globals, not locals: the trap
 	# runs after this function's scope is gone.
 	NEW_NAME=$name NEW_DIR=$(dirname "$userdata") NEW_DONE=0
 	trap 'if [[ $NEW_DONE != 1 ]]; then token_del "$NEW_NAME" 2>/dev/null || true; if backend_exists "$NEW_NAME"; then backend_rm "$NEW_NAME" 2>/dev/null || true; fi; fi; rm -rf "$NEW_DIR"' EXIT
-	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata"
+	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata" "$from"
 	local ep host port; ep=$(backend_wait_endpoint "$name"); host=${ep% *}; port=${ep#* }
 	log "$name reachable at $host:$port; waiting for ssh + cloud-init"
 	wait_ssh "$host" "$port"
 	vm_ssh_cmd "$host" "$port" 'cloud-init status --wait >/dev/null 2>&1; true'
+	# A VM made from an image starts with another VM's disk. Whatever the backend did to give it its own
+	# identity, make sure of the parts boxery's security depends on: exactly this host's keys (never the
+	# source's lease holder), and nothing pushed by grants (tmpfs, so normally gone already).
+	if [[ -n $from ]]; then
+		pet_set_keys "$name" || die "could not reset ssh keys on $name"
+		vm_ssh_cmd "$host" "$port" 'rm -rf "/run/user/$(id -u)/boxery"' || true
+	fi
 	vm_ssh_cmd "$host" "$port" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
 		log "warning: noVNC not answering yet"
 	NEW_DONE=1
@@ -446,31 +498,65 @@ cmd_connect() {
 cmd_start() { valid_name "$1"; backend_start "$1"; local ep; ep=$(backend_wait_endpoint "$1"); wait_ssh "${ep% *}" "${ep#* }"; log "$1 started"; }
 cmd_stop() { valid_name "$1"; backend_stop "$1"; log "$1 shutting down"; }
 
+_rm() {
+	backend_rm "$1"
+	# Not @fork-* images: a fork in progress may be booting VMs from one (it removes it when done).
+	local i; for i in $(backend_images | cut -f1 | grep "^$1@" | grep -v "^$1@fork-" || true); do backend_image_rm "$i" || log "warning: could not remove image $i"; done
+}
 cmd_rm() {
 	valid_name "$1"
 	is_pool "$1" && die "$1 is a pool VM; run: boxery-host pool rm $1 (after its lease ends)"
-	backend_rm "$1"
+	backend_exists "$1" || die "no such vm: $1"
+	with_vm_lock "$1" _rm "$1"
 	token_del "$1"
 	edge_clear "$1"
-	log "$1 removed (proxy token revoked)"
+	log "$1 removed with its snapshots (proxy token revoked)"
 }
 
-cmd_snap() { # NAME [SNAPNAME]
+# ---------------------------------------------------------------- images: snapshots and forks
+# One primitive on every backend: capture a VM's disk as an immutable image, and boot VMs from images.
+#   snap   = capture NAME → NAME@LABEL          revert = put NAME's own image back (reimage)
+#   fork   = capture SRC → new VM(s) from it    pool   = reset to NAME@boxery-clean
+# Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
+
+cmd_snap() { # NAME [LABEL]
 	valid_name "$1"; local s=${2:-snap-$(date +%Y%m%d-%H%M%S)}; valid_snap "$s"
-	backend_snap "$1" "$s"
+	backend_exists "$1" || die "no such vm: $1"
+	image_exists "$1@$s" && die "snapshot $1@$s exists (boxery-host snap-rm $1 $s)"
+	with_vm_lock "$1" backend_capture "$1" "$1@$s"
 	log "snapshot $1@$s"
+}
+snaps_lines() { # NAME → LABEL<TAB>CREATED<TAB>SIZE (pool clean state and in-flight fork images included)
+	backend_exists "$1" || die "no such vm: $1"
+	backend_images | awk -F'\t' -v p="$1@" 'index($1, p) == 1 { print substr($1, length(p) + 1) "\t" $2 "\t" $3 }'
+	if declare -F backend_legacy_snaps >/dev/null; then backend_legacy_snaps "$1" | awk '{ print $0 "\t(legacy)\t-" }'; fi
 }
 cmd_snaps() { # NAME [--json]
 	valid_name "${1:-}"
-	case ${2:-} in --json) snaps_json "$1" ;; '') backend_snaps "$1" ;; *) die "usage: snaps NAME [--json]" ;; esac
+	case ${2:-} in --json) snaps_json "$1" ;; '') snaps_lines "$1" ;; *) die "usage: snaps NAME [--json]" ;; esac
+}
+cmd_snap_rm() { # NAME LABEL
+	valid_name "$1"; valid_snap "${2:-}"
+	[[ $2 != "$POOL_SNAP" ]] || ! is_pool "$1" || die "$1@$2 is the pool's clean state"
+	if image_exists "$1@$2"; then backend_image_rm "$1@$2"
+	elif declare -F backend_legacy_snap_rm >/dev/null && backend_legacy_snap_rm "$1" "$2"; then :
+	else die "no snapshot $1@$2"; fi
+	log "removed snapshot $1@$2"
+}
+cmd_images() { printf '%-40s %-20s %s\n' IMAGE CREATED SIZE; backend_images | while IFS=$'\t' read -r i c z; do printf '%-40s %-20s %s\n' "$i" "$c" "$z"; done; }
+
+_revert() { # NAME LABEL
+	restore_vm "$1" "$2"
+	local ep h p; ep=$(backend_wait_endpoint "$1"); h=${ep% *}; p=${ep#* }
+	wait_ssh "$h" "$p"
+	# Guest clock may resume from snapshot time (legacy memory snapshots); step it to host time.
+	vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null" || true
 }
 cmd_revert() {
 	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"; valid_snap "$2"
-	backend_revert "$1" "$2"
-	local ep h p; ep=$(backend_wait_endpoint "$1"); h=${ep% *}; p=${ep#* }
-	wait_ssh "$h" "$p"
-	# Guest clock resumes from snapshot time; step it to host time (guest agent lacks guest-set-time on Ubuntu).
-	vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null" || true
+	backend_exists "$1" || die "no such vm: $1"
+	is_pool "$1" && die "$1 is a pool VM; it is reset on release"
+	with_vm_lock "$1" _revert "$1" "$2"
 	log "$1 reverted to $2"
 }
 
@@ -503,6 +589,40 @@ cmd_edge_set() {
 	log "$1: edge routes → $(jq -r 'keys | join(", ")' <<<"$in")"
 }
 
+# fork SRC DST... [--cpus N --mem MiB --disk GiB]: capture SRC once (it keeps running), then boot every
+# DST from that image with its own identity (hostname, proxy token, ssh keys, network). Prints
+# "DST ADDR" per fork, like new. The capture is temporary: forks never depend on it.
+cmd_fork() {
+	local src="" dsts=() flags=() d
+	while (($#)); do
+		case $1 in
+		--cpus | --mem | --disk) valid_num "$1" "${2:-}"; flags+=("$1" "$2"); shift 2 ;;
+		-*) die "unknown flag $1" ;;
+		*) if [[ -z $src ]]; then src=$1; else dsts+=("$1"); fi; shift ;;
+		esac
+	done
+	[[ -n $src && ${#dsts[@]} -gt 0 ]] || die "usage: fork SRC DST... [--cpus N --mem MiB --disk GiB]"
+	valid_name "$src"; backend_exists "$src" || die "no such vm: $src"
+	for d in "${dsts[@]}"; do
+		valid_name "$d"; backend_exists "$d" && die "$d already exists"
+		[[ $(printf '%s\n' "${dsts[@]}" | grep -cxF "$d") == 1 ]] || die "duplicate fork name $d"
+	done
+	local img; img="$src@fork-$(date +%Y%m%d%H%M%S)-$(openssl rand -hex 3)"
+	FORK_IMG=$img
+	trap 'if image_exists "$FORK_IMG"; then backend_image_rm "$FORK_IMG" || log "warning: could not remove $FORK_IMG"; fi' EXIT
+	local t0=$SECONDS
+	with_vm_lock "$src" backend_capture "$src" "$img"
+	log "captured $src in $((SECONDS - t0))s; booting ${#dsts[*]} fork(s)"
+	# Boot the forks in parallel; print results in argument order.
+	local out; out=$(mktemp -d) rc=0
+	for d in "${dsts[@]}"; do ( cmd_new "$d" ${flags[@]+"${flags[@]}"} --from "$img" >"$out/$d" ) & done
+	wait
+	for d in "${dsts[@]}"; do if [[ -s $out/$d ]]; then cat "$out/$d"; else rc=1; log "fork $d failed"; fi; done
+	rm -rf "$out"
+	log "forked $src → ${dsts[*]} in $((SECONDS - t0))s"
+	return $rc
+}
+
 cmd_proxy_log() {
 	if [[ $(uname) == Darwin ]]; then tail -n "${1:-30}" "$HOME/Library/Logs/$PROXY_UNIT.log"
 	else journalctl --user -u "$PROXY_UNIT" -n "${1:-30}" --no-pager -o cat; fi
@@ -516,8 +636,11 @@ usage() {
 		  build-base                build the golden desktop image (one-time)
 		  add-key < key.pub         authorize a controller's ssh key for new VMs
 		  new NAME [--cpus N --mem MiB --disk GiB]
+		  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1)
+		  fork SRC DST... [--cpus N --mem MiB --disk GiB]
+		                            copy a VM (running or not) into new VMs with their own identity
 		  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
-		  snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
+		  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
 		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
 		  proxy-log [N]             recent LLM + edge proxy requests
 		  edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
@@ -546,6 +669,9 @@ stop) cmd_stop "$@" ;;
 rm | delete) cmd_rm "$@" ;;
 snap) cmd_snap "$@" ;;
 snaps) cmd_snaps "$@" ;;
+snap-rm) cmd_snap_rm "$@" ;;
+images) cmd_images ;;
+fork) cmd_fork "$@" ;;
 revert) cmd_revert "$@" ;;
 proxy-log) cmd_proxy_log "$@" ;;
 edge-set) cmd_edge_set "$@" ;;

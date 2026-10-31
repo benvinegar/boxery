@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-Several agents, laptops or CI jobs can share a set of VMs without stepping on each other. Pool VMs are handed out with **exclusive, expiring leases**. When a lease ends, the VM is reset to a clean snapshot, and all work from that lease is gone, including its keys.
+Several agents, laptops or CI jobs can share a set of VMs without stepping on each other. Pool VMs are handed out with **exclusive, expiring leases**. When a lease ends, the VM is reset to its clean image, and all work from that lease is gone, including its keys.
 
 ## Set up a pool (admin)
 
@@ -16,7 +16,7 @@ boxery pool add pool-2
 boxery pool ls
 ```
 
-`pool add` locks the VM down so that only lease holders can reach it. It ends existing ssh sessions, wipes pushed grants, and takes the `boxery-clean` snapshot that each reset returns to. The backend must support snapshots (libvirt, or Lima with `BOXERY_LIMA_VMTYPE=qemu`).
+`pool add` locks the VM down so that only lease holders can reach it. It ends existing ssh sessions, wipes pushed grants, and captures the `NAME@boxery-clean` image that each reset returns to. Works on every backend (libvirt and Lima, including Lima vz).
 
 To take a VM out of the pool after its lease ends, run `boxery pool rm NAME`. It becomes a normal VM again. `--force` removes it even while it's leased.
 
@@ -46,7 +46,7 @@ boxery leases                    # what you hold
 
 - **Exclusive.** A pool VM accepts only the host's key and the current lease's key. Each lease gets a fresh ssh keypair, stored in `~/.boxery/leases/`.
 - **Expiring.** TTLs run from 1 minute to 8 hours (default 30 min). The pi extension renews at a third of the TTL. A reaper on the host (systemd timer or launchd agent, every minute) resets expired leases. A sleeping laptop or a crashed agent never strands a VM.
-- **Fenced.** Release or expiry reverts the VM to its clean snapshot, which also removes the lease key. A holder whose lease is gone is locked out, even with a connection that was already open.
+- **Fenced.** Release or expiry resets the VM to its clean image, which also removes the lease key. Forking a leased VM doesn't carry the lease key over. A holder whose lease is gone is locked out, even with a connection that was already open.
 - **Reboot-safe.** Leases are tied to the host's boot ID. After a host reboot, every lease is void and gets reset.
 - **Crash-safe.** State lives in SQLite (`~/.config/boxery/leases.db`) as a small state machine with generation fencing. A failed acquire or reset never leaves a VM half-assigned. Such VMs are marked `BROKEN` instead, and `pool ls` shows them.
 

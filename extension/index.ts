@@ -7,7 +7,7 @@
  *   vm_bash  vm_read  vm_write  vm_edit  vm_copy           files and shell in a VM
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               list / new / rm / snap / revert / use / grants
+ *   vm_manage                                               list / new / fork / rm / snap / snaps / revert / use / grants
  *
  * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs;
  * both share core/boxery-core.mjs. Here, bash/read/write/edit reuse pi's own tool engines (same
@@ -306,13 +306,15 @@ export default function (pi: ExtensionAPI) {
 		name: "vm_manage",
 		label: "vm manage",
 		description:
-			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
+			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | fork | rm | snap | snaps | revert | use | none | grants. " +
+			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name); each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
 		parameters: Type.Object({
 			action: Type.String(),
 			name: Type.Optional(Type.String()),
 			snapshot: Type.Optional(Type.String({ description: "snapshot name for snap/revert" })),
+			to: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: "for fork: new VM name(s)" })),
 			use: Type.Optional(Type.Boolean({ description: "for new: also make it the current VM" })),
 		}),
 		async execute(_id, p: any, _s, _u, ctx: any) {

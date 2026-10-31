@@ -221,6 +221,16 @@ describe("stdio", () => {
 		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
 		assert.equal((await c.tool("vm_manage", { action: "bogus" })).isError, true);
 	});
+
+	test("vm_manage fork passes validated names to the controller", async () => {
+		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: ["try-a", "try-b"] })).content[0].text, /stub boxery fork fakevm try-a try-b/);
+		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: "one" })).content[0].text, /stub boxery fork fakevm one$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm" })).content[0].text, /stub boxery fork fakevm pi-[0-9a-f]{6}/);
+		const bad = await c.tool("vm_manage", { action: "fork", name: "fakevm", to: ["ok", "x; touch /tmp/pwned"] });
+		assert.equal(bad.isError, true);
+		assert.match(bad.content[0].text, /invalid VM name/);
+		assert.equal((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: Array.from({ length: 9 }, (_, i) => `f${i}`) })).isError, true);
+	});
 });
 
 describe("http", () => {

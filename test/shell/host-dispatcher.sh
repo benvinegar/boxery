@@ -40,8 +40,8 @@ expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
 expect "start" "$H" start a1
 expect "snap" "$H" snap a1 s1
-"$H" snaps a1 | grep -qx s1 && ok "snaps" || bad snaps
-[[ $("$H" snaps a1 --json | jq -c .) == '[{"name":"s1"}]' ]] && ok "snaps --json" || bad "snaps --json: $("$H" snaps a1 --json)"
+"$H" snaps a1 | cut -f1 | grep -qx s1 && ok "snaps" || bad snaps
+[[ $("$H" snaps a1 --json | jq -c 'map(.name)') == '["s1"]' ]] && ok "snaps --json" || bad "snaps --json: $("$H" snaps a1 --json)"
 expect_fail "snaps --json of unknown VM fails" "$H" snaps nope --json
 expect "revert" "$H" revert a1 s1
 expect_fail "revert to unknown snapshot fails" "$H" revert a1 nope

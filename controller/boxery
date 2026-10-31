@@ -98,6 +98,7 @@ ssh_include_value() {
 valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac; [ ${#1} -le 64 ]; }
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
+valid_image() { case "${1:-}" in *@*) valid_vm "${1%%@*}" && valid_snap "${1#*@}" ;; *) return 1 ;; esac; }
 need_host() { [ -n "$HOST" ] || die "not configured; run: boxery setup user@host"; }
 # HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
 is_local() { [ "$HOST" = local ]; }
@@ -635,10 +636,11 @@ migrate_legacy_agent_forward() { # ~/.boxery/agent-forward/NAME markers → gran
 	[ -n "$HOST" ] && write_ssh_config || true
 }
 
-cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
-	name=""; pass=""; specs=""
+cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--grant SPEC]... [--agent-forward]
+	name=""; pass=""; specs=""; from=""
 	while [ $# -gt 0 ]; do
 		case $1 in
+		--from) valid_image "${2:-}" || die "invalid image name: ${2:-} (use VM@SNAP)"; from=$2; shift 2 ;;
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
@@ -653,7 +655,7 @@ cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-fo
 	while IFS= read -r sp; do [ -n "$sp" ] && grant_spec "$name" "$sp" "" dry; done <<EOF
 $specs
 EOF
-	h new "$name" $pass
+	h new "$name" $pass ${from:+--from "$from"}
 	if [ -n "$specs" ]; then
 		while IFS= read -r sp; do [ -n "$sp" ] && grant_spec "$name" "$sp" ""; done <<EOF
 $specs
@@ -661,6 +663,34 @@ EOF
 		echo "==> grants for $name: $(grants_summary "$name")"
 		grants_changed "$name"
 	fi
+}
+
+# fork SRC DST... [--cpus N --mem MiB --disk GiB] [--grants]: copy SRC (running or not) into new VMs.
+# Each fork is a pet with its own identity. Grants are per VM and not copied unless --grants is given
+# (then the fork gets the same grant list, applied from this machine).
+cmd_fork() {
+	src=""; dsts=""; pass=""; copy_grants=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
+			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
+			pass="$pass $1 $2"; shift 2 ;;
+		--grants) copy_grants=1; shift ;;
+		-*) die "unknown flag $1" ;;
+		*) need_vm "$1"; if [ -z "$src" ]; then src=$1; else dsts="$dsts $1"; fi; shift ;;
+		esac
+	done
+	[ -n "$src" ] && [ -n "$dsts" ] || die "usage: boxery fork SRC DST... [--cpus N --mem MiB --disk GiB] [--grants]"
+	# shellcheck disable=SC2086  # word splitting of validated names/flags is intended
+	h fork "$src" $dsts $pass || rc=$?
+	for d in $dsts; do
+		if [ -n "$copy_grants" ] && [ -f "$(grant_file "$src")" ]; then
+			mkdir -p "$GRANTS_DIR"; cp "$(grant_file "$src")" "$(grant_file "$d")"
+			echo "==> grants for $d: $(grants_summary "$d")" >&2
+			grants_changed "$d" >/dev/null 2>&1 || warn "could not apply grants to $d"
+		fi
+	done
+	return "${rc:-0}"
 }
 
 # ---------------------------------------------------------------- leases
@@ -810,7 +840,10 @@ usage() {
 		ls [--json]                     list VMs (with their grants)
 		rm NAME                         destroy VM (revokes its LLM token)
 		start|stop NAME
-		snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
+		fork SRC DST... [--grants]      copy a VM (running or not) into new VMs, ~10 s; each gets its own
+		                                identity (--grants: give the forks SRC's grants too)
+		snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP | snap-rm NAME SNAP
+		new NAME --from NAME@SNAP       new VM from a snapshot (also: boxery images)
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
 		run NAME cmd...                 run a command
@@ -857,9 +890,11 @@ start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if h
 revert) need_host; valid_snap "${2:-}" || die "invalid snapshot name: ${2:-}"; drop_master "${1:-}"; h revert "$@"; drop_master "${1:-}"; grants_apply "$1" --quiet || true ;;
 snap) need_host
 	[ -z "${2:-}" ] || valid_snap "$2" || die "invalid snapshot name: $2"
-	if has_pushed_grants "${1:-x}"; then warn "note: $1 has env/file grants; a memory snapshot includes their values (they are re-synced on revert)"; fi
 	h snap "$@" ;;
 new) need_host; cmd_new "$@" ;;
+fork) need_host; cmd_fork "$@" ;;
+snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
+images) need_host; h images ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
