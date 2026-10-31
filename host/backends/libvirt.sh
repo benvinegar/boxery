@@ -1,14 +1,14 @@
-# shellcheck shell=bash disable=SC2154  # sourced by host/agentvm-host (provides die/log/need/SSH_OPTS/…)
-# agentvm backend: libvirt/KVM (Linux). Sourced by host/agentvm-host.
+# shellcheck shell=bash disable=SC2154  # sourced by host/boxery-host (provides die/log/need/SSH_OPTS/…)
+# boxery backend: libvirt/KVM (Linux). Sourced by host/boxery-host.
 # Contract: see host/backends/README.md.
 
 export LIBVIRT_DEFAULT_URI=${LIBVIRT_DEFAULT_URI:-qemu:///system}
-POOL=${AGENTVM_POOL:-agentvm}
-POOL_DIR=${AGENTVM_POOL_DIR:-/var/lib/libvirt/images/agentvm}
-NET=${AGENTVM_NET:-default}
-BASE_VOL=agentvm-base.qcow2
+POOL=${BOXERY_POOL:-boxery}
+POOL_DIR=${BOXERY_POOL_DIR:-/var/lib/libvirt/images/boxery}
+NET=${BOXERY_NET:-default}
+BASE_VOL=${BOXERY_BASE_VOL:-boxery-base.qcow2}
 BASE_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
-PREFIX=avm-                    # libvirt domain prefix; user-facing names omit it
+PREFIX=${BOXERY_DOMAIN_PREFIX:-boxery-}   # libvirt domain prefix; user-facing names omit it
 dom() { echo "$PREFIX$1"; }
 exists() { virsh dominfo "$(dom "$1")" >/dev/null 2>&1; }
 
@@ -46,10 +46,10 @@ backend_init() {
 
 # How guests reach the LLM proxy: socat in the guest connects to vsock CID 2 (the host).
 backend_proxy_services() {
-	cat >"$HOME/.config/systemd/user/agentvm-vsock.service" <<-EOF
+	cat >"$HOME/.config/systemd/user/boxery-vsock.service" <<-EOF
 		[Unit]
-		Description=agentvm: expose LLM proxy to guests over vsock port $PROXY_PORT
-		After=agentvm-proxy.service
+		Description=boxery: expose LLM proxy to guests over vsock port $PROXY_PORT
+		After=boxery-proxy.service
 		[Service]
 		ExecStart=$(command -v socat) VSOCK-LISTEN:$PROXY_PORT,reuseaddr,fork TCP:127.0.0.1:$PROXY_PORT
 		Restart=always
@@ -57,12 +57,12 @@ backend_proxy_services() {
 		[Install]
 		WantedBy=default.target
 	EOF
-	echo agentvm-vsock.service
+	echo boxery-vsock.service
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 
 backend_build_base() {
-	local name=agentvm-base-build
+	local name=boxery-base-build
 	mkdir -p "$CACHE"
 	if [[ ! -f $CACHE/noble.img ]]; then
 		log "downloading Ubuntu 24.04 cloud image"
@@ -79,14 +79,14 @@ backend_build_base() {
 	upload_vol "$CACHE/noble.img" "$BASE_VOL" qcow2
 	virsh vol-resize --pool "$POOL" "$BASE_VOL" 20G >/dev/null
 	local tmp; tmp=$(mktemp -d)
-	printf 'instance-id: agentvm-base-%s\nlocal-hostname: agentvm-base\n' "$(date +%s)" >"$tmp/meta-data"
+	printf 'instance-id: boxery-base-%s\nlocal-hostname: boxery-base\n' "$(date +%s)" >"$tmp/meta-data"
 	cloud-localds "$tmp/seed.iso" "$ROOT/image/base-user-data.yaml" "$tmp/meta-data"
-	upload_vol "$tmp/seed.iso" agentvm-base-seed.iso raw
+	upload_vol "$tmp/seed.iso" boxery-base-seed.iso raw
 	rm -rf "$tmp"
 	virsh vol-delete --pool "$POOL" build.log >/dev/null 2>&1 || true
 	log "booting builder VM (installs XFCE, VNC, node, pi, opencode; ~5-10 min)"
 	virt-install --name "$name" --memory 8192 --vcpus 8 --osinfo ubuntu24.04 \
-		--disk "vol=$POOL/$BASE_VOL,bus=virtio" --disk "vol=$POOL/agentvm-base-seed.iso,device=cdrom" \
+		--disk "vol=$POOL/$BASE_VOL,bus=virtio" --disk "vol=$POOL/boxery-base-seed.iso,device=cdrom" \
 		--network "network=$NET,model=virtio" --graphics none \
 		--serial "pty,log.file=$POOL_DIR/build.log" \
 		--events on_reboot=destroy --import --noautoconsole >/dev/null
@@ -101,8 +101,8 @@ backend_build_base() {
 	virsh vol-download --pool "$POOL" build.log "$blog" >/dev/null 2>&1 || true
 	cp "$blog" "$CACHE/build.log" 2>/dev/null || true
 	virsh undefine "$name" >/dev/null
-	virsh vol-delete --pool "$POOL" agentvm-base-seed.iso >/dev/null
-	if grep -q AGENTVM_BUILD_OK "$blog"; then
+	virsh vol-delete --pool "$POOL" boxery-base-seed.iso >/dev/null
+	if grep -q BOXERY_BUILD_OK "$blog"; then
 		log "base image ready: $POOL/$BASE_VOL"
 	else
 		tail -40 "$blog" >&2
@@ -130,7 +130,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
 		--vsock cid.auto=yes \
 		--graphics none --console pty,target_type=serial \
 		--channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
-		--metadata "description=agentvm $name" \
+		--metadata "description=boxery $name" \
 		--import --noautoconsole >/dev/null
 	virsh autostart "$d" >/dev/null 2>&1 || true
 	wait_ip "$name" >/dev/null

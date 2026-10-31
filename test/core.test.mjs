@@ -1,7 +1,7 @@
-// Unit tests for core/agentvm-core.mjs pure helpers. Run: node --test test/
+// Unit tests for core/boxery-core.mjs pure helpers. Run: node --test test/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as core from "../core/agentvm-core.mjs";
+import * as core from "../core/boxery-core.mjs";
 
 test("vmPath maps relative, ~ and absolute paths into the VM", () => {
 	assert.equal(core.vmPath("src/a.ts"), "/home/agent/project/src/a.ts");
@@ -26,7 +26,7 @@ test("parseLoc understands local:, NAME: and bare paths", () => {
 
 test("assertName enforces the VM name grammar", () => {
 	for (const ok of ["a", "demo", "web-2", "a".repeat(31)]) assert.equal(core.assertName(ok), ok);
-	for (const bad of ["", "Demo", "1x", "a b", "a;b", "../x", "a".repeat(32), "x.avm", undefined, null])
+	for (const bad of ["", "Demo", "1x", "a b", "a;b", "../x", "a".repeat(32), "x.boxery", undefined, null])
 		assert.throws(() => core.assertName(bad), /invalid VM name/);
 });
 

@@ -1,10 +1,10 @@
 #cloud-config
 # Golden image build: installs software only. Per-VM identity (keys, token, hostname)
 # comes from a fresh NoCloud seed on each clone. Powers off when done.
-hostname: agentvm-base
+hostname: boxery-base
 users:
   - name: agent
-    gecos: agentvm agent
+    gecos: boxery agent
     groups: [sudo, adm]
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
@@ -12,46 +12,46 @@ users:
 package_update: true
 write_files:
   # Make `agent` the cloud-init default user so per-VM ssh_authorized_keys land there.
-  - path: /etc/cloud/cloud.cfg.d/99-agentvm.cfg
+  - path: /etc/cloud/cloud.cfg.d/99-boxery.cfg
     content: |
       system_info:
         default_user:
           name: agent
-          gecos: agentvm agent
+          gecos: boxery agent
           groups: [sudo, adm]
           shell: /bin/bash
           sudo: "ALL=(ALL) NOPASSWD:ALL"
           lock_passwd: true
   # Guest end of the LLM proxy: 127.0.0.1:8088 in the guest -> the host proxy (path depends on the backend).
-  - path: /etc/systemd/system/agentvm-llm.service
+  - path: /etc/systemd/system/boxery-llm.service
     content: |
       [Unit]
-      Description=agentvm: forward 127.0.0.1:8088 to host LLM proxy over vsock
+      Description=boxery: forward 127.0.0.1:8088 to host LLM proxy over vsock
       After=network.target
       [Service]
       # Upstream is backend-specific (libvirt: VSOCK-CONNECT:2:8088, lima: TCP:host.lima.internal:PORT);
-      # written per VM by agentvm-host into /etc/agentvm/proxy-upstream. Default: vsock.
-      ExecStart=/bin/sh -c 'exec /usr/bin/socat TCP-LISTEN:8088,bind=127.0.0.1,reuseaddr,fork "$$(cat /etc/agentvm/proxy-upstream 2>/dev/null || echo VSOCK-CONNECT:2:8088)"'
+      # written per VM by boxery-host into /etc/boxery/proxy-upstream. Default: vsock.
+      ExecStart=/bin/sh -c 'exec /usr/bin/socat TCP-LISTEN:8088,bind=127.0.0.1,reuseaddr,fork "$$(cat /etc/boxery/proxy-upstream 2>/dev/null || echo VSOCK-CONNECT:2:8088)"'
       Restart=always
       RestartSec=1
       [Install]
       WantedBy=multi-user.target
-  - path: /etc/skel/.config/systemd/user/agentvm-vnc.service
+  - path: /etc/skel/.config/systemd/user/boxery-vnc.service
     content: |
       [Unit]
-      Description=agentvm: TigerVNC X server :1 (localhost only)
+      Description=boxery: TigerVNC X server :1 (localhost only)
       [Service]
-      ExecStart=/usr/bin/Xtigervnc :1 -localhost=1 -rfbport 5901 -SecurityTypes None -geometry 1600x1000 -depth 24 -AlwaysShared -desktop agentvm
+      ExecStart=/usr/bin/Xtigervnc :1 -localhost=1 -rfbport 5901 -SecurityTypes None -geometry 1600x1000 -depth 24 -AlwaysShared -desktop boxery
       Restart=always
       RestartSec=2
       [Install]
       WantedBy=default.target
-  - path: /etc/skel/.config/systemd/user/agentvm-desktop.service
+  - path: /etc/skel/.config/systemd/user/boxery-desktop.service
     content: |
       [Unit]
-      Description=agentvm: XFCE session on :1
-      After=agentvm-vnc.service
-      Requires=agentvm-vnc.service
+      Description=boxery: XFCE session on :1
+      After=boxery-vnc.service
+      Requires=boxery-vnc.service
       [Service]
       Environment=DISPLAY=:1
       ExecStartPre=/bin/sh -c 'for i in $(seq 100); do [ -S /tmp/.X11-unix/X1 ] && exit 0; sleep 0.2; done; exit 1'
@@ -60,11 +60,11 @@ write_files:
       RestartSec=2
       [Install]
       WantedBy=default.target
-  - path: /etc/skel/.config/systemd/user/agentvm-novnc.service
+  - path: /etc/skel/.config/systemd/user/boxery-novnc.service
     content: |
       [Unit]
-      Description=agentvm: noVNC on 127.0.0.1:6080
-      After=agentvm-vnc.service
+      Description=boxery: noVNC on 127.0.0.1:6080
+      After=boxery-vnc.service
       [Service]
       ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5901
       Restart=always
@@ -75,15 +75,15 @@ write_files:
     content: |
       <meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&resize=remote&reconnect=1">
   # Many parallel tool calls share one multiplexed ssh connection from the laptop.
-  - path: /etc/ssh/sshd_config.d/60-agentvm.conf
+  - path: /etc/ssh/sshd_config.d/60-boxery.conf
     content: |
       MaxSessions 64
       MaxStartups 64:30:128
   # Reduce accidental persistence of secrets (see ARCHITECTURE.md, Secrets).
-  - path: /etc/sysctl.d/60-agentvm.conf
+  - path: /etc/sysctl.d/60-boxery.conf
     content: |
       kernel.core_pattern=|/bin/false
-  - path: /etc/profile.d/agentvm.sh
+  - path: /etc/profile.d/boxery.sh
     content: |
       # GUI apps launched by agents show up on the shared desktop.
       export DISPLAY=${DISPLAY:-:1}
@@ -94,7 +94,7 @@ write_files:
       set -g history-limit 50000
       set -g update-environment "DISPLAY SSH_AUTH_SOCK"
       set-environment -g DISPLAY :1
-  - path: /usr/local/sbin/agentvm-build.sh
+  - path: /usr/local/sbin/boxery-build.sh
     permissions: "0755"
     content: |
       #!/bin/bash
@@ -128,11 +128,11 @@ write_files:
       # Coding agents
       npm install -g @earendil-works/pi-coding-agent opencode-ai
       # Playwright client used by the laptop extension's vm_browser tool (talks CDP to the desktop Chrome)
-      npm install --prefix /opt/agentvm playwright-core
-      ls /opt/agentvm/node_modules/playwright-core/index.mjs
+      npm install --prefix /opt/boxery playwright-core
+      ls /opt/boxery/node_modules/playwright-core/index.mjs
       if ! command -v google-chrome >/dev/null; then
-        PLAYWRIGHT_BROWSERS_PATH=/opt/agentvm/browsers node /opt/agentvm/node_modules/playwright-core/cli.js install --with-deps chromium
-        CH=$(ls -d /opt/agentvm/browsers/chromium-*/chrome-linux*/chrome | head -1)
+        PLAYWRIGHT_BROWSERS_PATH=/opt/boxery/browsers node /opt/boxery/node_modules/playwright-core/cli.js install --with-deps chromium
+        CH=$(ls -d /opt/boxery/browsers/chromium-*/chrome-linux*/chrome | head -1)
         printf '#!/bin/sh\nexec %s "$@"\n' "$CH" > /usr/local/bin/google-chrome && chmod +x /usr/local/bin/google-chrome
       fi
       google-chrome --version
@@ -144,19 +144,19 @@ write_files:
       chown -R agent:agent /home/agent
       mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/agent
       sudo -u agent mkdir -p /home/agent/.config/systemd/user/default.target.wants
-      for s in agentvm-vnc agentvm-desktop agentvm-novnc; do
+      for s in boxery-vnc boxery-desktop boxery-novnc; do
         ln -sf /home/agent/.config/systemd/user/$s.service /home/agent/.config/systemd/user/default.target.wants/$s.service
       done
-      systemctl enable agentvm-llm.service qemu-guest-agent || true
+      systemctl enable boxery-llm.service qemu-guest-agent || true
       systemctl disable apport.service 2>/dev/null || true
       # Prepare for cloning: fresh identity on next boot
       apt-get clean
       cloud-init clean --logs --seed || true
       truncate -s 0 /etc/machine-id
       rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_*
-      touch /var/log/agentvm-build.ok
+      touch /var/log/boxery-build.ok
 runcmd:
-  - [bash, -c, "/usr/local/sbin/agentvm-build.sh 2>&1 | tee /var/log/agentvm-build.log > /dev/ttyS0; if [ -f /var/log/agentvm-build.ok ]; then echo AGENTVM_BUILD_OK > /dev/ttyS0; else echo AGENTVM_BUILD_FAILED > /dev/ttyS0; fi"]
+  - [bash, -c, "/usr/local/sbin/boxery-build.sh 2>&1 | tee /var/log/boxery-build.log > /dev/ttyS0; if [ -f /var/log/boxery-build.ok ]; then echo BOXERY_BUILD_OK > /dev/ttyS0; else echo BOXERY_BUILD_FAILED > /dev/ttyS0; fi"]
 power_state:
   mode: poweroff
   delay: now

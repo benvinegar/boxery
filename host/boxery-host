@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# agentvm-host: manage Ubuntu desktop VMs for coding agents.
-# Runs on the VM host (Linux with libvirt, or macOS/Linux with Lima). The controller (`agentvm`)
+# boxery-host: manage Ubuntu desktop VMs for coding agents.
+# Runs on the VM host (Linux with libvirt, or macOS/Linux with Lima). The controller (`boxery`)
 # calls it over ssh, or directly when the controller runs on the host itself (HOST=local).
 # VM-platform specifics live in host/backends/<backend>.sh (see host/backends/README.md).
 set -euo pipefail
 
 resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
-CONF=${AGENTVM_CONF:-$HOME/.config/agentvm}
-export CACHE=${AGENTVM_CACHE:-$HOME/.cache/agentvm}   # used by backends
+CONF=${BOXERY_CONF:-$HOME/.config/boxery}
+export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}   # used by backends
 # Settings persisted by `init` (backend, proxy port/unit). Explicit env vars win over the file.
 if [ -f "$CONF/host.env" ]; then
 	while IFS='=' read -r k v; do
-		case $k in AGENTVM_BACKEND | AGENTVM_PROXY_PORT | AGENTVM_PROXY_UNIT) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_LIMA_PREFIX) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
 	done <"$CONF/host.env"
 fi
-PROXY_PORT=${AGENTVM_PROXY_PORT:-8088}
-BACKEND=${AGENTVM_BACKEND:-libvirt}
-PROXY_UNIT=${AGENTVM_PROXY_UNIT:-agentvm-proxy}   # override to run a second agentvm install side by side
-SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="${AGENTVM_CONF:-$HOME/.config/agentvm}/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+PROXY_PORT=${BOXERY_PROXY_PORT:-8088}
+BACKEND=${BOXERY_BACKEND:-libvirt}
+PROXY_UNIT=${BOXERY_PROXY_UNIT:-boxery-proxy}   # override to run a second boxery install side by side
+SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="${BOXERY_CONF:-$HOME/.config/boxery}/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
 
-die() { echo "agentvm-host: $*" >&2; exit 1; }
+die() { echo "boxery-host: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1' (use [a-z][a-z0-9-]*)"; }
@@ -28,7 +28,7 @@ valid_snap() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid sna
 valid_num() { [[ $2 =~ ^[0-9]+$ ]] || die "$1 must be a number"; }
 MGMT_KEY=$CONF/mgmt_ed25519   # host's own passwordless key for managing VMs (works without an ssh-agent)
 host_pubkey() {
-	[[ -f $MGMT_KEY ]] || ssh-keygen -q -t ed25519 -N "" -C "agentvm-host@$(hostname)" -f "$MGMT_KEY"
+	[[ -f $MGMT_KEY ]] || ssh-keygen -q -t ed25519 -N "" -C "boxery-host@$(hostname)" -f "$MGMT_KEY"
 	cat "$MGMT_KEY.pub"
 }
 
@@ -51,7 +51,7 @@ ensure_tokens() { mkdir -p "$CONF"; chmod 700 "$CONF"; [[ -f $CONF/tokens.json ]
 # Serialize read-modify-write of tokens.json across concurrent new/rm (portable: mkdir is atomic).
 with_tokens_lock() {
 	local lock=$CONF/.tokens.lock i
-	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "tokens.json is locked ($lock); remove it if no agentvm-host is running"; done
+	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "tokens.json is locked ($lock); remove it if no boxery-host is running"; done
 	local rc=0; "$@" || rc=$?
 	rmdir "$lock"
 	return $rc
@@ -66,7 +66,7 @@ token_del() { with_tokens_lock _token_jq --arg n "$1" 'del(.[$n])'; }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
-agentvm_seed() { # NAME → path of a user-data file
+boxery_seed() { # NAME → path of a user-data file
 	local name=$1 tmp; tmp=$(mktemp -d)
 	local secret
 	secret=$(openssl rand -hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token (is openssl installed?)"
@@ -74,7 +74,7 @@ agentvm_seed() { # NAME → path of a user-data file
 	local cred="$name:$secret"
 	# The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token.
 	local fakejwt; fakejwt=$(node -e 'const b=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
-		console.log(b({alg:"none",typ:"JWT"})+"."+b({avm:process.argv[1],"https://api.openai.com/auth":{chatgpt_account_id:"agentvm"}})+".agentvm")' "$cred")
+		console.log(b({alg:"none",typ:"JWT"})+"."+b({boxery:process.argv[1],"https://api.openai.com/auth":{chatgpt_account_id:"boxery"}})+".boxery")' "$cred")
 	local ollama_models; ollama_models=$(curl -fsS -m 3 127.0.0.1:11434/api/tags 2>/dev/null | jq -c '[.models[] | select(.capabilities|index("tools")) | {id:.name}]' 2>/dev/null || echo '[]')
 	local P="http://127.0.0.1:8088"   # in the guest, socat always listens here and forwards to the host proxy
 
@@ -90,29 +90,29 @@ agentvm_seed() { # NAME → path of a user-data file
 	oc_config=$(jq -n --arg cred "$cred" --arg p "$P" --argjson m "$oc_models" --arg def "$oc_default" '{
 		"$schema": "https://opencode.ai/config.json",
 		autoupdate: false,
-		provider: {agentvm: {npm: "@ai-sdk/openai-compatible", name: "agentvm host proxy (ollama)",
+		provider: {boxery: {npm: "@ai-sdk/openai-compatible", name: "boxery host proxy (ollama)",
 			options: {baseURL: ($p + "/ollama/v1"), apiKey: $cred}, models: $m}}
-	} + (if $def != "" then {model: ("agentvm/" + $def)} else {} end)')
+	} + (if $def != "" then {model: ("boxery/" + $def)} else {} end)')
 
 	local keys; keys=$( { host_pubkey; cat "$CONF/authorized_keys" 2>/dev/null; } | sort -u | grep -v '^$')
 	{
 		echo "#cloud-config"
 		echo "hostname: $name"
-		echo "fqdn: $name.avm"
+		echo "fqdn: $name.boxery"
 		echo "ssh_pwauth: false"
 		echo "ssh_authorized_keys:"
 		while IFS= read -r k; do printf '  - %s\n' "$(jq -Rn --arg k "$k" '$k')"; done <<<"$keys"
 		echo "write_files:"
-		printf '  - path: /etc/agentvm/proxy-upstream\n    content: %s\n' "$(guest_proxy_upstream)"
-		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".agentvm/token:cred"; do
+		printf '  - path: /etc/boxery/proxy-upstream\n    content: %s\n' "$(guest_proxy_upstream)"
+		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".boxery/token:cred"; do
 			local f=${pair%%:*} var=${pair##*:}
 			printf '  - path: /home/agent/%s\n    owner: agent:agent\n    permissions: "0600"\n    defer: true\n    encoding: b64\n    content: %s\n' \
 				"$f" "$(printf '%s' "${!var}" | base64 | tr -d '\n')"
 		done
 		cat <<-'EOF'
 			runcmd:
-			  - [systemctl, restart, agentvm-llm.service]
-			  - [bash, -c, "chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@agentvm; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'"]
+			  - [bash, -c, "[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service 2>/dev/null || systemctl restart agentvm-llm.service"]  # agentvm-*: pre-rename images
+			  - [bash, -c, "chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'"]
 		EOF
 	} >"$tmp/user-data"
 	echo "$tmp/user-data"
@@ -131,8 +131,8 @@ start_proxy_services() {
 			<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 			<plist version="1.0"><dict>
 			  <key>Label</key><string>dev.$PROXY_UNIT</string>
-			  <key>ProgramArguments</key><array><string>$node</string><string>$ROOT/proxy/agentvm-proxy.mjs</string></array>
-			  <key>EnvironmentVariables</key><dict><key>AGENTVM_PROXY_PORT</key><string>$PROXY_PORT</string><key>AGENTVM_PROXY_BIND</key><string>$(proxy_bind)</string><key>AGENTVM_CONF</key><string>$CONF</string></dict>
+			  <key>ProgramArguments</key><array><string>$node</string><string>$ROOT/proxy/boxery-proxy.mjs</string></array>
+			  <key>EnvironmentVariables</key><dict><key>BOXERY_PROXY_PORT</key><string>$PROXY_PORT</string><key>BOXERY_PROXY_BIND</key><string>$(proxy_bind)</string><key>BOXERY_CONF</key><string>$CONF</string></dict>
 			  <key>KeepAlive</key><true/><key>RunAtLoad</key><true/>
 			  <key>StandardOutPath</key><string>$HOME/Library/Logs/$PROXY_UNIT.log</string>
 			  <key>StandardErrorPath</key><string>$HOME/Library/Logs/$PROXY_UNIT.log</string>
@@ -144,12 +144,12 @@ start_proxy_services() {
 		mkdir -p "$HOME/.config/systemd/user"
 		cat >"$HOME/.config/systemd/user/$PROXY_UNIT.service" <<-EOF
 			[Unit]
-			Description=agentvm LLM proxy (per-VM tokens -> host credentials)
+			Description=boxery LLM proxy (per-VM tokens -> host credentials)
 			[Service]
-			Environment=AGENTVM_PROXY_PORT=$PROXY_PORT
-			Environment=AGENTVM_PROXY_BIND=$(proxy_bind)
-			Environment=AGENTVM_CONF=$CONF
-			ExecStart=$node $ROOT/proxy/agentvm-proxy.mjs
+			Environment=BOXERY_PROXY_PORT=$PROXY_PORT
+			Environment=BOXERY_PROXY_BIND=$(proxy_bind)
+			Environment=BOXERY_CONF=$CONF
+			ExecStart=$node $ROOT/proxy/boxery-proxy.mjs
 			Restart=always
 			RestartSec=2
 			[Install]
@@ -171,21 +171,24 @@ cmd_init() {
 	touch "$CONF/authorized_keys"; chmod 600 "$CONF/authorized_keys"
 	host_pubkey >/dev/null
 	[[ -f $CONF/proxy.env ]] || cat >"$CONF/proxy.env" <<-'EOF'
-		# Optional upstream API keys for the agentvm LLM proxy (stay on the host).
+		# Optional upstream API keys for the boxery LLM proxy (stay on the host).
 		# ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
 		#OPENAI_API_KEY=
 		#ANTHROPIC_API_KEY=
 	EOF
 	chmod 600 "$CONF/proxy.env"
-	printf 'AGENTVM_BACKEND=%s\nAGENTVM_PROXY_PORT=%s\nAGENTVM_PROXY_UNIT=%s\n' "$BACKEND" "$PROXY_PORT" "$PROXY_UNIT" >"$CONF/host.env"
+	{
+		printf 'BOXERY_BACKEND=%s\nBOXERY_PROXY_PORT=%s\nBOXERY_PROXY_UNIT=%s\n' "$BACKEND" "$PROXY_PORT" "$PROXY_UNIT"
+		for k in BOXERY_POOL BOXERY_POOL_DIR BOXERY_BASE_VOL BOXERY_DOMAIN_PREFIX BOXERY_LIMA_PREFIX; do [ -z "${!k:-}" ] || printf '%s=%s\n' "$k" "${!k}"; done
+	} >"$CONF/host.env"
 	backend_init
 	mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
-	if [[ -z ${AGENTVM_CONF:-} ]]; then
-		ln -sf "$ROOT/host/agentvm-host" "$HOME/.local/bin/agentvm-host"
-		ln -sf "$ROOT/controller/agentvm" "$HOME/.local/bin/agentvm"
+	if [[ -z ${BOXERY_CONF:-} ]]; then
+		ln -sf "$ROOT/host/boxery-host" "$HOME/.local/bin/boxery-host"
+		ln -sf "$ROOT/controller/boxery" "$HOME/.local/bin/boxery"
 	fi
 	start_proxy_services
-	log "init done. Next: agentvm-host build-base"
+	log "init done. Next: boxery-host build-base"
 }
 
 cmd_add_key() { # pubkey on stdin
@@ -212,8 +215,8 @@ cmd_new() {
 	[[ -n $name ]] || die "usage: new NAME [--cpus N] [--mem MiB] [--disk GiB]"
 	valid_name "$name"
 	backend_exists "$name" && die "$name already exists"
-	backend_has_base || die "no base image; run: agentvm-host build-base"
-	local userdata; userdata=$(agentvm_seed "$name")
+	backend_has_base || die "no base image; run: boxery-host build-base"
+	local userdata; userdata=$(boxery_seed "$name")
 	# If anything below fails (including die → exit), revoke the token minted for this VM and drop
 	# the half-created VM. EXIT, not ERR: die exits without firing ERR. Globals, not locals: the trap
 	# runs after this function's scope is gone.
@@ -240,9 +243,9 @@ cmd_ls() {
 
 cmd_ip() { valid_name "$1"; local ep; ep=$(backend_ssh_endpoint "$1"); echo "${ep% *}"; }
 
-# Used as an ssh ProxyCommand by controllers: `ssh host agentvm-host connect NAME [PORT]`.
+# Used as an ssh ProxyCommand by controllers: `ssh host boxery-host connect NAME [PORT]`.
 cmd_connect() {
-	local n=${1%.avm} port=${2:-22}
+	local n=${1%.boxery} port=${2:-22}
 	valid_name "$n"
 	local ep; ep=$(backend_ssh_endpoint "$n")
 	[[ $port == 22 ]] || die "connect: only the ssh port is supported (forward other ports over ssh)"
@@ -282,7 +285,7 @@ cmd_proxy_log() {
 
 usage() {
 	cat <<-EOF
-		agentvm-host — Ubuntu desktop VMs for coding agents (backend: $BACKEND)
+		boxery-host — Ubuntu desktop VMs for coding agents (backend: $BACKEND)
 
 		  init [--backend libvirt|lima]  install proxy services + backend setup, symlinks
 		  build-base                build the golden desktop image (one-time)

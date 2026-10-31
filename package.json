@@ -1,5 +1,5 @@
 {
-  "name": "agentvm",
+  "name": "boxery",
   "version": "0.6.0",
   "private": true,
   "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",

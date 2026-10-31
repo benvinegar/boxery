@@ -1,5 +1,5 @@
 /**
- * agentvm pi extension: a laptop pi gets explicit tools for remote agentvm VMs.
+ * boxery pi extension: a laptop pi gets explicit tools for remote boxery VMs.
  *
  * Built-in tools (bash, read, write, edit, …) are NOT touched: they keep acting on this machine, so
  * other extensions that wrap them keep working. VM work goes through clearly named vm_* tools:
@@ -9,8 +9,8 @@
  *   vm_browser                                              Playwright → Chrome on the VM desktop
  *   vm_manage                                               list / new / rm / snap / revert / use / grants
  *
- * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/agentvm-mcp.mjs;
- * both share core/agentvm-core.mjs. Here, bash/read/write/edit reuse pi's own tool engines (same
+ * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs;
+ * both share core/boxery-core.mjs. Here, bash/read/write/edit reuse pi's own tool engines (same
  * rendering, truncation and edit semantics as the built-ins) on top of ssh-backed operations.
  *
  *   pi --vm demo [--vm-grant ssh-agent,env:GH_TOKEN,file:.env]
@@ -27,7 +27,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 // @ts-ignore: plain ESM shared with the MCP server
-import * as core from "../core/agentvm-core.mjs";
+import * as core from "../core/boxery-core.mjs";
 
 const { PROJECT, q } = core;
 
@@ -71,9 +71,9 @@ function toPi(r: { text?: string; image?: { data: string; mimeType: string }; is
 // ---------------------------------------------------------------- extension
 
 export default function (pi: ExtensionAPI) {
-	pi.registerFlag("vm", { description: 'agentvm: current VM NAME (created if missing), or "new" for a throwaway VM', type: "string" });
+	pi.registerFlag("vm", { description: 'boxery: current VM NAME (created if missing), or "new" for a throwaway VM', type: "string" });
 	pi.registerFlag("vm-grant", {
-		description: "agentvm: comma-separated grants for the --vm VM, e.g. ssh-agent,env:GH_TOKEN,file:.env (see `agentvm grant`)",
+		description: "boxery: comma-separated grants for the --vm VM, e.g. ssh-agent,env:GH_TOKEN,file:.env (see `boxery grant`)",
 		type: "string",
 	});
 
@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 	const writeDef = createWriteToolDefinition(PROJECT);
 	const editDef = createEditToolDefinition(PROJECT);
 	const withVm = (schema: any) => ({ ...schema, properties: { ...schema.properties, vm: vmParam } });
-	const where = "in an agentvm VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
+	const where = "in an boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
 
 	pi.registerTool({
 		name: "vm_bash",
@@ -227,21 +227,21 @@ export default function (pi: ExtensionAPI) {
 		// A throwaway VM is removed as soon as it stops being current, not only on quit.
 		if (current?.ephemeral && current.name !== c?.name) {
 			const old = current.name;
-			void core.agentvmCli(["rm", old], 120_000).catch(() => {});
-			ctx?.ui?.notify?.(`agentvm: removing throwaway VM "${old}"`, "info");
+			void core.boxeryCli(["rm", old], 120_000).catch(() => {});
+			ctx?.ui?.notify?.(`boxery: removing throwaway VM "${old}"`, "info");
 		}
 		current = c;
-		if (persist) pi.appendEntry("agentvm-current", c ? { vm: c.name, ephemeral: c.ephemeral } : { vm: null });
-		ctx?.ui?.setStatus?.("agentvm", c ? (ctx.ui.theme?.fg?.("accent", `⛁ vm:${c.name}`) ?? `vm:${c.name}`) : undefined);
+		if (persist) pi.appendEntry("boxery-current", c ? { vm: c.name, ephemeral: c.ephemeral } : { vm: null });
+		ctx?.ui?.setStatus?.("boxery", c ? (ctx.ui.theme?.fg?.("accent", `⛁ vm:${c.name}`) ?? `vm:${c.name}`) : undefined);
 	}
 
 	/** Grants (ssh-agent / env / file) are owned by the controller CLI; the extension asks it to apply them. */
 	async function applyGrants(name: string, ctx: any, specs: string[] = []) {
 		if (specs.length) {
-			const out = await core.agentvmCli(["grant", name, ...specs], 120_000);
-			ctx?.ui?.notify?.(`agentvm: ${out.split("\n").filter((l: string) => !l.startsWith("==> granted")).join(" ").replace(/==> /g, "")}`, "info");
+			const out = await core.boxeryCli(["grant", name, ...specs], 120_000);
+			ctx?.ui?.notify?.(`boxery: ${out.split("\n").filter((l: string) => !l.startsWith("==> granted")).join(" ").replace(/==> /g, "")}`, "info");
 		} else {
-			await core.agentvmCli(["grants", name, "apply", "--quiet"], 120_000).catch((e: any) => ctx?.ui?.notify?.(`agentvm: ${e.message}`, "warning"));
+			await core.boxeryCli(["grants", name, "apply", "--quiet"], 120_000).catch((e: any) => ctx?.ui?.notify?.(`boxery: ${e.message}`, "warning"));
 		}
 	}
 
@@ -255,7 +255,7 @@ export default function (pi: ExtensionAPI) {
 		name: "vm_manage",
 		label: "vm manage",
 		description:
-			"Manage agentvm VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
+			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
 		parameters: Type.Object({
@@ -303,15 +303,15 @@ export default function (pi: ExtensionAPI) {
 			if (flag && event.reason === "startup") {
 				const grants = String(pi.getFlag("vm-grant") ?? "").split(",").map((g) => g.trim()).filter(Boolean);
 				await (flag === "new" ? useVm(core.newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
-				ctx.ui?.notify?.(`agentvm: current VM "${current!.name}". vm_* tools work there; built-in tools stay local.`, "info");
+				ctx.ui?.notify?.(`boxery: current VM "${current!.name}". vm_* tools work there; built-in tools stay local.`, "info");
 				return;
 			}
 			let last: any;
-			for (const e of ctx.sessionManager.getBranch() as any[]) if (e.type === "custom" && e.customType === "agentvm-current") last = e.data;
+			for (const e of ctx.sessionManager.getBranch() as any[]) if (e.type === "custom" && (e.customType === "boxery-current" || e.customType === "agentvm-current")) last = e.data;
 			// A recorded throwaway VM belongs to its original process; don't adopt it.
 			if (last?.vm && !last.ephemeral) setCurrent({ name: last.vm, ephemeral: false }, ctx, false);
 		} catch (e: any) {
-			ctx.ui?.notify?.(`agentvm: ${e.message}`, "error");
+			ctx.ui?.notify?.(`boxery: ${e.message}`, "error");
 			// Keep the requested name as current so vm_* tools report the failure instead of guessing.
 			if (flag && flag !== "new" && core.VALID_NAME.test(flag)) setCurrent({ name: flag, ephemeral: false }, ctx, false);
 		}
@@ -323,11 +323,11 @@ export default function (pi: ExtensionAPI) {
 		// A throwaway VM lives exactly as long as the session that created it (quit, /new, /resume, fork).
 		// A reload keeps the same session, so the VM stays; the reloaded instance re-adopts nothing,
 		// hence the reload case also removes it rather than leaking it.
-		if (current?.ephemeral) await core.agentvmCli(["rm", current.name], 120_000).catch(() => {});
+		if (current?.ephemeral) await core.boxeryCli(["rm", current.name], 120_000).catch(() => {});
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		event.systemPromptOptions.sections.agentvm = core.guidance(current?.name, {
+		event.systemPromptOptions.sections.boxery = core.guidance(current?.name, {
 			localToolsNote:
 				"The built-in bash, read, write, edit, grep, find and ls tools act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.",
 		});
@@ -336,7 +336,7 @@ export default function (pi: ExtensionAPI) {
 	// ------------------------------------------------------------ /vm command
 
 	pi.registerCommand("vm", {
-		description: "agentvm: /vm [use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants]",
+		description: "boxery: /vm [use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants]",
 		handler: async (args, ctx) => {
 			const [sub, arg, ...more] = (args ?? "").trim().split(/\s+/);
 			const say = (m: string, lvl = "info") => ctx.ui.notify(m, lvl as any);
@@ -348,21 +348,21 @@ export default function (pi: ExtensionAPI) {
 					case "use":
 						if (!arg) throw new Error("usage: /vm use NAME");
 						await useVm(arg, ctx);
-						say(`agentvm: current VM "${arg}"`);
+						say(`boxery: current VM "${arg}"`);
 						break;
 					case "new": {
 						const n = arg || core.newName();
 						await useVm(n, ctx, !arg);
-						say(`agentvm: current VM "${n}"${!arg ? " (throwaway)" : ""}`);
+						say(`boxery: current VM "${n}"${!arg ? " (throwaway)" : ""}`);
 						break;
 					}
 					case "off":
 					case "local":
 						setCurrent(null, ctx);
-						say("agentvm: no current VM");
+						say("boxery: no current VM");
 						break;
 					case "ls":
-						say(await core.agentvmCli(["ls"], 60_000));
+						say(await core.boxeryCli(["ls"], 60_000));
 						break;
 					case "rm":
 						if (!arg) throw new Error("usage: /vm rm NAME");
@@ -370,33 +370,33 @@ export default function (pi: ExtensionAPI) {
 							current = { ...current, ephemeral: false };
 							setCurrent(null, ctx);
 						}
-						say(await core.agentvmCli(["rm", arg], 120_000));
+						say(await core.boxeryCli(["rm", arg], 120_000));
 						break;
 					case "grant":
 					case "revoke": {
 						if (!current) throw new Error("no current VM (/vm use NAME first)");
 						const specs = [arg, ...more].filter(Boolean);
 						if (!specs.length) throw new Error(`usage: /vm ${sub} ssh-agent | env:VAR | file:PATH[=REMOTE] …`);
-						say(await core.agentvmCli([sub, current.name, ...specs], 120_000));
+						say(await core.boxeryCli([sub, current.name, ...specs], 120_000));
 						break;
 					}
 					case "grants":
 						if (!current && !arg) throw new Error("usage: /vm grants [NAME]");
-						say(await core.agentvmCli(["grants", arg || current!.name], 60_000));
+						say(await core.boxeryCli(["grants", arg || current!.name], 60_000));
 						break;
 					case "desktop": {
 						const name = arg || current?.name;
 						if (!name) throw new Error("usage: /vm desktop [NAME]");
 						desktopProc?.kill();
-						desktopProc = spawn(core.AGENTVM, ["desktop", name], { stdio: "ignore" });
-						say(`agentvm: opening the desktop of "${name}" in your browser (tunnel closes when pi exits)`);
+						desktopProc = spawn(core.BOXERY, ["desktop", name], { stdio: "ignore" });
+						say(`boxery: opening the desktop of "${name}" in your browser (tunnel closes when pi exits)`);
 						break;
 					}
 					default:
 						throw new Error(`unknown subcommand "${sub}"`);
 				}
 			} catch (e: any) {
-				say(`agentvm: ${e.message}`, "error");
+				say(`boxery: ${e.message}`, "error");
 			}
 		},
 	});

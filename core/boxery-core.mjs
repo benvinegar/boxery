@@ -1,6 +1,6 @@
-// agentvm core: VM transport and tool implementations shared by the pi extension and the MCP server.
-// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using ~/.agentvm/ssh_config
-// (written by `agentvm setup`), and to the VM host through the `agentvm` controller CLI.
+// boxery core: VM transport and tool implementations shared by the pi extension and the MCP server.
+// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using ~/.boxery/ssh_config
+// (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -9,8 +9,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENTVM_HOME = process.env.AGENTVM_HOME ?? path.join(homedir(), ".agentvm");
-export const SSH_CONF = path.join(AGENTVM_HOME, "ssh_config");
+export const BOXERY_HOME = process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery");
+export const SSH_CONF = path.join(BOXERY_HOME, "ssh_config");
 export const REMOTE_HOME = "/home/agent";
 export const PROJECT = `${REMOTE_HOME}/project`;
 export const CDP_PORT = 9222;
@@ -20,14 +20,14 @@ export const MAX_CAPTURE = 64 * 1024 * 1024; // hard cap on bytes buffered from 
 export const MAX_LINES = 2000;
 
 export function controllerPath() {
-	if (process.env.AGENTVM_BIN) return process.env.AGENTVM_BIN;
+	if (process.env.BOXERY_BIN) return process.env.BOXERY_BIN;
 	try {
-		const p = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../controller/agentvm");
+		const p = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../controller/boxery");
 		if (existsSync(p)) return p;
 	} catch {}
-	return "agentvm";
+	return "boxery";
 }
-export const AGENTVM = controllerPath();
+export const BOXERY = controllerPath();
 
 export const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,8 +69,8 @@ export function parseLoc(spec, current) {
 export function sshRun(vm, script, opts = {}) {
 	return new Promise((resolve, reject) => {
 		if (!VALID_NAME.test(vm ?? "")) return reject(new Error(`invalid VM name "${vm}"`));
-		if (!existsSync(SSH_CONF)) return reject(new Error(`agentvm not set up (${SSH_CONF} missing); run: agentvm setup user@host`));
-		const child = spawn("ssh", ["-F", SSH_CONF, "-o", "BatchMode=yes", `${vm}.avm`, `bash -c ${q(script)}`], {
+		if (!existsSync(SSH_CONF)) return reject(new Error(`boxery not set up (${SSH_CONF} missing); run: boxery setup user@host`));
+		const child = spawn("ssh", ["-F", SSH_CONF, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
 			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"],
 		});
 		const out = [];
@@ -117,10 +117,10 @@ export async function sshOk(vm, script, opts = {}) {
 	return r.stdout;
 }
 
-export function agentvmCli(args, timeoutMs = 300_000) {
+export function boxeryCli(args, timeoutMs = 300_000) {
 	return new Promise((resolve, reject) => {
-		execFile(AGENTVM, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
-			if (e) reject(new Error(`agentvm ${args.join(" ")}: ${(stderr || e.message).trim()}`));
+		execFile(BOXERY, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
 	});
@@ -136,7 +136,7 @@ export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
 		const id = randomBytes(6).toString("hex");
 		// setsid makes the inner shell a new session/group leader; it records its PID (= PGID) before
 		// exec'ing the user command, so cleanup can kill exactly that process group.
-		const pidf = `/tmp/agentvm-run-${id}.pgid`;
+		const pidf = `/tmp/boxery-run-${id}.pgid`;
 		const inner = `echo $$ > ${pidf}; exec bash -lc ${q(command)}`;
 		const script = `cd ${q(cwd || PROJECT)} 2>/dev/null || cd ${q(PROJECT)} 2>/dev/null || cd ~; setsid -w bash -c ${q(inner)} </dev/null; rc=$?; rm -f ${pidf}; exit $rc`;
 		let timedOut = false;
@@ -318,7 +318,7 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 		);
 	} else {
 		const d = localAbs(dst.path);
-		const tmp = path.join(path.dirname(d), `.agentvm-copy-${randomBytes(4).toString("hex")}`);
+		const tmp = path.join(path.dirname(d), `.boxery-copy-${randomBytes(4).toString("hex")}`);
 		await mkdir(tmp, { recursive: true });
 		await new Promise((res, rej) => {
 			const c = spawn("tar", ["-xf", "-", "-C", tmp]);
@@ -393,8 +393,8 @@ export async function scroll(vm, { x, y, direction, amount, screenshot: shot }) 
 
 export async function browser(vm, { code, screenshot: shot, timeout }, { signal } = {}) {
 	const program = `
-import { chromium } from '/opt/agentvm/node_modules/playwright-core/index.mjs';
-const out = (o) => process.stdout.write('\\n__AVM__' + JSON.stringify(o) + '\\n');
+const { chromium } = await import(process.env.BOXERY_PW);
+const out = (o) => process.stdout.write('\\n__BOXERY__' + JSON.stringify(o) + '\\n');
 try {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:${CDP_PORT}');
   const context = browser.contexts()[0] ?? await browser.newContext();
@@ -408,12 +408,12 @@ try {
 process.exit(0);`;
 	const script =
 		`${X}if ! curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null; then ` +
-		`setsid nohup google-chrome --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=$HOME/.config/agentvm-chrome ` +
-		`--no-first-run --no-default-browser-check --password-store=basic --start-maximized about:blank >/tmp/agentvm-chrome.log 2>&1 & ` +
+		`setsid nohup google-chrome --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=$HOME/.config/boxery-chrome ` +
+		`--no-first-run --no-default-browser-check --password-store=basic --start-maximized about:blank >/tmp/boxery-chrome.log 2>&1 & ` +
 		`for i in $(seq 75); do curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null && break; sleep 0.2; done; fi; ` +
-		`cd /opt/agentvm && exec node --input-type=module`;
+		`P=/opt/boxery; [ -d $P ] || P=/opt/agentvm; cd $P && BOXERY_PW=$P/node_modules/playwright-core/index.mjs exec node --input-type=module`; // /opt/agentvm: images built before the rename
 	const r = await sshRun(vm, script, { input: program, signal, timeoutMs: (timeout ?? 60) * 1000 });
-	const m = r.stdout.toString().match(/__AVM__(.*)\n?$/s);
+	const m = r.stdout.toString().match(/__BOXERY__(.*)\n?$/s);
 	if (!m) throw new Error(`browser script produced no result (exit ${r.code}): ${r.stderr.slice(-2000)}`);
 	const res = JSON.parse(m[1]);
 	if (!res.ok) throw new Error(res.error);
@@ -426,7 +426,7 @@ process.exit(0);`;
 // ---------------------------------------------------------------- lifecycle
 
 export async function vmExists(name) {
-	const out = await agentvmCli(["ls"], 60_000);
+	const out = await boxeryCli(["ls"], 60_000);
 	return out.split("\n").some((l) => l.split(/\s+/)[0] === name);
 }
 
@@ -434,8 +434,8 @@ export async function vmExists(name) {
 export async function ensureVm(name, notify = () => {}) {
 	assertName(name);
 	if (!(await vmExists(name))) {
-		notify(`agentvm: creating VM "${name}" (~15s)…`);
-		await agentvmCli(["new", name]);
+		notify(`boxery: creating VM "${name}" (~15s)…`);
+		await boxeryCli(["new", name]);
 	}
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
@@ -445,17 +445,17 @@ export async function manage({ action, name, snapshot }) {
 	const need = () => assertName(name);
 	switch (action) {
 		case "list":
-			return agentvmCli(["ls"], 60_000);
+			return boxeryCli(["ls"], 60_000);
 		case "new":
-			return agentvmCli(["new", name ? need() : newName()]);
+			return boxeryCli(["new", name ? need() : newName()]);
 		case "rm":
-			return agentvmCli(["rm", need()], 120_000);
+			return boxeryCli(["rm", need()], 120_000);
 		case "snap":
-			return agentvmCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000);
+			return boxeryCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000);
 		case "revert":
-			return agentvmCli(["revert", need(), assertSnap(snapshot)], 600_000);
+			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000);
 		case "grants":
-			return agentvmCli(["grants", need()], 60_000);
+			return boxeryCli(["grants", need()], 60_000);
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
@@ -466,7 +466,7 @@ export async function manage({ action, name, snapshot }) {
 export function guidance(current, { localToolsNote } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
 	if (!current)
-		return `agentvm: vm_manage lists and creates remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+		return `boxery: vm_manage lists and creates remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
 	return [
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
@@ -474,6 +474,6 @@ export function guidance(current, { localToolsNote } = {}) {
 		"The VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`).",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_manage {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
-		`Servers started in the VM are reachable from the user's machine with \`agentvm forward ${current} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
+		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
 	].join("\n");
 }

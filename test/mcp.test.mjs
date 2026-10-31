@@ -1,5 +1,5 @@
 // MCP server protocol tests with a fake VM: an `ssh` stub on PATH runs the remote script locally
-// (in a temp "VM home"), and AGENTVM_BIN points at a stub controller.
+// (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -8,24 +8,24 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const SERVER = path.join(ROOT, "mcp/agentvm-mcp.mjs");
+const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
 let dir, env;
 
 before(() => {
-	dir = mkdtempSync(path.join(tmpdir(), "avm-mcp-"));
+	dir = mkdtempSync(path.join(tmpdir(), "boxery-mcp-"));
 	const bin = path.join(dir, "bin");
 	const vmroot = path.join(dir, "vm");
 	mkdirSync(bin);
 	mkdirSync(path.join(vmroot, "project"), { recursive: true });
 	mkdirSync(path.join(dir, "home"));
 	writeFileSync(path.join(dir, "home/ssh_config"), "# fake\n");
-	// ssh -F CONF -o BatchMode=yes NAME.avm "bash -c '<script>'": run the script locally, cwd = fake VM home.
+	// ssh -F CONF -o BatchMode=yes NAME.boxery "bash -c '<script>'": run the script locally, cwd = fake VM home.
 	// /home/agent is rewritten to the fake VM root so absolute VM paths stay inside the sandbox.
 	writeFileSync(
 		path.join(bin, "ssh"),
 		`#!/usr/bin/env bash
-host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.avm) host=$1; shift ;; *) shift ;; esac; done
-[ "$host" = "fakevm.avm" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
+host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.boxery) host=$1; shift ;; *) shift ;; esac; done
+[ "$host" = "fakevm.boxery" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
 cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,
@@ -33,10 +33,10 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	// macOS has no setsid; emulate "new process group + wait" with perl (present on macOS and Linux).
 	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- "$@"\n`);
 	chmodSync(path.join(bin, "setsid"), 0o755);
-	writeFileSync(path.join(bin, "agentvm"), `#!/usr/bin/env bash\necho "stub agentvm $*"\n[ "$1" = ls ] && printf 'NAME STATE\\nfakevm running\\n'\nexit 0\n`);
+	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash\necho "stub boxery $*"\n[ "$1" = ls ] && printf 'NAME STATE\\nfakevm running\\n'\nexit 0\n`);
 	chmodSync(path.join(bin, "ssh"), 0o755);
-	chmodSync(path.join(bin, "agentvm"), 0o755);
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENTVM_HOME: path.join(dir, "home"), AGENTVM_BIN: path.join(bin, "agentvm") };
+	chmodSync(path.join(bin, "boxery"), 0o755);
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") };
 	env.VMROOT = vmroot;
 });
 
@@ -70,7 +70,7 @@ describe("stdio", () => {
 	before(async () => {
 		c = client(["--vm", "fakevm"]);
 		const init = await c.call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
-		assert.equal(init.result.serverInfo.name, "agentvm");
+		assert.equal(init.result.serverInfo.name, "boxery");
 		assert.equal(init.result.protocolVersion, "2025-06-18");
 		assert.match(init.result.instructions, /fakevm/);
 		c.notify("notifications/initialized");
@@ -170,7 +170,7 @@ describe("stdio", () => {
 		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
-		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /stub agentvm grants fakevm/);
+		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /stub boxery grants fakevm/);
 		assert.equal((await c.tool("vm_manage", { action: "bogus" })).isError, true);
 	});
 });
@@ -184,7 +184,7 @@ describe("http", () => {
 
 	before(async () => {
 		port = 20000 + Math.floor(Math.random() * 20000);
-		p = spawn(process.execPath, [SERVER, "--http", `127.0.0.1:${port}`, "--vm", "fakevm", "--allow-user", "me@x"], { env: { ...env, AGENTVM_MCP_TOKEN: token }, stdio: "ignore" });
+		p = spawn(process.execPath, [SERVER, "--http", `127.0.0.1:${port}`, "--vm", "fakevm", "--allow-user", "me@x"], { env: { ...env, BOXERY_MCP_TOKEN: token }, stdio: "ignore" });
 		for (let i = 0; i < 50; i++) {
 			try {
 				if ((await fetch(`http://127.0.0.1:${port}/healthz`)).ok) return;
@@ -196,13 +196,13 @@ describe("http", () => {
 	after(() => p?.kill());
 
 	test("refuses to start without a token", async () => {
-		const q = spawn(process.execPath, [SERVER, "--http", "127.0.0.1:1"], { env: { ...env, AGENTVM_MCP_TOKEN: "" }, stdio: "ignore" });
+		const q = spawn(process.execPath, [SERVER, "--http", "127.0.0.1:1"], { env: { ...env, BOXERY_MCP_TOKEN: "" }, stdio: "ignore" });
 		const code = await new Promise((r) => q.on("exit", r));
 		assert.equal(code, 2);
 	});
 
 	test("--allow-user is refused unless listening on loopback", async () => {
-		const q = spawn(process.execPath, [SERVER, "--http", "0.0.0.0:1", "--allow-user", "a@b"], { env: { ...env, AGENTVM_MCP_TOKEN: "t" }, stdio: "ignore" });
+		const q = spawn(process.execPath, [SERVER, "--http", "0.0.0.0:1", "--allow-user", "a@b"], { env: { ...env, BOXERY_MCP_TOKEN: "t" }, stdio: "ignore" });
 		assert.equal(await new Promise((r) => q.on("exit", r)), 2);
 	});
 

@@ -1,19 +1,19 @@
-# shellcheck shell=bash disable=SC2154  # sourced by host/agentvm-host (provides die/log/need/SSH_OPTS/…)
-# agentvm backend: Lima (macOS or Linux). Sourced by host/agentvm-host.
+# shellcheck shell=bash disable=SC2154  # sourced by host/boxery-host (provides die/log/need/SSH_OPTS/…)
+# boxery backend: Lima (macOS or Linux). Sourced by host/boxery-host.
 # Contract: see host/backends/README.md.
 #
-# - VMs are Lima instances named avm-NAME (plain mode: no mounts, no port forwards, no guest agent),
-#   cloned from a built template instance (avm-base) so each new VM boots a ready desktop image.
+# - VMs are Lima instances named boxery-NAME (plain mode: no mounts, no port forwards, no guest agent),
+#   cloned from a built template instance (boxery-base) so each new VM boots a ready desktop image.
 # - Guests reach the host's LLM proxy at Lima's user-network gateway (192.168.5.2), which maps to the
 #   host's loopback, so the proxy stays bound to 127.0.0.1.
-# - ssh endpoint is 127.0.0.1:<lima ssh port>; `agentvm-host connect` pipes to it.
-# - vmType: qemu on Linux; vz on macOS by default (set AGENTVM_LIMA_VMTYPE=qemu for snapshot support).
+# - ssh endpoint is 127.0.0.1:<lima ssh port>; `boxery-host connect` pipes to it.
+# - vmType: qemu on Linux; vz on macOS by default (set BOXERY_LIMA_VMTYPE=qemu for snapshot support).
 
-LIMA_PREFIX=avm-
+LIMA_PREFIX=${BOXERY_LIMA_PREFIX:-boxery-}
 LIMA_BASE=${LIMA_PREFIX}base
-LIMA_GATEWAY=${AGENTVM_LIMA_GATEWAY:-192.168.5.2}
-LIMA_VMTYPE=${AGENTVM_LIMA_VMTYPE:-$([[ $(uname) == Darwin ]] && echo vz || echo qemu)}
-LIMA_ARCH=${AGENTVM_LIMA_ARCH:-default}
+LIMA_GATEWAY=${BOXERY_LIMA_GATEWAY:-192.168.5.2}
+LIMA_VMTYPE=${BOXERY_LIMA_VMTYPE:-$([[ $(uname) == Darwin ]] && echo vz || echo qemu)}
+LIMA_ARCH=${BOXERY_LIMA_ARCH:-default}
 linst() { echo "$LIMA_PREFIX$1"; }
 lima_json() { limactl list --format json 2>/dev/null | jq -c "select(.name == \"$1\")"; }
 lima_exists_inst() { [[ -n $(lima_json "$1") ]]; }
@@ -29,7 +29,7 @@ guest_proxy_upstream() { echo "TCP:$LIMA_GATEWAY:$PROXY_PORT"; }
 
 # Lima template for both the builder and each VM. The desktop install (image/base-user-data.yaml) runs
 # once in the builder; clones inherit its disk. Per-VM cloud-config (keys, token, configs) is applied
-# by agentvm-host over ssh after the clone boots (Lima owns the cloud-init seed).
+# by boxery-host over ssh after the clone boots (Lima owns the cloud-init seed).
 lima_template() { # NAME CPUS MEM_MIB DISK_GIB
 	cat <<-EOF
 		minimumLimaVersion: 2.0.0
@@ -63,14 +63,14 @@ backend_build_base() {
 	limactl create --name "$LIMA_BASE" --tty=false "$tmp/base.yaml" >/dev/null 2>"$tmp/create.log" || { cat "$tmp/create.log" >&2; die "limactl create failed"; }
 	limactl start "$LIMA_BASE" --timeout 20m >/dev/null 2>"$tmp/start.log" || { tail -20 "$tmp/start.log" >&2; die "limactl start failed"; }
 	log "installing the desktop image (XFCE, VNC, Chromium/Chrome, node, pi, opencode; ~5-10 min)"
-	# Reuse the libvirt build script: extract agentvm-build.sh + write_files from the cloud-config and run them.
+	# Reuse the libvirt build script: extract boxery-build.sh + write_files from the cloud-config and run them.
 	lima_apply_cloudconfig "$ROOT/image/base-user-data.yaml" build || die "base build failed (see output above)"
 	limactl stop "$LIMA_BASE" >/dev/null
 	rm -rf "$tmp"
 	log "base image ready: Lima instance $LIMA_BASE"
 }
 
-# Apply a cloud-config's write_files (+ for "build": run /usr/local/sbin/agentvm-build.sh; for "vm": runcmd)
+# Apply a cloud-config's write_files (+ for "build": run /usr/local/sbin/boxery-build.sh; for "vm": runcmd)
 # over ssh. Lima owns the instance's own cloud-init seed, so we replay ours as root.
 lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	local f=$1 mode=$2
@@ -112,8 +112,8 @@ lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	if [[ $mode == build ]]; then
 		# The build script disables cloud-init re-runs, linger etc. exactly as in the libvirt builder.
 		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo bash -s' <"$f.files.sh" || return 1
-		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo bash -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && /usr/local/sbin/agentvm-build.sh"' || return 1
-		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'test -f /var/log/agentvm-build.ok' || return 1
+		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo bash -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && /usr/local/sbin/boxery-build.sh"' || return 1
+		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'test -f /var/log/boxery-build.ok' || return 1
 		# The libvirt builder empties the agent user's authorized_keys via cloud-init clean; Lima re-injects
 		# its own key at boot, so nothing else to do. Make the agent user's runtime services start on boot:
 		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo loginctl enable-linger agent' || true
@@ -141,9 +141,9 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
 		ssh -F "$sshcfg" "lima-$i" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys; sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys'
 	# Same as the libvirt cloud-config's runcmd: everything under the agent's home belongs to the agent
 	# (write_files creates parent dirs such as ~/.pi/agent as root).
-	ssh -F "$sshcfg" "lima-$i" "sudo chown -R agent:agent /home/agent; sudo hostnamectl set-hostname $(printf %q "$name"); sudo systemctl restart agentvm-llm.service;
-		cd ~ && git config --global user.name agent && git config --global user.email agent@agentvm && git config --global init.defaultBranch main;
-		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start agentvm-vnc agentvm-desktop agentvm-novnc 2>/dev/null || true"
+	ssh -F "$sshcfg" "lima-$i" "sudo chown -R agent:agent /home/agent; sudo hostnamectl set-hostname $(printf %q "$name"); { [ -e /etc/agentvm ] || sudo ln -s /etc/boxery /etc/agentvm; sudo systemctl restart boxery-llm.service 2>/dev/null || sudo systemctl restart agentvm-llm.service; };
+		cd ~ && git config --global user.name agent && git config --global user.email agent@boxery && git config --global init.defaultBranch main;
+		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start boxery-vnc boxery-desktop boxery-novnc 2>/dev/null || systemctl --user start agentvm-vnc agentvm-desktop agentvm-novnc 2>/dev/null || true"
 }
 
 backend_list() {
@@ -174,7 +174,7 @@ backend_stop() { limactl stop "$(linst "$1")" >/dev/null 2>&1 || die "limactl st
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; limactl delete --force "$(linst "$1")" >/dev/null 2>&1; }
 
 backend_snap() {
-	[[ $LIMA_VMTYPE == qemu ]] || die "snapshots need Lima's qemu vmType (this backend uses $LIMA_VMTYPE); set AGENTVM_LIMA_VMTYPE=qemu"
+	[[ $LIMA_VMTYPE == qemu ]] || die "snapshots need Lima's qemu vmType (this backend uses $LIMA_VMTYPE); set BOXERY_LIMA_VMTYPE=qemu"
 	limactl snapshot create "$(linst "$1")" --tag "$2" >/dev/null 2>&1 || die "snapshot failed"
 }
 backend_snaps() { limactl snapshot list "$(linst "$1")"; }

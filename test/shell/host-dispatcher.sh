@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# agentvm-host dispatcher tests against the fake backend (no VMs, no network).
+# boxery-host dispatcher tests against the fake backend (no VMs, no network).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-H=$ROOT/host/agentvm-host
+H=$ROOT/host/boxery-host
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-export AGENTVM_CONF=$tmp/conf AGENTVM_BACKEND=fake AGENTVM_FAKE_DIR=$tmp/vms AGENTVM_PROXY_PORT=9999
-mkdir -p "$tmp/bin" "$AGENTVM_CONF"
+export BOXERY_CONF=$tmp/conf BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_PROXY_PORT=9999
+mkdir -p "$tmp/bin" "$BOXERY_CONF"
 # ssh stub: every "VM" answers immediately
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/ssh"; chmod +x "$tmp/bin/ssh"
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/ssh-keygen"; chmod +x "$tmp/bin/ssh-keygen"
-mkdir -p "$AGENTVM_CONF"; echo "ssh-ed25519 AAAAtest mgmt" >"$AGENTVM_CONF/mgmt_ed25519.pub"; touch "$AGENTVM_CONF/mgmt_ed25519"
+mkdir -p "$BOXERY_CONF"; echo "ssh-ed25519 AAAAtest mgmt" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 export PATH="$tmp/bin:$PATH"
 pass=0; fail=0
 ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
@@ -23,12 +23,12 @@ expect "build-base" "$H" build-base
 echo "ssh-ed25519 AAAAlaptop me@laptop" | "$H" add-key >/dev/null 2>&1 && ok "add-key" || bad add-key
 expect_fail "add-key rejects non-keys" bash -c "echo hello | '$H' add-key"
 out=$("$H" new a1 --cpus 2 --mem 2048 --disk 10 2>/dev/null) && [[ $out == "a1 127.0.0.1:2222" ]] && ok "new prints NAME ADDR" || bad "new: $out"
-[[ $(cat "$AGENTVM_FAKE_DIR/a1/size") == "2 2048 10" ]] && ok "new passes sizes to backend" || bad "sizes"
-ud=$AGENTVM_FAKE_DIR/a1/user-data
+[[ $(cat "$BOXERY_FAKE_DIR/a1/size") == "2 2048 10" ]] && ok "new passes sizes to backend" || bad "sizes"
+ud=$BOXERY_FAKE_DIR/a1/user-data
 grep -q '^#cloud-config' "$ud" && grep -q '^hostname: a1$' "$ud" && ok "seed is cloud-config with hostname" || bad "seed header"
 grep -q 'AAAAlaptop' "$ud" && grep -q 'AAAAtest' "$ud" && ok "seed authorizes mgmt + registered keys" || bad "seed keys"
 grep -A1 'proxy-upstream' "$ud" | grep -q 'TCP:fake-gateway:9999' && ok "seed carries backend proxy upstream" || bad "proxy upstream"
-jq -e '.a1 | length == 48' "$AGENTVM_CONF/tokens.json" >/dev/null && ok "per-VM proxy token stored" || bad "token"
+jq -e '.a1 | length == 48' "$BOXERY_CONF/tokens.json" >/dev/null && ok "per-VM proxy token stored" || bad "token"
 b64=$(awk '/path: \/home\/agent\/.pi\/agent\/models.json/{f=1} f&&/content:/{print $2; exit}' "$ud")
 echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://127.0.0.1:8088/chatgpt/backend-api"' >/dev/null && ok "pi models.json points at the guest-side proxy" || bad "models.json"
 expect_fail "duplicate name rejected" "$H" new a1
@@ -44,22 +44,22 @@ expect "revert" "$H" revert a1 s1
 expect_fail "revert to unknown snapshot fails" "$H" revert a1 nope
 expect_fail "connect rejects non-ssh ports" "$H" connect a1 80
 expect "rm" "$H" rm a1
-jq -e 'has("a1") | not' "$AGENTVM_CONF/tokens.json" >/dev/null && ok "rm revokes the proxy token" || bad "token not revoked"
+jq -e 'has("a1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "rm revokes the proxy token" || bad "token not revoked"
 expect_fail "rm of unknown VM fails" "$H" rm a1
-AGENTVM_BACKEND=nope expect_fail "unknown backend rejected" "$H" ls
+BOXERY_BACKEND=nope expect_fail "unknown backend rejected" "$H" ls
 "$H" new a2 >/dev/null 2>&1
 for sn in 'x;id' '$(id)' '-rf' '../x'; do expect_fail "invalid snapshot name '$sn' rejected" "$H" snap a2 "$sn"; done
 expect_fail "non-numeric --mem rejected" "$H" new a3 --mem '1;id'
-grep -q 'content: [A-Za-z0-9+/=]*$' "$AGENTVM_FAKE_DIR/a2/user-data" && ! grep -q 'content: $' "$AGENTVM_FAKE_DIR/a2/user-data" && ok "seed base64 payloads are non-empty (portable base64)" || bad "empty seed payload"
+grep -q 'content: [A-Za-z0-9+/=]*$' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'content: $' "$BOXERY_FAKE_DIR/a2/user-data" && ok "seed base64 payloads are non-empty (portable base64)" || bad "empty seed payload"
 
 # --- concurrency: parallel creates must not lose tokens (P1 #3)
 for i in 1 2 3 4 5 6 7 8; do "$H" new "p$i" >/dev/null 2>&1 & done; wait
-[[ $(jq '[keys[] | select(startswith("p"))] | length' "$AGENTVM_CONF/tokens.json") == 8 ]] && ok "8 parallel creates → 8 tokens" || bad "lost tokens: $(jq -c 'keys' "$AGENTVM_CONF/tokens.json")"
+[[ $(jq '[keys[] | select(startswith("p"))] | length' "$BOXERY_CONF/tokens.json") == 8 ]] && ok "8 parallel creates → 8 tokens" || bad "lost tokens: $(jq -c 'keys' "$BOXERY_CONF/tokens.json")"
 for i in 1 2 3 4 5 6 7 8; do "$H" rm "p$i" >/dev/null 2>&1 & done; wait
-[[ $(jq '[keys[] | select(startswith("p"))] | length' "$AGENTVM_CONF/tokens.json") == 0 ]] && ok "8 parallel removes → tokens revoked" || bad "stale tokens: $(jq -c 'keys' "$AGENTVM_CONF/tokens.json")"
+[[ $(jq '[keys[] | select(startswith("p"))] | length' "$BOXERY_CONF/tokens.json") == 0 ]] && ok "8 parallel removes → tokens revoked" || bad "stale tokens: $(jq -c 'keys' "$BOXERY_CONF/tokens.json")"
 # --- failed creation rolls back its token and half-created VM
-AGENTVM_FAKE_FAIL_NEW=1 expect_fail "backend failure during new fails" "$H" new f1
-jq -e 'has("f1") | not' "$AGENTVM_CONF/tokens.json" >/dev/null && ok "failed new revokes its token" || bad "token left behind by failed new"
-[[ ! -d $AGENTVM_FAKE_DIR/f1 ]] && ok "failed new removes the half-created VM" || bad "half-created VM left"
+BOXERY_FAKE_FAIL_NEW=1 expect_fail "backend failure during new fails" "$H" new f1
+jq -e 'has("f1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "failed new revokes its token" || bad "token left behind by failed new"
+[[ ! -d $BOXERY_FAKE_DIR/f1 ]] && ok "failed new removes the half-created VM" || bad "half-created VM left"
 
 echo; echo "passed: $pass  failed: $fail"; ((fail == 0))

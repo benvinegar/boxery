@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// agentvm MCP server: exposes agentvm VMs as MCP tools (vm_bash, vm_read, …, vm_browser, vm_manage).
-// No dependencies; Node >= 18. Uses ~/.agentvm (run `agentvm setup user@host` first).
+// boxery MCP server: exposes boxery VMs as MCP tools (vm_bash, vm_read, …, vm_browser, vm_manage).
+// No dependencies; Node >= 18. Uses ~/.boxery (run `boxery setup user@host` first).
 //
-//   agentvm-mcp [--vm NAME]                         stdio (launched by the MCP client)
-//   agentvm-mcp --http 127.0.0.1:8765 [--vm NAME]   Streamable HTTP at /mcp
-//        auth: bearer token from $AGENTVM_MCP_TOKEN or --token-file (required unless --no-auth),
+//   boxery-mcp [--vm NAME]                         stdio (launched by the MCP client)
+//   boxery-mcp --http 127.0.0.1:8765 [--vm NAME]   Streamable HTTP at /mcp
+//        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth),
 //              optional --allow-user a@b.c (checks Tailscale-User-Login from `tailscale serve`)
 //
 // "local" (vm_copy) and grant sources are the machine this server runs on.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
-import * as core from "../core/agentvm-core.mjs";
+import * as core from "../core/boxery-core.mjs";
 
 const VERSION = "0.5.0";
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -28,15 +28,15 @@ if (has("-h") || has("--help")) {
 	process.stdout.write(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
 	process.exit(0);
 }
-const DEFAULT_VM = opt("--vm") ?? process.env.AGENTVM_VM ?? null;
+const DEFAULT_VM = opt("--vm") ?? process.env.BOXERY_VM ?? null;
 if (DEFAULT_VM) core.assertName(DEFAULT_VM);
-const log = (...a) => process.stderr.write(`[agentvm-mcp] ${a.join(" ")}\n`);
+const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- tools
 
 const vmProp = { vm: { type: "string", description: "VM name (default: the current VM)" } };
 const shotProp = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
-const where = "in an agentvm VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
+const where = "in an boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, ...vmProp }, required });
 
 const TOOLS = [
@@ -139,7 +139,7 @@ const TOOLS = [
 	{
 		name: "vm_manage",
 		description:
-			"Manage agentvm VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
+			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
 		inputSchema: {
@@ -158,7 +158,7 @@ const TOOLS = [
 			switch (a.action) {
 				case "use":
 					await core.ensureVm(core.assertName(a.name));
-					await core.agentvmCli(["grants", a.name, "apply", "--quiet"], 120_000).catch(() => {});
+					await core.boxeryCli(["grants", a.name, "apply", "--quiet"], 120_000).catch(() => {});
 					session.current = a.name;
 					return { text: `current VM: ${a.name}` };
 				case "none":
@@ -231,7 +231,7 @@ async function handle(session, msg) {
 				return reply({
 					protocolVersion: PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0],
 					capabilities: { tools: { listChanged: false } },
-					serverInfo: { name: "agentvm", title: "agentvm VMs", version: VERSION },
+					serverInfo: { name: "boxery", title: "boxery VMs", version: VERSION },
 					instructions: instructions(session),
 				});
 			}
@@ -295,10 +295,10 @@ function serveStdio() {
 function serveHttp(listen) {
 	const [hostPart, portPart] = listen.includes(":") ? [listen.slice(0, listen.lastIndexOf(":")), listen.slice(listen.lastIndexOf(":") + 1)] : ["127.0.0.1", listen];
 	const tokenFile = opt("--token-file");
-	const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : process.env.AGENTVM_MCP_TOKEN;
+	const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : process.env.BOXERY_MCP_TOKEN;
 	const noAuth = has("--no-auth");
 	if (!token && !noAuth) {
-		log("refusing to start: set AGENTVM_MCP_TOKEN or --token-file (or --no-auth for local testing)");
+		log("refusing to start: set BOXERY_MCP_TOKEN or --token-file (or --no-auth for local testing)");
 		process.exit(2);
 	}
 	const allowUsers = argv.flatMap((a, i) => (a === "--allow-user" ? [argv[i + 1]] : []));

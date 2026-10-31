@@ -2,7 +2,7 @@
 # MCP server protocol test against a live VM (stdio + HTTP). Usage: mcp/test-mcp.sh VM
 set -euo pipefail
 VM=${1:?usage: test-mcp.sh VM}
-S=$(cd "$(dirname "$0")" && pwd)/agentvm-mcp.mjs
+S=$(cd "$(dirname "$0")" && pwd)/boxery-mcp.mjs
 pass=0; fail=0
 ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
 bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
@@ -22,7 +22,7 @@ out=$({ printf '%s\n' "$init" '{"jsonrpc":"2.0","method":"notifications/initiali
 	'{"jsonrpc":"2.0","id":9,"method":"nope"}'
 	sleep 8; } | node "$S" --vm "$VM" 2>/dev/null)
 r() { jq -c "select(.id==$1)" <<<"$out"; }
-[[ $(r 1 | jq -r .result.serverInfo.name) == agentvm ]] && ok initialize || bad "initialize: $(r 1)"
+[[ $(r 1 | jq -r .result.serverInfo.name) == boxery ]] && ok initialize || bad "initialize: $(r 1)"
 [[ $(r 2 | jq '.result.tools | length') -ge 12 ]] && ok "tools/list ($(r 2 | jq '.result.tools|length') tools)" || bad tools/list
 [[ $(r 3 | jq -r '.result.content[0].text') == "$VM"* ]] && ok "vm_bash" || bad "vm_bash: $(r 3)"
 [[ $(r 6 | jq -r '.result.content[0].text') == *MCP_OK* ]] && ok "vm_write + vm_edit + vm_read" || bad "edit/read: $(r 5) $(r 6)"
@@ -32,7 +32,7 @@ r() { jq -c "select(.id==$1)" <<<"$out"; }
 
 echo "== http"
 port=$((20000 + RANDOM % 20000)); tok=$(openssl rand -hex 16)
-AGENTVM_MCP_TOKEN=$tok node "$S" --http "127.0.0.1:$port" --vm "$VM" 2>/dev/null & pid=$!
+BOXERY_MCP_TOKEN=$tok node "$S" --http "127.0.0.1:$port" --vm "$VM" 2>/dev/null & pid=$!
 trap 'kill $pid 2>/dev/null || true' EXIT
 for _ in $(seq 50); do curl -fs "127.0.0.1:$port/healthz" >/dev/null && break; sleep 0.1; done
 U="http://127.0.0.1:$port/mcp"; H=(-H "content-type: application/json" -H "accept: application/json, text/event-stream")

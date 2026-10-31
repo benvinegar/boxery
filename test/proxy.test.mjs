@@ -28,11 +28,11 @@ before(async () => {
 		});
 	});
 	const up = await listen(upstream);
-	conf = mkdtempSync(path.join(tmpdir(), "avm-proxy-"));
+	conf = mkdtempSync(path.join(tmpdir(), "boxery-proxy-"));
 	writeFileSync(path.join(conf, "tokens.json"), JSON.stringify({ demo: "s3cret" }));
 	port = 20000 + Math.floor(Math.random() * 20000);
-	proxy = spawn(process.execPath, [path.join(ROOT, "proxy/agentvm-proxy.mjs")], {
-		env: { ...process.env, AGENTVM_PROXY_MAX_BODY: String(1024 * 1024), AGENTVM_CONF: conf, AGENTVM_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, AGENTVM_PI_AUTH: path.join(conf, "none.json") },
+	proxy = spawn(process.execPath, [path.join(ROOT, "proxy/boxery-proxy.mjs")], {
+		env: { ...process.env, BOXERY_PROXY_MAX_BODY: String(1024 * 1024), BOXERY_CONF: conf, BOXERY_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, BOXERY_PI_AUTH: path.join(conf, "none.json") },
 		stdio: "ignore",
 	});
 	for (let i = 0; i < 50; i++) {
@@ -56,8 +56,8 @@ test("rejects missing, wrong and malformed tokens without crashing", async () =>
 		{ authorization: "Bearer demo:wrong" },
 		{ authorization: "Bearer nobody:s3cret" },
 		{ authorization: "Bearer :s3cret" },
-		{ authorization: `Bearer ${jwt({ avm: {} })}` },
-		{ authorization: `Bearer ${jwt({ avm: 42 })}` },
+		{ authorization: `Bearer ${jwt({ boxery: {} })}` },
+		{ authorization: `Bearer ${jwt({ boxery: 42 })}` },
 		{ authorization: "Bearer null.bnVsbA.x" },
 		{ authorization: "Bearer a.%%%.b" },
 		{ "x-api-key": "demo:wrong" },
@@ -67,7 +67,7 @@ test("rejects missing, wrong and malformed tokens without crashing", async () =>
 });
 
 test("valid token (plain, x-api-key, JWT-wrapped) reaches upstream with VM auth stripped", async () => {
-	for (const h of [{ authorization: "Bearer demo:s3cret" }, { "x-api-key": "demo:s3cret" }, { authorization: `Bearer ${jwt({ avm: "demo:s3cret" })}` }]) {
+	for (const h of [{ authorization: "Bearer demo:s3cret" }, { "x-api-key": "demo:s3cret" }, { authorization: `Bearer ${jwt({ boxery: "demo:s3cret" })}` }, { authorization: `Bearer ${jwt({ avm: "demo:s3cret" })}` }]) {
 		const r = await req("/ollama/v1/chat/completions?x=1", { method: "POST", headers: { ...h, "content-type": "application/json" }, body: '{"m":1}' });
 		assert.equal(r.status, 200);
 		assert.equal(seen.url, "/v1/chat/completions?x=1");

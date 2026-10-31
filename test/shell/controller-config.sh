@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Local-only config regression test; no network or VM needed.
 set -eu
-CLI="$(cd "$(dirname "$0")/../.." && pwd)/controller/agentvm"
+CLI="$(cd "$(dirname "$0")/../.." && pwd)/controller/boxery"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-export AGENTVM_HOME="$tmp/config"
-export AGENTVM_HOST=test-host
-mkdir -p "$AGENTVM_HOME" "$tmp/bin"
+export BOXERY_HOME="$tmp/config"
+export BOXERY_HOST=test-host
+mkdir -p "$BOXERY_HOME" "$tmp/bin"
 printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/ssh"
 chmod +x "$tmp/bin/ssh"
 printf 'test public key\n' > "$tmp/key.pub"
@@ -16,7 +16,7 @@ export PATH="$tmp/bin:$PATH"
 bash "$CLI" agent-forward demo on >/dev/null
 # Use the real ssh -G to resolve config (the fake ssh on PATH only stubs setup's network calls).
 SSH=$REAL_SSH
-get_forward() { "$SSH" -F "$AGENTVM_HOME/ssh_config" -G "$1.avm" 2>/dev/null | grep '^forwardagent '; }
+get_forward() { "$SSH" -F "$BOXERY_HOME/ssh_config" -G "$1.boxery" 2>/dev/null | grep '^forwardagent '; }
 [ "$(get_forward demo)" = 'forwardagent yes' ]
 [ "$(get_forward other)" = 'forwardagent no' ]
 bash "$CLI" setup test-host --key "$tmp/key.pub" >/dev/null
@@ -25,7 +25,7 @@ bash "$CLI" agent-forward second on >/dev/null
 bash "$CLI" agent-forward demo off >/dev/null
 [ "$(get_forward demo)" = 'forwardagent no' ]
 [ "$(get_forward second)" = 'forwardagent yes' ]
-for name in '../escape' 'bad name' '*.avm'; do
+for name in '../escape' 'bad name' '*.boxery'; do
     if bash "$CLI" agent-forward "$name" on >/dev/null 2>&1; then
         echo "FAIL: accepted invalid name $name" >&2; exit 1
     fi

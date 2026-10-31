@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# End-to-end test, run from the CONTROLLER (Linux or macOS) after `agentvm setup user@host`.
+# End-to-end test, run from the CONTROLLER (Linux or macOS) after `boxery setup user@host`.
 # Creates a throwaway VM, exercises every path, then deletes it.
 set -euo pipefail
-A=${AGENTVM:-$(cd "$(dirname "$0")" && pwd)/controller/agentvm}
+A=${BOXERY:-$(cd "$(dirname "$0")" && pwd)/controller/boxery}
 VM=${1:-e2e$(date +%H%M%S)}
 pass=0; fail=0
 ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
@@ -15,7 +15,7 @@ echo "== create $VM"
 t0=$(date +%s); "$A" new "$VM" >/dev/null; ok "created in $(($(date +%s) - t0))s"
 
 echo "== guest basics"
-out=$("$A" run "$VM" 'pi --version; opencode --version; systemctl --user is-active agentvm-vnc agentvm-desktop agentvm-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
+out=$("$A" run "$VM" 'pi --version; opencode --version; p=boxery; systemctl --user cat boxery-vnc >/dev/null 2>&1 || p=agentvm; systemctl --user is-active $p-vnc $p-desktop $p-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
 grep -q '^active$' <<<"$out" && ok "desktop services active" || bad "desktop services: $out"
 grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable from the guest" || bad "proxy"
 
@@ -33,14 +33,14 @@ r=$("$A" run "$VM" 'cd ~/project && timeout 240 opencode run "Reply with exactly
 
 echo "== background task"
 "$A" prompt "$VM" "Create answer.txt containing just the number 42. Do nothing else." >/dev/null
-for _ in $(seq 36); do "$A" run "$VM" 'grep -q "task finished" ~/project/.agentvm/*.log 2>/dev/null' && break; sleep 5; done
+for _ in $(seq 36); do "$A" run "$VM" 'grep -q "task finished" ~/project/.boxery/*.log 2>/dev/null' && break; sleep 5; done
 check "task wrote answer.txt" "$A" run "$VM" 'grep -q 42 ~/project/answer.txt'
 
 echo "== desktop over ssh tunnel"
-"$A" desktop "$VM" --no-open >/tmp/agentvm-e2e-desk.$$ 2>&1 & tun=$!
-sleep 3; port=$(grep -o '127.0.0.1:[0-9]*' /tmp/agentvm-e2e-desk.$$ | head -1 | cut -d: -f2)
+"$A" desktop "$VM" --no-open >/tmp/boxery-e2e-desk.$$ 2>&1 & tun=$!
+sleep 3; port=$(grep -o '127.0.0.1:[0-9]*' /tmp/boxery-e2e-desk.$$ | head -1 | cut -d: -f2)
 check "noVNC served on localhost:$port" curl -fsS "http://127.0.0.1:$port/vnc.html"
-kill "$tun" 2>/dev/null || true; tun=""; rm -f /tmp/agentvm-e2e-desk.$$
+kill "$tun" 2>/dev/null || true; tun=""; rm -f /tmp/boxery-e2e-desk.$$
 
 echo "== laptop pi extension (vm_* tools, with the user's other extensions loaded)"
 if command -v pi >/dev/null; then
