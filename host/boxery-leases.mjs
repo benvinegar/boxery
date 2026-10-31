@@ -43,11 +43,25 @@ const clampTtl = (t) => Math.max(TTL_MIN, Math.min(TTL_MAX, Math.floor(Number(t)
 const HOLDER = /^[A-Za-z0-9._@:/+-]{1,128}$/;
 const PUBKEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]{20,} ?[^\n]{0,200}$/;
 
+// Changing journal mode can return SQLITE_BUSY immediately (it doesn't always honour busy_timeout).
+function retryBusy(fn) {
+	for (let i = 0; ; i++) {
+		try {
+			return fn();
+		} catch (e) {
+			if (!/locked|busy/i.test(String(e?.message)) || i >= 200) throw e;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + Math.random() * 50);
+		}
+	}
+}
+
 export function open(file) {
-	const db = new DatabaseSync(file);
-	db.exec(`
-		PRAGMA journal_mode = WAL;
-		PRAGMA busy_timeout = 15000;
+	// timeout = SQLite busy timeout, applied at open: concurrent openers wait for locks (including the
+	// one-time switch to WAL and CREATE TABLE) instead of failing with "database is locked".
+	const db = new DatabaseSync(file, { timeout: 15000 });
+	db.exec("PRAGMA busy_timeout = 15000");
+	retryBusy(() => db.exec("PRAGMA journal_mode = WAL"));
+	retryBusy(() => db.exec(`
 		CREATE TABLE IF NOT EXISTS vms (
 			name TEXT PRIMARY KEY,
 			state TEXT NOT NULL CHECK (state IN ('FREE','ACQUIRING','LEASED','RESETTING','BROKEN')),
@@ -56,7 +70,7 @@ export function open(file) {
 			holder TEXT, pubkey TEXT,
 			acquired_at INTEGER, expires_at INTEGER, boot_id TEXT,
 			updated_at INTEGER NOT NULL
-		);`);
+		);`));
 	return db;
 }
 

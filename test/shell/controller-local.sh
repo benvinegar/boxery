@@ -54,6 +54,7 @@ if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $BOXERY_HOME/grants/w1 ]] && ! grep -q '^Host w1.boxery' "$BOXERY_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
 
 # --- leases from the controller (local mode → fake backend)
+if node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null; then
 "$A" new lp1 >/dev/null 2>&1
 BOXERY_SSH_WAIT_TRIES=2 "$BOXERY_HOST_BIN" pool add lp1 >/dev/null 2>&1 && ok "pool add via host" || bad "pool add"
 out=$("$A" acquire --ttl 600 2>/dev/null) && set -- $out && [ "$1" = lp1 ] && ok "acquire → $1 $2" || bad "acquire: $out"
@@ -70,6 +71,7 @@ if "$A" acquire >/dev/null 2>&1; then bad "second acquire on a 1-VM pool succeed
 ! grep -q "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" && ok "ssh_config entry removed" || bad "ssh_config entry left"
 ! grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "VM no longer accepts the old lease key" || bad "old lease key still authorized"
 "$A" acquire >/dev/null 2>&1 && ok "VM can be acquired again after release" || bad "re-acquire"
+else echo "  - node:sqlite unavailable; skipping lease checks"; fi
 
 # --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9)
 "$A" new w4 >/dev/null 2>&1

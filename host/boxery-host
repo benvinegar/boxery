@@ -124,7 +124,10 @@ boxery_seed() { # NAME → path of a user-data file
 
 POOL_SNAP=boxery-clean
 leases() { node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-leases.mjs" "$CONF/leases.db" "$@"; }
-is_pool() { [[ $(leases get "$1" 2>/dev/null) != null && -n $(leases get "$1" 2>/dev/null) ]]; }
+is_pool() { # 0 = pool VM, 1 = not; dies on a lease-store error rather than guessing
+	local r; r=$(leases get "$1") || die "lease store error"
+	[[ $r != null ]]
+}
 
 # authorized_keys in the VM := host management key (+ the lease holder's key). This is the fence:
 # a VM in the pool accepts nobody else, and resetting it (snapshot revert) drops the lease key again.
