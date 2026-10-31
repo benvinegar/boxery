@@ -177,6 +177,7 @@ backend_snap() {
 	[[ $LIMA_VMTYPE == qemu ]] || die "snapshots need Lima's qemu vmType (this backend uses $LIMA_VMTYPE); set BOXERY_LIMA_VMTYPE=qemu"
 	limactl snapshot create "$(linst "$1")" --tag "$2" >/dev/null 2>&1 || die "snapshot failed"
 }
+backend_snap_rm() { limactl snapshot delete "$(linst "$1")" --tag "$2" >/dev/null 2>&1; }
 backend_snaps() { limactl snapshot list "$(linst "$1")"; }
 backend_revert() {
 	[[ $LIMA_VMTYPE == qemu ]] || die "snapshots need Lima's qemu vmType"

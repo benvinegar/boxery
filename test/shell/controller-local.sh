@@ -15,11 +15,13 @@ echo "ssh-ed25519 AAAAme me@laptop" >"$tmp/home/.ssh/id_ed25519.pub"; touch "$tm
 cat >"$tmp/bin/ssh" <<STUB
 #!/usr/bin/env bash
 for a in "\$@"; do case \$a in -O) exit 0 ;; esac; done
-host=""; while [ \$# -gt 0 ]; do case \$1 in -F|-o|-p) shift 2 ;; *.boxery) host=\${1%.boxery}; shift; break ;; *) shift ;; esac; done
+host=""; port=""; while [ \$# -gt 0 ]; do case \$1 in -p) port=\$2; shift 2 ;; -F|-o|-i) shift 2 ;; *.boxery) host=\${1%.boxery}; shift; break ;; agent@*) shift; break ;; *) shift ;; esac; done
+if [ -z "\$host" ] && [ -n "\$port" ]; then for d in $tmp/vms/*/; do [ "\$(cat "\$d/port" 2>/dev/null)" = "\$port" ] && host=\$(basename "\$d"); done; fi
+case "\$*" in *cloud-init*|*6080*) exit 0 ;; esac
 [ -n "\$host" ] || exit 0
 vm=$tmp/vms/\$host; [ -d "\$vm" ] || { echo "no such vm" >&2; exit 255; }
 mkdir -p "\$vm/home/project/.git/info"
-cd "\$vm/home" && HOME="\$vm/home" exec bash -c "\$*"
+cd "\$vm/home" && HOME="\$vm/home" exec bash -c "\${*:-true}"
 STUB
 chmod +x "$tmp/bin/ssh"; export PATH="$tmp/bin:$PATH"
 pass=0; fail=0
@@ -50,6 +52,24 @@ if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted";
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $BOXERY_HOME/grants/w1 ]] && ! grep -q '^Host w1.boxery' "$BOXERY_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
+
+# --- leases from the controller (local mode → fake backend)
+"$A" new lp1 >/dev/null 2>&1
+BOXERY_SSH_WAIT_TRIES=2 "$BOXERY_HOST_BIN" pool add lp1 >/dev/null 2>&1 && ok "pool add via host" || bad "pool add"
+out=$("$A" acquire --ttl 600 2>/dev/null) && set -- $out && [ "$1" = lp1 ] && ok "acquire → $1 $2" || bad "acquire: $out"
+lid=${2:-x}
+[ -f "$BOXERY_HOME/leases/$lid.lease" ] && [ -f "$BOXERY_HOME/leases/$lid.key" ] && ok "lease record + private key stored locally" || bad "local lease files"
+[ "$(stat -c %a "$BOXERY_HOME/leases" 2>/dev/null || stat -f %Lp "$BOXERY_HOME/leases")" = 700 ] && ok "leases dir is 0700" || bad "leases dir perms"
+grep -A2 "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" | grep -q "IdentityFile $BOXERY_HOME/leases/$lid.key" && ok "ssh_config uses the lease key for lp1" || bad "ssh_config lease identity"
+grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "lease key authorized in the VM" || bad "lease key not in VM"
+"$A" leases | grep -q "^lp1 " && ok "leases lists it" || bad "leases"
+"$A" renew lp1 >/dev/null 2>&1 && ok "renew by name" || bad "renew"
+if "$A" acquire >/dev/null 2>&1; then bad "second acquire on a 1-VM pool succeeded"; else ok "pool exhausted for a second acquire"; fi
+"$A" release lp1 >/dev/null 2>&1 && ok "release" || bad "release"
+[ ! -f "$BOXERY_HOME/leases/$lid.lease" ] && [ ! -f "$BOXERY_HOME/leases/$lid.key" ] && ok "release forgets the lease and deletes its key" || bad "lease files left"
+! grep -q "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" && ok "ssh_config entry removed" || bad "ssh_config entry left"
+! grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "VM no longer accepts the old lease key" || bad "old lease key still authorized"
+"$A" acquire >/dev/null 2>&1 && ok "VM can be acquired again after release" || bad "re-acquire"
 
 # --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9)
 "$A" new w4 >/dev/null 2>&1

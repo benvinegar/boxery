@@ -69,6 +69,35 @@ check "file grant git-excluded" "$A" run "$VM" 'cd ~/project && ! git status --p
 check "revoke removed env + file" "$A" run "$VM" 'bash -lc "test -z \"\${E2E_GRANT_VAR:-}\"" && ! test -e ~/project/.env'
 rm -rf "$gtmp"
 
+echo "== leases (the test VM joins the pool for this section)"
+if "$A" pool add "$VM" >/dev/null 2>&1; then
+	check "pool VM refuses non-holders (incl. connections opened before pool add)" bash -c "! '$A' run '$VM' true"
+	# Other FREE pool VMs may exist: keep acquiring until we hold ours, then give the others back.
+	held=(); LID=""
+	while lout=$("$A" acquire --ttl 120 2>/dev/null); do
+		set -- $lout
+		if [[ $1 == "$VM" ]]; then LID=$2; break; fi
+		held+=("$1")
+	done
+	for o in "${held[@]}"; do "$A" release "$o" >/dev/null 2>&1 || true; done
+	if [[ -n $LID ]]; then
+		ok "acquire → $VM"
+		check "lease holder can use it" "$A" run "$VM" 'echo lease-work > ~/project/lease.txt'
+		stale=/tmp/boxery-e2e-stale.$$; cp "${BOXERY_HOME:-$HOME/.boxery}/leases/$LID.key" "$stale"
+		"$A" release "$VM" >/dev/null 2>&1 && ok "release" || bad release
+		check "released lease key is locked out" bash -c "! ssh -F '${BOXERY_HOME:-$HOME/.boxery}/ssh_config' -i '$stale' -o IdentitiesOnly=yes -o BatchMode=yes '$VM.boxery' true"
+		rm -f "$stale"
+		"$A" pool rm "$VM" >/dev/null 2>&1 && ok "pool rm" || bad "pool rm"
+		check "reset on release: work from the lease is gone" "$A" run "$VM" 'test ! -e ~/project/lease.txt'
+	else
+		bad "could not acquire $VM from the pool"
+		"$A" pool rm "$VM" --force >/dev/null 2>&1 || true
+	fi
+	check "VM usable again after leaving the pool" "$A" run "$VM" true
+else
+	bad "pool add $VM"
+fi
+
 echo "== snapshot / revert"
 "$A" snap "$VM" e2e >/dev/null
 "$A" run "$VM" 'rm -f ~/project/answer.txt'

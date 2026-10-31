@@ -168,5 +168,6 @@ backend_rm() {
 backend_snap() { # NAME SNAP
 	timeout 600 virsh snapshot-create-as "$(dom "$1")" "$2" --atomic >/dev/null || { virsh resume "$(dom "$1")" >/dev/null 2>&1; die "snapshot failed"; }
 }
+backend_snap_rm() { virsh snapshot-delete "$(dom "$1")" "$2" >/dev/null; }
 backend_snaps() { virsh snapshot-list "$(dom "$1")"; }
 backend_revert() { virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null; }

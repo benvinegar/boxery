@@ -22,7 +22,7 @@ expect_fail "new before build-base fails" "$H" new a1
 expect "build-base" "$H" build-base
 echo "ssh-ed25519 AAAAlaptop me@laptop" | "$H" add-key >/dev/null 2>&1 && ok "add-key" || bad add-key
 expect_fail "add-key rejects non-keys" bash -c "echo hello | '$H' add-key"
-out=$("$H" new a1 --cpus 2 --mem 2048 --disk 10 2>/dev/null) && [[ $out == "a1 127.0.0.1:2222" ]] && ok "new prints NAME ADDR" || bad "new: $out"
+out=$("$H" new a1 --cpus 2 --mem 2048 --disk 10 2>/dev/null) && [[ $out =~ ^a1\ 127\.0\.0\.1:22[0-9]{3}$ ]] && ok "new prints NAME ADDR" || bad "new: $out"
 [[ $(cat "$BOXERY_FAKE_DIR/a1/size") == "2 2048 10" ]] && ok "new passes sizes to backend" || bad "sizes"
 ud=$BOXERY_FAKE_DIR/a1/user-data
 grep -q '^#cloud-config' "$ud" && grep -q '^hostname: a1$' "$ud" && ok "seed is cloud-config with hostname" || bad "seed header"
@@ -33,7 +33,7 @@ b64=$(awk '/path: \/home\/agent\/.pi\/agent\/models.json/{f=1} f&&/content:/{pri
 echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://127.0.0.1:8088/chatgpt/backend-api"' >/dev/null && ok "pi models.json points at the guest-side proxy" || bad "models.json"
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
-"$H" ls | grep -q '^a1 *running *127.0.0.1:2222' && ok "ls" || bad "ls: $("$H" ls)"
+"$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1

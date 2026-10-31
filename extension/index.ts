@@ -71,13 +71,19 @@ function toPi(r: { text?: string; image?: { data: string; mimeType: string }; is
 // ---------------------------------------------------------------- extension
 
 export default function (pi: ExtensionAPI) {
-	pi.registerFlag("vm", { description: 'boxery: current VM NAME (created if missing), or "new" for a throwaway VM', type: "string" });
+	pi.registerFlag("vm", {
+		description: 'boxery: current VM NAME (created if missing), "new" for a throwaway VM, or "pool" to lease one from the shared pool',
+		type: "string",
+	});
+	pi.registerFlag("vm-ttl", { description: "boxery: lease length in seconds for --vm pool (renewed automatically while pi runs; default 1800)", type: "string" });
 	pi.registerFlag("vm-grant", {
 		description: "boxery: comma-separated grants for the --vm VM, e.g. ssh-agent,env:GH_TOKEN,file:.env (see `boxery grant`)",
 		type: "string",
 	});
 
-	let current: { name: string; ephemeral: boolean } | null = null;
+	// lease: id of a pool lease held by this pi process (released when it ends; renewed while it runs)
+	let current: { name: string; ephemeral: boolean; lease?: string } | null = null;
+	let renewTimer: NodeJS.Timeout | null = null;
 	let desktopProc: ChildProcess | null = null;
 
 	const vmParam = Type.Optional(Type.String({ description: "VM name (default: the current VM)" }));
@@ -223,16 +229,60 @@ export default function (pi: ExtensionAPI) {
 
 	// ------------------------------------------------------------ VM lifecycle + current VM
 
-	function setCurrent(c: typeof current, ctx: any, persist = true) {
-		// A throwaway VM is removed as soon as it stops being current, not only on quit.
-		if (current?.ephemeral && current.name !== c?.name) {
-			const old = current.name;
-			void core.boxeryCli(["rm", old], 120_000).catch(() => {});
-			ctx?.ui?.notify?.(`boxery: removing throwaway VM "${old}"`, "info");
+	/** Give back whatever this process holds for VM `c`: release a lease, or delete a throwaway VM. */
+	function dropOwned(c: NonNullable<typeof current>, ctx: any) {
+		if (c.lease) {
+			if (renewTimer) clearInterval(renewTimer);
+			renewTimer = null;
+			ctx?.ui?.notify?.(`boxery: releasing lease on "${c.name}" (the VM is reset for the next user)`, "info");
+			return core.boxeryCli(["release", c.lease], 180_000).catch(() => {});
 		}
+		if (c.ephemeral) {
+			ctx?.ui?.notify?.(`boxery: removing throwaway VM "${c.name}"`, "info");
+			return core.boxeryCli(["rm", c.name], 120_000).catch(() => {});
+		}
+	}
+
+	async function acquireLease(ctx: any, grants: string[] = []) {
+		const ttl = Math.max(60, Number(pi.getFlag("vm-ttl") ?? 1800) || 1800);
+		ctx?.ui?.notify?.("boxery: leasing a VM from the pool…", "info");
+		// boxeryCli returns stdout+stderr; the machine-readable line is "NAME LEASE_ID".
+		const out = await core.boxeryCli(["acquire", "--ttl", String(ttl), "--wait", "60"], 300_000);
+		const m = out.match(/^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32})$/m);
+		if (!m) {
+			const leaked = out.match(/l-[0-9a-f]{32}/)?.[0];
+			if (leaked) await core.boxeryCli(["release", leaked], 180_000).catch(() => {}); // never leak a lease
+			throw new Error(`unexpected acquire output: ${out.slice(0, 300)}`);
+		}
+		const [, name, lease] = m;
+		if (grants.length) await applyGrants(name, ctx, grants);
+		setCurrent({ name, ephemeral: false, lease }, ctx);
+		// Heartbeat: renew at a third of the TTL. If renewal fails the lease is gone (expired, reaped,
+		// host rebooted) and the VM may already belong to someone else: stop using it.
+		renewTimer = setInterval(async () => {
+			try {
+				await core.boxeryCli(["renew", lease, "--ttl", String(ttl)], 60_000);
+			} catch (e: any) {
+				if (renewTimer) clearInterval(renewTimer);
+				renewTimer = null;
+				if (current?.lease === lease) {
+					current = null;
+					ctx?.ui?.setStatus?.("boxery", undefined);
+					ctx?.ui?.notify?.(`boxery: lost the lease on "${name}" (${e.message}); vm_* tools are disabled until you pick a VM`, "error");
+				}
+			}
+		}, Math.max(20, ttl / 3) * 1000);
+		renewTimer.unref?.();
+	}
+
+	function setCurrent(c: typeof current, ctx: any, persist = true) {
+		// Leases and throwaway VMs are given back as soon as they stop being current, not only on quit.
+		if (current && current.name !== c?.name) void dropOwned(current, ctx);
 		current = c;
-		if (persist) pi.appendEntry("boxery-current", c ? { vm: c.name, ephemeral: c.ephemeral } : { vm: null });
-		ctx?.ui?.setStatus?.("boxery", c ? (ctx.ui.theme?.fg?.("accent", `⛁ vm:${c.name}`) ?? `vm:${c.name}`) : undefined);
+		// Leased VMs are recorded like throwaways: they belong to this process and are never re-adopted.
+		if (persist) pi.appendEntry("boxery-current", c ? { vm: c.name, ephemeral: c.ephemeral || !!c.lease } : { vm: null });
+		const label = c ? `⛁ vm:${c.name}${c.lease ? " (leased)" : ""}` : undefined;
+		ctx?.ui?.setStatus?.("boxery", label ? (ctx.ui.theme?.fg?.("accent", label) ?? label) : undefined);
 	}
 
 	/** Grants (ssh-agent / env / file) are owned by the controller CLI; the extension asks it to apply them. */
@@ -282,6 +332,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				case "rm": {
 					if (current?.name === p.name) {
+						if (current.lease) throw new Error(`${p.name} is leased from the pool; use vm_manage {action:"none"} to release it`);
 						current = { ...current, ephemeral: false }; // we delete it below; setCurrent must not race us
 						setCurrent(null, ctx);
 					}
@@ -302,7 +353,8 @@ export default function (pi: ExtensionAPI) {
 			// fresh extension instance; they use what that session recorded (or no VM) and never create VMs.
 			if (flag && event.reason === "startup") {
 				const grants = String(pi.getFlag("vm-grant") ?? "").split(",").map((g) => g.trim()).filter(Boolean);
-				await (flag === "new" ? useVm(core.newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
+				if (flag === "pool") await acquireLease(ctx, grants);
+				else await (flag === "new" ? useVm(core.newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
 				ctx.ui?.notify?.(`boxery: current VM "${current!.name}". vm_* tools work there; built-in tools stay local.`, "info");
 				return;
 			}
@@ -313,17 +365,17 @@ export default function (pi: ExtensionAPI) {
 		} catch (e: any) {
 			ctx.ui?.notify?.(`boxery: ${e.message}`, "error");
 			// Keep the requested name as current so vm_* tools report the failure instead of guessing.
-			if (flag && flag !== "new" && core.VALID_NAME.test(flag)) setCurrent({ name: flag, ephemeral: false }, ctx, false);
+			if (flag && flag !== "new" && flag !== "pool" && core.VALID_NAME.test(flag)) setCurrent({ name: flag, ephemeral: false }, ctx, false);
 		}
 	});
 
 	pi.on("session_shutdown", async (event) => {
 		desktopProc?.kill();
 		desktopProc = null;
-		// A throwaway VM lives exactly as long as the session that created it (quit, /new, /resume, fork).
-		// A reload keeps the same session, so the VM stays; the reloaded instance re-adopts nothing,
-		// hence the reload case also removes it rather than leaking it.
-		if (current?.ephemeral) await core.boxeryCli(["rm", current.name], 120_000).catch(() => {});
+		// Throwaway VMs and leases live exactly as long as the session that created them (quit, /new,
+		// /resume, fork, reload): the next session never re-adopts them, so give them back now.
+		if (current) await dropOwned(current, null);
+		current = null;
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -336,7 +388,7 @@ export default function (pi: ExtensionAPI) {
 	// ------------------------------------------------------------ /vm command
 
 	pi.registerCommand("vm", {
-		description: "boxery: /vm [use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants]",
+		description: "boxery: /vm [use NAME | new [NAME] | pool | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants]",
 		handler: async (args, ctx) => {
 			const [sub, arg, ...more] = (args ?? "").trim().split(/\s+/);
 			const say = (m: string, lvl = "info") => ctx.ui.notify(m, lvl as any);
@@ -356,6 +408,10 @@ export default function (pi: ExtensionAPI) {
 						say(`boxery: current VM "${n}"${!arg ? " (throwaway)" : ""}`);
 						break;
 					}
+					case "pool":
+						await acquireLease(ctx);
+						say(`boxery: leased "${current!.name}" from the pool (released when pi exits or with /vm off)`);
+						break;
 					case "off":
 					case "local":
 						setCurrent(null, ctx);
@@ -367,6 +423,7 @@ export default function (pi: ExtensionAPI) {
 					case "rm":
 						if (!arg) throw new Error("usage: /vm rm NAME");
 						if (current?.name === arg) {
+							if (current.lease) throw new Error(`${arg} is leased from the pool; use /vm off to release it`);
 							current = { ...current, ephemeral: false };
 							setCurrent(null, ctx);
 						}

@@ -35,8 +35,8 @@ host_pubkey() {
 
 vm_ssh_cmd() { local h=$1 p=$2; shift 2; ssh "${SSH_OPTS[@]}" -p "$p" "agent@$h" "$@"; }
 
-wait_ssh() { # HOST [PORT]
-	for _ in $(seq 180); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
+wait_ssh() { # HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 180 = 6 min)
+	for _ in $(seq "${BOXERY_SSH_WAIT_TRIES:-180}"); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
 	die "timed out waiting for ssh on $1:${2:-22}"
 }
 
@@ -118,6 +118,125 @@ boxery_seed() { # NAME → path of a user-data file
 	echo "$tmp/user-data"
 }
 
+# ---------------------------------------------------------------- leases (pool VMs)
+# State machine + fencing live in host/boxery-leases.mjs (SQLite). This file does the side effects:
+# installing a lease's ssh key in the VM, and resetting the VM to its clean snapshot.
+
+POOL_SNAP=boxery-clean
+leases() { node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-leases.mjs" "$CONF/leases.db" "$@"; }
+is_pool() { [[ $(leases get "$1" 2>/dev/null) != null && -n $(leases get "$1" 2>/dev/null) ]]; }
+
+# authorized_keys in the VM := host management key (+ the lease holder's key). This is the fence:
+# a VM in the pool accepts nobody else, and resetting it (snapshot revert) drops the lease key again.
+lease_set_keys() { # NAME [PUBKEY]
+	local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+	{ host_pubkey; [[ -z ${2:-} ]] || printf '%s\n' "$2"; } |
+		vm_ssh_cmd "$h" "$p" 'umask 077; mkdir -p ~/.ssh && cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys'
+}
+
+# RESETTING(gen) → revert to the clean snapshot → FREE (or BROKEN if anything fails).
+lease_reset() { # NAME GEN
+	local name=$1 gen=$2 ok=0 ep h p
+	# Every backend step runs in a subshell: backends `die` (exit) on failure, and a failed reset must
+	# still reach the BROKEN transition below instead of leaving the row stuck in RESETTING.
+	if ( backend_revert "$name" "$POOL_SNAP" ) 2>/dev/null; then
+		ep=$( backend_wait_endpoint "$name" ) && h=${ep% *} && p=${ep#* } &&
+			( BOXERY_SSH_WAIT_TRIES=${BOXERY_SSH_WAIT_TRIES:-45} wait_ssh "$h" "$p" ) 2>/dev/null &&
+			vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null 2>&1; true" &&
+			( lease_set_keys "$name" ) && ok=1
+	fi
+	if ((ok)); then leases finish "$name" "$gen" FREE >/dev/null && log "$name reset → FREE"
+	else leases finish "$name" "$gen" BROKEN >/dev/null; log "$name reset FAILED → BROKEN (fix it, then: boxery-host pool rm $name && boxery-host pool add $name)"; fi
+}
+
+cmd_pool() { # add NAME | rm NAME [--force] | ls
+	local sub=${1:-ls}; shift || true
+	case $sub in
+	add)
+		valid_name "${1:-}"; backend_exists "$1" || die "no such vm: $1"
+		is_pool "$1" && die "$1 is already in the pool"
+		backend_ssh_endpoint "$1" >/dev/null   # must be running
+		local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+		# The clean snapshot must not carry a previous user's pushed grants (tmpfs) or keys.
+		vm_ssh_cmd "$h" "$p" 'rm -rf "/run/user/$(id -u)/boxery"' || true
+		lease_set_keys "$1" || die "could not lock down ssh keys on $1"
+		# authorized_keys only gates *new* logins: end existing ssh sessions (not the desktop) so
+		# nobody keeps access through a connection opened before the VM joined the pool.
+		vm_ssh_cmd "$h" "$p" 'sudo pkill -u agent -x sshd 2>/dev/null; sudo pkill -f "^sshd: agent" 2>/dev/null; true' || true
+		sleep 1
+		if declare -F backend_snap_rm >/dev/null; then backend_snap_rm "$1" "$POOL_SNAP" 2>/dev/null || true; fi
+		backend_snap "$1" "$POOL_SNAP"
+		leases add "$1" >/dev/null
+		log "$1 added to the pool (only lease holders can reach it now)" ;;
+	rm)
+		valid_name "${1:-}"
+		leases remove "$1" ${2:+"$2"} >/dev/null
+		# back to a pet: registered controller keys may log in again
+		if backend_ssh_endpoint "$1" >/dev/null 2>&1; then
+			local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+			{ host_pubkey; cat "$CONF/authorized_keys" 2>/dev/null; } | sort -u | grep -v '^$' |
+				vm_ssh_cmd "$h" "$p" 'umask 077; cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys' || true
+		fi
+		log "$1 removed from the pool" ;;
+	ls)
+		printf '%-16s %-10s %-10s %s\n' NAME LEASE EXPIRES HOLDER
+		leases list | jq -r '.[] | [.name, .state, (if .expires_in then "\(.expires_in)s" else "-" end), (.holder // "-")] | @tsv' |
+			while IFS=$'\t' read -r n st ex ho; do printf '%-16s %-10s %-10s %s\n' "$n" "$st" "$ex" "$ho"; done ;;
+	*) die "usage: pool add NAME | rm NAME [--force] | ls" ;;
+	esac
+}
+
+cmd_acquire() { # --holder H [--ttl SECS] [--wait SECS]   (lease public key on stdin) → "NAME LEASE_ID EXPIRES_AT"
+	local holder="" ttl=1800 wait=0
+	while (($#)); do
+		case $1 in
+		--holder) holder=${2:-}; shift 2 ;;
+		--ttl) valid_num "$1" "${2:-}"; ttl=$2; shift 2 ;;
+		--wait) valid_num "$1" "${2:-}"; wait=$2; shift 2 ;;
+		*) die "unknown flag $1" ;;
+		esac
+	done
+	local pub; pub=$(head -n1)
+	local deadline=$(($(date +%s) + wait)) claim="" reaped=0
+	while :; do
+		claim=$(leases claim "$holder" "$ttl" "$pub") || die "acquire failed"
+		[[ $claim != null ]] && break
+		if ((!reaped)); then reaped=1; cmd_reap >/dev/null 2>&1 || true; continue; fi   # free expired leases first
+		(($(date +%s) < deadline)) || { echo "boxery-host: pool exhausted (no FREE VM)" >&2; exit 4; }
+		sleep 2
+	done
+	local name gen lease exp
+	name=$(jq -r .name <<<"$claim"); gen=$(jq -r .gen <<<"$claim"); lease=$(jq -r .lease_id <<<"$claim"); exp=$(jq -r .expires_at <<<"$claim")
+	# Any failure from here on: give the VM back (reset), never leave it ACQUIRING.
+	ACQ_NAME=$name ACQ_GEN=$gen ACQ_DONE=0
+	trap 'if [[ $ACQ_DONE != 1 ]] && r=$(leases begin-reset-name "$ACQ_NAME" "$ACQ_GEN" 2>/dev/null); then lease_reset "$ACQ_NAME" "$(jq -r .gen <<<"$r")"; fi' EXIT
+	lease_set_keys "$name" "$pub" || die "could not install the lease key on $name"
+	leases commit "$name" "$gen" >/dev/null || { ACQ_DONE=1; die "lease on $name was taken over while acquiring (expired?)"; }
+	ACQ_DONE=1
+	log "$name leased to $holder until $(date -d "@$exp" 2>/dev/null || date -r "$exp")"
+	echo "$name $lease $exp"
+}
+
+cmd_renew() { # LEASE_ID [--ttl SECS] → "NAME EXPIRES_AT"
+	local id=${1:-} ttl=1800; [[ ${2:-} == --ttl ]] && { valid_num --ttl "${3:-}"; ttl=$3; }
+	[[ $id =~ ^l-[0-9a-f]{32}$ ]] || die "invalid lease id"
+	leases renew "$id" "$ttl" | jq -r '"\(.name) \(.expires_at)"'
+}
+
+cmd_release() { # LEASE_ID
+	local id=${1:-}; [[ $id =~ ^l-[0-9a-f]{32}$ ]] || die "invalid lease id"
+	local r; r=$(leases begin-reset "$id") || exit 2
+	lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")"
+}
+
+cmd_reap() { # reset every expired / orphaned / pre-reboot lease
+	local rows; rows=$(leases due) || return 1
+	jq -c '.[]' <<<"$rows" | while read -r r; do
+		log "reaping $(jq -r .name <<<"$r") ($(jq -r .reason <<<"$r"))"
+		lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")"
+	done
+}
+
 # ---------------------------------------------------------------- commands
 
 # LLM proxy + backend's guest bridge: systemd user units on Linux, launchd agents on macOS.
@@ -162,10 +281,55 @@ start_proxy_services() {
 	fi
 	sleep 1
 }
+# Reaper: resets expired/orphaned leases every minute.
+REAPER_UNIT=${BOXERY_REAPER_UNIT:-${PROXY_UNIT/proxy/reaper}}
+start_reaper() {
+	local env="BOXERY_CONF=$CONF BOXERY_BACKEND=$BACKEND"
+	if [[ $(uname) == Darwin ]]; then
+		local plist=$HOME/Library/LaunchAgents/dev.$REAPER_UNIT.plist
+		cat >"$plist" <<-EOF
+			<?xml version="1.0" encoding="UTF-8"?>
+			<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+			<plist version="1.0"><dict>
+			  <key>Label</key><string>dev.$REAPER_UNIT</string>
+			  <key>ProgramArguments</key><array><string>$ROOT/host/boxery-host</string><string>reap</string></array>
+			  <key>EnvironmentVariables</key><dict><key>BOXERY_CONF</key><string>$CONF</string><key>PATH</key><string>$(dirname "$(command -v node)"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+			  <key>StartInterval</key><integer>60</integer>
+			  <key>StandardOutPath</key><string>$HOME/Library/Logs/$REAPER_UNIT.log</string>
+			  <key>StandardErrorPath</key><string>$HOME/Library/Logs/$REAPER_UNIT.log</string>
+			</dict></plist>
+		EOF
+		launchctl bootout "gui/$(id -u)/dev.$REAPER_UNIT" 2>/dev/null || true
+		launchctl bootstrap "gui/$(id -u)" "$plist"
+	else
+		cat >"$HOME/.config/systemd/user/$REAPER_UNIT.service" <<-EOF
+			[Unit]
+			Description=boxery: reset expired/orphaned leases
+			[Service]
+			Type=oneshot
+			Environment=$env PATH=$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin
+			ExecStart=$ROOT/host/boxery-host reap
+		EOF
+		cat >"$HOME/.config/systemd/user/$REAPER_UNIT.timer" <<-EOF
+			[Unit]
+			Description=boxery: lease reaper every minute
+			[Timer]
+			OnBootSec=1min
+			OnUnitActiveSec=1min
+			AccuracySec=10s
+			[Install]
+			WantedBy=timers.target
+		EOF
+		systemctl --user daemon-reload
+		systemctl --user enable --now "$REAPER_UNIT.timer" >/dev/null
+	fi
+}
+
 proxy_bind() { if declare -F backend_proxy_bind >/dev/null; then backend_proxy_bind; else echo 127.0.0.1; fi; }
 
 cmd_init() {
 	need jq; need node; need nc; need openssl
+	node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null || die "node $(node --version) lacks node:sqlite; need Node >= 22.13"
 	backend_check
 	ensure_tokens
 	touch "$CONF/authorized_keys"; chmod 600 "$CONF/authorized_keys"
@@ -188,6 +352,7 @@ cmd_init() {
 		ln -sf "$ROOT/controller/boxery" "$HOME/.local/bin/boxery"
 	fi
 	start_proxy_services
+	[[ -n ${BOXERY_NO_SERVICES:-} ]] || start_reaper
 	log "init done. Next: boxery-host build-base"
 }
 
@@ -235,9 +400,11 @@ cmd_new() {
 }
 
 cmd_ls() {
-	printf '%-16s %-10s %-16s %s\n' NAME STATE ADDR DISK
+	local pool; pool=$(leases list 2>/dev/null | jq -r '.[] | "\(.name)\t\(.state)"' 2>/dev/null || true)
+	printf '%-16s %-10s %-16s %-10s %s\n' NAME STATE ADDR DISK LEASE
 	backend_list | while IFS=$'\t' read -r n st addr disk; do
-		printf '%-16s %-10s %-16s %s\n' "$n" "$st" "$addr" "$disk"
+		local l; l=$(awk -F'\t' -v n="$n" '$1==n{print $2}' <<<"$pool")
+		printf '%-16s %-10s %-16s %-10s %s\n' "$n" "$st" "$addr" "$disk" "${l:--}"
 	done
 }
 
@@ -257,6 +424,7 @@ cmd_stop() { valid_name "$1"; backend_stop "$1"; log "$1 shutting down"; }
 
 cmd_rm() {
 	valid_name "$1"
+	is_pool "$1" && die "$1 is a pool VM; run: boxery-host pool rm $1 (after its lease ends)"
 	backend_rm "$1"
 	token_del "$1"
 	log "$1 removed (proxy token revoked)"
@@ -295,6 +463,10 @@ usage() {
 		  snap NAME [SNAP] | snaps NAME | revert NAME SNAP
 		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
 		  proxy-log [N]             recent LLM proxy requests
+
+		  pool add NAME | rm NAME [--force] | ls     shared pool of leasable VMs
+		  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
+		  renew LEASE [--ttl S] | release LEASE | reap
 	EOF
 }
 
@@ -318,6 +490,11 @@ snap) cmd_snap "$@" ;;
 snaps) cmd_snaps "$@" ;;
 revert) cmd_revert "$@" ;;
 proxy-log) cmd_proxy_log "$@" ;;
+pool) cmd_pool "$@" ;;
+acquire) cmd_acquire "$@" ;;
+renew) cmd_renew "$@" ;;
+release) cmd_release "$@" ;;
+reap) cmd_reap ;;
 help | -h | --help) usage ;;
 *) usage; exit 1 ;;
 esac
