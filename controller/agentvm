@@ -18,6 +18,7 @@ NL='
 
 die() { echo "agentvm: $*" >&2; exit 1; }
 warn() { echo "agentvm: $*" >&2; }
+valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac; [ ${#1} -le 64 ]; }
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
 need_host() { [ -n "$HOST" ] || die "not configured; run: agentvm setup user@host"; }
@@ -25,15 +26,15 @@ need_host() { [ -n "$HOST" ] || die "not configured; run: agentvm setup user@hos
 is_local() { [ "$HOST" = local ]; }
 # shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
 local_host_bin() { case $HOST_BIN in "~/"*) echo "$HOME/${HOST_BIN#\~/}" ;; *) echo "$HOST_BIN" ;; esac; }
+# Remote command line with every argument shell-quoted: ssh joins argv with spaces and the remote
+# shell re-parses it, so unquoted args (snapshot names, flags) would be executed on the host.
+quote_args() { out=""; for a in "$@"; do out="$out $(printf %q "$a")"; done; printf '%s' "$out"; }
 h() {
 	need_host
 	if is_local; then "$(local_host_bin)" "$@"
-	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN $*"; fi
+	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN$(quote_args "$@")"; fi
 }
-h_stdin() { # like h, but passes stdin through (for add-key)
-	if is_local; then "$(local_host_bin)" "$@"
-	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN $*"; fi
-}
+h_stdin() { h "$@"; }  # stdin is passed through by both branches
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.
 drop_master() { [ -n "${1:-}" ] && ssh -F "$SSH_CONF" -O exit "$1.avm" >/dev/null 2>&1 || true; }
@@ -147,6 +148,12 @@ grant_file() { echo "$GRANTS_DIR/$1"; }
 has_grant() { [ -f "$(grant_file "$1")" ] && awk -F'\t' -v k="$2" '$1==k{f=1} END{exit !f}' "$(grant_file "$1")"; }
 has_pushed_grants() { [ -f "$(grant_file "$1")" ] && awk -F'\t' '$1=="env"||$1=="file"{f=1} END{exit !f}' "$(grant_file "$1")"; }
 
+grants_lock() { # NAME cmd...: serialize local grant-store edits (mkdir is atomic everywhere)
+	l="$GRANTS_DIR/.$1.lock"; mkdir -p "$GRANTS_DIR"; i=0
+	while ! mkdir "$l" 2>/dev/null; do i=$((i + 1)); [ $i -lt 300 ] || die "grants for $1 are locked ($l)"; sleep 0.1; done
+	shift; rc=0; "$@" || rc=$?; rmdir "$l"; return $rc
+}
+
 grant_put() { # NAME kind key extra
 	mkdir -p "$GRANTS_DIR"; chmod 700 "$GRANTS_DIR"
 	f=$(grant_file "$1"); touch "$f"; tmp="$f.tmp.$$"
@@ -176,13 +183,13 @@ grant_spec() {
 	case $spec in
 	ssh-agent)
 		[ -z "$cmd" ] || die "--cmd only applies to env grants"
-		[ -n "$dry" ] || grant_put "$n" ssh-agent "" "" ;;
+		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" ssh-agent "" "" ;;
 	env:*)
 		var=${spec#env:}
 		case $var in [A-Za-z_]*) ;; *) die "invalid env var name: $var" ;; esac
 		case $var in *[!A-Za-z0-9_]*) die "invalid env var name: $var" ;; esac
 		case $cmd in *"$TAB"* | *"$NL"*) die "--cmd must be a single line" ;; esac
-		[ -n "$dry" ] || grant_put "$n" env "$var" "$cmd" ;;
+		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" env "$var" "$cmd" ;;
 	file:*)
 		rest=${spec#file:}; loc=${rest%%=*}; rem=""
 		case $rest in *=*) rem=${rest#*=} ;; esac
@@ -192,7 +199,7 @@ grant_spec() {
 		[ -n "$rem" ] || rem="project/$(basename "$abs")"
 		case "/$rem/" in */../* | *"$TAB"* | *"$NL"*) die "invalid remote path: $rem" ;; esac
 		case "$abs" in *"$TAB"* | *"$NL"*) die "invalid local path: $abs" ;; esac
-		[ -n "$dry" ] || grant_put "$n" file "$abs" "$rem" ;;
+		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" file "$abs" "$rem" ;;
 	*) die "unknown grant '$spec' (use ssh-agent, env:VAR or file:LOCAL[=REMOTE])" ;;
 	esac
 }
@@ -223,6 +230,8 @@ for _ in $(seq 30); do [ -d "$RT" ] && break; sleep 1; done   # appears once the
 [ -d "$RT" ] || { echo "agentvm: $RT missing (no user runtime dir)" >&2; exit 1; }
 R=$RT/agentvm
 mkdir -p "$R/files"
+# One apply at a time per VM (concurrent attach/revoke must not interleave staging files).
+exec 9>"$R/.lock"; if command -v flock >/dev/null; then flock 9; fi
 : >"$R/env.sh.new"; : >"$R/links.new"; : >"$R/targets.new"
 put_env() { v=$(printf %s "$2" | base64 -d); printf 'export %s=%q\n' "$1" "$v" >>"$R/env.sh.new"; }
 put_file() {
@@ -279,9 +288,15 @@ grants_apply() { # NAME [--quiet]
 
 # After a grant change: regenerate ForwardAgent config, stop the shared connection from taking new
 # sessions (running ones finish; the next connection uses the new config), push env/file state.
+# After a grant change: regenerate ForwardAgent config and close the shared connection so the next
+# one uses it. `-O exit` (not `stop`) also tears down existing sessions, so a revoked ssh-agent
+# forward can't keep signing through an already-open channel.
 grants_changed() {
 	write_ssh_config
-	ssh -F "$SSH_CONF" -O stop "$1.avm" >/dev/null 2>&1 || true
+	if ssh -F "$SSH_CONF" -O check "$1.avm" >/dev/null 2>&1; then
+		ssh -F "$SSH_CONF" -O exit "$1.avm" >/dev/null 2>&1 || true
+		echo "==> closed open connections to $1 so the change takes effect (attached sessions will reconnect)"
+	fi
 	grants_apply "$1" || warn "grants for $1 are saved; they'll be applied on the next start/attach"
 }
 
@@ -304,10 +319,10 @@ cmd_revoke() { # NAME SPEC...|all
 	for spec in "$@"; do
 		case $spec in
 		all) rm -f "$(grant_file "$n")"; echo "==> revoked all grants for $n" ;;
-		ssh-agent) [ "$(grant_del "$n" ssh-agent "")" -gt 0 ] && echo "==> revoked ssh-agent" || warn "no ssh-agent grant" ;;
-		env:*) [ "$(grant_del "$n" env "${spec#env:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
+		ssh-agent) [ "$(grants_lock "$n" grant_del "$n" ssh-agent "")" -gt 0 ] && echo "==> revoked ssh-agent" || warn "no ssh-agent grant" ;;
+		env:*) [ "$(grants_lock "$n" grant_del "$n" env "${spec#env:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
 		file:*) k=${spec#file:}; [ -e "$k" ] && k=$(abs_path "$k")
-			[ "$(grant_del "$n" file "$k")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
+			[ "$(grants_lock "$n" grant_del "$n" file "$k")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
 		*) die "unknown grant '$spec'" ;;
 		esac
 	done
@@ -354,7 +369,9 @@ cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-fo
 		case $1 in
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
-		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"; pass="$pass $1 $(printf %q "$2")"; shift 2 ;;
+		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
+			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
+			pass="$pass $1 $2"; shift 2 ;;
 		-*) die "unknown flag $1" ;;
 		*) name=$1; shift ;;
 		esac
@@ -434,8 +451,9 @@ rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(g
 stop) need_host; drop_master "${1:-}"; h stop "$@"; drop_master "${1:-}" ;;
 start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if has_pushed_grants "${1:-x}"; then grants_apply "$1" || true; fi ;;
 # a revert restores the snapshot's tmpfs too: always reconcile to the current grants
-revert) need_host; drop_master "${1:-}"; h revert "$@"; drop_master "${1:-}"; grants_apply "$1" --quiet || true ;;
+revert) need_host; valid_snap "${2:-}" || die "invalid snapshot name: ${2:-}"; drop_master "${1:-}"; h revert "$@"; drop_master "${1:-}"; grants_apply "$1" --quiet || true ;;
 snap) need_host
+	[ -z "${2:-}" ] || valid_snap "$2" || die "invalid snapshot name: $2"
 	if has_pushed_grants "${1:-x}"; then warn "note: $1 has env/file grants; a memory snapshot includes their values (they are re-synced on revert)"; fi
 	h snap "$@" ;;
 new) need_host; cmd_new "$@" ;;

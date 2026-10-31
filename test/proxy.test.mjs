@@ -32,7 +32,7 @@ before(async () => {
 	writeFileSync(path.join(conf, "tokens.json"), JSON.stringify({ demo: "s3cret" }));
 	port = 20000 + Math.floor(Math.random() * 20000);
 	proxy = spawn(process.execPath, [path.join(ROOT, "proxy/agentvm-proxy.mjs")], {
-		env: { ...process.env, AGENTVM_CONF: conf, AGENTVM_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, AGENTVM_PI_AUTH: path.join(conf, "none.json") },
+		env: { ...process.env, AGENTVM_PROXY_MAX_BODY: String(1024 * 1024), AGENTVM_CONF: conf, AGENTVM_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, AGENTVM_PI_AUTH: path.join(conf, "none.json") },
 		stdio: "ignore",
 	});
 	for (let i = 0; i < 50; i++) {
@@ -75,6 +75,31 @@ test("valid token (plain, x-api-key, JWT-wrapped) reaches upstream with VM auth 
 		assert.equal(seen.headers.authorization, undefined, "VM token must not reach upstream");
 		assert.equal(seen.headers["x-api-key"], undefined);
 	}
+});
+
+test("only inference endpoints are allowed (admin/account APIs → 403 before credentials)", async () => {
+	const h = { authorization: "Bearer demo:s3cret" };
+	seen = undefined;
+	for (const [method, p] of [
+		["DELETE", "/ollama/api/delete"],
+		["POST", "/ollama/api/pull"],
+		["POST", "/ollama/api/create"],
+		["GET", "/openai/v1/files"],
+		["POST", "/openai/v1/fine_tuning/jobs"],
+		["GET", "/chatgpt/backend-api/me"],
+		["POST", "/ollama/v1/chat/completions/../../api/pull"],
+	]) {
+		const r = await req(p, { method, headers: h, body: method === "GET" ? undefined : "{}" });
+		assert.ok([403, 404].includes(r.status), `${method} ${p} → ${r.status}`);
+	}
+	assert.equal(seen, undefined, "nothing reached upstream");
+	assert.equal((await req("/ollama/api/tags", { headers: h })).status, 200);
+});
+
+test("request body limit", async () => {
+	const big = "x".repeat(2 * 1024 * 1024);
+	const r = await req("/ollama/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer demo:s3cret" }, body: big });
+	assert.equal(r.status, 413);
 });
 
 test("unknown route → 404; missing upstream credentials → 502 (not a crash)", async () => {

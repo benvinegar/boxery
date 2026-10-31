@@ -2,7 +2,7 @@
 // (in a temp "VM home"), and AGENTVM_BIN points at a stub controller.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -30,7 +30,8 @@ cmd=\${1//\\/home\\/agent/${vmroot}}
 cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,
 	);
-	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec "$@"\n`);
+	// macOS has no setsid; emulate "new process group + wait" with perl (present on macOS and Linux).
+	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- "$@"\n`);
 	chmodSync(path.join(bin, "setsid"), 0o755);
 	writeFileSync(path.join(bin, "agentvm"), `#!/usr/bin/env bash\necho "stub agentvm $*"\n[ "$1" = ls ] && printf 'NAME STATE\\nfakevm running\\n'\nexit 0\n`);
 	chmodSync(path.join(bin, "ssh"), 0o755);
@@ -120,6 +121,51 @@ describe("stdio", () => {
 		assert.ok((await c.call("ping")).result);
 	});
 
+	test("hostile file names never execute (read/edit error paths)", async () => {
+		const marker = path.join(env.VMROOT, "pwned");
+		await c.tool("vm_read", { path: `nope$(touch ${marker})` });
+		await c.tool("vm_edit", { path: `nope$(touch ${marker})`, edits: [{ oldText: "a", newText: "b" }] });
+		assert.equal(existsSync(marker), false);
+	});
+
+	test("snapshot names are validated before reaching the controller", async () => {
+		const r = await c.tool("vm_manage", { action: "snap", name: "fakevm", snapshot: "x; touch /tmp/pwned #" });
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].text, /invalid snapshot name/);
+	});
+
+	test("endless output is bounded (no unbounded buffering)", async () => {
+		const r = await c.tool("vm_bash", { command: "yes | head -c 30000000; echo; echo END" });
+		assert.match(r.content[0].text, /END/);
+		assert.ok(r.content[0].text.length < 300_000, `returned ${r.content[0].text.length} chars`);
+	});
+
+	test("vm_copy failures are reported, not swallowed", async () => {
+		const ro = path.join(env.VMROOT, "ro");
+		mkdirSync(ro, { recursive: true });
+		chmodSync(ro, 0o500);
+		const src = path.join(env.VMROOT, "project/copy-src.txt");
+		writeFileSync(src, "x");
+		const r = await c.tool("vm_copy", { from: `local:${src}`, to: "/home/agent/ro/sub/x.txt" });
+		chmodSync(ro, 0o700);
+		assert.equal(r.isError, true, r.content[0].text);
+	});
+
+	test("timeouts kill the remote process group", async () => {
+		const pidFile = path.join(env.VMROOT, "sleeper.pid");
+		const r = await c.tool("vm_bash", { command: `sleep 300 & echo $! > ${pidFile}; wait`, timeout: 1 });
+		assert.match(r.content[0].text, /timed out/);
+		await new Promise((res) => setTimeout(res, 2500));
+		const pid = Number(readFileSync(pidFile, "utf8"));
+		let alive = true;
+		try {
+			process.kill(pid, 0);
+		} catch {
+			alive = false;
+		}
+		assert.equal(alive, false, "background child survived the timeout");
+	});
+
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
 		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
@@ -153,6 +199,11 @@ describe("http", () => {
 		const q = spawn(process.execPath, [SERVER, "--http", "127.0.0.1:1"], { env: { ...env, AGENTVM_MCP_TOKEN: "" }, stdio: "ignore" });
 		const code = await new Promise((r) => q.on("exit", r));
 		assert.equal(code, 2);
+	});
+
+	test("--allow-user is refused unless listening on loopback", async () => {
+		const q = spawn(process.execPath, [SERVER, "--http", "0.0.0.0:1", "--allow-user", "a@b"], { env: { ...env, AGENTVM_MCP_TOKEN: "t" }, stdio: "ignore" });
+		assert.equal(await new Promise((r) => q.on("exit", r)), 2);
 	});
 
 	test("auth: token required, Tailscale user allowlist, Origin check", async () => {

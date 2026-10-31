@@ -16,6 +16,7 @@ export const PROJECT = `${REMOTE_HOME}/project`;
 export const CDP_PORT = 9222;
 export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const MAX_BYTES = 50 * 1024;
+export const MAX_CAPTURE = 64 * 1024 * 1024; // hard cap on bytes buffered from one remote command
 export const MAX_LINES = 2000;
 
 export function controllerPath() {
@@ -31,6 +32,12 @@ export const AGENTVM = controllerPath();
 export const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const newName = () => `pi-${randomBytes(3).toString("hex")}`;
+
+export const VALID_SNAP = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export function assertSnap(s) {
+	if (!s || !VALID_SNAP.test(s)) throw new Error(`invalid snapshot name "${s ?? ""}"`);
+	return s;
+}
 
 export function assertName(name) {
 	if (!name || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
@@ -69,8 +76,23 @@ export function sshRun(vm, script, opts = {}) {
 		const out = [];
 		let err = "";
 		let timer;
-		child.stdout.on("data", (d) => (opts.onData ? opts.onData(d) : out.push(d)));
-		child.stderr.on("data", (d) => (opts.onData ? opts.onData(d) : (err += d.toString())));
+		let size = 0;
+		const cap = opts.maxBytes ?? MAX_CAPTURE;
+		let overflow = false;
+		child.stdout.on("data", (d) => {
+			if (opts.onData) return opts.onData(d);
+			size += d.length;
+			if (size > cap) {
+				overflow = true;
+				child.kill();
+				return;
+			}
+			out.push(d);
+		});
+		child.stderr.on("data", (d) => {
+			if (opts.onData) return opts.onData(d);
+			if (err.length < 64 * 1024) err += d.toString();
+		});
 		const onAbort = () => child.kill();
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		if (opts.timeoutMs) timer = setTimeout(() => child.kill(), opts.timeoutMs);
@@ -78,10 +100,14 @@ export function sshRun(vm, script, opts = {}) {
 		child.on("close", (code) => {
 			if (timer) clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
+			if (overflow) return reject(new Error(`output exceeded ${Math.round(cap / 1048576)} MiB; refusing to buffer more`));
 			if (code === 255) return reject(new Error(`VM "${vm}" unreachable over ssh: ${err.trim() || "connection failed"}`));
 			resolve({ code, stdout: Buffer.concat(out), stderr: err });
 		});
-		if (opts.input != null) child.stdin.end(opts.input);
+		if (opts.input != null) {
+			child.stdin.on("error", () => {}); // EPIPE if the remote side exits early; the exit code reports it
+			child.stdin.end(opts.input);
+		}
 	});
 }
 
@@ -108,10 +134,14 @@ export function agentvmCli(args, timeoutMs = 300_000) {
 export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
 	return new Promise((resolve, reject) => {
 		const id = randomBytes(6).toString("hex");
-		const script = `cd ${q(cwd || PROJECT)} 2>/dev/null || cd ${q(PROJECT)} 2>/dev/null || cd ~; exec setsid -w bash -lc ${q(command)} agentvm-run-${id} </dev/null`;
+		// setsid makes the inner shell a new session/group leader; it records its PID (= PGID) before
+		// exec'ing the user command, so cleanup can kill exactly that process group.
+		const pidf = `/tmp/agentvm-run-${id}.pgid`;
+		const inner = `echo $$ > ${pidf}; exec bash -lc ${q(command)}`;
+		const script = `cd ${q(cwd || PROJECT)} 2>/dev/null || cd ${q(PROJECT)} 2>/dev/null || cd ~; setsid -w bash -c ${q(inner)} </dev/null; rc=$?; rm -f ${pidf}; exit $rc`;
 		let timedOut = false;
 		const killRemote = () =>
-			sshRun(vm, `g=$(pgrep -f -o 'agentvm-run-${id}$'); [ -n "$g" ] && { kill -TERM -- -$g; sleep 2; kill -KILL -- -$g; } 2>/dev/null; true`).catch(() => {});
+			sshRun(vm, `g=$(cat ${pidf} 2>/dev/null); [ -n "$g" ] && { kill -TERM -- -"$g"; sleep 2; kill -KILL -- -"$g"; rm -f ${pidf}; } 2>/dev/null; true`).catch(() => {});
 		const ac = new AbortController();
 		const onAbort = () => {
 			void killRemote();
@@ -183,10 +213,18 @@ export function truncTail(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 export async function bashTool(vm, { command, timeout }, { signal } = {}) {
+	// Bounded tail buffer: an endless producer (`yes`) can't exhaust memory.
 	const chunks = [];
+	let held = 0;
+	const keep = 4 * MAX_BYTES;
+	const onData = (d) => {
+		chunks.push(d);
+		held += d.length;
+		while (held - chunks[0].length >= keep) held -= chunks.shift().length;
+	};
 	let r;
 	try {
-		r = await execRemote(vm, command, PROJECT, { onData: (d) => chunks.push(d), signal, timeout: timeout ?? 120 });
+		r = await execRemote(vm, command, PROJECT, { onData, signal, timeout: timeout ?? 120 });
 	} catch (e) {
 		if (String(e.message).startsWith("timeout:")) {
 			const t = truncTail(Buffer.concat(chunks).toString());
@@ -201,13 +239,13 @@ export async function bashTool(vm, { command, timeout }, { signal } = {}) {
 
 export async function readTool(vm, { path: p, offset, limit }) {
 	const rp = vmPath(p);
-	const mime = (await sshOk(vm, `test -r ${q(rp)} || { echo "cannot read ${rp.replace(/"/g, "")}" >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();
+	const mime = (await sshOk(vm, `test -r ${q(rp)} || { printf 'cannot read %s\\n' ${q(rp)} >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();
 	if (IMAGE_TYPES.includes(mime)) {
 		// downscale large images in the VM (ImageMagick) so they fit model limits
 		const data = await sshOk(vm, `convert ${q(rp)} -resize '1568x1568>' png:-`);
 		return { text: `${rp} (${mime}, shown as PNG)`, image: { data: data.toString("base64"), mimeType: "image/png" } };
 	}
-	const buf = await sshOk(vm, `cat -- ${q(rp)}`);
+	const buf = await sshOk(vm, `[ -f ${q(rp)} ] || { printf 'not a regular file: %s\\n' ${q(rp)} >&2; exit 1; }; cat -- ${q(rp)}`, { maxBytes: 16 * 1024 * 1024, timeoutMs: 60_000 });
 	const all = buf.toString("utf8").split("\n");
 	const start = Math.max(1, Math.floor(offset ?? 1));
 	const slice = all.slice(start - 1, limit ? start - 1 + Math.floor(limit) : undefined).join("\n");
@@ -248,7 +286,7 @@ export async function editTool(vm, { path: p, edits, oldText, newText }) {
 	const rp = vmPath(p);
 	const list = Array.isArray(edits) && edits.length ? edits : oldText != null ? [{ oldText, newText }] : [];
 	if (!list.length) throw new Error("provide edits: [{oldText, newText}]");
-	const original = (await sshOk(vm, `test -w ${q(rp)} || { echo "cannot write ${rp.replace(/"/g, "")}" >&2; exit 1; }; cat -- ${q(rp)}`)).toString("utf8");
+	const original = (await sshOk(vm, `test -w ${q(rp)} || { printf 'cannot write %s\\n' ${q(rp)} >&2; exit 1; }; cat -- ${q(rp)}`)).toString("utf8");
 	const updated = applyEdits(original, list);
 	await sshOk(vm, `cat > ${q(rp)}`, { input: updated });
 	return { text: `edited ${rp}: ${list.length} replacement(s)` };
@@ -275,7 +313,7 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 	if (dst.vm) {
 		await sshOk(
 			dst.vm,
-			`d=${q(dst.path)}; t=$(mktemp -d); tar -xf - -C "$t"; if [ -d "$d" ]; then cp -a "$t"/. "$d"/; else mkdir -p "$(dirname "$d")"; mv "$t"/${q(srcBase)} "$d"; fi; rm -rf "$t"`,
+			`set -e; d=${q(dst.path)}; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; tar -xf - -C "$t"; if [ -d "$d" ]; then cp -a "$t"/. "$d"/; else mkdir -p "$(dirname "$d")"; mv "$t"/${q(srcBase)} "$d"; fi`,
 			{ input: tarball, signal },
 		);
 	} else {
@@ -285,11 +323,12 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 		await new Promise((res, rej) => {
 			const c = spawn("tar", ["-xf", "-", "-C", tmp]);
 			c.on("error", rej);
+			c.stdin.on("error", () => {});
 			c.on("close", (code) => (code === 0 ? res() : rej(new Error(`tar exit ${code}`))));
 			c.stdin.end(tarball);
 		});
 		await new Promise((res, rej) =>
-			execFile("sh", ["-c", 'if [ -d "$2" ]; then cp -a "$1"/. "$2"/; else mv "$1"/"$3" "$2"; fi; rm -rf "$1"', "sh", tmp, d, srcBase], (e) =>
+			execFile("sh", ["-c", 'trap \'rm -rf "$1"\' EXIT; set -e; if [ -d "$2" ]; then cp -a "$1"/. "$2"/; else mv "$1"/"$3" "$2"; fi', "sh", tmp, d, srcBase], (e) =>
 				e ? rej(e) : res(),
 			),
 		);
@@ -412,10 +451,9 @@ export async function manage({ action, name, snapshot }) {
 		case "rm":
 			return agentvmCli(["rm", need()], 120_000);
 		case "snap":
-			return agentvmCli(["snap", need(), ...(snapshot ? [snapshot] : [])], 600_000);
+			return agentvmCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000);
 		case "revert":
-			if (!snapshot) throw new Error("snapshot is required");
-			return agentvmCli(["revert", need(), snapshot], 600_000);
+			return agentvmCli(["revert", need(), assertSnap(snapshot)], 600_000);
 		case "grants":
 			return agentvmCli(["grants", need()], 60_000);
 		default:

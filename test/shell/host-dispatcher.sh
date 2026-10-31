@@ -47,5 +47,19 @@ expect "rm" "$H" rm a1
 jq -e 'has("a1") | not' "$AGENTVM_CONF/tokens.json" >/dev/null && ok "rm revokes the proxy token" || bad "token not revoked"
 expect_fail "rm of unknown VM fails" "$H" rm a1
 AGENTVM_BACKEND=nope expect_fail "unknown backend rejected" "$H" ls
+"$H" new a2 >/dev/null 2>&1
+for sn in 'x;id' '$(id)' '-rf' '../x'; do expect_fail "invalid snapshot name '$sn' rejected" "$H" snap a2 "$sn"; done
+expect_fail "non-numeric --mem rejected" "$H" new a3 --mem '1;id'
+grep -q 'content: [A-Za-z0-9+/=]*$' "$AGENTVM_FAKE_DIR/a2/user-data" && ! grep -q 'content: $' "$AGENTVM_FAKE_DIR/a2/user-data" && ok "seed base64 payloads are non-empty (portable base64)" || bad "empty seed payload"
+
+# --- concurrency: parallel creates must not lose tokens (P1 #3)
+for i in 1 2 3 4 5 6 7 8; do "$H" new "p$i" >/dev/null 2>&1 & done; wait
+[[ $(jq '[keys[] | select(startswith("p"))] | length' "$AGENTVM_CONF/tokens.json") == 8 ]] && ok "8 parallel creates → 8 tokens" || bad "lost tokens: $(jq -c 'keys' "$AGENTVM_CONF/tokens.json")"
+for i in 1 2 3 4 5 6 7 8; do "$H" rm "p$i" >/dev/null 2>&1 & done; wait
+[[ $(jq '[keys[] | select(startswith("p"))] | length' "$AGENTVM_CONF/tokens.json") == 0 ]] && ok "8 parallel removes → tokens revoked" || bad "stale tokens: $(jq -c 'keys' "$AGENTVM_CONF/tokens.json")"
+# --- failed creation rolls back its token and half-created VM
+AGENTVM_FAKE_FAIL_NEW=1 expect_fail "backend failure during new fails" "$H" new f1
+jq -e 'has("f1") | not' "$AGENTVM_CONF/tokens.json" >/dev/null && ok "failed new revokes its token" || bad "token left behind by failed new"
+[[ ! -d $AGENTVM_FAKE_DIR/f1 ]] && ok "failed new removes the half-created VM" || bad "half-created VM left"
 
 echo; echo "passed: $pass  failed: $fail"; ((fail == 0))

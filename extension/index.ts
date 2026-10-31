@@ -281,7 +281,10 @@ export default function (pi: ExtensionAPI) {
 					return text(`${out}${p.use ? `\ncurrent VM: ${name}` : ""}`);
 				}
 				case "rm": {
-					if (current?.name === p.name) setCurrent(null, ctx);
+					if (current?.name === p.name) {
+						current = { ...current, ephemeral: false }; // we delete it below; setCurrent must not race us
+						setCurrent(null, ctx);
+					}
 					return text(await core.manage(p));
 				}
 				default:
@@ -363,7 +366,10 @@ export default function (pi: ExtensionAPI) {
 						break;
 					case "rm":
 						if (!arg) throw new Error("usage: /vm rm NAME");
-						if (current?.name === arg) setCurrent(null, ctx);
+						if (current?.name === arg) {
+							current = { ...current, ephemeral: false };
+							setCurrent(null, ctx);
+						}
 						say(await core.agentvmCli(["rm", arg], 120_000));
 						break;
 					case "grant":

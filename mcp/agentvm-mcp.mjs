@@ -302,6 +302,10 @@ function serveHttp(listen) {
 		process.exit(2);
 	}
 	const allowUsers = argv.flatMap((a, i) => (a === "--allow-user" ? [argv[i + 1]] : []));
+	if (allowUsers.length && !["127.0.0.1", "::1", "localhost"].includes(hostPart)) {
+		log("refusing to start: --allow-user trusts the Tailscale-User-Login header, which is only safe when the server listens on loopback behind `tailscale serve`");
+		process.exit(2);
+	}
 	const allowOrigins = argv.flatMap((a, i) => (a === "--allow-origin" ? [argv[i + 1]] : []));
 	const sessions = new Map();
 

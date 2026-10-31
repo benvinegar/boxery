@@ -24,6 +24,8 @@ die() { echo "agentvm-host: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1' (use [a-z][a-z0-9-]*)"; }
+valid_snap() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid snapshot name '$1'"; }
+valid_num() { [[ $2 =~ ^[0-9]+$ ]] || die "$1 must be a number"; }
 MGMT_KEY=$CONF/mgmt_ed25519   # host's own passwordless key for managing VMs (works without an ssh-agent)
 host_pubkey() {
 	[[ -f $MGMT_KEY ]] || ssh-keygen -q -t ed25519 -N "" -C "agentvm-host@$(hostname)" -f "$MGMT_KEY"
@@ -46,16 +48,21 @@ load_backend() {
 }
 ensure_tokens() { mkdir -p "$CONF"; chmod 700 "$CONF"; [[ -f $CONF/tokens.json ]] || echo '{}' >"$CONF/tokens.json"; chmod 600 "$CONF/tokens.json"; }
 
-token_set() { # name secret
+# Serialize read-modify-write of tokens.json across concurrent new/rm (portable: mkdir is atomic).
+with_tokens_lock() {
+	local lock=$CONF/.tokens.lock i
+	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "tokens.json is locked ($lock); remove it if no agentvm-host is running"; done
+	local rc=0; "$@" || rc=$?
+	rmdir "$lock"
+	return $rc
+}
+_token_jq() { # jq filter args...
 	ensure_tokens
 	local tmp; tmp=$(mktemp "$CONF/.tokens.XXXX")
-	jq --arg n "$1" --arg s "$2" '.[$n]=$s' "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
+	jq "$@" "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
 }
-token_del() {
-	ensure_tokens
-	local tmp; tmp=$(mktemp "$CONF/.tokens.XXXX")
-	jq --arg n "$1" 'del(.[$n])' "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
-}
+token_set() { with_tokens_lock _token_jq --arg n "$1" --arg s "$2" '.[$n]=$s'; }
+token_del() { with_tokens_lock _token_jq --arg n "$1" 'del(.[$n])'; }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
@@ -100,7 +107,7 @@ agentvm_seed() { # NAME → path of a user-data file
 		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".agentvm/token:cred"; do
 			local f=${pair%%:*} var=${pair##*:}
 			printf '  - path: /home/agent/%s\n    owner: agent:agent\n    permissions: "0600"\n    defer: true\n    encoding: b64\n    content: %s\n' \
-				"$f" "$(printf '%s' "${!var}" | base64 -w0)"
+				"$f" "$(printf '%s' "${!var}" | base64 | tr -d '\n')"
 		done
 		cat <<-'EOF'
 			runcmd:
@@ -195,9 +202,9 @@ cmd_new() {
 	local name="" cpus=4 mem=8192 disk=40
 	while (($#)); do
 		case $1 in
-		--cpus) cpus=$2; shift 2 ;;
-		--mem) mem=$2; shift 2 ;;
-		--disk) disk=$2; shift 2 ;;
+		--cpus) valid_num "$1" "${2:-}"; cpus=$2; shift 2 ;;
+		--mem) valid_num "$1" "${2:-}"; mem=$2; shift 2 ;;
+		--disk) valid_num "$1" "${2:-}"; disk=$2; shift 2 ;;
 		-*) die "unknown flag $1" ;;
 		*) name=$1; shift ;;
 		esac
@@ -207,14 +214,19 @@ cmd_new() {
 	backend_exists "$name" && die "$name already exists"
 	backend_has_base || die "no base image; run: agentvm-host build-base"
 	local userdata; userdata=$(agentvm_seed "$name")
+	# If anything below fails (including die → exit), revoke the token minted for this VM and drop
+	# the half-created VM. EXIT, not ERR: die exits without firing ERR. Globals, not locals: the trap
+	# runs after this function's scope is gone.
+	NEW_NAME=$name NEW_DIR=$(dirname "$userdata") NEW_DONE=0
+	trap 'if [[ $NEW_DONE != 1 ]]; then token_del "$NEW_NAME" 2>/dev/null || true; if backend_exists "$NEW_NAME"; then backend_rm "$NEW_NAME" 2>/dev/null || true; fi; fi; rm -rf "$NEW_DIR"' EXIT
 	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata"
-	rm -rf "$(dirname "$userdata")"
 	local ep host port; ep=$(backend_wait_endpoint "$name"); host=${ep% *}; port=${ep#* }
 	log "$name reachable at $host:$port; waiting for ssh + cloud-init"
 	wait_ssh "$host" "$port"
 	vm_ssh_cmd "$host" "$port" 'cloud-init status --wait >/dev/null 2>&1; true'
 	vm_ssh_cmd "$host" "$port" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
 		log "warning: noVNC not answering yet"
+	NEW_DONE=1
 	log "$name ready"
 	echo "$name $host:$port"
 }
@@ -248,13 +260,13 @@ cmd_rm() {
 }
 
 cmd_snap() { # NAME [SNAPNAME]
-	valid_name "$1"; local s=${2:-snap-$(date +%Y%m%d-%H%M%S)}
+	valid_name "$1"; local s=${2:-snap-$(date +%Y%m%d-%H%M%S)}; valid_snap "$s"
 	backend_snap "$1" "$s"
 	log "snapshot $1@$s"
 }
 cmd_snaps() { valid_name "$1"; backend_snaps "$1"; }
 cmd_revert() {
-	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"
+	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"; valid_snap "$2"
 	backend_revert "$1" "$2"
 	local ep h p; ep=$(backend_wait_endpoint "$1"); h=${ep% *}; p=${ep#* }
 	wait_ssh "$h" "$p"

@@ -51,4 +51,35 @@ if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accep
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $AGENTVM_HOME/grants/w1 ]] && ! grep -q '^Host w1.avm' "$AGENTVM_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
 
+# --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9)
+"$A" new w4 >/dev/null 2>&1
+for i in 1 2 3 4 5 6; do env "V$i=x" "$A" grant w4 "env:V$i" >/dev/null 2>&1 & done; wait
+[ "$(grep -c '^env' "$AGENTVM_HOME/grants/w4")" = 6 ] && ok "6 parallel grants → 6 entries" || bad "grant store: $(cat "$AGENTVM_HOME/grants/w4")"
+for i in 1 2 3 4 5 6; do "$A" revoke w4 "env:V$i" >/dev/null 2>&1 & done; wait
+[ ! -f "$AGENTVM_HOME/grants/w4" ] && ok "6 parallel revokes → store empty" || bad "left: $(cat "$AGENTVM_HOME/grants/w4" 2>/dev/null)"
+"$A" rm w4 >/dev/null 2>&1 || true
+
+# --- regression (code review P0 #1): args must not be re-parsed by the host shell
+"$A" new w2 >/dev/null 2>&1
+rm -f "$tmp/pwned"
+"$A" snap w2 "x; touch $tmp/pwned #" >/dev/null 2>&1 || true
+[ ! -e "$tmp/pwned" ] && ok "snapshot name cannot inject commands (local mode)" || bad "INJECTION via snapshot name"
+if "$A" new w3 --cpus '1; touch '"$tmp"'/pwned' >/dev/null 2>&1; then bad "non-numeric --cpus accepted"; else ok "non-numeric --cpus rejected"; fi
+[ ! -e "$tmp/pwned" ] && ok "--cpus cannot inject" || bad "INJECTION via --cpus"
+# remote mode: an ssh stub that, like real ssh, joins argv into one string and runs it with sh -c
+cat >"$tmp/bin/sshjoin" <<STUB2
+#!/usr/bin/env bash
+while [ \$# -gt 0 ]; do case \$1 in -o|-F|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift  # destination
+exec sh -c "\$*"
+STUB2
+chmod +x "$tmp/bin/sshjoin"
+rm -f "$tmp/pwned"
+( export AGENTVM_HOST=fakehost; ssh() { "$tmp/bin/sshjoin" "$@"; }; export -f ssh
+  . /dev/stdin <<<"$(sed -n '/^quote_args()/p' "$A")"
+  cmdline="echo$(quote_args snap w2 "x; touch $tmp/pwned #")"
+  sh -c "$cmdline" >/dev/null )
+[ ! -e "$tmp/pwned" ] && ok "remote transport quotes every argument" || bad "INJECTION via remote transport"
+"$A" rm w2 >/dev/null 2>&1 || true
+
 echo; echo "passed: $pass  failed: $fail"; [ "$fail" -eq 0 ]

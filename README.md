@@ -136,12 +136,17 @@ How it works:
 
 Anything granted can be read or copied by whatever runs in the VM (an agent has root there). Grant **dev-scoped, revocable** credentials (a fine-grained GitHub token, dev `.env`), never production secrets. For keys that should never enter a VM, use the host proxy pattern (as for LLM keys).
 
+## Backends
+
+`agentvm-host init --backend libvirt` (Linux/KVM, default) or `--backend lima` (macOS, or Linux). On a Mac, run the host on the same machine and point the controller at it with `agentvm setup local`: Mac → Lima VMs, no second machine needed. Lima on Apple Silicon builds an arm64 image (Playwright's Chromium instead of Google Chrome); snapshots need `AGENTVM_LIMA_VMTYPE=qemu`. Contract and details: [host/backends/README.md](host/backends/README.md).
+
 ## Test
 
 ```bash
+npm run lint && npm test && npm run test:shell   # offline: lint, 31 unit tests, 66 shell tests (CI runs these + bash 3.2 + macOS)
 mcp/test-mcp.sh VM                # MCP protocol test (stdio + http) against a VM
 ./e2e.sh                          # from the controller: create → pi → opencode → bg task → desktop → laptop-pi extension → grants → snapshot → rm
-bash controller/test-agent-forward.sh   # offline config test (no VM)
+bash test/shell/controller-config.sh   # offline config test (no VM)
 ```
 
 ## How the credential proxy works
