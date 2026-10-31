@@ -58,7 +58,7 @@ Non-goals (for now): macOS/Windows guests, GPU passthrough, multi-host clusterin
 
 Measured: new VM ~13 s, snapshot ~2 s, revert ~6 s (including ssh wait and clock step).
 
-| `extension/index.ts` | laptop | **pi extension (built, v0.2):** `--vm NAME|new`, `/vm …`. Routes read/write/edit/bash/grep/find/ls and `!` into the VM over the agentvm ssh config (content over stdin, explicit cwd/`~` mapping, remote process-group kill on abort/timeout, local env not forwarded). Fails closed. Computer use: `vm_screenshot` (downscaled to 1280px; clicks scaled back), `vm_click/type/key/scroll` (xdotool on :1). `vm_browser`: Playwright `connectOverCDP` to Chrome on the desktop (CDP on the VM's localhost). Fan-out: `vm_manage`, `vm_exec`. Attachment saved in the session (`agentvm-attach` entries). Throwaway VMs are removed on quit. Not yet: leases, secrets push. |
+| `extension/index.ts` | laptop | **pi extension (v0.3):** explicit `vm_bash/vm_read/vm_write/vm_edit` (pi's built-in tool engines with ssh-backed operations: same truncation, edit semantics and image handling), `vm_copy` (tar over ssh, local⇄VM⇄VM), computer use (`vm_screenshot` downscaled to 1280px with clicks scaled back, `vm_click/type/key/scroll` via xdotool on :1), `vm_browser` (Playwright `connectOverCDP` to Chrome on the desktop), `vm_manage`. Optional `vm` on every tool; current VM via `--vm`/`/vm use`, saved in the session. **Built-in tools are not overridden**: they stay local, so extensions that wrap them (e.g. a custom `bash`) don't conflict, and extensions that act on the local machine stay correct. VM-vs-local is explicit in tool names and the system prompt (guidance, not enforcement). |
 
 ### Planned
 
@@ -136,11 +136,13 @@ Snapshots taken while leased default to **disk-only**, so in-RAM secrets aren't 
 
 Per-VM proxy tokens are an acknowledged exception: they live in the VM's seed ISO, disk and snapshots, are scoped to the proxy, and are rotated on every reset (new token, old one revoked).
 
-#### 4. pi extension (`agentvm`): v0.2 built; leases/secrets integration planned
+#### 4. pi extension (`agentvm`): v0.3 built (explicit vm_* tools); leases/secrets integration planned
+
+Design decision (v0.3): v0.2 *replaced* the built-in tools so they ran in the VM. It conflicted with other extensions that also register `bash` (pi allows one owner per tool name), and it couldn't redirect what other extensions do on the laptop anyway. v0.3 adds explicit `vm_*` tools and leaves the built-ins local. Trade-off: "project work goes to the VM" is guidance in the system prompt, not a guarantee. A future `--vm-strict` could hide the local mutating tools while a VM is current.
 
 - `session_start` (opt-in flag `--vm <profile>` or `/vm acquire <profile>`): acquire a lease, push secrets from the laptop's cwd, swap built-in tools to ssh-backed operations (like `examples/extensions/ssh.ts`, using `~/.agentvm/ssh_config`), show the VM in the footer.
 - Heartbeat timer to renew. `session_shutdown` releases. `/vm release [--keep]`, `/vm local`, `/vm use <name>`.
-- **Fail closed.** Routing covers every execution path: read/write/edit/bash, find/grep/ls, `!` user shell commands, and any extension that shells out. If the lease is lost or the VM is unreachable, tools **error**; they never silently run on the laptop. Paths are mapped explicitly (laptop cwd ↔ `/home/agent/project`). File transfer uses base64 over the ssh channel, not shell-interpolated strings.
+- *(v0.2 design, superseded by explicit vm_* tools)* **Fail closed.** Routing covers every execution path: read/write/edit/bash, find/grep/ls, `!` user shell commands, and any extension that shells out. If the lease is lost or the VM is unreachable, tools **error**; they never silently run on the laptop. Paths are mapped explicitly (laptop cwd ↔ `/home/agent/project`). File transfer uses base64 over the ssh channel, not shell-interpolated strings.
 - Tools: `vm_acquire`, `vm_release`, `vm_run`, `vm_prompt` (delegate to an in-VM pi; collect the log), `vm_screenshot` (`import -window root` on `DISPLAY=:1` → image result), `vm_desktop_url`.
 - **Session-aware, with explicit semantics**: `session_shutdown` on reload or session switch = **detach** (lease kept, heartbeat paused, normal expiry). `/vm release` = **reset**. `/vm release --keep` = **park**. The session stores `{vm_uuid, template_version, lease_id, intent}`. On `/resume`, the host revalidates ownership and state, and if the workspace is gone the user is told and must explicitly acquire a fresh one. Forks don't inherit a lease (they start detached).
 

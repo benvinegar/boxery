@@ -42,13 +42,14 @@ sleep 3; port=$(grep -o '127.0.0.1:[0-9]*' /tmp/agentvm-e2e-desk.$$ | head -1 | 
 check "noVNC served on localhost:$port" curl -fsS "http://127.0.0.1:$port/vnc.html"
 kill "$tun" 2>/dev/null || true; tun=""; rm -f /tmp/agentvm-e2e-desk.$$
 
-echo "== laptop pi extension (tools routed into the VM)"
+echo "== laptop pi extension (vm_* tools, with the user's other extensions loaded)"
 if command -v pi >/dev/null; then
 	ext=$(cd "$(dirname "$0")" && pwd)/extension/index.ts
 	lt=$(mktemp -d)
-	r=$(cd "$lt" && timeout 240 pi --no-session --no-extensions -e "$ext" --vm "$VM" -p "Use bash to run hostname, then write ext.txt containing EXT_OK. Reply with only the hostname." </dev/null 2>&1 | tail -1)
-	[[ $r == *"$VM"* ]] && ok "laptop pi bash ran in VM" || bad "extension bash: $r"
-	check "laptop pi write landed in VM" "$A" run "$VM" 'grep -q EXT_OK ~/project/ext.txt'
+	r=$(cd "$lt" && timeout 240 pi --no-session -e "$ext" --vm "$VM" -p "Use vm_bash to run hostname, then vm_write ext.txt containing EXT_OK, then run hostname with the local bash tool. Reply with exactly: VM=<vm hostname> LOCAL=<local hostname>" </dev/null 2>&1 | sed 's/\x1b\][^\x07]*\x07//g' | tail -1)
+	[[ $r == *"VM=$VM"* ]] && ok "vm_bash ran in VM" || bad "vm_bash: $r"
+	[[ $r == *"LOCAL=$(hostname)"* ]] && ok "built-in bash stayed local" || bad "local bash: $r"
+	check "vm_write landed in VM" "$A" run "$VM" 'grep -q EXT_OK ~/project/ext.txt'
 	[[ ! -e $lt/ext.txt ]] && ok "nothing written locally" || bad "file leaked to laptop"
 	rm -rf "$lt"
 else
