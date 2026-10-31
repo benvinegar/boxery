@@ -1,0 +1,441 @@
+// agentvm core: VM transport and tool implementations shared by the pi extension and the MCP server.
+// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using ~/.agentvm/ssh_config
+// (written by `agentvm setup`), and to the VM host through the `agentvm` controller CLI.
+import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const AGENTVM_HOME = process.env.AGENTVM_HOME ?? path.join(homedir(), ".agentvm");
+export const SSH_CONF = path.join(AGENTVM_HOME, "ssh_config");
+export const REMOTE_HOME = "/home/agent";
+export const PROJECT = `${REMOTE_HOME}/project`;
+export const CDP_PORT = 9222;
+export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
+export const MAX_BYTES = 50 * 1024;
+export const MAX_LINES = 2000;
+
+export function controllerPath() {
+	if (process.env.AGENTVM_BIN) return process.env.AGENTVM_BIN;
+	try {
+		const p = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../controller/agentvm");
+		if (existsSync(p)) return p;
+	} catch {}
+	return "agentvm";
+}
+export const AGENTVM = controllerPath();
+
+export const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const newName = () => `pi-${randomBytes(3).toString("hex")}`;
+
+export function assertName(name) {
+	if (!name || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
+	return name;
+}
+
+/** VM path for a model-supplied path: ~ → VM home, relative → VM project dir. */
+export function vmPath(p) {
+	const s = String(p ?? ".").trim() || ".";
+	if (s === "~") return REMOTE_HOME;
+	if (s.startsWith("~/")) return REMOTE_HOME + s.slice(1);
+	return path.posix.isAbsolute(s) ? path.posix.normalize(s) : path.posix.join(PROJECT, s);
+}
+
+/** Parse "vmname:/path", "local:/path" or a plain path (= current VM). */
+export function parseLoc(spec, current) {
+	const m = String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/);
+	if (m) return m[1] === "local" ? { vm: null, path: m[2] } : { vm: m[1], path: vmPath(m[2]) };
+	if (!current) throw new Error(`"${spec}" has no VM prefix and no current VM is set (use NAME:path or local:path)`);
+	return { vm: current, path: vmPath(spec) };
+}
+
+// ---------------------------------------------------------------- transport
+
+/**
+ * Run a bash script in a VM. opts: { input, signal, timeoutMs, onData }.
+ * Resolves { code, stdout: Buffer, stderr }. ssh exit 255 (transport failure) rejects.
+ */
+export function sshRun(vm, script, opts = {}) {
+	return new Promise((resolve, reject) => {
+		if (!VALID_NAME.test(vm ?? "")) return reject(new Error(`invalid VM name "${vm}"`));
+		if (!existsSync(SSH_CONF)) return reject(new Error(`agentvm not set up (${SSH_CONF} missing); run: agentvm setup user@host`));
+		const child = spawn("ssh", ["-F", SSH_CONF, "-o", "BatchMode=yes", `${vm}.avm`, `bash -c ${q(script)}`], {
+			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"],
+		});
+		const out = [];
+		let err = "";
+		let timer;
+		child.stdout.on("data", (d) => (opts.onData ? opts.onData(d) : out.push(d)));
+		child.stderr.on("data", (d) => (opts.onData ? opts.onData(d) : (err += d.toString())));
+		const onAbort = () => child.kill();
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
+		if (opts.timeoutMs) timer = setTimeout(() => child.kill(), opts.timeoutMs);
+		child.on("error", reject);
+		child.on("close", (code) => {
+			if (timer) clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
+			if (code === 255) return reject(new Error(`VM "${vm}" unreachable over ssh: ${err.trim() || "connection failed"}`));
+			resolve({ code, stdout: Buffer.concat(out), stderr: err });
+		});
+		if (opts.input != null) child.stdin.end(opts.input);
+	});
+}
+
+export async function sshOk(vm, script, opts = {}) {
+	const r = await sshRun(vm, script, opts);
+	if (r.code !== 0) throw new Error(r.stderr.trim() || `command failed (exit ${r.code})`);
+	return r.stdout;
+}
+
+export function agentvmCli(args, timeoutMs = 300_000) {
+	return new Promise((resolve, reject) => {
+		execFile(AGENTVM, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+			if (e) reject(new Error(`agentvm ${args.join(" ")}: ${(stderr || e.message).trim()}`));
+			else resolve(`${stdout}${stderr}`.trim());
+		});
+	});
+}
+
+/**
+ * Run a command in a VM as its own process group, so abort/timeout kill the remote job too.
+ * stdin is /dev/null (tools like rg would otherwise read the ssh pipe). Local env is not forwarded.
+ * Resolves { exitCode }; rejects "aborted" / "timeout:N" / transport errors.
+ */
+export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
+	return new Promise((resolve, reject) => {
+		const id = randomBytes(6).toString("hex");
+		const script = `cd ${q(cwd || PROJECT)} 2>/dev/null || cd ${q(PROJECT)} 2>/dev/null || cd ~; exec setsid -w bash -lc ${q(command)} agentvm-run-${id} </dev/null`;
+		let timedOut = false;
+		const killRemote = () =>
+			sshRun(vm, `g=$(pgrep -f -o 'agentvm-run-${id}$'); [ -n "$g" ] && { kill -TERM -- -$g; sleep 2; kill -KILL -- -$g; } 2>/dev/null; true`).catch(() => {});
+		const ac = new AbortController();
+		const onAbort = () => {
+			void killRemote();
+			ac.abort();
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const timer = timeout
+			? setTimeout(() => {
+					timedOut = true;
+					void killRemote();
+					ac.abort();
+				}, timeout * 1000)
+			: undefined;
+		sshRun(vm, script, { onData, signal: ac.signal })
+			.then((r) => {
+				if (timer) clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				if (signal?.aborted) reject(new Error("aborted"));
+				else if (timedOut) reject(new Error(`timeout:${timeout}`));
+				else resolve({ exitCode: r.code });
+			})
+			.catch((e) => {
+				if (timer) clearTimeout(timer);
+				reject(e);
+			});
+	});
+}
+
+// ---------------------------------------------------------------- truncation
+
+/** Keep the first lines/bytes (file reads). */
+export function truncHead(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
+	const lines = text.split("\n");
+	let out = [];
+	let bytes = 0;
+	let truncated = false;
+	for (const l of lines) {
+		const b = Buffer.byteLength(l) + 1;
+		if (out.length >= maxLines || bytes + b > maxBytes) {
+			truncated = true;
+			break;
+		}
+		out.push(l);
+		bytes += b;
+	}
+	return { text: out.join("\n"), truncated, shownLines: out.length, totalLines: lines.length };
+}
+
+/** Keep the last lines/bytes (command output). */
+export function truncTail(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
+	const lines = text.split("\n");
+	const out = [];
+	let bytes = 0;
+	let truncated = false;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const b = Buffer.byteLength(lines[i]) + 1;
+		if (out.length >= maxLines || bytes + b > maxBytes) {
+			truncated = true;
+			break;
+		}
+		out.unshift(lines[i]);
+		bytes += b;
+	}
+	return { text: out.join("\n"), truncated };
+}
+
+// ---------------------------------------------------------------- standalone file/shell tools (MCP; pi uses its own engines)
+
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+export async function bashTool(vm, { command, timeout }, { signal } = {}) {
+	const chunks = [];
+	let r;
+	try {
+		r = await execRemote(vm, command, PROJECT, { onData: (d) => chunks.push(d), signal, timeout: timeout ?? 120 });
+	} catch (e) {
+		if (String(e.message).startsWith("timeout:")) {
+			const t = truncTail(Buffer.concat(chunks).toString());
+			return { text: `${t.text}\n\n[command timed out after ${timeout ?? 120}s and was killed]`, isError: true };
+		}
+		throw e;
+	}
+	const t = truncTail(Buffer.concat(chunks).toString());
+	const note = t.truncated ? `[output truncated to the last ${MAX_LINES} lines / ${MAX_BYTES / 1024}KB]\n` : "";
+	return { text: `${note}${t.text || "(no output)"}\n[exit ${r.exitCode}]`, isError: r.exitCode !== 0 };
+}
+
+export async function readTool(vm, { path: p, offset, limit }) {
+	const rp = vmPath(p);
+	const mime = (await sshOk(vm, `test -r ${q(rp)} || { echo "cannot read ${rp.replace(/"/g, "")}" >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();
+	if (IMAGE_TYPES.includes(mime)) {
+		// downscale large images in the VM (ImageMagick) so they fit model limits
+		const data = await sshOk(vm, `convert ${q(rp)} -resize '1568x1568>' png:-`);
+		return { text: `${rp} (${mime}, shown as PNG)`, image: { data: data.toString("base64"), mimeType: "image/png" } };
+	}
+	const buf = await sshOk(vm, `cat -- ${q(rp)}`);
+	const all = buf.toString("utf8").split("\n");
+	const start = Math.max(1, Math.floor(offset ?? 1));
+	const slice = all.slice(start - 1, limit ? start - 1 + Math.floor(limit) : undefined).join("\n");
+	const t = truncHead(slice);
+	let text = t.text;
+	const end = start - 1 + t.shownLines;
+	if (t.truncated || (limit && end < all.length)) text += `\n\n[showing lines ${start}-${end} of ${all.length}; use offset=${end + 1} to continue]`;
+	return { text };
+}
+
+export async function writeTool(vm, { path: p, content }) {
+	const rp = vmPath(p);
+	await sshOk(vm, `f=${q(rp)}; mkdir -p "$(dirname "$f")" && cat > "$f"`, { input: content ?? "" });
+	return { text: `wrote ${Buffer.byteLength(content ?? "")} bytes to ${rp}` };
+}
+
+/** Exact-text replacement; each oldText must match exactly once in the original file; edits must not overlap. */
+export function applyEdits(original, edits) {
+	const spans = edits.map((e, i) => {
+		if (!e.oldText) throw new Error(`edits[${i}].oldText is empty`);
+		const at = original.indexOf(e.oldText);
+		if (at < 0) throw new Error(`edits[${i}].oldText not found`);
+		if (original.indexOf(e.oldText, at + 1) >= 0) throw new Error(`edits[${i}].oldText matches more than once; add surrounding context`);
+		return { at, end: at + e.oldText.length, newText: e.newText ?? "" };
+	});
+	spans.sort((a, b) => a.at - b.at);
+	for (let i = 1; i < spans.length; i++) if (spans[i].at < spans[i - 1].end) throw new Error("edits overlap");
+	let out = "";
+	let pos = 0;
+	for (const s of spans) {
+		out += original.slice(pos, s.at) + s.newText;
+		pos = s.end;
+	}
+	return out + original.slice(pos);
+}
+
+export async function editTool(vm, { path: p, edits, oldText, newText }) {
+	const rp = vmPath(p);
+	const list = Array.isArray(edits) && edits.length ? edits : oldText != null ? [{ oldText, newText }] : [];
+	if (!list.length) throw new Error("provide edits: [{oldText, newText}]");
+	const original = (await sshOk(vm, `test -w ${q(rp)} || { echo "cannot write ${rp.replace(/"/g, "")}" >&2; exit 1; }; cat -- ${q(rp)}`)).toString("utf8");
+	const updated = applyEdits(original, list);
+	await sshOk(vm, `cat > ${q(rp)}`, { input: updated });
+	return { text: `edited ${rp}: ${list.length} replacement(s)` };
+}
+
+// ---------------------------------------------------------------- copy
+
+export async function copyTool({ from, to }, { current, localCwd = process.cwd(), signal } = {}) {
+	const src = parseLoc(from, current);
+	const dst = parseLoc(to, current);
+	const localAbs = (s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
+	let tarball;
+	if (src.vm) {
+		tarball = await sshOk(src.vm, `s=${q(src.path)}; cd "$(dirname "$s")" && tar -cf - -- "$(basename "$s")"`, { signal });
+	} else {
+		const abs = localAbs(src.path);
+		tarball = await new Promise((res, rej) =>
+			execFile("tar", ["-cf", "-", "-C", path.dirname(abs), "--", path.basename(abs)], { encoding: "buffer", maxBuffer: 1 << 30 }, (e, out) =>
+				e ? rej(e) : res(out),
+			),
+		);
+	}
+	const srcBase = path.posix.basename(src.vm ? src.path : localAbs(src.path));
+	if (dst.vm) {
+		await sshOk(
+			dst.vm,
+			`d=${q(dst.path)}; t=$(mktemp -d); tar -xf - -C "$t"; if [ -d "$d" ]; then cp -a "$t"/. "$d"/; else mkdir -p "$(dirname "$d")"; mv "$t"/${q(srcBase)} "$d"; fi; rm -rf "$t"`,
+			{ input: tarball, signal },
+		);
+	} else {
+		const d = localAbs(dst.path);
+		const tmp = path.join(path.dirname(d), `.agentvm-copy-${randomBytes(4).toString("hex")}`);
+		await mkdir(tmp, { recursive: true });
+		await new Promise((res, rej) => {
+			const c = spawn("tar", ["-xf", "-", "-C", tmp]);
+			c.on("error", rej);
+			c.on("close", (code) => (code === 0 ? res() : rej(new Error(`tar exit ${code}`))));
+			c.stdin.end(tarball);
+		});
+		await new Promise((res, rej) =>
+			execFile("sh", ["-c", 'if [ -d "$2" ]; then cp -a "$1"/. "$2"/; else mv "$1"/"$3" "$2"; fi; rm -rf "$1"', "sh", tmp, d, srcBase], (e) =>
+				e ? rej(e) : res(),
+			),
+		);
+	}
+	const fmt = (l) => `${l.vm ?? "local"}:${l.vm ? l.path : localAbs(l.path)}`;
+	return { text: `copied ${fmt(src)} → ${fmt(dst)} (${tarball.length} bytes tar)` };
+}
+
+// ---------------------------------------------------------------- computer use
+
+const X = "export DISPLAY=:1; ";
+const screenScale = new Map(); // screenshot px → screen px, per VM
+
+export async function screenshot(vm, maxWidth = 1280) {
+	// geometry on stderr, PNG on stdout (downscaled for model image limits; clicks scale back)
+	const r = await sshRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' png:-`, { timeoutMs: 30_000 });
+	if (r.code !== 0) throw new Error(r.stderr.trim() || "screenshot failed");
+	const [sw, sh] = r.stderr.trim().split(/\s+/).map(Number);
+	const shotW = Math.min(sw, maxWidth);
+	const scale = sw / shotW;
+	screenScale.set(vm, scale);
+	return {
+		text: `Screen of VM "${vm}": ${sw}x${sh}, shown at ${shotW}x${Math.round(sh / scale)}. Use coordinates in this screenshot's pixels.`,
+		image: { data: r.stdout.toString("base64"), mimeType: "image/png" },
+	};
+}
+
+const toScreen = (vm, n) => Math.round(Number(n) * (screenScale.get(vm) ?? 1600 / 1280));
+
+async function after(vm, msg, want) {
+	if (want === false) return { text: msg };
+	await sleep(500);
+	const s = await screenshot(vm);
+	return { text: `${msg}\n${s.text}`, image: s.image };
+}
+
+export async function click(vm, { x, y, button, double, screenshot: shot }) {
+	const b = { left: 1, middle: 2, right: 3 }[button ?? "left"] ?? 1;
+	await sshOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click ${double ? "--repeat 2 " : ""}${b}`);
+	return after(vm, `clicked ${button ?? "left"} at (${x}, ${y})`, shot);
+}
+
+export async function typeText(vm, { text, screenshot: shot }) {
+	await sshOk(vm, `${X}xdotool type --clearmodifiers --delay 8 --file -`, { input: String(text) });
+	return after(vm, `typed ${String(text).length} chars`, shot);
+}
+
+export async function pressKeys(vm, { keys, screenshot: shot }) {
+	const list = String(keys).trim().split(/\s+/);
+	if (!list.every((k) => /^[A-Za-z0-9_+\-]+$/.test(k))) throw new Error(`invalid key spec: ${keys}`);
+	await sshOk(vm, `${X}xdotool key --clearmodifiers -- ${list.join(" ")}`);
+	return after(vm, `pressed ${list.join(" ")}`, shot);
+}
+
+export async function scroll(vm, { x, y, direction, amount, screenshot: shot }) {
+	const btn = { up: 4, down: 5, left: 6, right: 7 }[direction];
+	if (!btn) throw new Error("direction must be up, down, left or right");
+	const n = Math.max(1, Math.min(50, Math.floor(amount ?? 5)));
+	await sshOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click --repeat ${n} ${btn}`);
+	return after(vm, `scrolled ${direction} x${n}`, shot);
+}
+
+export async function browser(vm, { code, screenshot: shot, timeout }, { signal } = {}) {
+	const program = `
+import { chromium } from '/opt/agentvm/node_modules/playwright-core/index.mjs';
+const out = (o) => process.stdout.write('\\n__AVM__' + JSON.stringify(o) + '\\n');
+try {
+  const browser = await chromium.connectOverCDP('http://127.0.0.1:${CDP_PORT}');
+  const context = browser.contexts()[0] ?? await browser.newContext();
+  const page = context.pages().filter((pg) => !pg.url().startsWith('devtools:')).at(-1) ?? await context.newPage();
+  await page.bringToFront().catch(() => {});
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const result = await new AsyncFunction('page', 'context', 'browser', ${JSON.stringify(String(code))})(page, context, browser);
+  const shot = ${shot ? "(await page.screenshot()).toString('base64')" : "null"};
+  out({ ok: true, result: result === undefined ? null : result, url: page.url(), shot });
+} catch (e) { out({ ok: false, error: String(e && e.stack || e) }); }
+process.exit(0);`;
+	const script =
+		`${X}if ! curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null; then ` +
+		`setsid nohup google-chrome --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=$HOME/.config/agentvm-chrome ` +
+		`--no-first-run --no-default-browser-check --password-store=basic --start-maximized about:blank >/tmp/agentvm-chrome.log 2>&1 & ` +
+		`for i in $(seq 75); do curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null && break; sleep 0.2; done; fi; ` +
+		`cd /opt/agentvm && exec node --input-type=module`;
+	const r = await sshRun(vm, script, { input: program, signal, timeoutMs: (timeout ?? 60) * 1000 });
+	const m = r.stdout.toString().match(/__AVM__(.*)\n?$/s);
+	if (!m) throw new Error(`browser script produced no result (exit ${r.code}): ${r.stderr.slice(-2000)}`);
+	const res = JSON.parse(m[1]);
+	if (!res.ok) throw new Error(res.error);
+	return {
+		text: truncHead(`url: ${res.url}\nresult: ${JSON.stringify(res.result, null, 2)}`).text,
+		image: res.shot ? { data: res.shot, mimeType: "image/png" } : undefined,
+	};
+}
+
+// ---------------------------------------------------------------- lifecycle
+
+export async function vmExists(name) {
+	const out = await agentvmCli(["ls"], 60_000);
+	return out.split("\n").some((l) => l.split(/\s+/)[0] === name);
+}
+
+/** Make sure VM `name` exists (create it if not) and answers over ssh. */
+export async function ensureVm(name, notify = () => {}) {
+	assertName(name);
+	if (!(await vmExists(name))) {
+		notify(`agentvm: creating VM "${name}" (~15s)…`);
+		await agentvmCli(["new", name]);
+	}
+	await sshOk(name, "true", { timeoutMs: 30_000 });
+}
+
+/** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
+export async function manage({ action, name, snapshot }) {
+	const need = () => assertName(name);
+	switch (action) {
+		case "list":
+			return agentvmCli(["ls"], 60_000);
+		case "new":
+			return agentvmCli(["new", name ? need() : newName()]);
+		case "rm":
+			return agentvmCli(["rm", need()], 120_000);
+		case "snap":
+			return agentvmCli(["snap", need(), ...(snapshot ? [snapshot] : [])], 600_000);
+		case "revert":
+			if (!snapshot) throw new Error("snapshot is required");
+			return agentvmCli(["revert", need(), snapshot], 600_000);
+		case "grants":
+			return agentvmCli(["grants", need()], 60_000);
+		default:
+			throw new Error(`unknown action ${action}`);
+	}
+}
+
+// ---------------------------------------------------------------- shared prompt text
+
+export function guidance(current, { localToolsNote } = {}) {
+	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
+	if (!current)
+		return `agentvm: vm_manage lists and creates remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+	return [
+		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
+		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
+		local,
+		"The VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`).",
+		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
+		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_manage {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
+		`Servers started in the VM are reachable from the user's machine with \`agentvm forward ${current} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
+	].join("\n");
+}

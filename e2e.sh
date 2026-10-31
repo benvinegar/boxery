@@ -56,6 +56,9 @@ else
 	echo "  - pi not installed, skipping"
 fi
 
+echo "== MCP server (stdio + http)"
+if mout=$("$(cd "$(dirname "$0")" && pwd)/mcp/test-mcp.sh" "$VM" 2>&1); then ok "MCP: $(tail -1 <<<"$mout")"; else bad "MCP: $(grep '✗' <<<"$mout" | head -3)"; fi
+
 echo "== grants (env + file pushed to tmpfs, revoke removes them)"
 gtmp=$(mktemp -d); printf 'E2E_FILE_OK\n' >"$gtmp/e2e.env"
 E2E_GRANT_VAR=e2e-grant-ok "$A" grant "$VM" env:E2E_GRANT_VAR "file:$gtmp/e2e.env=project/.env" >/dev/null

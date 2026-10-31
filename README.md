@@ -65,6 +65,33 @@ Every `vm_*` tool takes an optional `vm` (default: the current VM), so one agent
 
 Leases (several laptop agents sharing a pool safely) are designed in ARCHITECTURE.md but not built yet. For now, give each pi its own VM.
 
+## Use from any MCP client (Claude Code, Cursor, opencode, pi, …)
+
+`mcp/agentvm-mcp.mjs` exposes the same 12 `vm_*` tools over MCP. No dependencies: Node 18+ and the `agentvm setup` config. The pi extension and the MCP server share `core/agentvm-core.mjs`.
+
+**A. stdio on your laptop** (recommended: full features). The server runs locally and reaches VMs over the same ssh path:
+
+```bash
+claude mcp add agentvm -- node ~/agentvm/mcp/agentvm-mcp.mjs --vm demo     # Claude Code
+pi mcp add agentvm -- node ~/agentvm/mcp/agentvm-mcp.mjs --vm demo         # pi (or use the extension)
+# Cursor / others: {"mcpServers":{"agentvm":{"command":"node","args":["~/agentvm/mcp/agentvm-mcp.mjs","--vm","demo"]}}}
+```
+
+**B. Streamable HTTP on the host, over Tailscale** (no install on clients; groundwork for shared leases):
+
+```bash
+# on the host
+export AGENTVM_MCP_TOKEN=$(openssl rand -hex 32)
+node mcp/agentvm-mcp.mjs --http 127.0.0.1:8765 --allow-user you@example.com
+tailscale serve --bg --https=8765 http://127.0.0.1:8765    # tailnet-only; never `tailscale funnel`
+# on a client
+claude mcp add --transport http agentvm https://hornet.<tailnet>.ts.net:8765/mcp --header "Authorization: Bearer $AGENTVM_MCP_TOKEN"
+```
+
+- Auth: a bearer token is required (`--no-auth` is for local testing only). `--allow-user` additionally checks the `Tailscale-User-Login` header that `tailscale serve` sets. Requests with a foreign `Origin` are rejected.
+- In mode B, "local" means the **host**: `vm_copy local:…` copies to and from the host, and grants are read from the host's env, files and ssh agent.
+- `--vm NAME` sets the default VM; otherwise the model picks one with `vm_manage {action:"use"}`. Without it, tools fail closed when no `vm` is given.
+
 ## CLI
 
 ```bash
@@ -112,6 +139,7 @@ Anything granted can be read or copied by whatever runs in the VM (an agent has 
 ## Test
 
 ```bash
+mcp/test-mcp.sh VM                # MCP protocol test (stdio + http) against a VM
 ./e2e.sh                          # from the controller: create → pi → opencode → bg task → desktop → laptop-pi extension → grants → snapshot → rm
 bash controller/test-agent-forward.sh   # offline config test (no VM)
 ```
