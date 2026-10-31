@@ -85,7 +85,8 @@ for n in p3 p4; do "$H" new "$n" >/dev/null 2>&1; "$H" pool add "$n" >/dev/null 
 for n in p1 p2; do "$H" pool add "$n" >/dev/null 2>&1; done
 for i in 1 2 3 4 5 6; do (echo "$K1" | "$H" acquire --holder "c$i" 2>"$tmp/acqerr.$i" >"$tmp/acq.$i" || true) & done; wait
 got=$(cat "$tmp"/acq.* | awk '{print $1}' | sort)
-[[ $(wc -l <<<"$got") == 4 && $(sort -u <<<"$got" | wc -l) == 4 ]] && ok "6 parallel acquires on 4 VMs → 4 distinct leases" || bad "parallel: $(tr '\n' ' ' <<<"$got") errors: $(cat "$tmp"/acqerr.* | grep -v 'leased to\|exhausted' | sort -u | tr '\n' '|')"
+# numeric comparison: BSD wc pads its count with spaces
+(( $(wc -l <<<"$got") == 4 && $(sort -u <<<"$got" | wc -l) == 4 )) && ok "6 parallel acquires on 4 VMs → 4 distinct leases" || bad "parallel: $(tr '\n' ' ' <<<"$got") errors: $(cat "$tmp"/acqerr.* | grep -v 'leased to\|exhausted' | sort -u | tr '\n' '|')"
 
 "$H" pool rm pet >/dev/null 2>&1 && bad "pool rm of a non-pool VM" || ok "pool rm rejects non-pool VMs"
 

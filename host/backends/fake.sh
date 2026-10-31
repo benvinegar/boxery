@@ -13,7 +13,7 @@ backend_exists() { [[ -d $FAKE/$1 ]]; }
 fake_port() { cat "$FAKE/$1/port"; }
 backend_new() {
 	mkdir -p "$FAKE/$1/home"
-	echo $((22000 + $(find "$FAKE" -maxdepth 2 -name port | wc -l))) >"$FAKE/$1/port"
+	local n; n=$(find "$FAKE" -maxdepth 2 -name port | wc -l); echo $((22000 + n)) >"$FAKE/$1/port"
 	[[ -z ${BOXERY_FAKE_FAIL_NEW:-} ]] || { echo running >"$FAKE/$1/state"; die "fake backend: injected failure"; }
 	echo running >"$FAKE/$1/state"; cp "$5" "$FAKE/$1/user-data"; echo "$2 $3 $4" >"$FAKE/$1/size"
 }
