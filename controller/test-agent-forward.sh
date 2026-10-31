@@ -10,11 +10,12 @@ mkdir -p "$AGENTVM_HOME" "$tmp/bin"
 printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/ssh"
 chmod +x "$tmp/bin/ssh"
 printf 'test public key\n' > "$tmp/key.pub"
+REAL_SSH=$(command -v ssh) || { echo "SKIP: no ssh client"; exit 0; }
 export PATH="$tmp/bin:$PATH"
 
 bash "$CLI" agent-forward demo on >/dev/null
-# Use real ssh -G to resolve config (fake ssh is only for setup's network calls).
-SSH=$(command -p -v ssh)
+# Use the real ssh -G to resolve config (the fake ssh on PATH only stubs setup's network calls).
+SSH=$REAL_SSH
 get_forward() { "$SSH" -F "$AGENTVM_HOME/ssh_config" -G "$1.avm" 2>/dev/null | grep '^forwardagent '; }
 [ "$(get_forward demo)" = 'forwardagent yes' ]
 [ "$(get_forward other)" = 'forwardagent no' ]
