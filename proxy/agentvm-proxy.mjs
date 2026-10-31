@@ -55,11 +55,12 @@ function authenticate(req) {
 	const parts = raw.split(".");
 	if (parts.length === 3) {
 		try {
-			cred = b64urlJson(parts[1]).avm ?? "";
+			cred = b64urlJson(parts[1])?.avm;
 		} catch {
 			return null;
 		}
 	}
+	if (typeof cred !== "string") return null;
 	const i = cred.indexOf(":");
 	if (i < 1) return null;
 	const name = cred.slice(0, i);
@@ -133,7 +134,14 @@ function log(...a) {
 	console.log(new Date().toISOString(), ...a);
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
+	handle(req, res).catch((e) => {
+		log("UNHANDLED", e?.message);
+		if (!res.headersSent) res.writeHead(500);
+		res.end();
+	});
+});
+async function handle(req, res) {
 	const started = Date.now();
 	const url = new URL(req.url, "http://x");
 	if (url.pathname === "/healthz") return res.end("ok\n");
@@ -177,7 +185,8 @@ const server = http.createServer(async (req, res) => {
 		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: String(e.message) }) + "\n");
 	}
-});
+}
+process.on("uncaughtException", (e) => log("uncaught", e?.message));
 // Refuse websocket upgrades so clients fall back to SSE.
 server.on("upgrade", (_req, sock) => sock.end("HTTP/1.1 426 Upgrade Required\r\nconnection: close\r\n\r\n"));
 server.requestTimeout = 0;

@@ -132,6 +132,11 @@ cmd_build_base() {
 		log "downloading Ubuntu 24.04 cloud image"
 		curl -fL --progress-bar -o "$CACHE/noble.img.part" "$BASE_IMG_URL" && mv "$CACHE/noble.img.part" "$CACHE/noble.img"
 	fi
+	# Existing VMs are qcow2 overlays backed by $BASE_VOL; rewriting it would corrupt them.
+	local deps; deps=$(virsh list --all --name | grep -c "^$PREFIX" || true)
+	if virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1 && ((deps > 0)); then
+		die "$deps VM(s) depend on $BASE_VOL; remove them first (versioned templates are planned, see ARCHITECTURE.md)"
+	fi
 	virsh destroy "$name" >/dev/null 2>&1 || true
 	virsh undefine "$name" >/dev/null 2>&1 || true
 	log "uploading base disk"
