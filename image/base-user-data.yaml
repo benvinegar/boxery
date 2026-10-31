@@ -74,6 +74,15 @@ write_files:
   - path: /usr/share/novnc/index.html
     content: |
       <meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&resize=remote&reconnect=1">
+  # Ubuntu restricts user namespaces by executable path. Chrome's deb has a distro profile, but
+  # Playwright's ARM64 Chromium needs its own so the browser can keep its sandbox enabled.
+  - path: /etc/apparmor.d/boxery-chromium
+    content: |
+      abi <abi/4.0>,
+      include <tunables/global>
+      profile boxery-chromium /opt/boxery/browsers/chromium-*/chrome-linux*/chrome flags=(unconfined) {
+        userns,
+      }
   # Many parallel tool calls share one multiplexed ssh connection from the laptop.
   - path: /etc/ssh/sshd_config.d/60-boxery.conf
     content: |
@@ -105,7 +114,7 @@ write_files:
         dbus-x11 x11-xserver-utils x11-utils xdotool imagemagick \
         tigervnc-standalone-server tigervnc-tools novnc websockify python3-numpy \
         fonts-dejavu-core adwaita-icon-theme-full \
-        tmux git socat curl jq ripgrep fd-find build-essential python3 python3-venv unzip ca-certificates gnupg qemu-guest-agent
+        tmux git socat curl jq ripgrep fd-find build-essential python3 python3-venv unzip ca-certificates gnupg qemu-guest-agent apparmor
       # Firefox as a real deb (not snap)
       install -d -m 0755 /etc/apt/keyrings
       curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /etc/apt/keyrings/packages.mozilla.org.asc
@@ -134,6 +143,7 @@ write_files:
         PLAYWRIGHT_BROWSERS_PATH=/opt/boxery/browsers node /opt/boxery/node_modules/playwright-core/cli.js install --with-deps chromium
         CH=$(ls -d /opt/boxery/browsers/chromium-*/chrome-linux*/chrome | head -1)
         printf '#!/bin/sh\nexec %s "$@"\n' "$CH" > /usr/local/bin/google-chrome && chmod +x /usr/local/bin/google-chrome
+        apparmor_parser -r /etc/apparmor.d/boxery-chromium
       fi
       google-chrome --version
       pi --version || true

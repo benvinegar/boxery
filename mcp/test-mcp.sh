@@ -19,7 +19,8 @@ out=$({ printf '%s\n' "$init" '{"jsonrpc":"2.0","method":"notifications/initiali
 	printf '%s\n' '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"vm_read","arguments":{"path":"mcp-test.txt"}}}' \
 	'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"vm_screenshot","arguments":{}}}' \
 	'{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"vm_bash","arguments":{"command":"exit 3"}}}' \
-	'{"jsonrpc":"2.0","id":9,"method":"nope"}'
+	'{"jsonrpc":"2.0","id":9,"method":"nope"}' \
+	'{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"vm_browser","arguments":{"code":"await page.setContent(\"<title>BROWSER_OK</title>\"); return await page.title();","screenshot":true}}}'
 	sleep 8; } | node "$S" --vm "$VM" 2>/dev/null)
 r() { jq -c "select(.id==$1)" <<<"$out"; }
 [[ $(r 1 | jq -r .result.serverInfo.name) == boxery ]] && ok initialize || bad "initialize: $(r 1)"
@@ -29,6 +30,7 @@ r() { jq -c "select(.id==$1)" <<<"$out"; }
 [[ $(r 7 | jq -r '.result.content[1].type') == image ]] && ok "vm_screenshot returns image" || bad "screenshot: $(r 7 | cut -c1-200)"
 [[ $(r 8 | jq -r .result.isError) == true ]] && ok "non-zero exit → isError" || bad "exit 3: $(r 8)"
 [[ $(r 9 | jq -r .error.code) == -32601 ]] && ok "unknown method → -32601" || bad "unknown method: $(r 9)"
+[[ $(r 10 | jq -r '.result.content[0].text') == *BROWSER_OK* && $(r 10 | jq -r '.result.content[1].type') == image ]] && ok "vm_browser controls sandboxed Chromium + screenshot" || bad "browser: $(r 10 | cut -c1-500)"
 
 echo "== http"
 port=$((20000 + RANDOM % 20000)); tok=$(openssl rand -hex 16)
