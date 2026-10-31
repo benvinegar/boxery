@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# agentvm-host: manage Ubuntu desktop VMs for coding agents on a libvirt/KVM host.
+# Runs on the Linux host. The controller (`agentvm`) calls it over ssh.
+set -euo pipefail
+
+export LIBVIRT_DEFAULT_URI=${LIBVIRT_DEFAULT_URI:-qemu:///system}
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+CONF=${AGENTVM_CONF:-$HOME/.config/agentvm}
+CACHE=${AGENTVM_CACHE:-$HOME/.cache/agentvm}
+POOL=${AGENTVM_POOL:-agentvm}
+POOL_DIR=${AGENTVM_POOL_DIR:-/var/lib/libvirt/images/agentvm}
+NET=${AGENTVM_NET:-default}
+BASE_VOL=agentvm-base.qcow2
+BASE_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+PREFIX=avm-                    # libvirt domain prefix; user-facing names omit it
+PROXY_PORT=${AGENTVM_PROXY_PORT:-8088}
+SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="${AGENTVM_CONF:-$HOME/.config/agentvm}/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+
+die() { echo "agentvm-host: $*" >&2; exit 1; }
+log() { echo "==> $*" >&2; }
+need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
+valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1' (use [a-z][a-z0-9-]*)"; }
+dom() { echo "$PREFIX$1"; }
+exists() { virsh dominfo "$(dom "$1")" >/dev/null 2>&1; }
+MGMT_KEY=$CONF/mgmt_ed25519   # host's own passwordless key for managing VMs (works without an ssh-agent)
+host_pubkey() {
+	[[ -f $MGMT_KEY ]] || ssh-keygen -q -t ed25519 -N "" -C "agentvm-host@$(hostname)" -f "$MGMT_KEY"
+	cat "$MGMT_KEY.pub"
+}
+
+upload_vol() { # file vol format
+	local f=$1 v=$2 fmt=$3
+	virsh vol-delete --pool "$POOL" "$v" >/dev/null 2>&1 || true
+	virsh vol-create-as "$POOL" "$v" "$(stat -c %s "$f")" --format "$fmt" >/dev/null
+	virsh vol-upload --pool "$POOL" "$v" "$f"
+}
+
+vm_ip() {
+	virsh domifaddr "$(dom "$1")" --source lease 2>/dev/null | awk '/ipv4/{split($4,a,"/"); print a[1]; exit}'
+}
+
+wait_ip() {
+	local ip i
+	for i in $(seq 180); do ip=$(vm_ip "$1"); [[ -n $ip ]] && { echo "$ip"; return; }; sleep 1; done
+	die "timed out waiting for $1 to get an IP"
+}
+
+wait_ssh() {
+	local i
+	for i in $(seq 180); do ssh "${SSH_OPTS[@]}" "agent@$1" true 2>/dev/null && return; sleep 2; done
+	die "timed out waiting for ssh on $1"
+}
+
+ensure_tokens() { mkdir -p "$CONF"; chmod 700 "$CONF"; [[ -f $CONF/tokens.json ]] || echo '{}' >"$CONF/tokens.json"; chmod 600 "$CONF/tokens.json"; }
+
+token_set() { # name secret
+	ensure_tokens
+	local tmp; tmp=$(mktemp "$CONF/.tokens.XXXX")
+	jq --arg n "$1" --arg s "$2" '.[$n]=$s' "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
+}
+token_del() {
+	ensure_tokens
+	local tmp; tmp=$(mktemp "$CONF/.tokens.XXXX")
+	jq --arg n "$1" 'del(.[$n])' "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_init() {
+	need virsh; need virt-install; need cloud-localds; need jq; need socat; need node; need qemu-img
+	[[ -r /dev/kvm ]] || die "/dev/kvm not accessible"
+	ensure_tokens
+	touch "$CONF/authorized_keys"; chmod 600 "$CONF/authorized_keys"
+	host_pubkey >/dev/null
+	[[ -f $CONF/proxy.env ]] || cat >"$CONF/proxy.env" <<-'EOF'
+		# Optional upstream API keys for the agentvm LLM proxy (stay on the host).
+		# ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
+		#OPENAI_API_KEY=
+		#ANTHROPIC_API_KEY=
+	EOF
+	chmod 600 "$CONF/proxy.env"
+	if ! virsh pool-info "$POOL" >/dev/null 2>&1; then
+		log "creating storage pool $POOL at $POOL_DIR"
+		virsh pool-define-as "$POOL" dir --target "$POOL_DIR" >/dev/null
+		virsh pool-build "$POOL" >/dev/null; virsh pool-start "$POOL" >/dev/null; virsh pool-autostart "$POOL" >/dev/null
+	fi
+	mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
+	ln -sf "$ROOT/host/agentvm-host" "$HOME/.local/bin/agentvm-host"
+	ln -sf "$ROOT/controller/agentvm" "$HOME/.local/bin/agentvm"
+	cat >"$HOME/.config/systemd/user/agentvm-proxy.service" <<-EOF
+		[Unit]
+		Description=agentvm LLM proxy (per-VM tokens -> host credentials)
+		[Service]
+		Environment=AGENTVM_PROXY_PORT=$PROXY_PORT
+		ExecStart=$(command -v node) $ROOT/proxy/agentvm-proxy.mjs
+		Restart=always
+		RestartSec=2
+		[Install]
+		WantedBy=default.target
+	EOF
+	cat >"$HOME/.config/systemd/user/agentvm-vsock.service" <<-EOF
+		[Unit]
+		Description=agentvm: expose LLM proxy to guests over vsock port $PROXY_PORT
+		After=agentvm-proxy.service
+		[Service]
+		ExecStart=$(command -v socat) VSOCK-LISTEN:$PROXY_PORT,reuseaddr,fork TCP:127.0.0.1:$PROXY_PORT
+		Restart=always
+		RestartSec=2
+		[Install]
+		WantedBy=default.target
+	EOF
+	systemctl --user daemon-reload
+	systemctl --user enable --now agentvm-proxy.service agentvm-vsock.service >/dev/null
+	systemctl --user restart agentvm-proxy.service agentvm-vsock.service
+	sleep 1
+	curl -fsS "127.0.0.1:$PROXY_PORT/healthz" >/dev/null && log "proxy healthy on 127.0.0.1:$PROXY_PORT (+ vsock:$PROXY_PORT)"
+	log "init done. Next: agentvm-host build-base"
+}
+
+cmd_add_key() { # pubkey on stdin
+	mkdir -p "$CONF"; touch "$CONF/authorized_keys"
+	local k; k=$(cat)
+	[[ $k == ssh-* || $k == ecdsa-* ]] || die "expected an ssh public key on stdin"
+	grep -qxF "$k" "$CONF/authorized_keys" || echo "$k" >>"$CONF/authorized_keys"
+	log "key registered ($(wc -l <"$CONF/authorized_keys") total)"
+}
+
+cmd_build_base() {
+	local name=agentvm-base-build
+	mkdir -p "$CACHE"
+	if [[ ! -f $CACHE/noble.img ]]; then
+		log "downloading Ubuntu 24.04 cloud image"
+		curl -fL --progress-bar -o "$CACHE/noble.img.part" "$BASE_IMG_URL" && mv "$CACHE/noble.img.part" "$CACHE/noble.img"
+	fi
+	virsh destroy "$name" >/dev/null 2>&1 || true
+	virsh undefine "$name" >/dev/null 2>&1 || true
+	log "uploading base disk"
+	upload_vol "$CACHE/noble.img" "$BASE_VOL" qcow2
+	virsh vol-resize --pool "$POOL" "$BASE_VOL" 20G >/dev/null
+	local tmp; tmp=$(mktemp -d)
+	printf 'instance-id: agentvm-base-%s\nlocal-hostname: agentvm-base\n' "$(date +%s)" >"$tmp/meta-data"
+	cloud-localds "$tmp/seed.iso" "$ROOT/image/base-user-data.yaml" "$tmp/meta-data"
+	upload_vol "$tmp/seed.iso" agentvm-base-seed.iso raw
+	rm -rf "$tmp"
+	virsh vol-delete --pool "$POOL" build.log >/dev/null 2>&1 || true
+	log "booting builder VM (installs XFCE, VNC, node, pi, opencode; ~5-10 min)"
+	virt-install --name "$name" --memory 8192 --vcpus 8 --osinfo ubuntu24.04 \
+		--disk "vol=$POOL/$BASE_VOL,bus=virtio" --disk "vol=$POOL/agentvm-base-seed.iso,device=cdrom" \
+		--network "network=$NET,model=virtio" --graphics none \
+		--serial "pty,log.file=$POOL_DIR/build.log" \
+		--events on_reboot=destroy --import --noautoconsole >/dev/null
+	local t=0
+	while [[ $(virsh domstate "$name" 2>/dev/null) == running ]]; do
+		sleep 10; t=$((t + 10))
+		((t % 60 == 0)) && log "still building... ${t}s"
+		((t > 2400)) && die "build timed out"
+	done
+	virsh pool-refresh "$POOL" >/dev/null
+	local blog; blog=$(mktemp)
+	virsh vol-download --pool "$POOL" build.log "$blog" >/dev/null 2>&1 || true
+	cp "$blog" "$CACHE/build.log" 2>/dev/null || true
+	virsh undefine "$name" >/dev/null
+	virsh vol-delete --pool "$POOL" agentvm-base-seed.iso >/dev/null
+	if grep -q AGENTVM_BUILD_OK "$blog"; then
+		log "base image ready: $POOL/$BASE_VOL"
+	else
+		tail -40 "$blog" >&2
+		die "base build failed; full serial log in $CACHE/build.log"
+	fi
+}
+
+cmd_new() {
+	local name="" cpus=4 mem=8192 disk=40
+	while (($#)); do
+		case $1 in
+		--cpus) cpus=$2; shift 2 ;;
+		--mem) mem=$2; shift 2 ;;
+		--disk) disk=$2; shift 2 ;;
+		-*) die "unknown flag $1" ;;
+		*) name=$1; shift ;;
+		esac
+	done
+	[[ -n $name ]] || die "usage: new NAME [--cpus N] [--mem MiB] [--disk GiB]"
+	valid_name "$name"
+	exists "$name" && die "$name already exists"
+	virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1 || die "no base image; run: agentvm-host build-base"
+	local d; d=$(dom "$name")
+
+	local secret; secret=$(openssl rand -hex 24)
+	token_set "$name" "$secret"
+	local cred="$name:$secret"
+	# The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token.
+	local fakejwt; fakejwt=$(node -e 'const b=o=>Buffer.from(JSON.stringify(o)).toString("base64url");
+		console.log(b({alg:"none",typ:"JWT"})+"."+b({avm:process.argv[1],"https://api.openai.com/auth":{chatgpt_account_id:"agentvm"}})+".agentvm")' "$cred")
+	local ollama_models; ollama_models=$(curl -fsS -m 3 127.0.0.1:11434/api/tags 2>/dev/null | jq -c '[.models[] | select(.capabilities|index("tools")) | {id:.name}]' 2>/dev/null || echo '[]')
+	local P="http://127.0.0.1:$PROXY_PORT"
+
+	local pi_models pi_settings oc_config
+	pi_models=$(jq -n --arg jwt "$fakejwt" --arg cred "$cred" --arg p "$P" --argjson om "$ollama_models" '{
+		providers: ({
+			"openai-codex": {baseUrl: ($p + "/chatgpt/backend-api"), apiKey: $jwt}
+		} + (if ($om|length) > 0 then {ollama: {baseUrl: ($p + "/ollama/v1"), api: "openai-completions", apiKey: $cred, models: $om}} else {} end))}')
+	pi_settings=$(jq -n '{transport: "sse", defaultProvider: "openai-codex", defaultModel: "gpt-6.1-sol", defaultThinkingLevel: "medium"}')
+	local oc_models oc_default
+	oc_models=$(jq -c '[.[] | {key: .id, value: {name: .id}}] | from_entries' <<<"$ollama_models")
+	oc_default=$(jq -r 'map(.id) | (if index("qwen3-coder:latest") then "qwen3-coder:latest" else .[0] end) // empty' <<<"$ollama_models")
+	oc_config=$(jq -n --arg cred "$cred" --arg p "$P" --argjson m "$oc_models" --arg def "$oc_default" '{
+		"$schema": "https://opencode.ai/config.json",
+		autoupdate: false,
+		provider: {agentvm: {npm: "@ai-sdk/openai-compatible", name: "agentvm host proxy (ollama)",
+			options: {baseURL: ($p + "/ollama/v1"), apiKey: $cred}, models: $m}}
+	} + (if $def != "" then {model: ("agentvm/" + $def)} else {} end)')
+
+	local keys; keys=$( { host_pubkey; cat "$CONF/authorized_keys" 2>/dev/null; } | sort -u | grep -v '^$')
+	local tmp; tmp=$(mktemp -d)
+	{
+		echo "#cloud-config"
+		echo "hostname: $name"
+		echo "fqdn: $name.avm"
+		echo "ssh_pwauth: false"
+		echo "ssh_authorized_keys:"
+		while IFS= read -r k; do printf '  - %s\n' "$(jq -Rn --arg k "$k" '$k')"; done <<<"$keys"
+		echo "write_files:"
+		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".agentvm/token:cred"; do
+			local f=${pair%%:*} var=${pair##*:}
+			printf '  - path: /home/agent/%s\n    owner: agent:agent\n    permissions: "0600"\n    defer: true\n    encoding: b64\n    content: %s\n' \
+				"$f" "$(printf '%s' "${!var}" | base64 -w0)"
+		done
+		cat <<-'EOF'
+			runcmd:
+			  - [bash, -c, "chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@agentvm; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'"]
+		EOF
+	} >"$tmp/user-data"
+	printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$name" "$(date +%s)" "$name" >"$tmp/meta-data"
+	cloud-localds "$tmp/seed.iso" "$tmp/user-data" "$tmp/meta-data"
+	upload_vol "$tmp/seed.iso" "$d-seed.iso" raw
+	rm -rf "$tmp"
+
+	log "creating $name (${cpus} vCPU, ${mem} MiB, ${disk} GiB overlay on $BASE_VOL)"
+	virsh vol-create-as "$POOL" "$d.qcow2" "${disk}G" --format qcow2 \
+		--backing-vol "$BASE_VOL" --backing-vol-format qcow2 >/dev/null
+	virt-install --name "$d" --memory "$mem" --vcpus "$cpus" --osinfo ubuntu24.04 \
+		--disk "vol=$POOL/$d.qcow2,bus=virtio" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
+		--network "network=$NET,model=virtio" \
+		--vsock cid.auto=yes \
+		--graphics none --console pty,target_type=serial \
+		--channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
+		--metadata "description=agentvm $name" \
+		--import --noautoconsole >/dev/null
+	virsh autostart "$d" >/dev/null 2>&1 || true
+	local ip; ip=$(wait_ip "$name")
+	log "$name has IP $ip; waiting for ssh + cloud-init"
+	wait_ssh "$ip"
+	ssh "${SSH_OPTS[@]}" "agent@$ip" 'cloud-init status --wait >/dev/null 2>&1; true'
+	ssh "${SSH_OPTS[@]}" "agent@$ip" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
+		log "warning: noVNC not answering yet"
+	log "$name ready"
+	echo "$name $ip"
+}
+
+cmd_ls() {
+	printf '%-16s %-10s %-16s %s\n' NAME STATE IP DISK
+	virsh list --all --name | grep "^$PREFIX" | while read -r d; do
+		local n=${d#"$PREFIX"}
+		printf '%-16s %-10s %-16s %s\n' "$n" "$(virsh domstate "$d" | head -1)" "$(vm_ip "$n")" \
+			"$(virsh vol-info --pool "$POOL" "$d.qcow2" 2>/dev/null | awk '/Allocation/{print $2$3}')"
+	done
+}
+
+cmd_ip() { valid_name "$1"; exists "$1" || die "no such vm: $1"; local ip; ip=$(vm_ip "$1"); [[ -n $ip ]] || die "$1 has no IP (stopped?)"; echo "$ip"; }
+
+# Used as an ssh ProxyCommand by controllers: `ssh host agentvm-host connect NAME`.
+cmd_connect() {
+	local n=${1%.avm} port=${2:-22}
+	valid_name "$n"
+	local ip; ip=$(cmd_ip "$n")
+	exec nc "$ip" "$port"
+}
+
+cmd_start() { valid_name "$1"; virsh start "$(dom "$1")" >/dev/null; wait_ip "$1" >/dev/null; log "$1 started"; }
+cmd_stop() { valid_name "$1"; virsh shutdown "$(dom "$1")" >/dev/null; log "$1 shutting down"; }
+
+cmd_rm() {
+	valid_name "$1"; local d; d=$(dom "$1")
+	exists "$1" || die "no such vm: $1"
+	virsh destroy "$d" >/dev/null 2>&1 || true
+	virsh snapshot-list "$d" --name 2>/dev/null | while read -r s; do if [[ -n $s ]]; then virsh snapshot-delete "$d" "$s" >/dev/null; fi; done
+	virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null
+	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null 2>&1 || true
+	virsh vol-delete --pool "$POOL" "$d-seed.iso" >/dev/null 2>&1 || true
+	token_del "$1"
+	log "$1 removed (proxy token revoked)"
+}
+
+cmd_snap() { # NAME [SNAPNAME]
+	valid_name "$1"; local s=${2:-snap-$(date +%Y%m%d-%H%M%S)}
+	timeout 600 virsh snapshot-create-as "$(dom "$1")" "$s" --atomic >/dev/null || { virsh resume "$(dom "$1")" >/dev/null 2>&1; die "snapshot failed"; }
+	log "snapshot $1@$s"
+}
+cmd_snaps() { valid_name "$1"; virsh snapshot-list "$(dom "$1")"; }
+cmd_revert() {
+	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"
+	virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null
+	local ip; ip=$(wait_ip "$1"); wait_ssh "$ip"
+	# Guest clock resumes from snapshot time; step it to host time (guest agent lacks guest-set-time on Ubuntu).
+	ssh "${SSH_OPTS[@]}" "agent@$ip" "sudo date -u -s @$(date -u +%s) >/dev/null" || true
+	log "$1 reverted to $2"
+}
+
+cmd_proxy_log() { journalctl --user -u agentvm-proxy -n "${1:-30}" --no-pager -o cat; }
+
+usage() {
+	cat <<-EOF
+		agentvm-host — Ubuntu desktop VMs for coding agents (libvirt/KVM)
+
+		  init                      install proxy services, storage pool, symlinks
+		  build-base                build the golden desktop image (one-time)
+		  add-key < key.pub         authorize a controller's ssh key for new VMs
+		  new NAME [--cpus N --mem MiB --disk GiB]
+		  ls | ip NAME | start NAME | stop NAME | rm NAME
+		  snap NAME [SNAP] | snaps NAME | revert NAME SNAP
+		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
+		  proxy-log [N]             recent LLM proxy requests
+	EOF
+}
+
+c=${1:-help}; shift || true
+case $c in
+init) cmd_init ;;
+build-base) cmd_build_base ;;
+add-key) cmd_add_key ;;
+new) cmd_new "$@" ;;
+ls | list) cmd_ls ;;
+ip) cmd_ip "$@" ;;
+connect) cmd_connect "$@" ;;
+start) cmd_start "$@" ;;
+stop) cmd_stop "$@" ;;
+rm | delete) cmd_rm "$@" ;;
+snap) cmd_snap "$@" ;;
+snaps) cmd_snaps "$@" ;;
+revert) cmd_revert "$@" ;;
+proxy-log) cmd_proxy_log "$@" ;;
+help | -h | --help) usage ;;
+*) usage; exit 1 ;;
+esac
