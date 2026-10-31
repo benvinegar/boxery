@@ -20,7 +20,18 @@ warn() { echo "agentvm: $*" >&2; }
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
 need_host() { [ -n "$HOST" ] || die "not configured; run: agentvm setup user@host"; }
-h() { need_host; ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN $*"; }
+# HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
+is_local() { [ "$HOST" = local ]; }
+local_host_bin() { case $HOST_BIN in "~/"*) echo "$HOME/${HOST_BIN#\~/}" ;; *) echo "$HOST_BIN" ;; esac; }
+h() {
+	need_host
+	if is_local; then "$(local_host_bin)" "$@"
+	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN $*"; fi
+}
+h_stdin() { # like h, but passes stdin through (for add-key)
+	if is_local; then "$(local_host_bin)" "$@"
+	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN $*"; fi
+}
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.
 drop_master() { [ -n "${1:-}" ] && ssh -F "$SSH_CONF" -O exit "$1.avm" >/dev/null 2>&1 || true; }
@@ -50,7 +61,8 @@ write_ssh_config() {
 		echo "Host *.avm"
 		echo "  ForwardAgent no"
 		echo "  User agent"
-		echo "  ProxyCommand ssh -o LogLevel=ERROR $HOST $HOST_BIN connect %h %p"
+		if is_local; then echo "  ProxyCommand $(local_host_bin) connect %h %p"
+		else echo "  ProxyCommand ssh -o LogLevel=ERROR $HOST $HOST_BIN connect %h %p"; fi
 		echo "  StrictHostKeyChecking no"
 		echo "  UserKnownHostsFile /dev/null"
 		echo "  LogLevel ERROR"
@@ -65,7 +77,7 @@ write_ssh_config() {
 }
 
 cmd_setup() {
-	[ $# -ge 1 ] || die "usage: agentvm setup user@host [--key ~/.ssh/id_ed25519.pub]"
+	[ $# -ge 1 ] || die "usage: agentvm setup user@host|local [--key ~/.ssh/id_ed25519.pub]"
 	HOST=$1; shift
 	pub=""
 	while [ $# -gt 0 ]; do case $1 in --key) pub=$2; shift 2 ;; *) die "unknown flag $1" ;; esac; done
@@ -74,10 +86,16 @@ cmd_setup() {
 	IDENTITY=${pub%.pub}
 	mkdir -p "$CONF_DIR"
 	printf 'HOST=%q\nHOST_BIN=%q\nIDENTITY=%q\n' "$HOST" "$HOST_BIN" "$IDENTITY" >"$CONF_FILE"
-	echo "==> checking ssh to $HOST"
-	ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run agentvm-host init?)"
+	if is_local; then
+		echo "==> local mode: the VM host is this machine"
+		[ -x "$(local_host_bin)" ] || die "$(local_host_bin) not found; run host/agentvm-host init here first"
+		"$(local_host_bin)" help >/dev/null || die "cannot run $(local_host_bin)"
+	else
+		echo "==> checking ssh to $HOST"
+		ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run agentvm-host init?)"
+	fi
 	echo "==> registering $pub with host (applies to VMs created from now on)"
-	ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN add-key" <"$pub"
+	h_stdin add-key <"$pub"
 	write_ssh_config
 	if [ -f "$HOME/.ssh/config" ] && grep -qF "Include $SSH_CONF" "$HOME/.ssh/config"; then :; else
 		echo "==> add this line to the TOP of ~/.ssh/config so 'ssh NAME.avm', VS Code, Zed etc. work:"
@@ -381,7 +399,8 @@ usage() {
 	cat <<-'EOF'
 		agentvm — remote desktop VMs for coding agents
 
-		setup user@host [--key K.pub]   configure host + register your ssh key
+		setup user@host|local [--key K.pub]
+		                                configure the VM host (local = this machine) + register your ssh key
 		new NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
 		ls                              list VMs (with their grants)
 		rm NAME                         destroy VM (revokes its LLM token)
