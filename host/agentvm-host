@@ -9,8 +9,13 @@ resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case 
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
 CONF=${AGENTVM_CONF:-$HOME/.config/agentvm}
 CACHE=${AGENTVM_CACHE:-$HOME/.cache/agentvm}
+# Settings persisted by `init` (backend, proxy port/unit). Explicit env vars win over the file.
+if [ -f "$CONF/host.env" ]; then
+	while IFS='=' read -r k v; do
+		case $k in AGENTVM_BACKEND | AGENTVM_PROXY_PORT | AGENTVM_PROXY_UNIT) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+	done <"$CONF/host.env"
+fi
 PROXY_PORT=${AGENTVM_PROXY_PORT:-8088}
-[ -f "$CONF/host.env" ] && . "$CONF/host.env"   # persisted by init: AGENTVM_BACKEND=…
 BACKEND=${AGENTVM_BACKEND:-libvirt}
 PROXY_UNIT=${AGENTVM_PROXY_UNIT:-agentvm-proxy}   # override to run a second agentvm install side by side
 SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="${AGENTVM_CONF:-$HOME/.config/agentvm}/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)

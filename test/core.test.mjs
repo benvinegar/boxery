@@ -1,0 +1,87 @@
+// Unit tests for core/agentvm-core.mjs pure helpers. Run: node --test test/
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import * as core from "../core/agentvm-core.mjs";
+
+test("vmPath maps relative, ~ and absolute paths into the VM", () => {
+	assert.equal(core.vmPath("src/a.ts"), "/home/agent/project/src/a.ts");
+	assert.equal(core.vmPath("."), "/home/agent/project");
+	assert.equal(core.vmPath(undefined), "/home/agent/project");
+	assert.equal(core.vmPath("  "), "/home/agent/project");
+	assert.equal(core.vmPath("~"), "/home/agent");
+	assert.equal(core.vmPath("~/x/y"), "/home/agent/x/y");
+	assert.equal(core.vmPath("/etc/hosts"), "/etc/hosts");
+	assert.equal(core.vmPath("/a/b/../c"), "/a/c");
+	assert.equal(core.vmPath("../outside"), "/home/agent/outside");
+});
+
+test("parseLoc understands local:, NAME: and bare paths", () => {
+	assert.deepEqual(core.parseLoc("local:./x", "demo"), { vm: null, path: "./x" });
+	assert.deepEqual(core.parseLoc("web:src", "demo"), { vm: "web", path: "/home/agent/project/src" });
+	assert.deepEqual(core.parseLoc("notes.md", "demo"), { vm: "demo", path: "/home/agent/project/notes.md" });
+	assert.throws(() => core.parseLoc("notes.md", undefined), /no VM prefix/);
+	// Invalid VM-name prefixes are treated as part of a bare path, not as a VM.
+	assert.deepEqual(core.parseLoc("C:/x", "demo"), { vm: "demo", path: "/home/agent/project/C:/x" });
+});
+
+test("assertName enforces the VM name grammar", () => {
+	for (const ok of ["a", "demo", "web-2", "a".repeat(31)]) assert.equal(core.assertName(ok), ok);
+	for (const bad of ["", "Demo", "1x", "a b", "a;b", "../x", "a".repeat(32), "x.avm", undefined, null])
+		assert.throws(() => core.assertName(bad), /invalid VM name/);
+});
+
+test("q quotes safely for bash", async () => {
+	const { execFileSync } = await import("node:child_process");
+	for (const s of ["plain", "it's", "a b", "$(rm -rf /)", "`x`", "\\n", "'\"'", "", "ünïcødé"]) {
+		const out = execFileSync("bash", ["-c", `printf %s ${core.q(s)}`]).toString();
+		assert.equal(out, s);
+	}
+});
+
+test("applyEdits: exact single-match replacement", () => {
+	assert.equal(core.applyEdits("a b c", [{ oldText: "b", newText: "B" }]), "a B c");
+	assert.equal(
+		core.applyEdits("one two three", [
+			{ oldText: "three", newText: "3" },
+			{ oldText: "one", newText: "1" },
+		]),
+		"1 two 3",
+	);
+	assert.equal(core.applyEdits("x", [{ oldText: "x", newText: "" }]), "");
+	assert.equal(core.applyEdits("$&", [{ oldText: "$&", newText: "$1" }]), "$1"); // no regex replacement semantics
+});
+
+test("applyEdits: rejects missing, ambiguous, empty and overlapping edits", () => {
+	assert.throws(() => core.applyEdits("abc", [{ oldText: "z", newText: "" }]), /not found/);
+	assert.throws(() => core.applyEdits("aa", [{ oldText: "a", newText: "" }]), /more than once/);
+	assert.throws(() => core.applyEdits("abc", [{ oldText: "", newText: "x" }]), /empty/);
+	assert.throws(
+		() =>
+			core.applyEdits("abcdef", [
+				{ oldText: "abcd", newText: "" },
+				{ oldText: "cdef", newText: "" },
+			]),
+		/overlap/,
+	);
+});
+
+test("truncHead keeps the beginning within line and byte limits", () => {
+	const t = core.truncHead("a\nb\nc\nd", 2);
+	assert.deepEqual([t.text, t.truncated, t.shownLines, t.totalLines], ["a\nb", true, 2, 4]);
+	assert.equal(core.truncHead("x".repeat(10), 100, 5).truncated, true);
+	assert.equal(core.truncHead("short").truncated, false);
+});
+
+test("truncTail keeps the end (command output)", () => {
+	const t = core.truncTail("1\n2\n3\n4", 2);
+	assert.deepEqual([t.text, t.truncated], ["3\n4", true]);
+	assert.equal(core.truncTail("ok").text, "ok");
+});
+
+test("guidance mentions the current VM and the local/VM split", () => {
+	const g = core.guidance("demo");
+	assert.match(g, /"demo"/);
+	assert.match(g, /vm_bash/);
+	assert.match(g, /LOCAL machine/);
+	assert.match(core.guidance(null), /vm_manage/);
+});

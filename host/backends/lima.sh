@@ -139,7 +139,9 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
 	# authorized keys (host mgmt key + registered controller keys), hostname, then the runcmd steps.
 	awk '/^ssh_authorized_keys:/{f=1;next} f&&/^  - /{sub(/^  - /,""); gsub(/^"|"$/,""); print; next} f{f=0}' "$userdata" |
 		ssh -F "$sshcfg" "lima-$i" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys; sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys'
-	ssh -F "$sshcfg" "lima-$i" "sudo hostnamectl set-hostname $(printf %q "$name"); sudo systemctl restart agentvm-llm.service;
+	# Same as the libvirt cloud-config's runcmd: everything under the agent's home belongs to the agent
+	# (write_files creates parent dirs such as ~/.pi/agent as root).
+	ssh -F "$sshcfg" "lima-$i" "sudo chown -R agent:agent /home/agent; sudo hostnamectl set-hostname $(printf %q "$name"); sudo systemctl restart agentvm-llm.service;
 		cd ~ && git config --global user.name agent && git config --global user.email agent@agentvm && git config --global init.defaultBranch main;
 		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start agentvm-vnc agentvm-desktop agentvm-novnc 2>/dev/null || true"
 }

@@ -1,10 +1,17 @@
 {
   "name": "agentvm",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "Self-hosted desktop VMs for coding agents; pi extension routes a laptop pi's tools into them",
+  "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:shell": "bash test/shell/run.sh",
+    "lint": "bash test/lint.sh"
+  },
   "pi": {
     "extensions": ["./extension/index.ts"]
   }

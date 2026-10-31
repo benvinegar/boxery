@@ -17,7 +17,7 @@ t0=$(date +%s); "$A" new "$VM" >/dev/null; ok "created in $(($(date +%s) - t0))s
 echo "== guest basics"
 out=$("$A" run "$VM" 'pi --version; opencode --version; systemctl --user is-active agentvm-vnc agentvm-desktop agentvm-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
 grep -q '^active$' <<<"$out" && ok "desktop services active" || bad "desktop services: $out"
-grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable over vsock" || bad "proxy"
+grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable from the guest" || bad "proxy"
 
 echo "== isolation"
 code=$("$A" run "$VM" 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer x:y" 127.0.0.1:8088/ollama/v1/models')
