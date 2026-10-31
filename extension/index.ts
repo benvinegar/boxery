@@ -188,6 +188,10 @@ function fileOps(vm: string) {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag("vm", { description: 'agentvm: current VM NAME (created if missing), or "new" for a throwaway VM', type: "string" });
+	pi.registerFlag("vm-grant", {
+		description: "agentvm: comma-separated grants for the --vm VM, e.g. ssh-agent,env:GH_TOKEN,file:.env (see `agentvm grant`)",
+		type: "string",
+	});
 
 	let current: { name: string; ephemeral: boolean } | null = null;
 	let desktopProc: ChildProcess | null = null;
@@ -498,13 +502,25 @@ process.exit(0);`;
 		ctx?.ui?.setStatus?.("agentvm", c ? (ctx.ui.theme?.fg?.("accent", `⛁ vm:${c.name}`) ?? `vm:${c.name}`) : undefined);
 	}
 
-	async function useVm(name: string, ctx: any, ephemeral = false) {
+	/** Grants (ssh-agent / env / file) are owned by the controller CLI; the extension just asks it to apply them. */
+	async function applyGrants(name: string, ctx: any, specs: string[] = []) {
+		if (specs.length) {
+			const out = await agentvmCli(["grant", name, ...specs], 120_000);
+			ctx?.ui?.notify?.(`agentvm: ${out.split("\n").filter((l) => !l.startsWith("==> granted")).join(" ").replace(/==> /g, "")}`, "info");
+		} else {
+			// Re-push env/file values (the VM keeps them in tmpfs; a reboot clears them). Cheap no-op without grants.
+			await agentvmCli(["grants", name, "apply", "--quiet"], 120_000).catch((e) => ctx?.ui?.notify?.(`agentvm: ${e.message}`, "warning"));
+		}
+	}
+
+	async function useVm(name: string, ctx: any, ephemeral = false, grants: string[] = []) {
 		if (!VALID_NAME.test(name)) throw new Error(`invalid VM name "${name}"`);
 		if (!(await vmExists(name))) {
 			ctx?.ui?.notify?.(`agentvm: creating VM "${name}" (~15s)…`, "info");
 			await agentvmCli(["new", name]);
 		}
 		await sshOk(name, "true", { timeoutMs: 30_000 });
+		await applyGrants(name, ctx, grants);
 		setCurrent({ name, ephemeral }, ctx);
 	}
 
@@ -514,7 +530,8 @@ process.exit(0);`;
 		name: "vm_manage",
 		label: "vm manage",
 		description:
-			"Manage agentvm VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none. " +
+			"Manage agentvm VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
+			"`grants` shows what the VM may access from the user's machine (ssh-agent, env vars, files). Only the user can add or remove grants (`agentvm grant`, or pi --vm-grant). " +
 			"`use` makes NAME the current VM (default for all vm_* tools); `new` creates (and, with use=true, selects) a VM; `none` clears the current VM.",
 		parameters: Type.Object({
 			action: Type.String(),
@@ -552,6 +569,8 @@ process.exit(0);`;
 				case "none":
 					setCurrent(null, ctx);
 					return text("no current VM");
+				case "grants":
+					return text(await agentvmCli(["grants", need()], 60_000));
 				default:
 					throw new Error(`unknown action ${p.action}`);
 			}
@@ -564,7 +583,8 @@ process.exit(0);`;
 		const flag = pi.getFlag("vm") as string | undefined;
 		try {
 			if (flag) {
-				await (flag === "new" ? useVm(newName(), ctx, true) : useVm(flag, ctx));
+				const grants = String(pi.getFlag("vm-grant") ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+				await (flag === "new" ? useVm(newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
 				ctx.ui?.notify?.(`agentvm: current VM "${current!.name}". vm_* tools work there; built-in tools stay local.`, "info");
 				return;
 			}
@@ -592,6 +612,7 @@ process.exit(0);`;
 					"The built-in bash, read, write, edit, grep, find and ls tools act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.",
 					"The VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`).",
 					"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
+					"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_manage {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 					`Servers started in the VM are reachable from the user's machine with \`agentvm forward ${current.name} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
 				].join("\n")
 			: "agentvm is available: vm_manage creates and lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, …, vm_browser) operate them (pass `vm`). The built-in tools act on the local machine.";
@@ -600,9 +621,9 @@ process.exit(0);`;
 	// ------------------------------------------------------------ /vm command
 
 	pi.registerCommand("vm", {
-		description: "agentvm: /vm [use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME]]",
+		description: "agentvm: /vm [use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants]",
 		handler: async (args, ctx) => {
-			const [sub, arg] = (args ?? "").trim().split(/\s+/);
+			const [sub, arg, ...more] = (args ?? "").trim().split(/\s+/);
 			const say = (m: string, lvl = "info") => ctx.ui.notify(m, lvl as any);
 			try {
 				switch (sub || "status") {
@@ -632,6 +653,18 @@ process.exit(0);`;
 						if (!arg) throw new Error("usage: /vm rm NAME");
 						if (current?.name === arg) setCurrent(null, ctx);
 						say(await agentvmCli(["rm", arg], 120_000));
+						break;
+					case "grant":
+					case "revoke": {
+						if (!current) throw new Error("no current VM (/vm use NAME first)");
+						const specs = [arg, ...more].filter(Boolean);
+						if (!specs.length) throw new Error(`usage: /vm ${sub} ssh-agent | env:VAR | file:PATH[=REMOTE] …`);
+						say(await agentvmCli([sub, current.name, ...specs], 120_000));
+						break;
+					}
+					case "grants":
+						if (!current && !arg) throw new Error("usage: /vm grants [NAME]");
+						say(await agentvmCli(["grants", arg || current!.name], 60_000));
 						break;
 					case "desktop": {
 						const name = arg || current?.name;

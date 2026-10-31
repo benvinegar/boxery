@@ -84,30 +84,36 @@ agentvm rm demo
 
 VS Code / Cursor / Zed: once the `Include` line is in place, connect via Remote-SSH to `demo.avm`.
 
-### GitHub authentication via your local SSH agent
+### Grants: give a VM access to your SSH agent, env vars, and files
 
-Forwarding is off by default. For a trusted VM, opt in with:
+Off by default, per VM, controlled from your machine:
 
 ```bash
-agentvm agent-forward demo on
-# When no VM commands are running, close the old shared connection:
-ssh -F ~/.agentvm/ssh_config -O exit demo.avm
-agentvm run demo 'ssh-add -l'
+agentvm grant demo ssh-agent                         # git over ssh (git@github.com:…) with your keys
+agentvm grant demo env:GH_TOKEN --cmd 'gh auth token' # value from a command…
+agentvm grant demo env:NPM_TOKEN                     # …or from your current environment
+agentvm grant demo file:.env                         # → /home/agent/project/.env
+agentvm grant demo file:~/.npmrc=.npmrc              # remote paths are relative to /home/agent
+agentvm grants demo                                  # list; `agentvm ls` shows them too
+agentvm revoke demo env:GH_TOKEN                     # or: revoke demo all
+agentvm new web --grant ssh-agent --grant file:.env  # at creation
+pi --vm demo --vm-grant ssh-agent,env:GH_TOKEN,file:.env
 ```
 
-The next connection forwards your loaded local SSH agent, including for `vm_bash`.
-Use an SSH Git remote (`git@github.com:OWNER/REPO.git`); your key must be registered
-with GitHub. Verify GitHub's host fingerprint on first connection. Private keys
-are not copied, but VM processes can request authentication while connected.
-Forwarding persists across `agentvm setup`; disable with `agentvm agent-forward demo off`
-and close the shared connection again. Existing separate SSH connections must also
-be closed. Git commit name/email are configured separately. Detached tmux jobs
-may retain a stale agent socket after reconnecting and need restarting.
+How it works:
+
+- **ssh-agent**: `ForwardAgent yes` for that VM only. Your private keys never leave your machine, but processes in the VM can ask your agent to sign while you're connected.
+- **env / file**: the local store (`~/.agentvm/grants/NAME`) keeps **names and paths only**. Values are read when grants are applied, then pushed over ssh into `/run/user/<uid>/agentvm` in the VM: tmpfs, so they're gone on reboot and never written to the VM's disk. Env vars are sourced by login and interactive shells (and `vm_bash`). Files are symlinked into place and added to `.git/info/exclude`.
+- Grants are re-applied on `grant`/`revoke`, `new`, `start`, `revert`, `attach`, `ssh`, and when pi selects the VM. Each apply reconciles the VM to exactly the current grants, so revoked items are deleted.
+- `agentvm agent-forward NAME on|off` is kept as an alias for `grant/revoke NAME ssh-agent`.
+
+Anything granted can be read or copied by whatever runs in the VM (an agent has root there). Grant **dev-scoped, revocable** credentials (a fine-grained GitHub token, dev `.env`), never production secrets. For keys that should never enter a VM, use the host proxy pattern (as for LLM keys).
 
 ## Test
 
 ```bash
-./e2e.sh      # from the controller: create → pi → opencode → bg task → desktop → laptop-pi extension → snapshot → rm (13 checks)
+./e2e.sh                          # from the controller: create → pi → opencode → bg task → desktop → laptop-pi extension → grants → snapshot → rm
+bash controller/test-agent-forward.sh   # offline config test (no VM)
 ```
 
 ## How the credential proxy works

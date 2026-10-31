@@ -56,6 +56,16 @@ else
 	echo "  - pi not installed, skipping"
 fi
 
+echo "== grants (env + file pushed to tmpfs, revoke removes them)"
+gtmp=$(mktemp -d); printf 'E2E_FILE_OK\n' >"$gtmp/e2e.env"
+E2E_GRANT_VAR=e2e-grant-ok "$A" grant "$VM" env:E2E_GRANT_VAR "file:$gtmp/e2e.env=project/.env" >/dev/null
+check "env grant visible in login shell" "$A" run "$VM" 'bash -lc "test \"\$E2E_GRANT_VAR\" = e2e-grant-ok"'
+check "file grant linked into project (tmpfs)" "$A" run "$VM" 'grep -q E2E_FILE_OK ~/project/.env && readlink ~/project/.env | grep -q ^/run/user/'
+check "file grant git-excluded" "$A" run "$VM" 'cd ~/project && ! git status --porcelain | grep -q "\.env"'
+"$A" revoke "$VM" all >/dev/null
+check "revoke removed env + file" "$A" run "$VM" 'bash -lc "test -z \"\${E2E_GRANT_VAR:-}\"" && ! test -e ~/project/.env'
+rm -rf "$gtmp"
+
 echo "== snapshot / revert"
 "$A" snap "$VM" e2e >/dev/null
 "$A" run "$VM" 'rm -f ~/project/answer.txt'

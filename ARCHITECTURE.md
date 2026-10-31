@@ -121,7 +121,11 @@ Rule: **the `clean` snapshot never contains secrets.** Everything that needs sec
 
 Example profiles: `plain` (just the desktop), `modem` (Docker, Node 24, pnpm, compose Postgres built from `docker/postgres`, migrated and seeded `modem_dev` + `modem_test`; start = `pnpm dev:dashboard`).
 
-#### 3. Secrets
+#### 3. Secrets: v0 built as **grants** (see README)
+
+`agentvm grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]`. The controller stores names and paths only; values are read at apply time and pushed into the VM's `/run/user/<uid>/agentvm` tmpfs, then reconciled on every apply (grant/revoke, new, start, revert, attach, ssh, pi selecting the VM). ssh-agent = per-VM `ForwardAgent`. This implements the "laptop pushes on acquire" row below for env vars and files. Still planned: leases calling it on acquire, the host-side 1Password fallback, and per-grant approval prompts.
+
+
 
 | Kind | Where it lives | How it gets there |
 |---|---|---|
