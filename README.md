@@ -23,7 +23,7 @@ laptop (macOS/Linux)                    Linux host (KVM + libvirt)
 Needs: KVM, libvirt (`qemu:///system`, user in `libvirt` group), `virt-install`, `cloud-localds` (cloud-image-utils), `socat`, `jq`, `node` ≥ 20, `nc`. User systemd with linger is recommended so the proxy runs while you're logged out (`loginctl enable-linger`).
 
 ```bash
-git clone … ~/Projects/agentvm && cd ~/Projects/agentvm
+git clone git@github.com:benvinegar/agentvm.git ~/Projects/agentvm && cd ~/Projects/agentvm
 ./host/agentvm-host init          # storage pool, proxy + vsock user services, ~/.local/bin symlinks
 ./host/agentvm-host build-base    # golden image: XFCE, VNC, Firefox, node 22, pi, opencode (~3 min)
 pi   # then /login → ChatGPT, if you haven't already; the proxy reuses ~/.pi/agent/auth.json
@@ -36,7 +36,7 @@ The laptop has to be able to `ssh you@host`: add its key to the host's `~/.ssh/a
 ## Controller setup (macOS or Linux)
 
 ```bash
-git clone … ~/agentvm && ln -s ~/agentvm/controller/agentvm /usr/local/bin/agentvm   # or anywhere on PATH
+git clone git@github.com:benvinegar/agentvm.git ~/agentvm && ln -s ~/agentvm/controller/agentvm /usr/local/bin/agentvm   # or anywhere on PATH
 agentvm setup you@hornet          # checks ssh, registers your pubkey for new VMs, writes ~/.agentvm/ssh_config
 echo "Include ~/.agentvm/ssh_config" | cat - ~/.ssh/config > /tmp/c && mv /tmp/c ~/.ssh/config   # optional: `ssh demo.avm`, VS Code/Zed remote
 ```
