@@ -282,7 +282,7 @@ cmd_connect() {
 	exec nc "$ip" "$port"
 }
 
-cmd_start() { valid_name "$1"; virsh start "$(dom "$1")" >/dev/null; wait_ip "$1" >/dev/null; log "$1 started"; }
+cmd_start() { valid_name "$1"; virsh start "$(dom "$1")" >/dev/null; wait_ssh "$(wait_ip "$1")"; log "$1 started"; }
 cmd_stop() { valid_name "$1"; virsh shutdown "$(dom "$1")" >/dev/null; log "$1 shutting down"; }
 
 cmd_rm() {
