@@ -84,6 +84,26 @@ agentvm rm demo
 
 VS Code / Cursor / Zed: once the `Include` line is in place, connect via Remote-SSH to `demo.avm`.
 
+### GitHub authentication via your local SSH agent
+
+Forwarding is off by default. For a trusted VM, opt in with:
+
+```bash
+agentvm agent-forward demo on
+# When no VM commands are running, close the old shared connection:
+ssh -F ~/.agentvm/ssh_config -O exit demo.avm
+agentvm run demo 'ssh-add -l'
+```
+
+The next connection forwards your loaded local SSH agent, including for `vm_bash`.
+Use an SSH Git remote (`git@github.com:OWNER/REPO.git`); your key must be registered
+with GitHub. Verify GitHub's host fingerprint on first connection. Private keys
+are not copied, but VM processes can request authentication while connected.
+Forwarding persists across `agentvm setup`; disable with `agentvm agent-forward demo off`
+and close the shared connection again. Existing separate SSH connections must also
+be closed. Git commit name/email are configured separately. Detached tmux jobs
+may retain a stale agent socket after reconnecting and need restarting.
+
 ## Test
 
 ```bash
