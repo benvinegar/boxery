@@ -15,6 +15,7 @@ laptop (macOS/Linux)                    Linux host (KVM + libvirt)
 - **VMs**: qcow2 overlays on a golden image → a new desktop VM in ~13 s. Snapshot/revert in ~2 s.
 - **Agents in the VM**: pi + opencode preinstalled, pre-configured to use the host proxy. Runs in tmux, so the work keeps going while your laptop is closed.
 - **Credentials stay on the host**: each VM gets a random per-VM token. The proxy checks it and swaps in the real credential (your host pi's ChatGPT/Codex OAuth, or API keys in `proxy.env`). `rm` revokes the token. VMs reach the proxy over **vsock**, so the host doesn't need any listening port for them.
+- **Laptop agents drive VMs**: the pi extension routes a laptop pi's tools into a VM, and adds computer-use and browser tools.
 - **Desktop**: XFCE over noVNC, bound to localhost inside the VM and reachable only through ssh. Agents' GUI apps (`DISPLAY=:1`, e.g. Firefox) appear there.
 - **Controller is just bash 3.2 + ssh**: works on stock macOS.
 
@@ -41,7 +42,30 @@ agentvm setup you@hornet          # checks ssh, registers your pubkey for new VM
 echo "Include ~/.agentvm/ssh_config" | cat - ~/.ssh/config > /tmp/c && mv /tmp/c ~/.ssh/config   # optional: `ssh demo.avm`, VS Code/Zed remote
 ```
 
-## Use
+## Drive VMs from pi on your laptop (the main workflow)
+
+pi runs on your laptop, using your laptop's model login. Its tools run inside a VM.
+
+```bash
+pi install ~/agentvm          # or: pi -e ~/agentvm/extension/index.ts
+cd ~/anything
+pi --vm demo                  # attach to VM "demo" (created if missing)
+pi --vm new                   # throwaway VM, deleted when pi quits
+```
+
+While attached:
+
+- `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls` and `!` commands run **in the VM**, in `/home/agent/project`. The footer shows `⛁ vm:demo`.
+- **Fail closed:** if the VM is unreachable, tools error. They never fall back to your laptop.
+- **Computer use:** `vm_screenshot`, `vm_click`, `vm_type`, `vm_key`, `vm_scroll` operate the VM's XFCE desktop.
+- **Browser:** `vm_browser` runs Playwright code against Google Chrome on that desktop. You can watch it with `/vm desktop`.
+- **Fan-out:** `vm_manage` (list, new, rm, snap, revert, attach, detach) and `vm_exec` let the agent create and use other VMs.
+- `/vm use NAME` · `/vm new` · `/vm local` · `/vm ls` · `/vm rm NAME` · `/vm desktop`
+- The attachment is saved in the session, so `pi --continue` re-attaches.
+
+Leases (several laptop agents sharing a pool safely) are designed in ARCHITECTURE.md but not built yet. For now, give each pi its own VM (`--vm new` or a unique name).
+
+## CLI
 
 ```bash
 agentvm new demo                  # ~13 s
@@ -63,7 +87,7 @@ VS Code / Cursor / Zed: once the `Include` line is in place, connect via Remote-
 ## Test
 
 ```bash
-./e2e.sh      # from the controller: create → pi → opencode → bg task → desktop → snapshot → rm
+./e2e.sh      # from the controller: create → pi → opencode → bg task → desktop → laptop-pi extension → snapshot → rm (13 checks)
 ```
 
 ## How the credential proxy works

@@ -1,0 +1,11 @@
+{
+  "name": "agentvm",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Self-hosted desktop VMs for coding agents; pi extension routes a laptop pi's tools into them",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extension/index.ts"]
+  }
+}

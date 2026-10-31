@@ -58,7 +58,7 @@ Non-goals (for now): macOS/Windows guests, GPU passthrough, multi-host clusterin
 
 Measured: new VM ~13 s, snapshot ~2 s, revert ~6 s (including ssh wait and clock step).
 
-Proven ad hoc (not yet packaged): **laptop pi with tools routed into a VM** (pi's `examples/extensions/ssh.ts` plus an `ssh -F ~/.agentvm/ssh_config` shim), and **laptop pi orchestrating VMs** through the `agentvm` CLI in its bash tool.
+| `extension/index.ts` | laptop | **pi extension (built, v0.2):** `--vm NAME|new`, `/vm …`. Routes read/write/edit/bash/grep/find/ls and `!` into the VM over the agentvm ssh config (content over stdin, explicit cwd/`~` mapping, remote process-group kill on abort/timeout, local env not forwarded). Fails closed. Computer use: `vm_screenshot` (downscaled to 1280px; clicks scaled back), `vm_click/type/key/scroll` (xdotool on :1). `vm_browser`: Playwright `connectOverCDP` to Chrome on the desktop (CDP on the VM's localhost). Fan-out: `vm_manage`, `vm_exec`. Attachment saved in the session (`agentvm-attach` entries). Throwaway VMs are removed on quit. Not yet: leases, secrets push. |
 
 ### Planned
 
@@ -136,7 +136,7 @@ Snapshots taken while leased default to **disk-only**, so in-RAM secrets aren't 
 
 Per-VM proxy tokens are an acknowledged exception: they live in the VM's seed ISO, disk and snapshots, are scoped to the proxy, and are rotated on every reset (new token, old one revoked).
 
-#### 4. pi extension (`agentvm`)
+#### 4. pi extension (`agentvm`): v0.2 built; leases/secrets integration planned
 
 - `session_start` (opt-in flag `--vm <profile>` or `/vm acquire <profile>`): acquire a lease, push secrets from the laptop's cwd, swap built-in tools to ssh-backed operations (like `examples/extensions/ssh.ts`, using `~/.agentvm/ssh_config`), show the VM in the footer.
 - Heartbeat timer to renew. `session_shutdown` releases. `/vm release [--keep]`, `/vm local`, `/vm use <name>`.

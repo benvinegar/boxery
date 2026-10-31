@@ -72,6 +72,15 @@ write_files:
   - path: /usr/share/novnc/index.html
     content: |
       <meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&resize=remote&reconnect=1">
+  # Many parallel tool calls share one multiplexed ssh connection from the laptop.
+  - path: /etc/ssh/sshd_config.d/60-agentvm.conf
+    content: |
+      MaxSessions 64
+      MaxStartups 64:30:128
+  # Reduce accidental persistence of secrets (see ARCHITECTURE.md, Secrets).
+  - path: /etc/sysctl.d/60-agentvm.conf
+    content: |
+      kernel.core_pattern=|/bin/false
   - path: /etc/profile.d/agentvm.sh
     content: |
       # GUI apps launched by agents show up on the shared desktop.
@@ -87,7 +96,7 @@ write_files:
     permissions: "0755"
     content: |
       #!/bin/bash
-      set -euxo pipefail
+      set -euo pipefail
       export DEBIAN_FRONTEND=noninteractive
       apt-get install -y --no-install-recommends \
         xfce4 xfce4-terminal xfce4-panel xfce4-session xfwm4 xfdesktop4 thunar \
@@ -101,12 +110,19 @@ write_files:
       echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /etc/apt/sources.list.d/mozilla.list
       printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /etc/apt/preferences.d/mozilla
       apt-get update && apt-get install -y firefox
+      # Google Chrome (real deb; Ubuntu's chromium is a snap) for CDP/Playwright browser control
+      curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+      apt-get install -y /tmp/chrome.deb && rm -f /tmp/chrome.deb
+      google-chrome --version
       # Node 22 LTS
       NODE_TGZ=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | awk '/linux-x64.tar.xz$/{print $2}')
       curl -fsSL "https://nodejs.org/dist/latest-v22.x/$NODE_TGZ" | tar -xJ -C /usr/local --strip-components=1
       node --version
       # Coding agents
       npm install -g @earendil-works/pi-coding-agent opencode-ai
+      # Playwright client used by the laptop extension's vm_browser tool (talks CDP to the desktop Chrome)
+      npm install --prefix /opt/agentvm playwright-core
+      ls /opt/agentvm/node_modules/playwright-core/index.mjs
       pi --version || true
       opencode --version || true
       # Desktop services for the agent user
@@ -119,6 +135,7 @@ write_files:
         ln -sf /home/agent/.config/systemd/user/$s.service /home/agent/.config/systemd/user/default.target.wants/$s.service
       done
       systemctl enable agentvm-llm.service qemu-guest-agent || true
+      systemctl disable apport.service 2>/dev/null || true
       # Prepare for cloning: fresh identity on next boot
       apt-get clean
       cloud-init clean --logs --seed || true

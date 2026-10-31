@@ -42,6 +42,19 @@ sleep 3; port=$(grep -o '127.0.0.1:[0-9]*' /tmp/agentvm-e2e-desk.$$ | head -1 | 
 check "noVNC served on localhost:$port" curl -fsS "http://127.0.0.1:$port/vnc.html"
 kill "$tun" 2>/dev/null || true; tun=""; rm -f /tmp/agentvm-e2e-desk.$$
 
+echo "== laptop pi extension (tools routed into the VM)"
+if command -v pi >/dev/null; then
+	ext=$(cd "$(dirname "$0")" && pwd)/extension/index.ts
+	lt=$(mktemp -d)
+	r=$(cd "$lt" && timeout 240 pi --no-session --no-extensions -e "$ext" --vm "$VM" -p "Use bash to run hostname, then write ext.txt containing EXT_OK. Reply with only the hostname." </dev/null 2>&1 | tail -1)
+	[[ $r == *"$VM"* ]] && ok "laptop pi bash ran in VM" || bad "extension bash: $r"
+	check "laptop pi write landed in VM" "$A" run "$VM" 'grep -q EXT_OK ~/project/ext.txt'
+	[[ ! -e $lt/ext.txt ]] && ok "nothing written locally" || bad "file leaked to laptop"
+	rm -rf "$lt"
+else
+	echo "  - pi not installed, skipping"
+fi
+
 echo "== snapshot / revert"
 "$A" snap "$VM" e2e >/dev/null
 "$A" run "$VM" 'rm -f ~/project/answer.txt'
