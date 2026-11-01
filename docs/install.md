@@ -39,7 +39,7 @@ sudo loginctl enable-linger "$USER"
 ```bash
 npm install -g boxery-vm            # or: git clone https://github.com/benvinegar/boxery.git && use ./host/boxery-host
 boxery-host init                 # storage pool, proxy + vsock + reaper user services, ~/.local/bin symlinks
-boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Node 22, pi, opencode (~3 min)
+boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Node 24, pi, opencode (~3 min)
 ```
 
 `init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path and the node and tools found on your `PATH` at `init` time, so after switching Node versions with nvm/fnm re-run `boxery-host init`. To update boxery itself, see [Upgrading](#upgrading).

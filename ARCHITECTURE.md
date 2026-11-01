@@ -66,7 +66,7 @@ VM (Ubuntu 24.04; XFCE desktop unless --headless)
 | `host/boxery-host` + `host/*.mjs` | control plane | Backend-agnostic VM manager. Bash entry point; `connect` stays in Bash so the ProxyCommand never pays Node startup; everything else is Node. Ownership per module: [host-modules.md](docs/host-modules.md) |
 | `host/backends/*.sh` | control plane | Hypervisor effects only, one allowlisted function per process, arguments as argv ([contract](host/backends/README.md)). libvirt and Lima are stable; Cloud Hypervisor and exe.dev are experimental |
 | `proxy/boxery-proxy.mjs` | control plane | Credential proxy: checks the per-VM token, applies per-route method/path allowlists, body/concurrency/time limits, injects the real credential, refuses WebSocket upgrades (clients use SSE) |
-| `image/layers/*.sh`, `image/base-user-data.yaml` | guest | What boxery adds to Ubuntu: `plumbing` (agent user, proxy bridge, sshd/sysctl/tmux), `devtools` (git, Node 22, pi, opencode, …), `desktop` (XFCE, TigerVNC/noVNC, Chrome, Playwright). Desktop VMs clone a base built once with all three; headless VMs apply the first two at first boot |
+| `image/layers/*.sh`, `image/base-user-data.yaml` | guest | What boxery adds to Ubuntu: `plumbing` (agent user, proxy bridge, sshd/sysctl/tmux), `devtools` (git from the git-core PPA, Node 24, pi, opencode, …), `desktop` (XFCE, TigerVNC/noVNC, Chrome, Playwright). Desktop VMs clone a base built once with all three; headless VMs apply the first two at first boot |
 
 ## Deployment shapes
 

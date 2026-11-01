@@ -124,7 +124,7 @@ Leases belong to the MCP session that acquired them. The server renews each one 
 ## Atomic file edits
 
 `vm_edit` (core/MCP, not pi's edit engine) sends one request to the Linux guest,
-requiring Node (image: Node 22) and util-linux `flock`, not Python. One persistent
+requiring Node (image: Node 24) and util-linux `flock`, not Python. One persistent
 per-user lock at `~/.boxery-edit/edit.lock` covers reading the latest file,
 exact-text matching and atomic replacement. Never unlink this lock while editors
 may run. All cooperating edits serialize, including symlink/case aliases, and each
