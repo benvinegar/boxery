@@ -2,44 +2,56 @@
 
 ← [Docs](README.md)
 
-The host is being extracted incrementally into Node, not rewritten wholesale ([plan](plans/2026-11-01-host-orchestration-in-node.md)). Lease workflows, listings and the lease commands run in Node. VM/image creation, pool membership, generic recovery dispatch and service setup still run in the legacy shell dispatcher, which `host/boxery-host` routes them to.
+The host runs in Node. Bash remains where it fits: the entry point (`host/boxery-host`), the ssh ProxyCommand path, and the hypervisor backends (`host/backends/*.sh`). `init`, `build-base` and `add-key` still run in `host/boxery-host-legacy.sh` until they move too ([plan](plans/2026-11-01-host-orchestration-in-node.md)).
 
 ## Ownership
 
 | Module | Owns | Does not own |
 |---|---|---|
 | `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles and grants | Host lease decisions or hypervisor mechanics |
-| `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, legacy commands to `boxery-host-legacy.sh`, everything else to Node | Any command logic |
-| `host/boxery-host.mjs` | CLI for listings (`ls`, `shapes`, `snaps`, `images`, `pool ls`, `ip`), `proxy-log` and the lease commands; output formats | Lease policy, hypervisor commands |
-| `host/boxery-host-legacy.sh` | Initialization, VM/image mutations, pool membership, recovery dispatch (until they move to Node) | Lease acquire/reset/reaper ordering |
-| `host/shapes.mjs` | Shape merging/validation and per-VM size records | Choosing a size for a command |
-| `host/boxery-lifecycle.mjs` | Lease CLI parsing/output, direct SQLite/journal/backend bindings and held-lock validation | Lease policy or hypervisor commands |
-| `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
-| `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
-| `host/config.mjs` | `$BOXERY_CONF`, `host.env` settings, journaled backend settings | Anything with side effects |
-| `host/images.mjs`, `host/recovery.mjs` | Restoring a VM from its image; inventory drift checks | Lock acquisition (callers hold or take locks) |
+| `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, legacy commands, everything else to Node | Any command logic |
+| `host/boxery-host.mjs` | CLI: argument dispatch, listings and their output formats, supervised mutating commands, private worker entry points | Lease policy, hypervisor commands |
+| `host/vms.mjs`, `host/images.mjs`, `host/pool.mjs` | VM, image and pool-membership commands; edge routes | Locking (the supervisor holds locks around them) |
+| `host/seed.mjs` | Per-VM cloud-config: keys, proxy token, agent configs | Delivering it to the guest (backends) |
+| `host/recovery.mjs` | Replaying an abandoned operation's intents; inventory drift | Deciding which operations are abandoned |
+| `host/boxery-lifecycle.mjs` | Lease runtime: binds lease policy to SQLite, the journal, backend effects and the supervisor; held-lock validation | Lease policy or hypervisor commands |
 | `host/lease-workflows.mjs` | Lease workflow ordering, stale-state decisions, reset outcomes and retry/reap policy | Files, environment variables, subprocesses, SQLite implementation or CLI formatting |
 | `host/boxery-leases.mjs` | Transactional lease state machine, generations/incarnations, expiry and claim eligibility | Guest side effects |
-| `host/boxery-operations.mjs` | Resource arbitration, worker supervision, durable intent storage and abandoned-operation recovery scheduling | Guest or lease workflow policy |
+| `host/boxery-operations.mjs` | Resource arbitration, worker supervision, durable intent storage, abandoned-operation recovery scheduling, token file transactions | Guest or lease workflow policy |
+| `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
+| `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
+| `host/runtime.mjs`, `host/config.mjs`, `host/shapes.mjs`, `host/util.mjs` | Per-command context (store, backend, journal, held locks), configuration, shapes, shared helpers | Side effects of their own |
 | `host/backends/*.sh` | Hypervisor-specific effects and idempotent recovery hooks | Pool ownership or lease transitions |
 
-`core/boxery-core.mjs` remains the agent-facing transport/tool implementation. It is not a dependency of host lease policy. Its eventual transport/file/desktop/lifecycle split should be a separate change rather than coupled to this extraction.
+`core/boxery-core.mjs` remains the agent-facing transport/tool implementation. It is not a dependency of the host.
 
-## Lease call path
+## Call paths
+
+A mutating command (`new`, `fork`, `start`, `stop`, `resize`, `rm`, `snap`, `snap-rm`, `revert`, `edge-set`, `pool add|rm`):
 
 ```text
-boxery-host CLI
-  → boxery-lifecycle.mjs (runtime adapter)
-    → lease-workflows.mjs (policy)
-      → boxery-leases.mjs (short state transactions)
-      → boxery-operations.mjs (locks + journal)
-      → backend.mjs → backend.sh FUNCTION ARG… (one allowlisted backend function per process)
+host/boxery-host (Bash) → exec node boxery-host.mjs COMMAND …      supervisor: takes the VMs' locks
+  → node boxery-host.mjs __worker __dispatch COMMAND …              worker: own process group, waits on fd 3
+    → vms.mjs / images.mjs / pool.mjs (journals intents)
+      → backend.mjs → backend.sh FUNCTION ARG…                      one allowlisted backend function per process
       → guest.mjs (ssh to the VM)
 ```
 
-Acquiring a resource still uses the existing supervisor and held-lock callbacks. The shell callback names are compatibility shims into Node. Before a held-lock entry point executes policy, the runtime checks the inherited resource set. Backend subprocesses are never detached: they stay in the supervisor's worker process group, so crash fencing from #17 continues to cover them.
+A lease step:
 
-Backend effects run as `host/backend.sh FUNCTION ARG…`: a small Bash prelude (`die`, `log`, `need`, `wait_ssh`, `vm_ssh_cmd` and the settings backends read) sources `host/backends/$BOXERY_BACKEND.sh` and runs one function from the backend contract. Anything else is refused, and arguments are argv, never evaluated. Each call is a separate process in the caller's process group, so a killed operation's backend commands are stopped with it.
+```text
+boxery-host.mjs acquire | release | reap
+  → boxery-lifecycle.mjs (runtime) → lease-workflows.mjs (policy)
+    → boxery-leases.mjs (short state transactions)
+    → supervise(VM) → node boxery-host.mjs __worker __call _lease_acquire | _lease_release | _lease_reset | _reap_candidate …
+      → backend.mjs / guest.mjs
+```
+
+The supervisor runs in the process that received the command. Each worker runs in its own process group behind the fd-3 gate, and backend subprocesses are never detached, so crash fencing (#17) covers everything an operation started. Before a held-lock callback acts, the runtime checks the inherited resource set (`BOXERY_LOCKS`).
+
+Backend effects run as `host/backend.sh FUNCTION ARG…`: a small Bash prelude (`die`, `log`, `need`, `wait_ssh`, `vm_ssh_cmd` and the settings backends read) sources `host/backends/$BOXERY_BACKEND.sh` and runs one function from the backend contract. Anything else is refused, and arguments are argv, never evaluated.
+
+The private entry points (`__worker`, `__dispatch`, `__call CALLBACK`, `__recover`) dispatch fixed tables. They are implementation details, not a public CLI or an authorization API.
 
 ## Policy dependencies
 
@@ -55,11 +67,13 @@ This lets tests assert ordering directly. In particular, reset cannot publish FR
 
 ## Compatibility and tests
 
-Documented CLI arguments, listing JSON shapes, environment overrides, pool state semantics and backend contracts remain unchanged. Lease command stdout stays machine-readable (`NAME LEASE_ID EXPIRES_AT` for acquire; `NAME EXPIRES_AT` for renew); diagnostics stay on stderr. Diagnostic expiry timestamps now use ISO 8601 rather than platform-specific `date` output. The controller still needs only Bash 3.2 and SSH.
+Documented CLI arguments, listing output (tables and JSON), environment overrides, pool state semantics, the intent journal format and backend contracts are unchanged by the move to Node. Lease command stdout stays machine-readable (`NAME LEASE_ID EXPIRES_AT` for acquire; `NAME EXPIRES_AT` for renew); diagnostics stay on stderr. The controller still needs only Bash 3.2 and SSH.
 
+- `test/shell/host-output.sh`: exact output of listings, usage and common errors.
 - `test/lease-workflows.test.mjs`: injected policy tests, no SQLite or subprocesses; also run on Node 20.
 - `test/leases.test.mjs`: real SQLite transaction/state tests.
 - `test/operations.test.mjs`: real dispatcher/supervisor crash tests against the fake backend, plus runtime parsing and callback-boundary checks.
-- `test/shell/*.sh`: existing controller, backend and CLI integration contracts, including Bash 3.2.
+- `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`: the backend shim, guest ssh, configuration, shapes and seed, without SQLite.
+- `test/shell/*.sh`: controller, backend and CLI integration contracts, including Bash 3.2.
 
-See [Lifecycle coordination and recovery](lifecycle.md) for the locking, recovery and upgrade contract. This extraction does not change that protocol or add a service/dependency.
+See [Lifecycle coordination and recovery](lifecycle.md) for the locking, recovery and upgrade contract.

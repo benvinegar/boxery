@@ -1,23 +1,14 @@
-#!/usr/bin/env node
-// Runtime adapter for lease-workflows.mjs. Owns CLI parsing and the SQLite/journal/backend bindings.
-// Hypervisor commands live in host/backends/*.sh, reached through host/backend.mjs.
-import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
-import path from "node:path";
+// Lease runtime: binds lease-workflows.mjs (policy) to SQLite, the operation journal, backend effects
+// and the supervisor. Each locked step runs in a supervised worker (`__call CALLBACK …`) that holds the
+// VM's lifecycle lock; the held-lock entry points below check that lock before acting.
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
-import { createBackend } from "./backend.mjs";
 import * as leases from "./boxery-leases.mjs";
-import { recordIntent, completeIntent } from "./boxery-operations.mjs";
-import { loadConfig } from "./config.mjs";
-import { createGuest } from "./guest.mjs";
+import { reconcileAbandoned, supervise } from "./boxery-operations.mjs";
 import { restoreVm } from "./images.mjs";
 import { LeaseWorkflows } from "./lease-workflows.mjs";
+import { setLeaseKeys } from "./pool.mjs";
 import { reconcileDrift } from "./recovery.mjs";
 
-const SELF = fileURLToPath(import.meta.url);
-const HOST = fileURLToPath(new URL("./boxery-host", import.meta.url));
-const OPERATIONS = fileURLToPath(new URL("./boxery-operations.mjs", import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
 const nameOf = (name) => {
@@ -42,25 +33,6 @@ export function parseOptions(args, defaults, flags) {
 	return result;
 }
 
-// Keep every subprocess in the supervisor's worker group (never detached). stdout is metadata;
-// diagnostics stay on stderr, and failed calls retain their exit status for the CLI.
-function run(file, args, { quiet = false, env = process.env } = {}) {
-	return new Promise((resolve, reject) => {
-		const child = spawn(file, args.map(String), { env, stdio: ["inherit", "pipe", quiet ? "ignore" : "inherit"] });
-		const chunks = []; let bytes = 0;
-		child.stdout.on("data", (d) => {
-			bytes += d.length;
-			if (bytes > 16 * 1024 * 1024) child.kill();
-			else chunks.push(d);
-		});
-		child.on("error", reject);
-		child.on("close", (code) => {
-			if (bytes > 16 * 1024 * 1024) return reject(new Error("backend metadata exceeded 16 MiB"));
-			if (code !== 0) return reject(Object.assign(new Error(`${args[1] ?? file} failed`), { exitCode: code ?? 1 }));
-			resolve(Buffer.concat(chunks).toString("utf8"));
-		});
-	});
-}
 function publicKey() {
 	return new Promise((resolve, reject) => {
 		const input = createInterface({ input: process.stdin, terminal: false });
@@ -76,77 +48,64 @@ function publicKey() {
 	});
 }
 
-/** acquire | renew | release | reap | reconcile, and the private held-lock entry points. */
-export async function runLifecycle(command, args) {
-	const config = loadConfig();
-	const { conf } = config;
-	const db = leases.open(path.join(conf, "leases.db"));
-	const operationId = process.env.BOXERY_OPERATION_ID;
-	const vms = createBackend(config.env), guest = createGuest(config);
-	const requireLock = (name) => {
-		nameOf(name);
-		if (!process.env.BOXERY_LOCKS?.includes(`:${name}:`)) throw new Error(`lifecycle lock required for ${name}`);
+/** acquire | renew | release | reap | reconcile, and the held-lock entry points
+ * (reset, install-held, release-held, reset-held, reap-held). rt: runtime.mjs */
+export async function runLifecycle(rt, command, args) {
+	const db = rt.db();
+	const requireLock = (name) => rt.requireLock(nameOf(name));
+	const lock = async (name, callback, argv) => {
+		const rc = await supervise({ conf: rt.conf, names: [nameOf(name)], command: callback, args: ["__call", callback, ...argv.map(String)], env: rt.operationEnv() });
+		// The worker reported its own error.
+		if (rc !== 0) throw Object.assign(new Error(`${callback} ${name} failed`), { exitCode: rc, reported: true });
 	};
-	const lock = (name, callback, argv) => run(process.execPath, ["--disable-warning=ExperimentalWarning", OPERATIONS, "run", conf, nameOf(name), HOST, callback, ...argv]);
 	const store = Object.fromEntries(["get", "find", "claim", "commit", "beginReset", "finish", "candidates", "due", "renew"]
 		.map((method) => [method, (...argv) => leases[method](db, ...argv)]));
-	const log = (message) => process.stderr.write(`==> ${message}\n`);
-	const mustRun = async (name, command) => {
-		if (await guest.run(await vms.sshEndpoint(nameOf(name)), command) !== 0) throw new Error(`${name}: guest command failed`);
-	};
 	const backend = {
-		clearEdge: async (name) => rmSync(path.join(conf, "edge", `${nameOf(name)}.json`), { force: true }),
-		restore: (name, label) => restoreVm(vms, nameOf(name), label, { quiet: true }),
-		waitReady: async (name) => guest.waitSsh(await vms.waitEndpoint(nameOf(name), { quiet: true }), Number(process.env.BOXERY_SSH_WAIT_TRIES || 45)),
-		stepClock: (name) => mustRun(name, `sudo date -u -s @${now()} >/dev/null 2>&1; true`),
-		// authorized_keys := the host key (+ the lease holder's). This is the fence: a pool VM accepts nobody else.
-		setKeys: async (name, pubkey) => guest.setKeys(await vms.sshEndpoint(nameOf(name)), [guest.hostPubkey(), ...(pubkey ? [pubkey] : [])]),
+		clearEdge: async (name) => rt.clearEdge(nameOf(name)),
+		restore: (name, label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
+		waitReady: async (name) => rt.guest.waitSsh(await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
+		async stepClock(name) {
+			if (await rt.guest.run(await rt.vms.sshEndpoint(nameOf(name)), `sudo date -u -s @${now()} >/dev/null 2>&1; true`) !== 0) throw new Error(`${name}: could not reach the guest`);
+		},
+		setKeys: (name, pubkey) => setLeaseKeys(rt, nameOf(name), pubkey),
 	};
-	const journal = {
-		intent: (kind, data) => recordIntent(db, operationId, kind, data),
-		done: (id) => completeIntent(db, operationId, id),
-	};
+	const journal = { intent: (kind, data) => rt.intent(kind, ...data), done: (id) => rt.done(id) };
 	let flows;
 	const reclaim = async () => {
-		await run(process.execPath, ["--disable-warning=ExperimentalWarning", OPERATIONS, "reconcile", conf, HOST]);
+		await reconcileAbandoned(rt.conf);
 		await flows.reapCandidates();
-		await reconcileDrift({ backend: vms, db, conf, lock });
+		await reconcileDrift({ backend: rt.vms, db, conf: rt.conf, lock });
 	};
-	flows = new LeaseWorkflows({ store, backend, journal, lock, reclaim, now, sleep, log });
-	try {
-		switch (command) {
-			case "acquire": {
-				const options = parseOptions(args, { holder: "", ttl: 1800, wait: 0 }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait" });
-				const claim = await flows.acquire({ ...options, pubkey: await publicKey() });
-				process.stdout.write(`${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
-				break;
-			}
-			case "renew": {
-				const id = leaseOf(args[0]);
-				const { ttl } = parseOptions(args.slice(1), { ttl: 1800 }, { "--ttl": "ttl" });
-				const row = store.renew(id, ttl);
-				process.stdout.write(`${row.name} ${row.expires_at}\n`);
-				break;
-			}
-			case "release": await flows.release(leaseOf(args[0])); break;
-			case "reap": case "reconcile": await reclaim(); break;
-			case "reset": // compatibility for the existing recovery dispatcher / private entry point
-				await lock(nameOf(args[0]), "_lease_reset", args); break;
-			case "install-held":
-				requireLock(args[0]); await flows.install(...args); break;
-			case "release-held": {
-				const row = store.find(leaseOf(args[0]));
-				if (!row) throw Object.assign(new Error("unknown or inactive lease"), { exitCode: 2 });
-				requireLock(row.name); await flows.releaseHeld(args[0]); break;
-			}
-			case "reset-held":
-				requireLock(args[0]); await flows.reset(...args); break;
-			case "reap-held":
-				requireLock(args[0]); await flows.reapHeld(...args); break;
-			default: throw new Error(`unknown lifecycle command: ${command}`);
+	flows = new LeaseWorkflows({ store, backend, journal, lock, reclaim, now, sleep, log: rt.log });
+	switch (command) {
+		case "acquire": {
+			const options = parseOptions(args, { holder: "", ttl: 1800, wait: 0 }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait" });
+			const claim = await flows.acquire({ ...options, pubkey: await publicKey() });
+			process.stdout.write(`${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
+			break;
 		}
-	} finally { db.close(); }
-}
-if (process.argv[1] && path.resolve(process.argv[1]) === SELF) {
-	runLifecycle(process.argv[2], process.argv.slice(3)).catch((e) => { console.error(`boxery-host: ${e.message}`); process.exitCode = e.exitCode ?? 1; });
+		case "renew": {
+			const id = leaseOf(args[0]);
+			const { ttl } = parseOptions(args.slice(1), { ttl: 1800 }, { "--ttl": "ttl" });
+			const row = store.renew(id, ttl);
+			process.stdout.write(`${row.name} ${row.expires_at}\n`);
+			break;
+		}
+		case "release": await flows.release(leaseOf(args[0])); break;
+		case "reap": case "reconcile": await reclaim(); break;
+		case "reset": // takes the VM's lock itself (private entry point `__call lease_reset`)
+			await lock(nameOf(args[0]), "_lease_reset", args); break;
+		case "install-held":
+			requireLock(args[0]); await flows.install(...args); break;
+		case "release-held": {
+			const row = store.find(leaseOf(args[0]));
+			if (!row) throw Object.assign(new Error("unknown or inactive lease"), { exitCode: 2 });
+			requireLock(row.name); await flows.releaseHeld(args[0]); break;
+		}
+		case "reset-held":
+			requireLock(args[0]); await flows.reset(...args); break;
+		case "reap-held":
+			requireLock(args[0]); await flows.reapHeld(...args); break;
+		default: throw new Error(`unknown lifecycle command: ${command}`);
+	}
 }

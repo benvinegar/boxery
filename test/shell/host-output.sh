@@ -153,7 +153,7 @@ err "snaps of a missing VM" "boxery-host: no such vm: nope" snaps nope --json
 err "snaps with a bad flag" "boxery-host: usage: snaps NAME [--json]" snaps a1 bogus
 err "invalid snapshot name" "boxery-host: invalid snapshot name 'x;id'" snap a1 'x;id'
 err "non-numeric size" "boxery-host: --mem must be a number" new a3 --mem '1;id'
-err "invalid VM name" "boxery-operations: invalid VM name: A1" new A1
+err "invalid VM name" "boxery-host: invalid VM name: A1" new A1
 err "new without a name" "boxery-host: usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless]" new
 err "connect to a non-ssh port" "boxery-host: connect: only the ssh port is supported (forward other ports over ssh)" connect a1 80
 err "resize without sizes" "boxery-host: usage: resize NAME [--cpus N] [--mem MiB] [--disk GiB]" resize a1
