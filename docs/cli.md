@@ -71,6 +71,21 @@ boxery sessions demo [--json]                # list tmux sessions
 
 `prompt` logs to `~/project/.boxery/task-*.log` in the VM. Attach to a task with `boxery attach demo pi task-…`.
 
+### Background command jobs
+
+```bash
+job=$(boxery run --bg demo --cwd app pnpm test)   # prints just the job ID
+boxery jobs demo [--json]                        # state, start time, exit code
+boxery logs demo "$job" [-f] [--strip-ansi] [--lines 200] [--bytes 51200]
+boxery wait demo "$job"                          # exits with the command's real status
+```
+
+`run demo --bg …` also works. Background commands keep the same exact-argv and `--cwd` rules as foreground `run`; use `bash -c '…'` for shell syntax. They run in detached tmux sessions with login-shell setup and no stdin, surviving SSH disconnects and laptop sleep. Combined stdout/stderr goes to `~/.boxery/jobs/ID.log` in the VM, with the exit code atomically recorded in `ID.exit`. Logs default to the last 200 lines; `-f` follows until completion, and `--strip-ansi` removes terminal escapes. `wait --timeout SEC` stops observing after that many seconds (exit 124), without stopping the job; no timeout means wait indefinitely.
+
+Optional `logs --bytes N` (1–999999999) clips each raw snapshot to its last N bytes **before** line selection and ANSI filtering, emitting a truncation notice on stderr when bytes were clipped. With `-f`, the same bound applies to each subsequent update, not the total stream. Without `--bytes`, CLI logs have no byte cap. A byte cut can start partway through a line, UTF-8 character or escape sequence; MCP requests a 50KB raw tail and drops any incomplete leading UTF-8 character. Startup returns the ID only after the detached runner publishes metadata; failed login setup or readiness taking over 10 seconds fails launch and cleans up the session.
+
+States are `running`, `completed` (including failed commands), or `lost` (the tmux session disappeared without recording an exit code, e.g. after a VM reboot). Waiting on a lost job fails rather than hanging. Jobs do not survive VM shutdown/revert/reset; logs and metadata remain on disk until removed or the VM is reset. They may contain secrets printed by the command.
+
 ### Desktop and ports
 
 ```bash
@@ -211,6 +226,17 @@ tmux sessions in the VM (agents started by `attach` / `prompt`).
 {"name":"task-20261031-120000","windows":1,"created":1793460100,"attached":false}
 ]
 ```
+
+#### `boxery jobs NAME --json`
+
+```json
+[
+{"id":"job-a1b2c3D4E5F6","state":"running","started_at":1793460000,"exit_code":null},
+{"id":"job-ABCdef123456","state":"completed","started_at":1793460100,"exit_code":7}
+]
+```
+
+`started_at` is Unix epoch seconds. `exit_code` is the command's numeric exit status for completed jobs, otherwise `null`. A `lost` job has no known exit code. IDs are scoped to their VM and host.
 
 #### `boxery snaps NAME --json`
 

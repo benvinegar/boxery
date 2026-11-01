@@ -285,18 +285,26 @@ run_literal_note() { # NAME CMD [ARG...]
 # Exact argv, like docker/kubectl exec: ssh would join the args into a string the VM's shell re-parses,
 # so each one is quoted first. Pipes, ~ and $VAR need an explicit shell: boxery run NAME bash -c '…'.
 # Runs in ~/project (home if it is missing) and resolves a relative --cwd there, like the vm_bash tool.
-cmd_run() { # NAME [--cwd DIR] [--] CMD [ARG...]
-	local usage="usage: boxery run NAME [--cwd DIR] [--] CMD [ARG...]   (a shell line: ... bash -c 'A | B')"
+cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
+	local bg=false
+	if [ "${1:-}" = --bg ]; then bg=true; shift; fi
+	local usage="usage: boxery run [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]   (a shell line: ... bash -c 'A | B')"
 	case ${1:-} in '' | -h | --help) echo "$usage"; run_examples; [ -n "${1:-}" ]; return ;; esac
 	need_vm "$1"; local name=$1 cwd="" line rc=0; shift
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--cwd) [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"; cwd=$2; shift 2 ;;
+		--bg) bg=true; shift ;;
 		--) shift; break ;;
 		*) break ;;
 		esac
 	done
 	[ $# -gt 0 ] || die "$usage"
+	if "$bg"; then
+		job_call "$name" start "$cwd" "$@"
+		run_literal_note "$name" "$@"
+		return
+	fi
 	line=$(literal_args "$@")
 	case $cwd in
 	'') line="cd ~/project 2>/dev/null; $line" ;;
@@ -308,6 +316,27 @@ cmd_run() { # NAME [--cwd DIR] [--] CMD [ARG...]
 	case $rc:$1 in 127:*[[:space:]]*) warn "hint: run takes the command and its arguments separately; for a shell line use: boxery run $name bash -c $(literal "$1")" ;; esac
 	run_literal_note "$name" "$@"
 	return "$rc"
+}
+
+# Ship the shared guest protocol; resolve npm's bin symlink before finding its sibling.
+job_call() { # NAME ACTION [ARGS...]
+	local name=$1 script=${BASH_SOURCE[0]} dir; shift
+	need_vm "$name"
+	while [ -L "$script" ]; do
+		dir=$(cd -P "$(dirname "$script")" && pwd)
+		script=$(readlink "$script")
+		case $script in /*) ;; *) script=$dir/$script ;; esac
+	done
+	dir=$(cd -P "$(dirname "$script")" && pwd)
+	vm_ssh -T "$name.boxery" "bash -s -- $(literal_args "$@")" <"$dir/jobs.sh"
+}
+
+cmd_jobs() { need_vm "${1:-}"; local name=$1; shift; job_call "$name" list "$@"; }
+cmd_job() { # ACTION NAME JOB [OPTIONS...]
+	local action=$1; shift
+	[ $# -ge 2 ] || die "usage: boxery $action NAME JOB [OPTIONS...]"
+	local name=$1; shift
+	job_call "$name" "$action" "$@"
 }
 
 cmd_attach() { # NAME [pi|opencode|shell] [session]
@@ -892,9 +921,13 @@ usage() {
 		new NAME --from NAME@SNAP       new VM from a snapshot (also: boxery images)
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
-		run NAME [--cwd DIR] CMD [ARG...]
+		run [--bg] NAME [--cwd DIR] CMD [ARG...]
 		                                run a command with exactly these args (like docker exec), in
 		                                  ~/project; a relative --cwd is under ~/project
+		jobs NAME [--json]             list detached command jobs (state, start time, exit code)
+		logs NAME JOB [-f] [--strip-ansi] [--lines N] [--bytes N]
+		                                tail a job's output; -f follows until it finishes
+		wait NAME JOB [--timeout SEC]  wait and return the command's exit code (timeout: 124)
 		attach NAME [pi|opencode|shell] [session]
 		                                attach to a persistent tmux session running the agent
 		prompt NAME "task"              start a headless pi task in the background
@@ -913,7 +946,7 @@ usage() {
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
 
-		--json on ls, snaps, sessions, leases, grants prints JSON (fields: docs/cli.md)
+		--json on ls, snaps, sessions, leases, grants, jobs prints JSON (fields: docs/cli.md)
 
 	EOF
 	run_examples
@@ -962,6 +995,8 @@ snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; cmd_run "$@" ;;
+jobs) need_host; cmd_jobs "$@" ;;
+logs | wait) need_host; cmd_job "$cmd" "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
 desktop) need_host; cmd_desktop "$@" ;;
 forward) need_host; cmd_forward "$@" ;;

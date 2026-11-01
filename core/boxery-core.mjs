@@ -309,6 +309,55 @@ export async function bashTool(vm, { command, timeout }, { signal } = {}) {
 	return { text: `${note}${t.text || "(no output)"}\n[exit ${r.exitCode}]`, isError: r.exitCode !== 0 };
 }
 
+const JOB_SCRIPT = readFileSync(new URL("../controller/jobs.sh", import.meta.url));
+
+/** Detached jobs: cancelling a tool call stops observation, never the tmux job. */
+export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi, timeout }, { signal } = {}) {
+	assertName(vm);
+	if (signal?.aborted) throw new Error("aborted");
+	const args = [action];
+	if (action === "start") {
+		if (typeof command !== "string" || !command.trim() || command.includes("\0")) throw new Error("start requires a command");
+		if (cwd != null && (typeof cwd !== "string" || cwd.includes("\0"))) throw new Error("invalid cwd");
+		args.push(cwd ?? "", "bash", "-lc", command);
+	} else if (action === "list") args.push("--json");
+	else if (action === "logs" || action === "wait") {
+		if (typeof job !== "string" || !/^job-[A-Za-z0-9]{12}$/.test(job)) throw new Error("invalid job ID");
+		args.push(job);
+		if (action === "logs") {
+			if (lines != null && (!Number.isInteger(lines) || lines < 0 || lines > MAX_LINES)) throw new Error(`lines must be an integer from 0 to ${MAX_LINES}`);
+			args.push("--lines", String(lines ?? 200), "--bytes", String(MAX_BYTES));
+			if (stripAnsi) args.push("--strip-ansi");
+		} else {
+			if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600)) throw new Error("timeout must be an integer from 1 to 3600 seconds");
+			args.push("--json", "--timeout", String(timeout ?? 120));
+		}
+	} else throw new Error(`unknown jobs action: ${action}`);
+	const r = await sshRun(vm, `bash -s -- ${args.map(q).join(" ")}`, {
+		input: JOB_SCRIPT, signal, timeoutMs: action === "wait" ? ((timeout ?? 120) + 15) * 1000 : 120_000,
+		...(action === "logs" ? { maxBytes: MAX_BYTES } : {}),
+	});
+	if (signal?.aborted) throw new Error("aborted (detached job was not stopped)");
+	if (r.code !== 0) throw new Error(r.stderr.trim() || `job operation failed (exit ${r.code ?? "timeout"})`);
+	const out = r.stdout.toString().trim();
+	if (action === "start") return { text: JSON.stringify({ id: out }) };
+	if (action === "logs") {
+		// The guest already bounds bytes and lines; do not drop an oversized final
+		// line via the shared whole-line truncator. Skip a clipped UTF-8 prefix.
+		let start = 0;
+		while (start < r.stdout.length && (r.stdout[start] & 0xc0) === 0x80) start++;
+		const log = r.stdout.subarray(start).toString();
+		const truncated = r.stderr.includes("boxery jobs: output byte-truncated");
+		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}` };
+	}
+	if (action === "wait") {
+		const result = JSON.parse(out);
+		if (result.state === "running") result.timed_out = true;
+		return { text: JSON.stringify(result), isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
+	}
+	return { text: out };
+}
+
 export async function readTool(vm, { path: p, offset, limit }) {
 	const rp = vmPath(p);
 	const mime = (await sshOk(vm, `test -r ${q(rp)} || { printf 'cannot read %s\\n' ${q(rp)} >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();

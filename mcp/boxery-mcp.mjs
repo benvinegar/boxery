@@ -57,6 +57,21 @@ const TOOLS = [
 		run: (vm, a, x) => core.bashTool(vm, a, x),
 	},
 	{
+		name: "vm_jobs",
+		description: "Detached command jobs in a VM. start runs a bash command in tmux (survives disconnects), returning a job ID; list returns state/start time/exit code; logs returns a bounded output tail; wait observes completion, returning exit_code or timed_out:true. Timeout/cancellation never kills the job. Jobs lost to VM reboot or tmux termination have state lost. Optional host/vm default to the session selection.",
+		inputSchema: obj({
+			action: { type: "string", enum: ["start", "list", "logs", "wait"] },
+			command: { type: "string", description: "start: bash command, like vm_bash" },
+			cwd: { type: "string", description: "start: working directory (default ~/project; relative paths below it)" },
+			job: { type: "string", description: "logs/wait: ID returned by start" },
+			lines: { type: "integer", minimum: 0, maximum: core.MAX_LINES, description: "logs: last N lines (default 200)" },
+			stripAnsi: { type: "boolean", description: "logs: strip terminal escape codes" },
+			timeout: { type: "integer", minimum: 1, maximum: 3600, description: "wait: seconds to observe (default 120)" },
+		}, ["action"]),
+		annotations: { title: "VM jobs", destructiveHint: true, openWorldHint: true },
+		run: (vm, a, x) => core.jobsTool(vm, a, x),
+	},
+	{
 		name: "vm_read",
 		description: `Read a file ${where} Images come back as images. offset/limit are 1-based line numbers.`,
 		inputSchema: obj({ path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, ["path"]),

@@ -96,7 +96,7 @@ describe("stdio", () => {
 	test("tools/list exposes the vm_* tools with schemas", async () => {
 		const { tools } = (await c.call("tools/list")).result;
 		const names = tools.map((t) => t.name);
-		for (const n of ["vm_bash", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage"])
+		for (const n of ["vm_bash", "vm_jobs", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage"])
 			assert.ok(names.includes(n), n);
 		for (const t of tools) assert.equal(t.inputSchema.type, "object", t.name);
 		assert.ok(!tools.some((t) => "run" in t), "internal fields not leaked");
