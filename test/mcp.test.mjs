@@ -42,6 +42,11 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	// vm_jobs needs tmux in the VM; the fake keeps it off the developer's server and works where tmux isn't installed.
 	writeFileSync(path.join(bin, "tmux"), fakeTmux());
 	chmodSync(path.join(bin, "tmux"), 0o755);
+	// Screen grabs: a 1600x1000 desktop; `import` prints the format it was asked for.
+	writeFileSync(path.join(bin, "xdotool"), `#!/usr/bin/env bash\n[ "$1" = getdisplaygeometry ] && echo "1600 1000"\nexit 0\n`);
+	writeFileSync(path.join(bin, "import"), `#!/usr/bin/env bash\nfor a; do :; done; printf '%s' "\${a%%:*}-bytes"\n`);
+	chmodSync(path.join(bin, "xdotool"), 0o755);
+	chmodSync(path.join(bin, "import"), 0o755);
 	writeFileSync(
 		path.join(bin, "boxery"),
 		`#!/usr/bin/env bash
@@ -376,6 +381,75 @@ describe("protocol features", () => {
 		const before = c.notifications.length;
 		await c.tool("vm_bash", { command: "echo quiet" });
 		assert.equal(c.notifications.length, before, "no token, no notifications");
+	});
+});
+
+describe("live view (MCP Apps)", () => {
+	const APPS = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } };
+	const init = (c, capabilities) => c.call("initialize", { protocolVersion: "2025-11-25", capabilities, clientInfo: { name: "t", version: "0" } });
+	let c;
+	before(async () => {
+		c = client(["--vm", "fakevm"]);
+		const r = await init(c, APPS);
+		assert.deepEqual(r.result.capabilities.resources, {});
+	});
+	after(() => c.close());
+
+	test("clients without MCP Apps see no vm_view and no resources", async () => {
+		const plain = client(["--vm", "fakevm"]);
+		try {
+			const r = await init(plain, {});
+			assert.equal(r.result.capabilities.resources, undefined);
+			const names = (await plain.call("tools/list")).result.tools.map((t) => t.name);
+			assert.ok(!names.includes("vm_view") && !names.includes("vm_view_frame"));
+			assert.deepEqual((await plain.call("resources/list")).result.resources, []);
+		} finally {
+			plain.close();
+		}
+	});
+
+	test("--ui offers the view without the capability", async () => {
+		const forced = client(["--vm", "fakevm", "--ui"]);
+		try {
+			await init(forced, {});
+			assert.ok((await forced.call("tools/list")).result.tools.some((t) => t.name === "vm_view"));
+		} finally {
+			forced.close();
+		}
+	});
+
+	test("vm_view links the ui:// resource; vm_view_frame is app-only", async () => {
+		const { tools } = (await c.call("tools/list")).result;
+		const view = tools.find((t) => t.name === "vm_view");
+		assert.deepEqual(view._meta.ui, { resourceUri: "ui://boxery/desktop", visibility: ["model", "app"] });
+		assert.equal(view._meta["ui/resourceUri"], "ui://boxery/desktop");
+		assert.equal(view.annotations.readOnlyHint, true);
+		assert.deepEqual(tools.find((t) => t.name === "vm_view_frame")._meta.ui.visibility, ["app"]);
+		const { resources } = (await c.call("resources/list")).result;
+		assert.deepEqual(resources.map((r) => [r.uri, r.mimeType]), [["ui://boxery/desktop", "text/html;profile=mcp-app"]]);
+	});
+
+	test("resources/read serves the view page", async () => {
+		const [page] = (await c.call("resources/read", { uri: "ui://boxery/desktop" })).result.contents;
+		assert.equal(page.mimeType, "text/html;profile=mcp-app");
+		assert.match(page.text, /^<!doctype html>/);
+		for (const m of ["ui/initialize", "vm_view_frame", "vm_click", "vm_type", "vm_key", "vm_scroll"]) assert.ok(page.text.includes(m), m);
+		assert.equal((await c.call("resources/read", { uri: "ui://boxery/nope" })).error.code, -32002);
+	});
+
+	test("vm_view names the VM for the page; frames are JPEGs in vm_click coordinates", async () => {
+		const view = await c.tool("vm_view", {});
+		assert.equal(view.isError, false, view.content[0].text);
+		assert.match(view.content[0].text, /live view of VM "fakevm" \(1600x1000\)/);
+		assert.deepEqual(view.structuredContent, { vm: "fakevm", host: "legacy", width: 1280, height: 800, screenWidth: 1600, screenHeight: 1000 });
+		const f = await c.tool("vm_view_frame", { vm: "fakevm" });
+		const img = f.content.find((x) => x.type === "image");
+		assert.equal(img.mimeType, "image/jpeg");
+		assert.equal(Buffer.from(img.data, "base64").toString(), "jpeg-bytes");
+		assert.equal(f.structuredContent.width, 1280);
+		const shot = await c.tool("vm_screenshot", {});
+		assert.equal(shot.content[1].mimeType, "image/png");
+		assert.equal(shot.structuredContent, undefined);
 	});
 });
 

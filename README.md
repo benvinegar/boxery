@@ -120,6 +120,7 @@ Every integration exposes the same tools:
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
 | `vm_info` | Read-only: list VMs, shapes, grants and snapshots |
 | `vm_lease` | Lease a VM from the shared pool; renewed while the session runs, released when it ends |
+| `vm_view` | MCP Apps clients only: a live view of the desktop in the chat, which you can take control of ([details](docs/mcp.md#live-desktop-view)) |
 
 Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
 

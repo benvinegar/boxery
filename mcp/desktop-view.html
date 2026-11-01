@@ -1,0 +1,460 @@
+<!doctype html>
+<!--
+  Live view of a boxery VM's desktop, an MCP App (ui://boxery/desktop) rendered by vm_view.
+  It speaks MCP Apps JSON-RPC to the host over postMessage, refreshes by calling vm_view_frame,
+  and in control mode sends the user's mouse and keyboard through vm_click, vm_type, vm_key and
+  vm_scroll. No network access of its own: every call goes through the host to the MCP server.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>boxery desktop</title>
+<style>
+	/* Fallbacks for the host's theme variables (MCP Apps hostContext.styles). */
+	:root {
+		color-scheme: light dark;
+		--color-background-primary: light-dark(#ffffff, #1c1c1e);
+		--color-background-secondary: light-dark(#f4f4f5, #2a2a2d);
+		--color-text-primary: light-dark(#18181b, #f4f4f5);
+		--color-text-secondary: light-dark(#5f5f66, #a1a1aa);
+		--color-text-danger: light-dark(#b42318, #f97066);
+		--color-text-success: light-dark(#067647, #47cd89);
+		--color-text-warning: light-dark(#b54708, #fdb022);
+		--color-border-primary: light-dark(#d4d4d8, #3f3f46);
+		--color-ring-primary: light-dark(#2563eb, #60a5fa);
+		--font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+		--font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+		--font-text-sm-size: 13px;
+		--border-radius-sm: 6px;
+		--border-radius-md: 8px;
+	}
+	* { box-sizing: border-box; }
+	[hidden] { display: none !important; }
+	html { overflow: hidden; } /* the host sizes the frame to us; scrollbars would skew the size we report */
+	html, body { margin: 0; background: var(--color-background-primary); color: var(--color-text-primary); font: var(--font-text-sm-size) / 1.4 var(--font-sans); }
+	body { display: flex; flex-direction: column; }
+	html.fullscreen, html.fullscreen body { height: 100vh; }
+
+	header { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--color-border-primary); flex-wrap: wrap; }
+	.name { font-family: var(--font-mono); font-weight: 600; }
+	.status { display: inline-flex; align-items: center; gap: 6px; color: var(--color-text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-secondary); flex: none; }
+	.live .dot { background: var(--color-text-success); }
+	.error .dot { background: var(--color-text-danger); }
+	.paused .dot { background: var(--color-text-warning); }
+	.spacer { flex: 1; }
+	button {
+		font: inherit; color: inherit; background: var(--color-background-secondary); border: 1px solid var(--color-border-primary);
+		border-radius: var(--border-radius-sm); padding: 3px 10px; cursor: pointer;
+	}
+	button[aria-pressed="true"] { border-color: var(--color-ring-primary); color: var(--color-ring-primary); }
+	button:focus-visible { outline: 2px solid var(--color-ring-primary); outline-offset: 1px; }
+
+	main { position: relative; flex: 1; min-height: 0; background: var(--color-background-secondary); outline: none; }
+	main.control { box-shadow: inset 0 0 0 2px var(--color-ring-primary); cursor: crosshair; }
+	img { display: block; width: 100%; height: auto; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+	html.fullscreen img { height: 100%; object-fit: contain; }
+	.placeholder { aspect-ratio: 16 / 10; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--color-text-secondary); }
+	.placeholder.error { color: var(--color-text-danger); }
+	.hint { position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; border-radius: var(--border-radius-sm); background: rgb(0 0 0 / 0.6); color: #fff; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+	<span class="name" id="name">boxery</span>
+	<span class="status" id="status"><span class="dot"></span><span id="statusText">connecting…</span></span>
+	<span class="spacer"></span>
+	<button id="control" aria-pressed="false" title="Send your mouse and keyboard to the VM">Take control</button>
+	<button id="pause" aria-pressed="false">Pause</button>
+	<button id="fullscreen" hidden>Fullscreen</button>
+</header>
+<main id="stage" tabindex="0" aria-label="VM desktop">
+	<div class="placeholder" id="placeholder">Waiting for the VM…</div>
+	<img id="frame" alt="VM desktop" hidden>
+	<span class="hint" id="hint" hidden>Controlling the VM: keys and clicks go to it</span>
+</main>
+<script>
+"use strict";
+const MIN_INTERVAL_MS = 700; // between frame requests (each one is an ssh round trip + screen grab)
+const IDLE_PAUSE_MS = 10 * 60_000; // stop refreshing when nobody has touched the view for this long
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+const $ = (id) => document.getElementById(id);
+
+// ------------------------------------------------------------ host connection (JSON-RPC over postMessage)
+
+let nextId = 1;
+const pending = new Map();
+function request(method, params) {
+	const id = nextId++;
+	return new Promise((resolve, reject) => {
+		pending.set(id, { resolve, reject });
+		window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+	});
+}
+const notify = (method, params) => window.parent.postMessage({ jsonrpc: "2.0", method, ...(params ? { params } : {}) }, "*");
+const respond = (id, result, error) => window.parent.postMessage({ jsonrpc: "2.0", id, ...(error ? { error } : { result }) }, "*");
+
+async function callTool(name, args) {
+	const r = await request("tools/call", { name, arguments: { ...args, vm: target.vm, ...(target.host ? { host: target.host } : {}) } });
+	if (r?.isError) throw new Error(r.content?.find((c) => c.type === "text")?.text || `${name} failed`);
+	return r;
+}
+
+window.addEventListener("message", (e) => {
+	if (e.source !== window.parent) return;
+	const m = e.data;
+	if (!m || m.jsonrpc !== "2.0") return;
+	if (m.method == null && m.id != null) {
+		const p = pending.get(m.id);
+		if (!p) return;
+		pending.delete(m.id);
+		if (m.error) p.reject(new Error(m.error.message || "request failed"));
+		else p.resolve(m.result);
+		return;
+	}
+	onHostMessage(m);
+});
+
+function onHostMessage({ id, method, params }) {
+	switch (method) {
+		case "ui/notifications/tool-input":
+			if (params?.arguments?.vm) setTarget({ vm: params.arguments.vm, host: params.arguments.host });
+			return;
+		case "ui/notifications/tool-result":
+			if (params?.isError) return fail(params.content?.find((c) => c.type === "text")?.text || "vm_view failed");
+			if (params?.structuredContent?.vm) setTarget({ vm: params.structuredContent.vm, host: params.structuredContent.host });
+			else if (!target.vm) {
+				// Clients on protocol versions before 2025-06-18 get no structuredContent; the text names the VM.
+				const named = params?.content?.find((c) => c.type === "text")?.text?.match(/VM "([^"]+)"/);
+				if (named) setTarget({ vm: named[1], host: target.host });
+			}
+			return start();
+		case "ui/notifications/tool-cancelled":
+			return fail(`Cancelled${params?.reason ? `: ${params.reason}` : ""}`);
+		case "ui/notifications/host-context-changed":
+			return applyContext(params);
+		case "ui/resource-teardown":
+			stop();
+			return respond(id, {});
+		case "ping":
+			return respond(id, {});
+		default:
+			if (id != null) respond(id, undefined, { code: -32601, message: `method not found: ${method}` });
+	}
+}
+
+// ------------------------------------------------------------ host context: theme, display mode
+
+let context = {};
+function applyContext(ctx = {}) {
+	context = { ...context, ...ctx };
+	const root = document.documentElement;
+	if (context.theme) root.style.colorScheme = context.theme;
+	for (const [k, v] of Object.entries(ctx.styles?.variables ?? {})) if (v) root.style.setProperty(k, v);
+	if (ctx.styles?.css?.fonts && !$("hostFonts")) {
+		const s = document.createElement("style");
+		s.id = "hostFonts";
+		s.textContent = ctx.styles.css.fonts;
+		document.head.append(s);
+	}
+	root.classList.toggle("fullscreen", context.displayMode === "fullscreen");
+	// Inline, the desktop scales to the width; a host height cap letterboxes it instead of clipping.
+	const maxH = context.displayMode === "fullscreen" ? null : context.containerDimensions?.maxHeight;
+	$("frame").style.maxHeight = maxH ? `${maxH - document.querySelector("header").offsetHeight}px` : "";
+	const canFullscreen = (context.availableDisplayModes ?? []).includes("fullscreen");
+	$("fullscreen").hidden = !canFullscreen;
+	$("fullscreen").textContent = context.displayMode === "fullscreen" ? "Exit fullscreen" : "Fullscreen";
+}
+
+$("fullscreen").onclick = async () => {
+	const mode = context.displayMode === "fullscreen" ? "inline" : "fullscreen";
+	try {
+		applyContext({ displayMode: (await request("ui/request-display-mode", { mode }))?.mode ?? context.displayMode });
+	} catch {}
+};
+
+new ResizeObserver(() => {
+	const r = document.documentElement.getBoundingClientRect();
+	notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) });
+}).observe(document.documentElement);
+
+// ------------------------------------------------------------ frames
+
+const target = { vm: null, host: null };
+let frame = null; // { width, height } of the last frame, in vm_click coordinates
+let running = false;
+let paused = false;
+let visible = true;
+let idle = false; // paused because nobody touched the view for IDLE_PAUSE_MS
+let lastTouch = Date.now();
+let errors = 0;
+let wakeUp = () => {};
+
+function setTarget({ vm, host }) {
+	target.vm = vm;
+	target.host = host ?? null;
+	$("name").textContent = host ? `${host}/${vm}` : vm;
+}
+
+function setStatus(kind, text) {
+	$("status").className = `status ${kind}`;
+	$("statusText").textContent = text;
+}
+
+function fail(message) {
+	stop();
+	setStatus("error", "not available");
+	$("placeholder").textContent = message;
+	$("placeholder").classList.add("error");
+	$("placeholder").hidden = false;
+	$("frame").hidden = true;
+}
+
+/** Sleep that kick() can cut short (after input, or when the view becomes visible again). */
+const nap = (ms) => new Promise((resolve) => {
+	const t = setTimeout(resolve, ms);
+	wakeUp = () => { clearTimeout(t); resolve(); };
+});
+const kick = () => wakeUp();
+
+async function start() {
+	if (running || !target.vm) return;
+	running = true;
+	let shown = 0;
+	let since = performance.now();
+	while (running) {
+		if (paused || !visible || Date.now() - lastTouch > IDLE_PAUSE_MS) {
+			if (!paused && visible) {
+				idle = true;
+				setPaused(true, "paused while idle");
+			}
+			await nap(60_000);
+			continue;
+		}
+		const t0 = performance.now();
+		try {
+			const r = await callTool("vm_view_frame", {});
+			const img = r.content?.find((c) => c.type === "image");
+			if (!img) throw new Error("no image in frame");
+			frame = r.structuredContent ?? frame;
+			$("frame").src = `data:${img.mimeType};base64,${img.data}`;
+			$("frame").hidden = false;
+			$("placeholder").hidden = true;
+			errors = 0;
+			shown++;
+			const secs = (performance.now() - since) / 1000;
+			if (secs >= 3) {
+				setStatus("live", `live · ${(shown / secs).toFixed(1)} fps`);
+				shown = 0;
+				since = performance.now();
+			} else if (!$("status").classList.contains("live")) setStatus("live", "live");
+		} catch (e) {
+			if (!running) break;
+			errors++;
+			setStatus("error", `${e.message.split("\n")[0]} · retrying`);
+		}
+		const backoff = errors ? Math.min(30_000, 1000 * 2 ** errors) : MIN_INTERVAL_MS - (performance.now() - t0);
+		if (backoff > 0) await nap(backoff);
+	}
+}
+
+function stop() {
+	running = false;
+	kick();
+}
+
+function setPaused(on, why) {
+	paused = on;
+	if (!on) idle = false;
+	$("pause").setAttribute("aria-pressed", String(on));
+	$("pause").textContent = on ? "Resume" : "Pause";
+	if (on) setStatus("paused", why ?? "paused");
+	else {
+		lastTouch = Date.now();
+		setStatus("live", "live");
+		kick();
+	}
+}
+$("pause").onclick = () => setPaused(!paused);
+
+// Don't grab frames nobody can see: the chat scrolled away, or the window is hidden.
+const observer = new IntersectionObserver(([entry]) => {
+	visible = entry.isIntersecting && !document.hidden;
+	if (visible) kick();
+});
+observer.observe($("stage"));
+document.addEventListener("visibilitychange", () => {
+	visible = !document.hidden;
+	if (visible) kick();
+});
+for (const ev of ["pointermove", "pointerdown", "keydown", "wheel"])
+	document.addEventListener(ev, (e) => {
+		lastTouch = Date.now();
+		if (idle && !e.target.closest?.("button")) setPaused(false); // the Resume button resumes by itself
+	}, { passive: true });
+
+// ------------------------------------------------------------ control: user input → vm_* tools
+
+let control = false;
+let actions = 0;
+let queue = Promise.resolve();
+/** Input runs in order, one call at a time; each refreshes the view as soon as it lands. */
+function send(name, args) {
+	flushClick(); // a click still waiting out the double-click window goes first
+	actions++;
+	queue = queue.then(() => callTool(name, { ...args, screenshot: false })).then(kick, (e) => setStatus("error", e.message.split("\n")[0]));
+}
+
+function setControl(on) {
+	control = on;
+	$("control").setAttribute("aria-pressed", String(on));
+	$("control").textContent = on ? "Release control" : "Take control";
+	$("stage").classList.toggle("control", on);
+	$("hint").hidden = !on;
+	if (on) {
+		actions = 0;
+		$("stage").focus();
+	} else {
+		flushText();
+		// Let the agent know the desktop changed under it.
+		if (actions > 0)
+			request("ui/update-model-context", {
+				content: [{ type: "text", text: `The user controlled VM "${target.vm}" from the live view (${actions} inputs). Take a fresh vm_screenshot before acting on the desktop.` }],
+			}).catch(() => {});
+	}
+}
+$("control").onclick = () => setControl(!control);
+
+/** Page coordinates → frame (vm_click) coordinates, allowing for letterboxing in fullscreen. */
+function toFrame(ev) {
+	if (!frame?.width) return null;
+	const r = $("frame").getBoundingClientRect();
+	const s = Math.min(r.width / frame.width, r.height / frame.height);
+	const x = (ev.clientX - r.left - (r.width - frame.width * s) / 2) / s;
+	const y = (ev.clientY - r.top - (r.height - frame.height * s) / 2) / s;
+	if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return null;
+	return { x: Math.round(x), y: Math.round(y) };
+}
+
+// A click waits briefly so a double-click goes over as one double click, not two singles.
+// Any other input sends it straight away (send → flushClick), so nothing overtakes it.
+let pendingClick = null;
+function flushClick() {
+	if (!pendingClick) return;
+	const { p, timer } = pendingClick;
+	pendingClick = null;
+	clearTimeout(timer);
+	send("vm_click", p);
+}
+$("frame").addEventListener("click", (ev) => {
+	if (!control) return;
+	const p = toFrame(ev);
+	if (!p) return;
+	if (ev.detail >= 2 && pendingClick) {
+		clearTimeout(pendingClick.timer);
+		pendingClick = null;
+		return send("vm_click", { ...p, double: true });
+	}
+	flushClick();
+	pendingClick = { p, timer: setTimeout(flushClick, 250) };
+});
+$("frame").addEventListener("contextmenu", (ev) => {
+	if (!control) return;
+	ev.preventDefault();
+	const p = toFrame(ev);
+	if (p) send("vm_click", { ...p, button: "right" });
+});
+$("frame").addEventListener("auxclick", (ev) => {
+	if (!control || ev.button !== 1) return;
+	const p = toFrame(ev);
+	if (p) send("vm_click", { ...p, button: "middle" });
+});
+
+let wheel = { dx: 0, dy: 0, at: null, timer: null };
+$("stage").addEventListener("wheel", (ev) => {
+	if (!control) return;
+	ev.preventDefault();
+	wheel.dx += ev.deltaX;
+	wheel.dy += ev.deltaY;
+	wheel.at = toFrame(ev) ?? wheel.at;
+	wheel.timer ??= setTimeout(() => {
+		const { dx, dy, at } = wheel;
+		wheel = { dx: 0, dy: 0, at: null, timer: null };
+		if (!at) return;
+		const vertical = Math.abs(dy) >= Math.abs(dx);
+		const d = vertical ? dy : dx;
+		const amount = Math.max(1, Math.min(15, Math.round(Math.abs(d) / 60)));
+		send("vm_scroll", { ...at, direction: vertical ? (d > 0 ? "down" : "up") : d > 0 ? "right" : "left", amount });
+	}, 150);
+}, { passive: false });
+
+// Plain characters are batched into vm_type; anything with a modifier, or a named key, goes to vm_key.
+const KEYSYM = {
+	Enter: "Return", Backspace: "BackSpace", Tab: "Tab", Escape: "Escape", Delete: "Delete", Insert: "Insert",
+	ArrowLeft: "Left", ArrowRight: "Right", ArrowUp: "Up", ArrowDown: "Down", Home: "Home", End: "End",
+	PageUp: "Page_Up", PageDown: "Page_Down", " ": "space",
+};
+const CODESYM = {
+	Comma: "comma", Period: "period", Slash: "slash", Semicolon: "semicolon", Quote: "apostrophe", BracketLeft: "bracketleft",
+	BracketRight: "bracketright", Backslash: "backslash", Minus: "minus", Equal: "equal", Backquote: "grave", Space: "space",
+};
+let text = "";
+let textTimer = null;
+function flushText() {
+	clearTimeout(textTimer);
+	if (text) send("vm_type", { text });
+	text = "";
+}
+$("stage").addEventListener("keydown", (ev) => {
+	if (!control || ["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead"].includes(ev.key) || ev.isComposing) return;
+	const ctrl = ev.ctrlKey || (isMac && ev.metaKey); // Cmd on a Mac means Ctrl on the VM
+	const sup = ev.metaKey && !isMac;
+	if (ev.key.length === 1 && !ctrl && !ev.altKey && !sup) {
+		ev.preventDefault();
+		text += ev.key;
+		clearTimeout(textTimer);
+		textTimer = setTimeout(flushText, 120);
+		return;
+	}
+	let sym = KEYSYM[ev.key] ?? (/^F\d{1,2}$/.test(ev.key) ? ev.key : null);
+	if (!sym) {
+		const c = ev.code;
+		sym = /^Key[A-Z]$/.test(c) ? c.slice(3).toLowerCase() : /^Digit\d$/.test(c) ? c.slice(5) : CODESYM[c];
+	}
+	if (!sym) return;
+	if (sym === "v" && ctrl && !ev.altKey && !ev.shiftKey) return; // no preventDefault: the paste event below types the local clipboard
+	ev.preventDefault();
+	const mods = [ctrl && "ctrl", ev.altKey && "alt", ev.shiftKey && "shift", sup && "super"].filter(Boolean);
+	flushText();
+	send("vm_key", { keys: [...mods, sym].join("+") });
+});
+
+// Ctrl/Cmd+V types the local clipboard's text into the VM (there is no shared clipboard).
+document.addEventListener("paste", (ev) => {
+	if (!control) return;
+	ev.preventDefault();
+	const pasted = ev.clipboardData?.getData("text/plain");
+	if (!pasted) return;
+	flushText();
+	send("vm_type", { text: pasted });
+});
+
+// ------------------------------------------------------------ start
+
+(async () => {
+	try {
+		const init = await request("ui/initialize", {
+			appInfo: { name: "boxery-desktop", version: "1.0.0" },
+			appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
+			protocolVersion: "2026-01-26",
+		});
+		applyContext(init?.hostContext);
+		notify("ui/notifications/initialized");
+	} catch (e) {
+		fail(`Could not connect to the host: ${e.message}`);
+	}
+})();
+</script>
+</body>
+</html>
