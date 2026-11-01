@@ -2,15 +2,16 @@
 
 ← [Docs](README.md)
 
-The host runs in Node. Bash remains where it fits: the entry point (`host/boxery-host`), the ssh ProxyCommand path, and the hypervisor backends (`host/backends/*.sh`). `init`, `build-base` and `add-key` still run in `host/boxery-host-legacy.sh` until they move too ([plan](plans/2026-11-01-host-orchestration-in-node.md)).
+The host runs in Node. Bash remains where it fits: the entry point (`host/boxery-host`), the ssh ProxyCommand path, and the hypervisor backends (`host/backends/*.sh`) ([plan](plans/2026-11-01-host-orchestration-in-node.md)).
 
 ## Ownership
 
 | Module | Owns | Does not own |
 |---|---|---|
 | `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles and grants | Host lease decisions or hypervisor mechanics |
-| `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, legacy commands, everything else to Node | Any command logic |
-| `host/boxery-host.mjs` | CLI: argument dispatch, listings and their output formats, supervised mutating commands, private worker entry points | Lease policy, hypervisor commands |
+| `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, everything else to Node (the node `init` recorded) | Any command logic |
+| `host/boxery-host.mjs` + `host/cli.mjs` | Node version check; CLI: argument dispatch, listings and their output formats, supervised mutating commands, private worker entry points | Lease policy, hypervisor commands |
+| `host/setup.mjs` | `init` (state directory, `host.env`, proxy/reaper services), `build-base`, `add-key` | VM lifecycle |
 | `host/vms.mjs`, `host/images.mjs`, `host/pool.mjs` | VM, image and pool-membership commands; edge routes | Locking (the supervisor holds locks around them) |
 | `host/seed.mjs` | Per-VM cloud-config: keys, proxy token, agent configs | Delivering it to the guest (backends) |
 | `host/recovery.mjs` | Replaying an abandoned operation's intents; inventory drift | Deciding which operations are abandoned |
@@ -73,7 +74,9 @@ Documented CLI arguments, listing output (tables and JSON), environment override
 - `test/lease-workflows.test.mjs`: injected policy tests, no SQLite or subprocesses; also run on Node 20.
 - `test/leases.test.mjs`: real SQLite transaction/state tests.
 - `test/operations.test.mjs`: real dispatcher/supervisor crash tests against the fake backend, plus runtime parsing and callback-boundary checks.
-- `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`: the backend shim, guest ssh, configuration, shapes and seed, without SQLite.
+- `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`, `test/host-setup.test.mjs`: the backend shim, guest ssh, configuration, shapes, seed and service files, without SQLite.
+- `test/shell/host-init.sh`: `init`, `add-key` and `build-base` with stubbed service managers.
+- `test/bench/host-timings.sh`: not a test; mean timings of common commands, to compare before and after a change.
 - `test/shell/*.sh`: controller, backend and CLI integration contracts, including Bash 3.2.
 
 See [Lifecycle coordination and recovery](lifecycle.md) for the locking, recovery and upgrade contract.

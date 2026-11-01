@@ -4,17 +4,13 @@
 # controller (`boxery`) calls it over ssh, or directly when the controller runs on the host itself (HOST=local).
 # Entry point only: commands run in Node (host/boxery-host.mjs). `connect` is the ssh ProxyCommand for
 # every VM connection, so it stays in Bash (host/backend.sh) and never pays Node's startup.
-# Commands not moved to Node yet run in host/boxery-host-legacy.sh
-# (docs/plans/2026-11-01-host-orchestration-in-node.md).
+# VM-platform specifics live in host/backends/<backend>.sh (see host/backends/README.md).
 set -eu
 
 resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
 
-case ${1:-} in
-connect) shift; exec "$ROOT/host/backend.sh" __connect "$@" ;;
-init | build-base | add-key) exec "$ROOT/host/boxery-host-legacy.sh" "$@" ;;
-esac
+if [ "${1:-}" = connect ]; then shift; exec "$ROOT/host/backend.sh" __connect "$@"; fi
 
 # The node `init` recorded: nvm/fnm shims are often missing from PATH in non-interactive ssh sessions.
 node=${BOXERY_NODE:-}

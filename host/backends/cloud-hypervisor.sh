@@ -53,7 +53,7 @@ ch_active() { systemctl --user is-active --quiet "$(ch_unit "$1")"; }
 ch_copy() { cp --reflink=auto --sparse=always "$1" "$2"; }   # instant on XFS/btrfs, a full copy elsewhere
 
 backend_check() {
-	need cloud-hypervisor; need ch-remote; need qemu-img; need cloud-localds; need ip; need nft; need socat; need curl
+	need cloud-hypervisor; need ch-remote; need qemu-img; need cloud-localds; need ip; need nft; need socat; need curl; need jq
 	local v; v=$(cloud-hypervisor --version 2>/dev/null | sed -n 's/.*v\([0-9][0-9]*\)\..*/\1/p')
 	[[ -n $v ]] && ((v >= CH_MIN_VERSION)) || die "need cloud-hypervisor v$CH_MIN_VERSION or newer (found: $(cloud-hypervisor --version 2>&1 | head -1)); older versions can't open qcow2 overlays or corrupt them in snapshots"
 	[[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm not accessible (add yourself to the kvm group)"
