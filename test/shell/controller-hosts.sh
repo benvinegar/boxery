@@ -163,4 +163,40 @@ output=$("$CLI" setup local --host-bin "$localbin")
 if printf '%s\n' "$output" | grep -q '^    Include '; then echo 'nonportable percent Include recommended' >&2; exit 1; fi
 printf '%s\n' "$output" | grep -q 'instead of a global Include'
 "$REAL_SSH" -F "$BOXERY_HOME/ssh_config" -G demo.boxery | grep -q '^user agent$'
+# host add --backend: creates the host-side profile, then every call (and the ProxyCommand) names it.
+export BOXERY_HOME="$tmp/profiles-root" PROFILE_LOG="$tmp/profile.log"
+mkdir -p "$REMOTE_HOME/bin"
+cat >"$REMOTE_HOME/bin/profiled" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PROFILE_LOG"
+p=""; if [ "$1" = --profile ]; then p=$2; shift 2; fi
+if [ -n "$p" ] && [ ! -f "$HOME/made-$p" ] && [ "$1" != init ]; then echo "no profile '$p'" >&2; exit 1; fi
+case $1 in
+init) [ "${3:-}" != broken ] || { echo "backend check failed" >&2; exit 1; }; : >"$HOME/made-$p" ;;
+add-key) cat >/dev/null ;;
+ls) echo "demo running ${p:-default}" ;;
+connect) printf 'CONNECTED:%s:%s:%s\n' "${p:-default}" "$2" "$3" ;;
+esac
+STUB
+chmod +x "$REMOTE_HOME/bin/profiled"
+out=$("$CLI" host add gamma user@fake --host-bin '~/bin/profiled' --backend exe)
+grep -qx -- '--profile gamma init --backend exe' "$PROFILE_LOG"
+grep -qx -- '--profile gamma add-key' "$PROFILE_LOG"
+printf '%s\n' "$out" | grep -q 'boxery --host gamma build-base'
+grep -qx "HOST_PROFILE='gamma'" "$BOXERY_HOME/profiles/gamma/config"
+"$CLI" --host gamma ls | grep -q '^demo running gamma '
+proxy=$("$REAL_SSH" -F "$BOXERY_HOME/profiles/gamma/ssh_config" -G demo.boxery | sed -n 's/^proxycommand //p')
+proxy=${proxy//%h/demo.boxery}; proxy=${proxy//%p/22}
+sh -c "$proxy" | grep -q '^CONNECTED:gamma:demo.boxery:22$'
+# --profile reuses one that exists (no init); a missing one or a failed init registers nothing.
+: >"$PROFILE_LOG"
+"$CLI" host add gamma2 user@fake --host-bin '~/bin/profiled' --profile gamma >/dev/null
+if grep -q init "$PROFILE_LOG"; then echo '--profile ran init' >&2; exit 1; fi
+"$CLI" --host gamma2 ls | grep -q '^demo running gamma '
+for args in "--profile nosuch" "--backend broken" "--backend ../x" "--profile Bad"; do
+	# shellcheck disable=SC2086 # word-split on purpose
+	if "$CLI" host add delta user@fake --host-bin '~/bin/profiled' $args >/dev/null 2>&1; then echo "host add $args succeeded" >&2; exit 1; fi
+	[ ! -e "$BOXERY_HOME/host-registry/delta" ]; [ ! -e "$BOXERY_HOME/profiles/delta" ]
+done
+if "$CLI" setup user@fake --host-bin '~/bin/profiled' --backend exe >/dev/null 2>&1; then echo 'setup --backend without a profile' >&2; exit 1; fi
 echo 'PASS: named registry, default/reset, import, safe removal, isolation, failures and remote quoting'

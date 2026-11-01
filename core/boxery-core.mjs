@@ -67,6 +67,38 @@ export function registeredHosts() {
 	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
 	return [resolveHost("legacy"), ...names.map(resolveHost)];
 }
+const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
+/**
+ * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
+ * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
+ * --config-dir, which name local files (an imported config is shell code). Never changes the default.
+ */
+export function addHost({ name, dest, backend, profile }, { progress } = {}) {
+	assertHost(name);
+	if (name === "legacy") throw new Error("legacy is reserved");
+	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
+	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
+	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
+	return registryCli(["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])], 600_000, { progress });
+}
+/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
+export function removeHost(name) {
+	assertHost(name);
+	if (name === "legacy") throw new Error("legacy is reserved");
+	return registryCli(["host", "rm", name], 60_000);
+}
+// Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
+function registryCli(args, timeout, { progress } = {}) {
+	return new Promise((resolve, reject) => {
+		const env = { ...process.env, BOXERY_HOME };
+		delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN;
+		const child = execFile(BOXERY, args, { env, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
+			else resolve(`${stdout}${stderr}`.trim());
+		});
+		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
+	});
+}
 /** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
 export function controllerCommand(args) {
 	const host = currentHost();
@@ -954,6 +986,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
 		case "images":
 			return boxeryCli(["images"], 60_000);
+		case "build-base":
+			return boxeryCli(["build-base"], 1_800_000, opts);
 		case "grants":
 			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:

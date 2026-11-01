@@ -2,7 +2,7 @@
 // table (core/boxery-tools.mjs), the same table the MCP server is built from.
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import * as nodeModule from "node:module"; // namespace import: Node 20 has no registerHooks export
+import * as nodeModule from "node:module"; // namespace import: Node < 22.15 has no registerHooks export
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";

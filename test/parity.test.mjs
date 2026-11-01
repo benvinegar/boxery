@@ -29,7 +29,7 @@ const CLI_FOR_TOOL = {
 	vm_manage: {
 		list: "ls", new: "new", fork: "fork", rm: "rm", start: "start", stop: "stop", resize: "resize",
 		snap: "snap", snaps: "snaps", "snap-rm": "snap-rm", revert: "revert", images: "images",
-		use: NO_CURRENT, none: NO_CURRENT, grants: "grants", shapes: "shapes",
+		use: NO_CURRENT, none: NO_CURRENT, grants: "grants", shapes: "shapes", "build-base": "build-base",
 	},
 	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", version: "version" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
@@ -39,7 +39,7 @@ const CLI_FOR_TOOL = {
 // CLI commands no tool maps to, and why agents don't get them.
 const CLI_ONLY = {
 	help: "usage text",
-	host: "registering hosts is the user's setup",
+	host: "the host registry belongs to the CLI user (MCP adds vm_manage host_add/host_rm outside the shared tools; selecting the default stays theirs)",
 	setup: "configuring the VM host is the user's setup",
 	"upgrade-host": "upgrading the host is the user's to run (vm_info version tells agents to ask)",
 	revoke: "only the user takes access away (agents can only ask for it, with vm_grant)",

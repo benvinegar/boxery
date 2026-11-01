@@ -1,12 +1,14 @@
 // One-time host setup: init (state directory, settings, proxy and reaper services), build-base and
 // add-key. Administrative: these run outside the lifecycle lock protocol (docs/lifecycle.md).
 import { spawn } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
-import { HOST_ENV } from "./config.mjs";
+import { discover } from "./boxery-upgrade.mjs";
+import { defaultConf, HOST_ENV } from "./config.mjs";
 import { baseUserdata } from "./seed.mjs";
-import { fail, log, readFd, sleep } from "./util.mjs";
+import { fail, jsonArray, log, print, readFd, sleep, table } from "./util.mjs";
 
 const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay on the host).
 # ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
@@ -42,6 +44,81 @@ export function hostEnv(config, node) {
 		if (k === "BOXERY_CH_SUDO" ? env[k] !== undefined : env[k]) lines.push(`${k}=${env[k]}`); // CH_SUDO "" (run as root) is a real value
 	}
 	return `${lines.join("\n")}\n`;
+}
+
+// ---------------------------------------------------------------- profiles
+// Several profiles can share a host: each has its own BOXERY_CONF (state, host.env), proxy port and
+// service names. `--profile NAME` ones live in ~/.config/boxery-NAME; others are found from the
+// services they installed.
+
+const readEnvFile = (file) => {
+	const env = {};
+	let text = "";
+	try { text = readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+	for (const line of text.split("\n")) { const i = line.indexOf("="); if (i > 0) env[line.slice(0, i)] = line.slice(i + 1); }
+	return env;
+};
+
+/** Every initialized profile on this host: {name, conf, backend, proxyPort, proxyUnit}. */
+export function hostProfiles({ home = homedir(), services = discover() } = {}) {
+	const def = defaultConf(), parent = path.dirname(def);
+	const confs = new Set([def, ...services.profiles.keys(), ...services.others.map((o) => o.conf)]);
+	try { for (const d of readdirSync(parent)) if (/^boxery-[a-z][a-z0-9-]{0,30}$/.test(d)) confs.add(path.join(parent, d)); }
+	catch (e) { if (e.code !== "ENOENT") throw e; }
+	const out = [];
+	for (const conf of [...confs].sort()) {
+		if (!existsSync(path.join(conf, "host.env"))) continue;
+		const env = readEnvFile(path.join(conf, "host.env"));
+		const base = path.basename(conf);
+		const name = conf === def ? "default" : path.dirname(conf) === parent && base.startsWith("boxery-") ? base.slice("boxery-".length) : conf.replace(home, "~");
+		out.push({ name, conf, backend: env.BOXERY_BACKEND || "libvirt", proxyPort: env.BOXERY_PROXY_PORT || "8088", proxyUnit: env.BOXERY_PROXY_UNIT || "boxery-proxy", env });
+	}
+	return out;
+}
+
+// The settings that say where a backend keeps its VMs. Two profiles of one backend with the same
+// values would manage the same VMs (and ports) under two lease stores. Backends not listed (fake, a
+// new one) aren't checked.
+const NAMESPACE = {
+	libvirt: /^(BOXERY_(POOL|POOL_DIR|BASE_VOL|DOMAIN_PREFIX|NET)|LIBVIRT_DEFAULT_URI)$/,
+	lima: /^(LIMA_HOME|BOXERY_LIMA_PREFIX)$/,
+	"cloud-hypervisor": /^BOXERY_CH_(DIR|NET)$/,
+	exe: /^BOXERY_EXE_(DIR|PORT_BASE)$/,
+	boat: /^BOXERY_BOAT_(DIR|PORT_BASE)$/,
+};
+const namespace = (backend, env) => JSON.stringify(HOST_ENV.filter((k) => NAMESPACE[backend]?.test(k)).map((k) => env[k] || ""));
+
+const portFree = (port) => new Promise((resolve) => {
+	const srv = createServer().once("error", () => resolve(false));
+	srv.listen(Number(port), "127.0.0.1", () => srv.close(() => resolve(true)));
+});
+
+/** Fail if this profile would share a proxy port, service names or backend VMs with another one. */
+function checkProfiles(rt, others) {
+	const hint = rt.profile ? "" : " (a second profile on one host: boxery-host --profile NAME init --backend B)";
+	for (const o of others) {
+		if (o.proxyPort === rt.proxyPort) fail(`proxy port ${rt.proxyPort} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_PORT${hint}`);
+		if (o.proxyUnit === rt.proxyUnit) fail(`service name ${rt.proxyUnit} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_UNIT${hint}`);
+		if (NAMESPACE[rt.backend] && o.backend === rt.backend && namespace(o.backend, o.env) === namespace(rt.backend, rt.env)) {
+			const keys = HOST_ENV.filter((k) => NAMESPACE[rt.backend].test(k));
+			fail(`profile ${o.name} (${o.conf}) already uses the ${rt.backend} backend with the same settings, so both would manage the same VMs; ` +
+				`give this one its own ${keys.join(", ")} or use another backend`);
+		}
+	}
+}
+
+/** A named profile's first init picks a proxy port no other profile uses and nothing listens on. */
+async function pickProxyPort(others) {
+	const taken = new Set(["8088", ...others.map((o) => o.proxyPort)]);
+	for (let p = 8089; p < 8189; p++) if (!taken.has(String(p)) && await portFree(p)) return String(p);
+	return fail("no free proxy port in 8089-8188; set BOXERY_PROXY_PORT");
+}
+
+export function profiles(_rt, [arg]) {
+	const list = hostProfiles().map(({ env: _env, ...p }) => p);
+	if (arg === "--json") return print(jsonArray(list));
+	if (arg) fail("usage: profiles [--json]");
+	print(table([16, 18, 7, 24], [["PROFILE", "BACKEND", "PORT", "UNIT", "CONF"], ...list.map((p) => [p.name, p.backend, p.proxyPort, p.proxyUnit, p.conf])]));
 }
 
 // ---------------------------------------------------------------- services
@@ -147,6 +224,20 @@ async function startServices(rt, { reaper }) {
 
 // ---------------------------------------------------------------- commands
 export async function init(rt) {
+	const others = hostProfiles().filter((p) => path.resolve(p.conf) !== rt.conf);
+	if (rt.profile && !rt.env.BOXERY_PROXY_PORT) {
+		// First init of a named profile (later ones read the port back from its host.env). Loaded here:
+		// the runtime needs node:sqlite, and this module also loads on older Node (tests, build-base).
+		const { createRuntime } = await import("./runtime.mjs");
+		const sub = createRuntime({ ...process.env, BOXERY_PROXY_PORT: await pickProxyPort(others) });
+		try { return await initProfile(sub, others); } finally { sub.close(); }
+	}
+	return initProfile(rt, others);
+}
+
+async function initProfile(rt, others) {
+	// Only a profile's first init: re-running init (or an upgrade) never fails over an existing setup.
+	if (!existsSync(path.join(rt.conf, "host.env"))) checkProfiles(rt, others);
 	need("nc"); need("ps");
 	await rt.vms.call("backend_check");
 	mkdirSync(rt.conf, { recursive: true });
@@ -172,7 +263,8 @@ export async function init(rt) {
 		}
 	}
 	await startServices(rt, { reaper: !process.env.BOXERY_NO_SERVICES });
-	log("init done. Next: boxery-host build-base");
+	if (rt.profile) log(`profile ${rt.profile}: ${rt.backend} backend, ${rt.conf}, proxy port ${rt.proxyPort}, services ${rt.proxyUnit}/${rt.reaperUnit}`);
+	log(`init done. Next: boxery-host ${rt.profile ? `--profile ${rt.profile} ` : ""}build-base`);
 }
 
 export async function buildBase(rt) {

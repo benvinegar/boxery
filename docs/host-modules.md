@@ -71,7 +71,7 @@ This lets tests assert ordering directly. In particular, reset cannot publish FR
 Documented CLI arguments, listing output (tables and JSON), environment overrides, pool state semantics, the intent journal format and backend contracts are unchanged by the move to Node. Lease command stdout stays machine-readable (`NAME LEASE_ID EXPIRES_AT` for acquire; `NAME EXPIRES_AT` for renew); diagnostics stay on stderr. The controller still needs only Bash 3.2 and SSH.
 
 - `test/shell/host-output.sh`: exact output of listings, usage and common errors.
-- `test/lease-workflows.test.mjs`: injected policy tests, no SQLite or subprocesses; also run on Node 20.
+- `test/lease-workflows.test.mjs`: injected policy tests, no SQLite or subprocesses, so they also run on a Node without `node:sqlite`.
 - `test/leases.test.mjs`: real SQLite transaction/state tests.
 - `test/operations.test.mjs`: real dispatcher/supervisor crash tests against the fake backend, plus runtime parsing and callback-boundary checks.
 - `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`, `test/host-setup.test.mjs`: the backend shim, guest ssh, configuration, shapes, seed and service files, without SQLite.
