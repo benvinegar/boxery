@@ -163,6 +163,32 @@ output=$("$CLI" setup local --host-bin "$localbin")
 if printf '%s\n' "$output" | grep -q '^    Include '; then echo 'nonportable percent Include recommended' >&2; exit 1; fi
 printf '%s\n' "$output" | grep -q 'instead of a global Include'
 "$REAL_SSH" -F "$BOXERY_HOME/ssh_config" -G demo.boxery | grep -q '^user agent$'
+# host ls says where each host runs: destination, the backend setup recorded, and which names share a profile.
+export BOXERY_HOME="$tmp/listing"
+backendbin="$tmp/backend-host"
+printf '#!/usr/bin/env bash\ncase $1 in add-key) cat >/dev/null ;; backend) echo lima ;; esac\n' >"$backendbin"
+chmod +x "$backendbin"
+"$CLI" setup local --host-bin "$backendbin" | grep -q '^==> backend: lima$'
+[ "$(cat "$BOXERY_HOME/backend")" = lima ]
+"$CLI" host add mirror --config-dir "$BOXERY_HOME" >/dev/null # records the canonical path (/private/var on macOS)
+real=$(cd "$BOXERY_HOME" && pwd -P)
+"$CLI" host add far user@fake --host-bin "~/$rel" >/dev/null # predates `backend`: nothing recorded
+[ ! -e "$BOXERY_HOME/profiles/far/backend" ]
+"$CLI" host use mirror
+"$CLI" host ls | grep -q "^legacy		$BOXERY_HOME	local	lima	mirror$"
+"$CLI" host ls | grep -q "^mirror	\*	$real	local	lima	legacy$"
+"$CLI" host ls | grep -q "^far		$BOXERY_HOME/profiles/far	user@fake	-	-$"
+"$CLI" host ls --json | jq -e --arg d "$BOXERY_HOME" --arg r "$real" '. == [
+	{name:"legacy",dir:$d,default:false,destination:"local",backend:"lima",same_as:["mirror"]},
+	{name:"far",dir:($d + "/profiles/far"),default:false,destination:"user@fake",backend:null,same_as:[]},
+	{name:"mirror",dir:$r,default:true,destination:"local",backend:"lima",same_as:["legacy"]}]' >/dev/null
+# Legacy honors the ambient override, exactly as routing does; named profiles ignore it.
+BOXERY_HOST=elsewhere "$CLI" host ls --json | jq -e '.[0].destination == "elsewhere" and .[2].destination == "local"' >/dev/null
+# `backend` refreshes the record, and clears it rather than keep a stale one when the host can't say.
+[ "$("$CLI" --host legacy backend)" = lima ]
+printf 'stale\n' >"$BOXERY_HOME/profiles/far/backend"
+if "$CLI" --host far backend >/dev/null 2>&1; then echo 'backend invented a value' >&2; exit 1; fi
+[ ! -e "$BOXERY_HOME/profiles/far/backend" ]
 # host add --backend: creates the host-side profile, then every call (and the ProxyCommand) names it.
 export BOXERY_HOME="$tmp/profiles-root" PROFILE_LOG="$tmp/profile.log"
 mkdir -p "$REMOTE_HOME/bin"

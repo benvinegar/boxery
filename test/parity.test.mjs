@@ -27,11 +27,10 @@ const CLI_FOR_TOOL = {
 	vm_scroll: DESKTOP,
 	vm_browser: DESKTOP,
 	vm_manage: {
-		list: "ls", new: "new", fork: "fork", rm: "rm", start: "start", stop: "stop", resize: "resize",
-		snap: "snap", snaps: "snaps", "snap-rm": "snap-rm", revert: "revert", images: "images",
-		use: NO_CURRENT, none: NO_CURRENT, grants: "grants", shapes: "shapes", "build-base": "build-base",
+		new: "new", fork: "fork", rm: "rm", start: "start", stop: "stop", resize: "resize",
+		snap: "snap", "snap-rm": "snap-rm", revert: "revert", use: NO_CURRENT, none: NO_CURRENT, "build-base": "build-base",
 	},
-	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", version: "version" },
+	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
 };
 
@@ -40,6 +39,7 @@ const CLI_ONLY = {
 	help: "usage text",
 	host: "the host registry belongs to the CLI user (MCP adds vm_manage host_add/host_rm outside the shared tools; selecting the default stays theirs)",
 	setup: "configuring the VM host is the user's setup",
+	backend: "refreshes the backend recorded in the user's profile (vm_info hosts reads that record)",
 	"upgrade-host": "upgrading the host is the user's to run (vm_info version tells agents to ask)",
 	grant: "only the user changes what a VM may access (vm_info grants reads them)",
 	revoke: "only the user changes what a VM may access",

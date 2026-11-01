@@ -70,13 +70,13 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
   ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]
                             change a VM's size; a running VM is restarted. Disk only grows
-  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
+  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
   connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
   proxy-log [N]             recent LLM + edge proxy requests
   edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
   pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
-  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
+  acquire --holder H [--ttl S] [--wait S]    lease a free pool VM (lease ssh pubkey on stdin)
   renew LEASE [--ttl S] | release LEASE | reap | reconcile
 EOF
 run help; same "help" out 0
@@ -85,15 +85,15 @@ run bogus; same "unknown command → usage, exit 1" out 1
 
 echo "== listings"
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR               DISK       SHAPE      KIND      LEASE
-a1               running    127.0.0.1:22000    1GiB       custom     desktop   -
-b2               shut off   127.0.0.1:22001    1GiB       standard   desktop   -
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
+a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   -
+b2               shut off   -                  0.5/40GiB    standard   desktop   -
 EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
 ]
 EOF
 run ls --json; same "ls --json (one element per line)" out 0
@@ -125,31 +125,43 @@ run pool add a1
 echo "==> a1 added to the pool (only lease holders can reach it now)" >"$tmp/expected"; same "pool add logs on stderr" err 0
 cat >"$tmp/expected" <<'EOF'
 NAME             LEASE      EXPIRES    HOLDER
-a1               FREE       -          -
+a1               free       -          -
 EOF
 run pool ls; same "pool ls" out 0
 run pool; same "pool (defaults to ls)" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"FREE","holder":null,"acquired_at":null,"expires_at":null,"expires_in":null}
+{"name":"a1","state":"free","holder":null,"acquired_at":null,"expires_at":null,"expires_in":null}
 ]
 EOF
 run pool ls --json; same "pool ls --json" out 0
 echo 127.0.0.1 >"$tmp/expected"
 run ip a1; same "ip" out 0
-rm -f "$BOXERY_CONF/vm-shapes/a1.json"; rm -rf "$BOXERY_CONF/vm-shapes"
+# VMs without a size record: ls asks the backend once and records it as a custom size. A VM whose size
+# can't be read (b2: the fake backend has none) is listed with nulls, and the rest still list.
+rm -rf "$BOXERY_CONF/vm-shapes"; mv "$BOXERY_FAKE_DIR/b2/size" "$tmp/b2.size"
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","tunnel":null,"lease":{"state":"FREE","holder":null,"expires_at":null},"shape":null,"cpus":null,"mem":null,"desktop":true},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":{"state":"free","holder":null,"expires_at":null},"shape":"custom","cpus":2,"mem":2048,"desktop":true},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":null,"disk_used":0.5,"tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
 ]
 EOF
-run ls --json; same "ls --json: pool lease object, nulls for VMs without a size record" out 0
+run ls --json; same "ls --json: pool lease object; sizes from the backend for VMs without a record, nulls if unreadable" out 0
+echo '{"shape":null,"cpus":2,"mem":2048,"disk":10}' >"$tmp/expected"; cp "$BOXERY_CONF/vm-shapes/a1.json" "$tmp/a1.rec" 2>/dev/null || : >"$tmp/a1.rec"
+same "...and records it as a custom size" a1.rec 0
+[[ ! -e $BOXERY_CONF/vm-shapes/b2.json ]] && ok "...but records nothing for an unreadable size" || bad "b2 recorded: $(cat "$BOXERY_CONF/vm-shapes/b2.json")"
+mv "$tmp/b2.size" "$BOXERY_FAKE_DIR/b2/size"
+cat >"$tmp/expected" <<'EOF'
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
+a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   free
+b2               shut off   -                  0.5/40GiB    custom     desktop   -
+EOF
+run ls; same "ls: lowercase lease state; b2's size read and recorded once readable" out 0
 mv "$BOXERY_FAKE_DIR/a1" "$tmp/a1.away"; mv "$BOXERY_FAKE_DIR/b2" "$tmp/b2.away"
 echo "[]" >"$tmp/expected"
 run ls --json; same "ls --json with no VMs → []" out 0
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR               DISK       SHAPE      KIND      LEASE
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
 EOF
 run ls; same "ls with no VMs → header only" out 0
 mv "$tmp/a1.away" "$BOXERY_FAKE_DIR/a1"; mv "$tmp/b2.away" "$BOXERY_FAKE_DIR/b2"
@@ -168,6 +180,7 @@ err "revert without a snapshot" "boxery-host: usage: revert NAME SNAP" revert a1
 err "rm of a missing VM" "boxery-host: no such vm: nope" rm nope
 err "pool rm of a pet" "boxery-host: b2 is not a pool VM" pool rm b2
 err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)" edge-set a1 </dev/null
+err "images with a bad flag" "boxery-host: usage: images [--json]" images bogus
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
 err "ls with an extra argument" "boxery-host: usage: ls [--json]" ls extra
 BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: boat cloud-hypervisor exe fake libvirt lima )" ls
@@ -183,11 +196,11 @@ EOF
 same "new --headless logs the layers it installs" err 0
 run ls --json
 grep -F '"name":"h3"' "$tmp/out" >"$tmp/h3.json" || true
-echo '{"name":"h3","state":"running","addr":"127.0.0.1:22002","disk":"1GiB","tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
+echo '{"name":"h3","state":"running","ssh_addr":"127.0.0.1:22002","disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
 same "ls --json: a headless VM has desktop false" h3.json 0
 run ls
 grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true
-echo "h3               running    127.0.0.1:22002    1GiB       standard   headless  -" >"$tmp/expected"
+echo "h3               running    127.0.0.1:22002    0.5/40GiB    standard   headless  -" >"$tmp/expected"
 same "ls: KIND headless" h3.txt 0
 run snap h3 hs
 "$H" new h4 --from h3@hs --headless >/dev/null 2>&1 && ok "new --from a headless image with --headless" || bad "new --from headless image"

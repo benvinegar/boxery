@@ -323,7 +323,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	exe_tunnel_start "$name"
 }
 
-backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK<TAB>TUNNEL
+backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES<TAB>TUNNEL
 	[[ -n $EXE_PREFIX ]] || return 0
 	local j n st addr disk tun
 	j=$(exe_ls) || exit 1
@@ -332,11 +332,13 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK<TAB>TUNNEL
 			[[ $n =~ ^[a-z][a-z0-9-]*$ ]] || continue
 			[[ ! -f $(exe_dir "$n")/vm || $(exe_vm "$n") == "$v" ]] || continue   # a reimage's leftover disk
 			addr="" disk="" tun=""
-			[[ ! -f $(exe_dir "$n")/disk ]] || disk="$(cat "$(exe_dir "$n")/disk")GiB"
+			# the size it was given (exe.dev reports neither size nor usage): DISK_USED stays unknown
+			disk=$(cat "$(exe_dir "$n")/disk" 2>/dev/null) || disk=""
+			if [[ $disk =~ ^[0-9]+$ ]]; then disk=$((disk * 1073741824)); else disk=""; fi
 			[[ ! -f $(exe_dir "$n")/slot ]] || tun=$(exe_tunnel_state "$n")
 			if [[ $st == running && $tun == up ]]; then addr="127.0.0.1:$(exe_port "$n")"; fi
 			[[ $st != stopped ]] || st="shut off"
-			printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$st" "$addr" "$disk" "$tun"
+			printf '%s\t%s\t%s\t%s\t\t%s\n' "$n" "$st" "$addr" "$disk" "$tun"
 		done
 }
 

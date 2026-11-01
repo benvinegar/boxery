@@ -4,7 +4,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +68,72 @@ export function registeredHosts() {
 	return [resolveHost("legacy"), ...names.map(resolveHost)];
 }
 const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
+// A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
+function readProfileFile(file, max = 64 * 1024) {
+	let fd;
+	try {
+		fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+		const st = fstatSync(fd);
+		return st.isFile() && st.size <= max ? readFileSync(fd, "utf8") : null;
+	} catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+// One shell word as `boxery setup` writes it (literal(): '…' with '\'' for quotes), or a plain word.
+// Anything needing expansion ($, `, globs…) is unknown: profile configs are never executed here.
+function shellWord(s) {
+	let out = "";
+	for (let i = 0; i < s.length;) {
+		const c = s[i];
+		if (c === "'") {
+			const j = s.indexOf("'", i + 1);
+			if (j < 0) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === '"') {
+			const j = s.indexOf('"', i + 1);
+			if (j < 0 || /[$`\\]/.test(s.slice(i + 1, j))) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === "\\" && i + 1 < s.length) { out += s[i + 1]; i += 2; }
+		else if (c === " " || c === "\t") return /^[ \t]*(#.*)?$/.test(s.slice(i)) ? out : null;
+		else if (/[A-Za-z0-9_.@:%+\-/~,=]/.test(c)) { out += c; i++; }
+		else return null;
+	}
+	return out;
+}
+/** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
+export function hostDestination(host) {
+	const h = resolveHost(host);
+	let dest = h.name === "legacy" ? process.env.BOXERY_HOST || null : null; // legacy honors BOXERY_HOST, like the controller
+	if (!dest) {
+		const text = readProfileFile(path.join(h.dir, "config")) ?? "";
+		const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
+		dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
+	}
+	return dest && VALID_DEST.test(dest) ? dest : null;
+}
+/** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. */
+export function hostBackend(host) {
+	const text = readProfileFile(path.join(resolveHost(host).dir, "backend"), 64);
+	const name = text?.replace(/\n$/, "");
+	return name && VALID_HOST.test(name) ? name : null; // one line, like the controller's valid_vm
+}
+/**
+ * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
+ * profile files (never sources them, never contacts a host). same_as names the other entries sharing this
+ * profile directory: `legacy` and an alias registered for ~/.boxery are the same host.
+ */
+export function describeHosts() {
+	let def = null;
+	try { def = resolveHost().name; } catch {}
+	const real = (d) => { try { return realpathSync(d); } catch { return path.resolve(d); } };
+	const hosts = registeredHosts().map((h) => ({ host: h, real: real(h.dir) }));
+	return hosts.map(({ host: h, real: r }) => ({
+		name: h.name,
+		dir: h.dir,
+		default: h.name === def,
+		destination: hostDestination(h),
+		backend: hostBackend(h),
+		same_as: hosts.filter((o) => o.real === r && o.host.name !== h.name).map((o) => o.host.name),
+	}));
+}
 /**
  * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
  * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
@@ -737,7 +803,8 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 	});
 }
 
-/** VMs on the host: [{name, state, addr, disk, tunnel, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
+/** VMs on the host: [{name, state, ssh_addr, disk_size, disk_used, tunnel, lease, shape, cpus, mem, desktop, grants}]
+ *  (fields: docs/cli.md). ssh_addr is "HOST:PORT" as the host reaches the VM; disk_size and disk_used are GiB. */
 export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
@@ -745,6 +812,9 @@ export const listShapes = () => boxeryJson(["shapes"]);
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
+
+/** Every image on the host (snapshots, addressed VM@SNAP): [{image, created, size}] (docs/cli.md). */
+export const listImages = () => boxeryJson(["images"]);
 
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
 export const versions = () => boxeryJson(["version"]);
@@ -762,6 +832,11 @@ export function formatSnaps(name, snaps) {
 	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
 }
 
+export function formatImages(images) {
+	if (!images.length) return "no images (snapshots) on the host";
+	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}`).join("\n");
+}
+
 export function assertShape(s) {
 	if (typeof s !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(s)) throw new Error(`invalid shape name: ${s}`);
 	return s;
@@ -775,14 +850,19 @@ export function formatShapes({ default: def, shapes }) {
 
 const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
-// A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
-const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.addr ?? "-"));
+// The VM's ssh endpoint from the host (HOST:PORT). A running VM whose tunnel isn't up (exe.dev) shows why
+// instead. `addr`: hosts from before ssh_addr.
+const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? v.addr ?? "-"));
+// USED/SIZE in GiB ("0.5/40GiB"), or only the size when the backend can't tell what's used.
+const fmtDisk = (v) => (v.disk_size == null && v.disk_used == null ? "-"
+	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
 
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
 	const kind = (v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
-	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.shape ?? "-", kind(v), v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const lease = (v) => v.lease?.state?.toLowerCase() ?? "-"; // hosts from before lowercase lease states
+	const rows = [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), fmtDisk(v), v.shape ?? "-", kind(v), lease(v), (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
@@ -814,9 +894,16 @@ export async function ensureVm(name, notify = () => {}) {
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
 
+/** The VM a vm_manage action `a` acts on: `a.vm`, which it must name. */
+export function needVm(a) {
+	if (a.vm == null || a.vm === "") throw new Error(`${a.action} needs \`vm\`, the VM to act on`);
+	return assertName(a.vm);
+}
+
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
-export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk, headless }, opts = {}) {
-	const need = () => assertName(name);
+export async function manage(a, opts = {}) {
+	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
+	const need = () => needVm(a);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
 			if (v == null) return [];
@@ -831,14 +918,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
 			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
-		case "snaps":
-			return boxeryCli(["snaps", need()], 60_000);
-		case "list":
-			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
-		case "shapes":
-			return formatShapes(await listShapes());
+			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":
@@ -855,12 +936,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
 		case "snap-rm":
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
-		case "images":
-			return boxeryCli(["images"], 60_000);
 		case "build-base":
 			return boxeryCli(["build-base"], 1_800_000, opts);
-		case "grants":
-			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
@@ -880,7 +957,7 @@ export function guidance(current, { localToolsNote } = {}) {
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
-		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }
 

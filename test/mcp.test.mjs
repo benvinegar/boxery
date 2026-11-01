@@ -68,10 +68,11 @@ echo "$*" >> "$BOXERY_HOME/calls"
 case "$*" in
 "acquire "*) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;
 "renew "*) echo "pool-1 9999999999" ;;
-"ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
+"ls --json") echo '[{"name":"fakevm","state":"running","ssh_addr":"10.0.0.2:22","disk_size":40,"disk_used":1.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
+"images --json") echo '[{"image":"fakevm@s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
 *) echo "stub boxery $*" ;;
@@ -142,7 +143,7 @@ describe("stdio", () => {
 			const { host, ...props } = t.inputSchema.properties;
 			assert.ok(host, `${t.name} takes host`);
 			if (t.name === "vm_manage") {
-				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts", "host", "host_add", "host_rm"]);
+				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "host", "host_add", "host_rm"]);
 				continue;
 			}
 			if (t.name === "vm_info") {
@@ -197,7 +198,7 @@ describe("stdio", () => {
 	});
 
 	test("snapshot names are validated before reaching the controller", async () => {
-		const r = await c.tool("vm_manage", { action: "snap", name: "fakevm", snapshot: "x; touch /tmp/pwned #" });
+		const r = await c.tool("vm_manage", { action: "snap", vm: "fakevm", snapshot: "x; touch /tmp/pwned #" });
 		assert.equal(r.isError, true);
 		assert.match(r.content[0].text, /invalid snapshot name/);
 	});
@@ -265,62 +266,61 @@ describe("stdio", () => {
 	});
 
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
-		const list = (await c.tool("vm_manage", { action: "list" })).content[0].text;
+		const list = (await c.tool("vm_info", { action: "list" })).content[0].text;
 		assert.match(list, /current: fakevm/);
-		assert.match(list, /^fakevm +running +10\.0\.0\.2 +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
+		assert.match(list, /^fakevm +running +10\.0\.0\.2:22 +1\.5\/40GiB +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
-		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
+		assert.match((await c.tool("vm_info", { action: "grants", vm: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
 		assert.equal((await c.tool("vm_manage", { action: "bogus" })).isError, true);
 	});
 
 	test("vm_manage fork passes validated names to the controller", async () => {
-		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: ["try-a", "try-b"] })).content[0].text, /stub boxery fork fakevm try-a try-b/);
-		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: "one" })).content[0].text, /stub boxery fork fakevm one$/m);
-		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm" })).content[0].text, /stub boxery fork fakevm pi-[0-9a-f]{6}/);
-		const bad = await c.tool("vm_manage", { action: "fork", name: "fakevm", to: ["ok", "x; touch /tmp/pwned"] });
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: ["try-a", "try-b"] })).content[0].text, /stub boxery fork fakevm try-a try-b/);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "one" })).content[0].text, /stub boxery fork fakevm one$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm" })).content[0].text, /stub boxery fork fakevm pi-[0-9a-f]{6}/);
+		const bad = await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: ["ok", "x; touch /tmp/pwned"] });
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid VM name/);
-		assert.equal((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: Array.from({ length: 9 }, (_, i) => `f${i}`) })).isError, true);
+		assert.equal((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: Array.from({ length: 9 }, (_, i) => `f${i}`) })).isError, true);
 	});
 
-	test("vm_manage shapes lists sizes; new/fork pass a validated shape", async () => {
-		const shapes = (await c.tool("vm_manage", { action: "shapes" })).content[0].text;
+	test("vm_info shapes lists sizes; vm_manage new/fork pass a validated shape", async () => {
+		const shapes = (await c.tool("vm_info", { action: "shapes" })).content[0].text;
 		assert.match(shapes, /^standard \(default\) +4 +8 GiB +40 GiB$/m);
 		assert.match(shapes, /^large +8 +16 GiB +80 GiB$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", name: "big", shape: "large" })).content[0].text, /stub boxery new big --shape large$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", name: "plain" })).content[0].text, /stub boxery new plain$/m);
-		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: "f1", shape: "large" })).content[0].text, /stub boxery fork fakevm f1 --shape large$/m);
-		const bad = await c.tool("vm_manage", { action: "new", name: "x", shape: "large; touch /tmp/pwned" });
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "big", shape: "large" })).content[0].text, /stub boxery new big --shape large$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "plain" })).content[0].text, /stub boxery new plain$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "f1", shape: "large" })).content[0].text, /stub boxery fork fakevm f1 --shape large$/m);
+		const bad = await c.tool("vm_manage", { action: "new", vm: "x", shape: "large; touch /tmp/pwned" });
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid shape/);
 	});
 
-	test("vm_manage start/stop/resize/snap-rm/images/new-from reach the controller validated", async () => {
+	test("vm_manage start/stop/resize/snap-rm/new-from reach the controller validated", async () => {
 		const out = async (a) => (await c.tool("vm_manage", a)).content[0].text;
 		const err = async (a, re) => {
 			const r = await c.tool("vm_manage", a);
 			assert.equal(r.isError, true, JSON.stringify(a));
 			assert.match(r.content[0].text, re);
 		};
-		assert.match(await out({ action: "start", name: "fakevm" }), /stub boxery start fakevm$/m);
-		assert.match(await out({ action: "stop", name: "fakevm" }), /stub boxery stop fakevm$/m);
-		assert.match(await out({ action: "resize", name: "fakevm", cpus: 8, disk: 80 }), /stub boxery resize fakevm --cpus 8 --disk 80$/m);
-		await err({ action: "resize", name: "fakevm" }, /resize needs/);
-		await err({ action: "resize", name: "fakevm", mem: "8192; touch /tmp/pwned" }, /mem must be a positive integer/);
-		await err({ action: "resize", name: "fakevm", cpus: 0 }, /cpus must be a positive integer/);
-		assert.match(await out({ action: "snap-rm", name: "fakevm", snapshot: "s1" }), /stub boxery snap-rm fakevm s1$/m);
-		await err({ action: "snap-rm", name: "fakevm" }, /invalid snapshot name/);
-		assert.match(await out({ action: "images" }), /stub boxery images$/m);
-		assert.match(await out({ action: "new", name: "copy", from: "fakevm@s1" }), /stub boxery new copy --from fakevm@s1$/m);
-		assert.match(await out({ action: "new", name: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
-		assert.match(await out({ action: "fork", name: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
-		for (const from of ["fakevm", "fakevm@s1@x", "x;y@s1", "fakevm@-s"]) await err({ action: "new", name: "x", from }, /invalid image/);
+		assert.match(await out({ action: "start", vm: "fakevm" }), /stub boxery start fakevm$/m);
+		assert.match(await out({ action: "stop", vm: "fakevm" }), /stub boxery stop fakevm$/m);
+		assert.match(await out({ action: "resize", vm: "fakevm", cpus: 8, disk: 80 }), /stub boxery resize fakevm --cpus 8 --disk 80$/m);
+		await err({ action: "resize", vm: "fakevm" }, /resize needs/);
+		await err({ action: "resize", vm: "fakevm", mem: "8192; touch /tmp/pwned" }, /mem must be a positive integer/);
+		await err({ action: "resize", vm: "fakevm", cpus: 0 }, /cpus must be a positive integer/);
+		assert.match(await out({ action: "snap-rm", vm: "fakevm", snapshot: "s1" }), /stub boxery snap-rm fakevm s1$/m);
+		await err({ action: "snap-rm", vm: "fakevm" }, /invalid snapshot name/);
+		assert.match(await out({ action: "new", vm: "copy", from: "fakevm@s1" }), /stub boxery new copy --from fakevm@s1$/m);
+		assert.match(await out({ action: "new", vm: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
+		assert.match(await out({ action: "fork", vm: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
+		for (const from of ["fakevm", "fakevm@s1@x", "x;y@s1", "fakevm@-s"]) await err({ action: "new", vm: "x", from }, /invalid image/);
 	});
 
 	test("vm_manage new headless:true passes --headless; desktop tools refuse a headless VM", async () => {
-		assert.match((await c.tool("vm_manage", { action: "new", name: "hl", headless: true })).content[0].text, /stub boxery new hl --headless$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", name: "dt", headless: false })).content[0].text, /stub boxery new dt$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "hl", headless: true })).content[0].text, /stub boxery new hl --headless$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "dt", headless: false })).content[0].text, /stub boxery new dt$/m);
 		mkdirSync(path.join(env.VMROOT, "etc/boxery"), { recursive: true });
 		writeFileSync(path.join(env.VMROOT, "etc/boxery/headless"), "no desktop\n");
 		try {
@@ -363,22 +363,37 @@ describe("protocol features", () => {
 		assert.equal(list.structuredContent.host, "legacy");
 		assert.equal((await c.tool("vm_info", { action: "shapes" })).structuredContent.default, "standard");
 		const grants = await c.tool("vm_info", { action: "grants" });
-		assert.equal(grants.structuredContent.name, "fakevm", "name defaults to the current VM");
+		assert.equal(grants.structuredContent.vm, "fakevm", "vm defaults to the current VM");
 		assert.equal(grants.structuredContent.grants[0].kind, "file");
-		const snaps = await c.tool("vm_info", { action: "snaps", name: "fakevm" });
+		const snaps = await c.tool("vm_info", { action: "snaps", vm: "fakevm" });
 		assert.match(snaps.content[0].text, /^s1\t2026-10-01T00:00:00Z\t1\.2G$/);
 		assert.equal(snaps.structuredContent.snapshots[0].name, "s1");
+		const images = await c.tool("vm_info", { action: "images" });
+		assert.match(images.content[0].text, /^fakevm@s1\t2026-10-01T00:00:00Z\t1\.2G$/);
+		assert.equal(images.structuredContent.images[0].image, "fakevm@s1");
 		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
 		const version = await c.tool("vm_info", { action: "version" });
 		assert.equal(version.structuredContent.behind, true);
 		assert.equal(version.structuredContent.host.version, "0.7.0");
 		assert.match(version.content[0].text, /older than the controller.*boxery upgrade-host/s, "tells the agent to hand the upgrade to the user");
-		assert.equal((await c.tool("vm_info", { action: "snaps", name: "Bad;Name" })).isError, true);
-		assert.equal((await c.tool("vm_info", { action: "grants", name: ["fakevm"] })).isError, true, "names must be strings, not arrays that coerce");
+		assert.equal((await c.tool("vm_info", { action: "snaps", vm: "Bad;Name" })).isError, true);
+		assert.equal((await c.tool("vm_info", { action: "grants", vm: ["fakevm"] })).isError, true, "names must be strings, not arrays that coerce");
 	});
 
-	test("vm_manage keeps its lookup actions", async () => {
-		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
+	test("vm_manage has no lookup actions and needs an explicit vm", async () => {
+		for (const action of ["list", "shapes", "grants", "snaps", "images"]) {
+			const r = await c.tool("vm_manage", { action, vm: "fakevm" });
+			assert.equal(r.isError, true, action);
+			assert.match(r.content[0].text, new RegExp(`use vm_info \\{action:"${action}"\\}`), action);
+		}
+		const hosts = await c.tool("vm_manage", { action: "hosts" });
+		assert.equal(hosts.isError, true);
+		const rm = await c.tool("vm_manage", { action: "rm" });
+		assert.equal(rm.isError, true);
+		assert.match(rm.content[0].text, /rm needs `vm`/);
+		const name = await c.tool("vm_manage", { action: "start", name: "fakevm" });
+		assert.equal(name.isError, true, "no `name` alias");
+		assert.match(name.content[0].text, /start needs `vm`/);
 	});
 
 	// The VM-side job helper needs Node's type stripping (22.18+; boxery images ship it).
@@ -414,7 +429,7 @@ describe("protocol features", () => {
 		const mine = c.notifications.filter((n) => n.method === "notifications/progress" && n.params.progressToken === "tok-1");
 		assert.deepEqual(mine.map((n) => n.params.message), ["first", "second"]);
 		assert.deepEqual(mine.map((n) => n.params.progress), [1, 2], "progress increases");
-		const managed = await c.call("tools/call", { name: "vm_manage", arguments: { action: "new", name: "slow" }, _meta: { progressToken: 7 } });
+		const managed = await c.call("tools/call", { name: "vm_manage", arguments: { action: "new", vm: "slow" }, _meta: { progressToken: 7 } });
 		assert.equal(managed.result.isError, false);
 		assert.deepEqual(c.notifications.filter((n) => n.params?.progressToken === 7).map((n) => n.params.message), ["==> creating slow", "==> slow is ready"]);
 		const before = c.notifications.length;
@@ -568,15 +583,15 @@ describe("leases", () => {
 			assert.match(await lease({ action: "acquire", ttl: 600, wait: 5 }), new RegExp(`^leased pool-1 \\(lease ${LEASE}, ttl 600s.*\ncurrent VM: pool-1$`));
 			assert.equal(calls().at(-1), "acquire --ttl 600 --wait 5");
 			assert.match(await lease({ action: "list" }), new RegExp(`^pool-1\t${LEASE}\texpires in 600s .*\tcurrent$`));
-			assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: pool-1/);
-			await err("vm_manage", { action: "rm", name: "pool-1" }, /leased from the pool/);
+			assert.match((await c.tool("vm_info", { action: "list" })).content[0].text, /current: pool-1/);
+			await err("vm_manage", { action: "rm", vm: "pool-1" }, /leased from the pool/);
 			assert.equal(await lease({ action: "renew", ttl: 900 }), "renewed pool-1 for 900s");
 			assert.equal(calls().at(-1), `renew ${LEASE} --ttl 900`);
-			await err("vm_lease", { action: "renew", name: "fakevm" }, /holds no lease on fakevm/);
+			await err("vm_lease", { action: "renew", vm: "fakevm" }, /holds no lease on fakevm/);
 			assert.match(await lease({ action: "release" }), /^released pool-1; .*\nno current VM$/);
 			assert.equal(calls().at(-1), `release ${LEASE}`);
 			await err("vm_bash", { command: "true" }, /no current VM/);
-			await err("vm_lease", { action: "release", name: "pool-1" }, /holds no lease/);
+			await err("vm_lease", { action: "release", vm: "pool-1" }, /holds no lease/);
 			assert.doesNotMatch(await lease({ action: "acquire", use: false }), /current VM/);
 			assert.equal(calls().at(-1), "acquire --ttl 1800 --wait 60");
 		} finally {

@@ -41,7 +41,18 @@ backend_new() { # NAME CPUS MEM DISK USERDATA [SOURCE: VM@LABEL image | stock]
 	echo running >"$FAKE/$1/state"; cp "$5" "$FAKE/$1/user-data"; echo "$2 $3 $4" >"$FAKE/$1/size"
 	fake_checkpoint new "$1"
 }
-backend_list() { local d; for d in "$FAKE"/*/; do [[ -d $d ]] || continue; printf '%s\t%s\t%s\t%s\n' "$(basename "$d")" "$(cat "$d/state")" "127.0.0.1:$(cat "$d/port")" "1GiB"; done; }
+# Like the real backends: an ssh endpoint only while running; DISK_BYTES is the size the VM was given,
+# DISK_USED_BYTES a fixed 512 MiB.
+backend_list() {
+	local d st ssh g
+	for d in "$FAKE"/*/; do
+		[[ -d $d ]] || continue
+		st=$(cat "$d/state") ssh="" g=""
+		[[ $st != running ]] || ssh="127.0.0.1:$(cat "$d/port")"
+		[[ ! -f $d/size ]] || read -r _ _ g <"$d/size" || true
+		printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$d")" "$st" "$ssh" "${g:+$((g * 1073741824))}" 536870912
+	done
+}
 backend_ssh_endpoint() { backend_exists "$1" || die "no such vm: $1"; [[ $(cat "$FAKE/$1/state") == running ]] || die "$1 is not running"; echo "127.0.0.1 $(fake_port "$1")"; }
 backend_wait_endpoint() { echo "127.0.0.1 $(fake_port "$1")"; }
 # BOXERY_FAKE_DAEMON: leave a background process behind, as limactl start does with its hostagent

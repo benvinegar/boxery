@@ -46,7 +46,8 @@ echo "== fork"
 "$H" fork b b4 --shape small >/dev/null 2>&1; [[ $(size b4) == "2 4096 20" ]] && ok "fork --shape replaces the source's size" || bad "b4: $(size b4)"
 rm "$BOXERY_CONF/vm-shapes/a.json"   # a VM from before shapes
 "$H" fork a a2 >/dev/null 2>&1; [[ $(size a2) == "4 8192 40" ]] && ok "fork of an unrecorded VM → its backend size" || bad "a2: $(size a2)"
-[[ $("$H" ls --json | jq -r '.[] | select(.name == "a") | .shape') == null ]] && ok "unrecorded VM lists shape null" || bad "a shape"
+[[ $("$H" ls --json | jq -c '.[] | select(.name == "a") | [.shape, .cpus, .mem, .disk_size]') == '["custom",4,8192,40]' ]] && ok "unrecorded VM lists its backend size, as custom" || bad "a: $("$H" ls --json | jq -c '.[] | select(.name == "a")')"
+[[ $(rec a) == '{"shape":null,"cpus":4,"mem":8192,"disk":40}' ]] && ok "...and ls records it" || bad "a record: $(rec a 2>&1)"
 if "$H" fork b b5 --shape nope >/dev/null 2>&1; then bad "fork with unknown shape"; else ok "fork with unknown shape fails"; fi
 [[ ! -d $tmp/vms/b5 && -z $("$H" images 2>/dev/null | grep '@fork-') ]] && ok "...before capturing anything" || bad "leftovers after bad fork shape"
 
@@ -54,7 +55,7 @@ echo "== resize updates the record"
 "$H" resize b2 --cpus 12 >/dev/null 2>&1
 [[ $(rec b2) == '{"shape":null,"cpus":12,"mem":16384,"disk":80}' ]] && ok "resize → custom with the new size" || bad "b2 after resize: $(rec b2)"
 "$H" fork b2 b6 >/dev/null 2>&1; [[ $(size b6) == "12 16384 80" ]] && ok "fork after resize copies the new size" || bad "b6: $(size b6)"
-echo "6 3072 30" >"$tmp/vms/a/size"   # unrecorded VM: fork reads the backend's size
+rm "$BOXERY_CONF/vm-shapes/a.json"; echo "6 3072 30" >"$tmp/vms/a/size"   # unrecorded VM: fork reads the backend's size
 "$H" fork a a3 >/dev/null 2>&1; [[ $(size a3) == "6 3072 30" ]] && ok "fork of an unrecorded VM uses backend_size" || bad "a3: $(size a3)"
 
 echo "== rm forgets the size"

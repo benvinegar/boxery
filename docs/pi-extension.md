@@ -41,8 +41,8 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 | `vm_click`, `vm_type`, `vm_key`, `vm_scroll` | Computer use via xdotool on `:1` |
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
 | `vm_lease` | Pool leases: `acquire` · `renew` · `release` · `list`. Renewed while pi runs, released when the session ends. See [Pool leases](mcp.md#pool-leases). |
-| `vm_manage` | `list` · `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snaps` · `snap-rm` · `revert` · `images` · `use` · `none` · `grants` · `shapes` · `build-base` (`new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`; `build-base` builds the host's desktop base image) |
-| `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `version` (`name` defaults to the current VM; `version` flags a host older than the controller) |
+| `vm_manage` | `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snap-rm` · `revert` · `use` · `none` · `build-base` on VM `vm` (for `fork`, the source; `new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`, see `vm_info images`; `build-base` builds the host's desktop base image) |
+| `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `images` · `version` (`vm` defaults to the current VM; `version` flags a host older than the controller) |
 
 Every tool takes an optional `vm` argument (default: the current VM), so one agent can **fan out** across several VMs at once. The system prompt tells the model that project work happens in the VM through `vm_*` tools, and that built-ins act locally.
 
@@ -63,5 +63,5 @@ Every tool takes an optional `vm` argument (default: the current VM), so one age
 
 - **Watch the agent work:** `/vm desktop` opens noVNC in your browser. `vm_browser` drives the same Chrome you see.
 - **Checkpoints:** ask the agent to `vm_manage snap` before something risky, then `revert` if it goes wrong. A snapshot takes about a second.
-- **Try things in parallel:** `vm_manage {action:"fork", name:"demo", to:["try-a","try-b","try-c"]}` copies the VM, mid-task, into three independent VMs. The agent works on each with `vm`, keeps the winner and removes the rest. The system prompt suggests this.
+- **Try things in parallel:** `vm_manage {action:"fork", vm:"demo", to:["try-a","try-b","try-c"]}` copies the VM, mid-task, into three independent VMs. The agent works on each with `vm`, keeps the winner and removes the rest. The system prompt suggests this.
 - **Long jobs:** to keep a task running after your laptop sleeps, start an in-VM agent with `boxery prompt NAME "…"`, or a plain command with `boxery run --bg NAME …` ([CLI](cli.md#background-command-jobs)). The agent can do the same with `vm_jobs`.

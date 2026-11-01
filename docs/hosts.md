@@ -12,7 +12,7 @@ boxery host add hornet you@hornet --host-bin '~/.local/bin/boxery-host'
 boxery host add exe local --backend exe
 boxery --host exe build-base         # desktop base image, once (~3 min); headless VMs don't need it
 
-boxery host ls                       # name, default marker, config directory
+boxery host ls                       # name, default marker, config directory, destination, backend, same-profile names
 boxery host show hornet              # prints its config directory (not credentials)
 boxery host use hornet               # atomic default selection
 boxery --host laptop ls              # explicit selection overrides the default
@@ -47,6 +47,21 @@ boxery host add hornet-boat you@hornet --profile boat
 ```
 
 On the host, `boxery-host profiles` lists every profile (backend, port, service, directory) and `boxery-host --profile NAME COMMAND` runs a command in one. `boxery-host upgrade` re-runs init for all of them.
+
+## Where each host runs
+
+`boxery host ls` (and `--json`, and MCP `vm_info {action:"hosts"}`) says where each registered host runs, read from local profile files without contacting any host:
+
+```text
+NAME	DEFAULT	CONFIG_DIR	DESTINATION	BACKEND	SAME_AS
+legacy		/home/you/.boxery	local	lima	laptop
+hornet		/home/you/.boxery/profiles/hornet	you@hornet	libvirt	-
+laptop	*	/home/you/.boxery	local	lima	legacy
+```
+
+* **DESTINATION** is the profile's `HOST`: `local` means the VM host is the machine running the controller (or the MCP server); otherwise it is the ssh destination or ssh-config alias. `legacy` honors `BOXERY_HOST`, as routing does. The CLI sources the trusted profile config to find it; MCP never executes it and parses only plain assignments (as `setup` writes them), so a computed value shows as unknown (`-` / `null`).
+* **BACKEND** lives on the VM host (`host.env`), so it is not read live. `setup` and `host add` record it in the profile's `backend` file (one line of data); `boxery [--host NAME] backend` asks the host and refreshes the record. Profiles set up earlier, or hosts that predate `boxery-host backend`, show `-` / `null` until then.
+* **SAME_AS** lists the other names whose profile is the same directory. `legacy` is the unnamed root profile (`$BOXERY_HOME`, normally `~/.boxery`), used when no `default-host` is set; after `host add laptop --config-dir ~/.boxery`, `legacy` and `laptop` are one host with the same VMs, not two.
 
 ## Importing two existing profiles
 
@@ -94,7 +109,7 @@ Every `vm_*` tool accepts optional `host`. For example:
 {"host":"hornet","vm":"demo","command":"hostname"}
 ```
 
-`vm_manage` adds read-only `{"action":"hosts"}` (also on `vm_info`), session selection `{"action":"host","host":"hornet"}` and registration `{"action":"host_add","name":"exe","dest":"local","backend":"exe"}` and `{"action":"host_rm","name":"exe"}` (see below). Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `host_add` runs `boxery host add NAME DEST` with optional `backend` or `profile`, and `buildBase:true` then runs `build-base` on the new host. It uses your default ssh key and host executable: there is no `key`, `host-bin` or `config-dir` (those name files on the server's machine, and an imported config is shell code). It doesn't select the new host; follow it with `{"action":"host","host":"exe"}`. `host_rm` is `boxery host rm NAME`: it forgets the registration only and refuses the CLI default (see [removal safety](#removal-safety-and-leases)); sessions already using that host keep it until they select another. `{"action":"build-base"}` builds the call's host's desktop base image, like `boxery build-base`; the backends refuse while VMs or snapshots depend on the current base. `vm_manage` cannot change the persistent CLI default, upgrade a host, add credentials or grant access.
+`vm_info {"action":"hosts"}` lists the hosts with the same fields as `boxery host ls --json` plus `current` (this session's host; text output marks it `*`), see [Where each host runs](#where-each-host-runs). `vm_manage` adds session selection `{"action":"host","host":"hornet"}` and registration `{"action":"host_add","name":"exe","dest":"local","backend":"exe"}` and `{"action":"host_rm","name":"exe"}` (see below). Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `host_add` runs `boxery host add NAME DEST` with optional `backend` or `profile`, and `buildBase:true` then runs `build-base` on the new host. It uses your default ssh key and host executable: there is no `key`, `host-bin` or `config-dir` (those name files on the server's machine, and an imported config is shell code). It doesn't select the new host; follow it with `{"action":"host","host":"exe"}`. `host_rm` is `boxery host rm NAME`: it forgets the registration only and refuses the CLI default (see [removal safety](#removal-safety-and-leases)); sessions already using that host keep it until they select another. `{"action":"build-base"}` builds the call's host's desktop base image, like `boxery build-base`; the backends refuse while VMs or snapshots depend on the current base. `vm_manage` cannot change the persistent CLI default, upgrade a host, add credentials or grant access.
 
 Selection mutations complete in completion order; concurrent ordinary tool calls keep the host+VM snapshot they started with. Screenshot scaling is keyed by profile directory and VM name.
 
