@@ -261,6 +261,28 @@ describe("stdio", () => {
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid shape/);
 	});
+
+	test("vm_manage start/stop/resize/snap-rm/images/new-from reach the controller validated", async () => {
+		const out = async (a) => (await c.tool("vm_manage", a)).content[0].text;
+		const err = async (a, re) => {
+			const r = await c.tool("vm_manage", a);
+			assert.equal(r.isError, true, JSON.stringify(a));
+			assert.match(r.content[0].text, re);
+		};
+		assert.match(await out({ action: "start", name: "fakevm" }), /stub boxery start fakevm$/m);
+		assert.match(await out({ action: "stop", name: "fakevm" }), /stub boxery stop fakevm$/m);
+		assert.match(await out({ action: "resize", name: "fakevm", cpus: 8, disk: 80 }), /stub boxery resize fakevm --cpus 8 --disk 80$/m);
+		await err({ action: "resize", name: "fakevm" }, /resize needs/);
+		await err({ action: "resize", name: "fakevm", mem: "8192; touch /tmp/pwned" }, /mem must be a positive integer/);
+		await err({ action: "resize", name: "fakevm", cpus: 0 }, /cpus must be a positive integer/);
+		assert.match(await out({ action: "snap-rm", name: "fakevm", snapshot: "s1" }), /stub boxery snap-rm fakevm s1$/m);
+		await err({ action: "snap-rm", name: "fakevm" }, /invalid snapshot name/);
+		assert.match(await out({ action: "images" }), /stub boxery images$/m);
+		assert.match(await out({ action: "new", name: "copy", from: "fakevm@s1" }), /stub boxery new copy --from fakevm@s1$/m);
+		assert.match(await out({ action: "new", name: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
+		assert.match(await out({ action: "fork", name: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
+		for (const from of ["fakevm", "fakevm@s1@x", "x;y@s1", "fakevm@-s"]) await err({ action: "new", name: "x", from }, /invalid image/);
+	});
 });
 
 describe("http", () => {

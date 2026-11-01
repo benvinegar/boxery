@@ -22,7 +22,7 @@ boxery fork big tiny --shape small        # …unless you pass --shape or size f
 boxery ls                        # SHAPE column
 ```
 
-Agents see them too. `vm_manage {action:"shapes"}` lists them, and `vm_manage {action:"new", shape:"large"}` (or `fork` with `shape`) picks one, through both the [pi extension](pi-extension.md) and the [MCP server](mcp.md).
+Agents see them too. `vm_manage {action:"shapes"}` lists them, and `vm_manage {action:"new", shape:"large"}` (or `fork` with `shape`) picks one, through both the [pi extension](pi-extension.md) and the [MCP server](mcp.md). `cpus`, `mem` (MiB) and `disk` (GiB) override a shape's values, and `vm_manage {action:"resize", name, cpus, mem, disk}` resizes an existing VM like `boxery resize`.
 
 ## Define your own
 

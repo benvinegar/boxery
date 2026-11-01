@@ -101,6 +101,13 @@ export function assertSnap(s) {
 	return s;
 }
 
+/** An image is a snapshot addressed host-wide: VM@SNAP. */
+export function assertImage(s) {
+	const [vm, snap, ...rest] = typeof s === "string" ? s.split("@") : [];
+	if (rest.length || !vm || !VALID_NAME.test(vm) || !snap || !VALID_SNAP.test(snap)) throw new Error(`invalid image "${s ?? ""}" (use VM@SNAP)`);
+	return s;
+}
+
 export function assertName(name) {
 	if (!name || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
 	return name;
@@ -632,9 +639,15 @@ export async function ensureVm(name, notify = () => {}) {
 }
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
-export async function manage({ action, name, snapshot, to, shape }) {
+export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk }) {
 	const need = () => assertName(name);
-	const shapeArgs = () => (shape == null || shape === "" ? [] : ["--shape", assertShape(shape)]);
+	const sizeArgs = () =>
+		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
+			if (v == null) return [];
+			if (!Number.isSafeInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
+			return [`--${k}`, String(v)];
+		});
+	const shapeArgs = () => [...(shape == null || shape === "" ? [] : ["--shape", assertShape(shape)]), ...sizeArgs()];
 	switch (action) {
 		case "fork": {
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
@@ -647,15 +660,27 @@ export async function manage({ action, name, snapshot, to, shape }) {
 		case "list":
 			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs()]);
+			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : [])]);
 		case "shapes":
 			return formatShapes(await listShapes());
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000);
+		case "start":
+		case "stop":
+			return boxeryCli([action, need()], 300_000);
+		case "resize": {
+			const args = sizeArgs();
+			if (!args.length) throw new Error("resize needs cpus, mem and/or disk");
+			return boxeryCli(["resize", need(), ...args], 600_000);
+		}
 		case "snap":
 			return boxeryCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000);
 		case "revert":
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000);
+		case "snap-rm":
+			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
+		case "images":
+			return boxeryCli(["images"], 60_000);
 		case "grants":
 			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:
