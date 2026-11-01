@@ -101,6 +101,36 @@ Every call accepts optional `host` and `vm`, using the session selection by defa
 
 Leases belong to the MCP session that acquired them. The server renews each one at a third of its TTL while the session is in use, meaning a call is running or one ran within the TTL. They're released when the session ends: stdin closes (stdio), the client sends `DELETE` (HTTP), or the server gets SIGINT/SIGTERM/SIGHUP. An HTTP client that disappears without `DELETE` stops renewing, and the host's reaper resets the VM when the lease expires. A release or expiry resets the VM to its clean image, so anything not copied out is lost. If a renewal fails (the lease expired, or the host rebooted), the lease is dropped and stops being the current VM.
 
+## Atomic file edits
+
+`vm_edit` (core/MCP, not pi's edit engine) sends one request to the Linux guest,
+requiring Node (image: Node 22) and util-linux `flock`, not Python. One persistent
+per-user lock at `~/.boxery-edit/edit.lock` covers reading the latest file,
+exact-text matching and atomic replacement. Never unlink this lock while editors
+may run. All cooperating edits serialize, including symlink/case aliases, and each
+reads the latest file. A second edit fails if the first removes its required match;
+otherwise it can apply normally, including disjoint edits that preserve both changes.
+Raw files and UTF-8 results are bounded to 16 MiB (JSON requests: 48 MiB).
+
+OS realpath follows and preserves symlinks. Stable before/after file stats (including
+identity) and raw bytes, plus a final resolved-target/parent-identity check, reject
+observed external changes. This is advisory, **not** a filesystem transaction:
+noncooperating writers can race the final check/rename; intermediate symlink-chain
+changes with the same final target and change-and-restore sequences may go unnoticed.
+Concurrent directory relocation is unsupported and may leave staging in the old directory.
+
+Replacement requires normal file read/write and directory write/search permissions
+(root retains its usual bypass). Regular, singly linked files only; basic mode,
+uid and gid are preserved or the edit fails. ACLs/xattrs/other metadata are not
+preserved. Existing UTF-8 decode/exact-match semantics are unchanged.
+
+A private adjacent staging file is fully written and flushed before rename; the
+destination is never truncated. Normal failures and handled TERM/HUP/INT clean up
+staging after pending I/O settles. SIGKILL/crashes may leave staging; power-loss
+durability is not promised. Preaborted calls never start. Stopping SSH need not stop
+the guest; cancellation/timeout or lost/malformed acknowledgement means **unknown
+commit outcome**, not rollback: reread before retrying.
+
 ## Options
 
 | Flag | |

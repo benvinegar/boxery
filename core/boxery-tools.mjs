@@ -88,7 +88,7 @@ export const TOOLS = [
 		name: "vm_edit",
 		title: "VM edit",
 		engine: "edit",
-		description: `Edit a file ${where} Exact-text replacement: each edits[].oldText must match exactly once in the original file; edits must not overlap.`,
+		description: `Edit a file ${where} Exact-text replacement: each edits[].oldText must match exactly once in the original file; edits must not overlap. Standalone core/MCP commits use atomic replacement with advisory conflict detection; reread before retrying. Follows symlinks without replacing them and requires a writable regular file and parent directory. Pi uses its native edit engine.`,
 		parameters: obj(
 			{
 				path: { type: "string" },
@@ -100,7 +100,7 @@ export const TOOLS = [
 			["path", "edits"],
 		),
 		annotations: { destructiveHint: true, openWorldHint: false },
-		run: (vm, a) => core.editTool(vm, a),
+		run: (vm, a, x) => core.editTool(vm, a, x),
 	},
 	{
 		name: "vm_copy",
