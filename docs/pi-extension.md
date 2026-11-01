@@ -25,6 +25,8 @@ pi --vm demo --vm-grant ssh-agent,env:GH_TOKEN,file:.env
 pi                               # no current VM; the agent can still create one with vm_manage
 ```
 
+The extension pins the controller's selected [host profile](hosts.md) on first transport use. Select it with `boxery host use NAME` before starting pi; restart pi to adopt a changed default. Saved VMs are host-bound and are not automatically resumed on another host. Pool leases use that same pinned profile.
+
 The current VM is saved in the session, so `pi --continue` picks it back up. Throwaway VMs and leases belong to their pi process. They're given back as soon as they stop being current: when you quit, `/new`, `/resume`, fork, or switch VMs.
 
 ## Tools

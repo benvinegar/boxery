@@ -279,8 +279,9 @@ export default function (pi: ExtensionAPI) {
 		// Leases and throwaway VMs are given back as soon as they stop being current, not only on quit.
 		if (current && current.name !== c?.name) void dropOwned(current, ctx);
 		current = c;
-		// Leased VMs are recorded like throwaways: they belong to this process and are never re-adopted.
-		if (persist) pi.appendEntry("boxery-current", c ? { vm: c.name, ephemeral: c.ephemeral || !!c.lease } : { vm: null });
+		// Leased VMs belong to this process and are never re-adopted; persistent VMs also
+		// record their host so a changed default cannot redirect a resumed session.
+		if (persist) pi.appendEntry("boxery-current", c ? { vm: c.name, ephemeral: c.ephemeral || !!c.lease, host: core.currentHost().name, configDir: core.currentHost().dir } : { vm: null });
 		const label = c ? `⛁ vm:${c.name}${c.lease ? " (leased)" : ""}` : undefined;
 		ctx?.ui?.setStatus?.("boxery", label ? (ctx.ui.theme?.fg?.("accent", label) ?? label) : undefined);
 	}
@@ -361,7 +362,13 @@ export default function (pi: ExtensionAPI) {
 			let last: any;
 			for (const e of ctx.sessionManager.getBranch() as any[]) if (e.type === "custom" && (e.customType === "boxery-current" || e.customType === "agentvm-current")) last = e.data;
 			// A recorded throwaway VM belongs to its original process; don't adopt it.
-			if (last?.vm && !last.ephemeral) setCurrent({ name: last.vm, ephemeral: false }, ctx, false);
+			if (last?.vm && !last.ephemeral) {
+				const host = core.currentHost();
+				// Old entries predate named hosts and therefore belong only to the legacy profile.
+				if ((last.host ?? "legacy") === host.name && (!last.configDir || last.configDir === host.dir))
+					setCurrent({ name: last.vm, ephemeral: false }, ctx, false);
+				else ctx.ui?.notify?.("boxery: saved VM belongs to another host; select a VM with /vm use NAME", "warning");
+			}
 		} catch (e: any) {
 			ctx.ui?.notify?.(`boxery: ${e.message}`, "error");
 			// Keep the requested name as current so vm_* tools report the failure instead of guessing.
@@ -445,7 +452,8 @@ export default function (pi: ExtensionAPI) {
 						const name = arg || current?.name;
 						if (!name) throw new Error("usage: /vm desktop [NAME]");
 						desktopProc?.kill();
-						desktopProc = spawn(core.BOXERY, ["desktop", name], { stdio: "ignore" });
+						const command = core.controllerCommand(["desktop", name]);
+						desktopProc = spawn(core.BOXERY, command.args, { env: command.env, stdio: "ignore" });
 						say(`boxery: opening the desktop of "${name}" in your browser (tunnel closes when pi exits)`);
 						break;
 					}

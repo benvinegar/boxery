@@ -1,0 +1,280 @@
+// Isolated host-aware core/MCP regressions. No real SSH, HOME, credentials or VM host.
+import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, before, test } from "node:test";
+
+const ROOT = path.resolve(import.meta.dirname, "..");
+const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
+let dir, env;
+const clients = [];
+const text = (r) => r.content[0].text;
+const vmroot = (host) => path.join(dir, `vm-${host}`);
+const profile = (host) => path.join(dir, "home", "profiles", host);
+const calls = (host) => readFileSync(path.join(vmroot(host), "calls"), "utf8");
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+before(() => {
+	dir = mkdtempSync(path.join(tmpdir(), "boxery-hosts-"));
+	const bin = path.join(dir, "bin");
+	mkdirSync(bin);
+	mkdirSync(path.join(dir, "home", "host-registry"), { recursive: true });
+	for (const host of ["alpha", "beta"]) {
+		mkdirSync(profile(host), { recursive: true });
+		mkdirSync(path.join(vmroot(host), "project"), { recursive: true });
+		writeFileSync(path.join(profile(host), "config"), "# fake controller config\n");
+		writeFileSync(path.join(profile(host), "ssh_config"), "# fake SSH config\n");
+		writeFileSync(path.join(dir, "home", "host-registry", host), `${profile(host)}\n`);
+		writeFileSync(path.join(vmroot(host), "calls"), "");
+	}
+	writeFileSync(path.join(dir, "home", "default-host"), "alpha\n");
+	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash
+[ "$1" != --host ] || shift 2
+tag="PROFILE:$(basename "$BOXERY_HOME") OVERRIDES:\${BOXERY_HOST-}:\${BOXERY_HOST_BIN-}"
+case "$*" in
+"ls --json") printf '[{"name":"fakevm","state":"running","addr":"%s"}]\\n' "$tag" ;;
+"grants "*" --json") printf '[{"kind":"file","local":"%s","remote":"fixture"}]\\n' "$tag" ;;
+*) printf '%s\\nCOMMAND:%s\\n' "$tag" "$*" ;;
+esac
+`);
+	writeFileSync(path.join(bin, "ssh"), `#!/usr/bin/env bash
+conf=""; vm=""
+while [ $# -gt 1 ]; do case $1 in -F) conf=$2; shift 2 ;; -o) shift 2 ;; *.boxery) vm=$1; shift ;; *) shift ;; esac; done
+[ "$vm" = fakevm.boxery ] || exit 255
+host=$(basename "$(dirname "$conf")")
+case $host in alpha|beta) ;; *) echo 'wrong profile' >&2; exit 255 ;; esac
+vmroot=${JSON.stringify(dir)}/vm-$host
+cmd=\${1//\\/home\\/agent/$vmroot}
+printf '%s\\n' "$cmd" >>"$vmroot/calls"
+# Keep multi-step core tools overlapped to catch lost async host context.
+sleep 0.02
+case $cmd in
+ *getdisplaygeometry*) if [ "$host" = alpha ]; then echo '2560 1440' >&2; else echo '1280 720' >&2; fi; printf 'fake-png'; exit 0 ;;
+ *xdotool*) exit 0 ;;
+esac
+cd "$vmroot" && HOST_TAG=$host HOME="$vmroot" exec bash -c "$cmd"
+`);
+	writeFileSync(path.join(bin, "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n");
+	for (const f of ["boxery", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery"), BOXERY_HOST: "must-not-leak", BOXERY_HOST_BIN: "/must/not/leak" };
+});
+after(() => {
+	for (const c of clients) c.close();
+	rmSync(dir, { recursive: true, force: true });
+});
+
+function client(args = [], overrides = {}) {
+	const p = spawn(process.execPath, [SERVER, ...args], { env: { ...env, ...overrides }, stdio: ["pipe", "pipe", "pipe"] });
+	let buf = "", id = 0;
+	const waiting = new Map();
+	p.stdout.on("data", (d) => {
+		buf += d;
+		let nl;
+		while ((nl = buf.indexOf("\n")) >= 0) {
+			const msg = JSON.parse(buf.slice(0, nl));
+			buf = buf.slice(nl + 1);
+			waiting.get(msg.id)?.(msg);
+			waiting.delete(msg.id);
+		}
+	});
+	p.on("exit", () => { for (const resolve of waiting.values()) resolve({ error: "server exited" }); });
+	const call = (method, params) => new Promise((resolve) => {
+		const i = ++id;
+		waiting.set(i, resolve);
+		p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method, params })}\n`);
+	});
+	const c = { call, tool: async (name, a) => (await call("tools/call", { name, arguments: a })).result, close: () => p.kill() };
+	clients.push(c);
+	return c;
+}
+
+// Run core in its own process, rather than mutate global process.env for profile selection.
+test("core registry, default/legacy resolution, trusted contexts and per-call subprocess env", () => {
+	const script = `
+import assert from 'node:assert/strict';
+import {writeFileSync} from 'node:fs';
+import * as c from ${JSON.stringify(new URL("../core/boxery-core.mjs", import.meta.url).href)};
+assert.equal(c.resolveHost().name, 'alpha');
+assert.equal(c.currentHost().name, 'alpha');
+try {
+ writeFileSync(c.BOXERY_HOME + '/default-host', 'beta\\n');
+ assert.equal(c.resolveHost().name, 'beta');
+ assert.equal(c.currentHost().name, 'alpha', 'implicit pi transport default stays pinned');
+ assert.equal(c.controllerCommand(['desktop','fakevm']).env.BOXERY_HOME, c.resolveHost('alpha').dir);
+} finally {writeFileSync(c.BOXERY_HOME + '/default-host', 'alpha\\n');}
+
+assert.equal(c.resolveHost('legacy').dir, c.BOXERY_HOME);
+assert.deepEqual(c.registeredHosts().map(h => h.name), ['legacy','alpha','beta']);
+for (const bad of ['', '../alpha', '-oX', 'a/b', { name:'alpha', dir:'/tmp/arbitrary' }]) assert.throws(() => c.resolveHost(bad), /invalid host/);
+assert.throws(() => c.resolveHost('unknown'), /unknown host/);
+assert.throws(() => c.parseLoc('unknown/fakevm:/x', 'fakevm'), /unknown host/);
+assert.throws(() => c.parseLoc('../fakevm:/x', 'fakevm'), /invalid host/);
+const loc = c.parseLoc('beta/fakevm:foo', 'fakevm');
+assert.equal(loc.host.name, 'beta'); assert.equal(loc.vm, 'fakevm');
+const before = {...process.env};
+const [a,b] = await Promise.all(['alpha','beta'].map(h => c.withHost(h, async () => {
+ await c.sleep(h === 'alpha' ? 20 : 1);
+ const cmd = c.controllerCommand(['ls']);
+ assert.equal(cmd.env.BOXERY_HOME, c.resolveHost(h).dir);
+ assert.equal(cmd.env.BOXERY_HOST, undefined);
+ assert.equal(cmd.env.BOXERY_HOST_BIN, undefined);
+ const [ssh, listed] = await Promise.all([
+  c.sshOk('fakevm', 'printf %s "$HOST_TAG"'),
+  c.listVms()
+ ]);
+ assert.equal(listed[0].addr, 'PROFILE:' + h + ' OVERRIDES::', 'JSON subprocess stays host-scoped');
+ return ssh.toString();
+})));
+assert.deepEqual([a,b], ['alpha','beta']);
+assert.deepEqual({...process.env}, before);
+console.log('core host assertions passed');
+`;
+	assert.match(execFileSync(process.execPath, ["--input-type=module", "-e", script], { env, encoding: "utf8" }), /core host assertions passed/);
+});
+
+test("all MCP schemas accept host; default/startup selection and VM ownership fail closed", async () => {
+	const c = client(["--vm", "fakevm"]);
+	const tools = (await c.call("tools/list")).result.tools;
+	for (const t of tools) assert.equal(t.inputSchema.properties.host.type, "string", t.name);
+	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/);
+	assert.equal((await c.tool("vm_bash", { host: "beta", command: "true" })).isError, true);
+	assert.match(text(await c.tool("vm_bash", { host: "beta", vm: "fakevm", command: 'echo "$HOST_TAG"' })), /^beta\n/);
+	for (const host of ["unknown", "../alpha", "", null, "alpha\n", { name: "beta", dir: profile("beta") }])
+		assert.equal((await c.tool("vm_bash", { host, vm: "fakevm", command: "true" })).isError, true);
+	assert.match(text(await c.tool("vm_manage", { action: "hosts" })), /alpha \*/);
+	assert.equal((await c.tool("vm_manage", { action: "add", name: "untrusted" })).isError, true);
+	assert.equal((await c.tool("vm_manage", { action: "host", host: "beta" })).isError, false);
+	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true, "host switch must clear VM");
+	assert.equal((await c.tool("vm_manage", { action: "use", host: "beta", name: "fakevm" })).isError, false);
+	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
+	assert.match(text(await c.tool("vm_manage", { action: "grants", name: "fakevm" })), /PROFILE:beta OVERRIDES::/);
+	await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, false, "other-host rm must not clear selected pair");
+	await c.tool("vm_manage", { action: "rm", host: "beta", name: "fakevm" });
+	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true);
+	await c.tool("vm_manage", { action: "new", host: "alpha", name: "fakevm", use: true });
+	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/);
+	const other = client(["--host", "beta", "--vm", "fakevm"]);
+	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
+});
+
+test("startup host failures, BOXERY_VM and alias replacement cannot inherit a different profile's VM", async () => {
+	for (const args of [["--host"], ["--host", "unknown"], ["--host", "../alpha"]]) {
+		const p = spawn(process.execPath, [SERVER, ...args], { env, stdio: "ignore" });
+		assert.notEqual(await new Promise((resolve) => p.on("exit", resolve)), 0);
+	}
+	const c = client(["--host", "alpha"], { BOXERY_VM: "fakevm" });
+	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/);
+	const pointer = path.join(dir, "home", "host-registry", "alpha");
+	try {
+		writeFileSync(pointer, `${profile("beta")}\n`);
+		assert.equal((await c.tool("vm_bash", { host: "alpha", command: "true" })).isError, true);
+		await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+		assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/, "resolved sessions retain their original profile");
+	} finally { writeFileSync(pointer, `${profile("alpha")}\n`); }
+});
+
+test("concurrent duplicate VM calls, nested tools and screenshots remain host-isolated", async () => {
+	const c = client(["--host", "alpha", "--vm", "fakevm"]);
+	const slow = c.tool("vm_bash", { command: 'sleep 0.15; echo "$HOST_TAG"' });
+	await c.tool("vm_manage", { action: "host", host: "beta" });
+	assert.match(text(await slow), /^alpha\n/, "inflight host selection is snapshotted");
+	await Promise.all(["alpha", "beta"].map(async (host) => {
+		await c.tool("vm_write", { host, vm: "fakevm", path: "same-name.txt", content: host });
+		const r = await c.tool("vm_read", { host, vm: "fakevm", path: "same-name.txt" });
+		assert.equal(text(r), host);
+		await c.tool("vm_screenshot", { host, vm: "fakevm" });
+	}));
+	for (const host of ["alpha", "beta"]) await c.tool("vm_click", { host, vm: "fakevm", x: 10, y: 20, screenshot: false });
+	assert.match(calls("alpha"), /mousemove 20 40 click/);
+	assert.match(calls("beta"), /mousemove 10 20 click/);
+});
+
+test("copy binds both hosts independently, supports local server paths and rejects unknown targets before writes", async () => {
+	const c = client(["--host", "alpha", "--vm", "fakevm"]);
+	await c.tool("vm_write", { path: "copy's.txt", content: "alpha-source" });
+	let r = await c.tool("vm_copy", { from: "alpha/fakevm:copy's.txt", to: "beta/fakevm:received.txt" });
+	assert.equal(r.isError, false, text(r));
+	assert.equal(readFileSync(path.join(vmroot("beta"), "project/received.txt"), "utf8"), "alpha-source");
+	const local = path.join(dir, "server-local's.txt");
+	r = await c.tool("vm_copy", { from: "beta/fakevm:received.txt", to: `local:${local}` });
+	assert.equal(r.isError, false, text(r));
+	assert.equal(readFileSync(local, "utf8"), "alpha-source");
+	r = await c.tool("vm_copy", { from: `local:${local}`, to: "fakevm:legacy-prefix.txt" });
+	assert.equal(r.isError, false, text(r));
+	assert.equal(readFileSync(path.join(vmroot("alpha"), "project/legacy-prefix.txt"), "utf8"), "alpha-source");
+	assert.equal((await c.tool("vm_copy", { host: "beta", from: "bare-path", to: `local:${local}` })).isError, true, "do not inherit alpha's current VM");
+	for (const endpoint of ["unknown/fakevm:/x", "bad host/fakevm:/x", "../fakevm:/x"])
+		assert.equal((await c.tool("vm_copy", { from: `local:${local}`, to: endpoint })).isError, true);
+	assert.equal(readFileSync(local, "utf8"), "alpha-source");
+});
+
+test("timeout cleanup stays on the snapshotted host after a concurrent session switch", async () => {
+	const c = client(["--host", "alpha", "--vm", "fakevm"]);
+	const pending = c.tool("vm_bash", { command: "sleep 30", timeout: 0.15 });
+	await delay(70);
+	await c.tool("vm_manage", { action: "host", host: "beta" });
+	assert.match(text(await pending), /timed out/);
+	await delay(150); // cleanup SSH starts asynchronously from the timer
+	assert.match(calls("alpha"), /kill -TERM/);
+	assert.doesNotMatch(calls("beta"), /kill -TERM/);
+});
+
+test("HTTP startup defaults, overrides and sessions stay pinned across registry default changes", async () => {
+	const defaultFile = path.join(dir, "home", "default-host");
+	try {
+		for (const startup of [
+			{ args: [], host: "alpha", vm: null, changedDefault: "beta" },
+			{ args: ["--host", "beta", "--vm", "fakevm"], host: "beta", vm: "fakevm", changedDefault: "legacy" },
+		]) {
+			writeFileSync(defaultFile, "alpha\n");
+			const port = 20000 + Math.floor(Math.random() * 20000);
+			const p = spawn(process.execPath, [SERVER, "--http", `127.0.0.1:${port}`, "--no-auth", ...startup.args], { env, stdio: "ignore" });
+			clients.push({ close: () => p.kill() });
+			const url = `http://127.0.0.1:${port}`;
+			for (let i = 0; i < 50; i++) {
+				try { if ((await fetch(`${url}/healthz`)).ok) break; } catch {}
+				await delay(50);
+			}
+			let id = 0;
+			const post = (method, params, sid) => fetch(`${url}/mcp`, { method: "POST", headers: { "content-type": "application/json", ...(sid ? { "mcp-session-id": sid } : {}) }, body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }) });
+			const initialize = async () => {
+				const response = await post("initialize", {});
+				assert.equal(response.status, 200);
+				const body = await response.json();
+				assert.match(body.result.instructions, new RegExp(`Current host: ${startup.host}\\.`));
+				return response.headers.get("mcp-session-id");
+			};
+			const tool = async (sid, name, args) => (await (await post("tools/call", { name, arguments: args }, sid)).json()).result;
+			const assertStartup = async (sid) => {
+				const listed = text(await tool(sid, "vm_manage", { action: "list" }));
+				assert.match(listed, new RegExp(`PROFILE:${startup.host} OVERRIDES::`));
+				assert.ok(listed.includes(`current: ${startup.vm ?? "(none)"} (host: ${startup.host})`));
+				const implicit = await tool(sid, "vm_bash", { command: 'echo "$HOST_TAG"' });
+				if (startup.vm) assert.match(text(implicit), new RegExp(`^${startup.host}\\n`));
+				else assert.equal(implicit.isError, true, "startup without --vm must not acquire a current VM");
+				const explicitVm = await tool(sid, "vm_bash", { vm: "fakevm", command: 'echo "$HOST_TAG"' });
+				assert.match(text(explicitVm), new RegExp(`^${startup.host}\\n`));
+			};
+			const first = await initialize();
+			const second = await initialize();
+			// No use/host mutation yet: prove registry default and explicit startup overrides directly.
+			await Promise.all([first, second].map(assertStartup));
+			writeFileSync(defaultFile, `${startup.changedDefault}\n`);
+			const third = await initialize(); // New sessions also inherit this server's startup snapshot.
+			await Promise.all([first, second, third].map(assertStartup));
+			await Promise.all([[first, "alpha"], [second, "beta"]].map(([sid, host]) => tool(sid, "vm_manage", { action: "use", host, name: "fakevm" })));
+			const out = await Promise.all([first, second].map((sid) => tool(sid, "vm_bash", { command: 'sleep 0.1; echo "$HOST_TAG"' })));
+			assert.match(text(out[0]), /^alpha\n/); assert.match(text(out[1]), /^beta\n/);
+			await tool(first, "vm_manage", { action: "host", host: "beta" });
+			assert.equal((await tool(first, "vm_bash", { command: "true" })).isError, true);
+			assert.match(text(await tool(second, "vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
+			await assertStartup(third); // Other sessions' mutations must not retarget its startup pair.
+			const stopped = new Promise((resolve) => p.once("exit", resolve));
+			p.kill();
+			await stopped;
+		}
+	} finally { writeFileSync(defaultFile, "alpha\n"); }
+});

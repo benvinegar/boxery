@@ -2,8 +2,8 @@
 // boxery MCP server: exposes boxery VMs as MCP tools (vm_bash, vm_read, …, vm_browser, vm_manage).
 // No dependencies; Node >= 18. Uses ~/.boxery (run `boxery setup user@host` first).
 //
-//   boxery-mcp [--vm NAME]                         stdio (launched by the MCP client)
-//   boxery-mcp --http 127.0.0.1:8765 [--vm NAME]   Streamable HTTP at /mcp
+//   boxery-mcp [--host NAME] [--vm NAME]   stdio (launched by the MCP client)
+//   boxery-mcp --http 127.0.0.1:8765 [--host NAME] [--vm NAME]   Streamable HTTP at /mcp
 //        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth),
 //              optional --allow-user a@b.c (checks Tailscale-User-Login from `tailscale serve`)
 //
@@ -28,13 +28,16 @@ if (has("-h") || has("--help")) {
 	process.stdout.write(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
 	process.exit(0);
 }
+if (has("--host") && opt("--host") == null) throw new Error("--host needs a registered host name");
+const DEFAULT_HOST = core.resolveHost(opt("--host"));
 const DEFAULT_VM = opt("--vm") ?? process.env.BOXERY_VM ?? null;
 if (DEFAULT_VM) core.assertName(DEFAULT_VM);
 const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- tools
 
-const vmProp = { vm: { type: "string", description: "VM name (default: the current VM)" } };
+const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
+const vmProp = { ...hostProp, vm: { type: "string", description: "VM name (default: the current VM)" } };
 const shotProp = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
 const where = "in an boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, ...vmProp }, required });
@@ -80,11 +83,11 @@ const TOOLS = [
 	{
 		name: "vm_copy",
 		description:
-			"Copy a file or directory between the machine running this server and a VM, or between VMs. Locations: `local:/path`, `NAME:/path`, or a bare path (= current VM). Directories copy recursively.",
-		inputSchema: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] },
+			"Copy a file or directory between the machine running this server and a VM, or between VMs. Locations: `HOST/NAME:/path`, `local:/path` (server machine), `NAME:/path` (session host), or a bare path (= current VM). Directories copy recursively.",
+		inputSchema: obj({ from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
 		annotations: { title: "VM copy", destructiveHint: true },
 		noVm: true,
-		run: (_vm, a, x) => core.copyTool(a, { current: x.session.current, signal: x.signal }),
+		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, signal: x.signal }),
 	},
 	{
 		name: "vm_screenshot",
@@ -139,13 +142,14 @@ const TOOLS = [
 	{
 		name: "vm_manage",
 		description:
-			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants. " +
+			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | rm | snap | revert | use | none | grants | hosts | host. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
+			"`grants` shows what the VM may access from the user's machine (only the user can change grants). `hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				action: { type: "string", enum: ["list", "new", "rm", "snap", "revert", "use", "none", "grants"] },
+				...hostProp,
+				action: { type: "string", enum: ["list", "new", "rm", "snap", "revert", "use", "none", "grants", "hosts", "host"] },
 				name: { type: "string" },
 				snapshot: { type: "string" },
 				use: { type: "boolean" },
@@ -154,27 +158,37 @@ const TOOLS = [
 		},
 		annotations: { title: "VM manage", destructiveHint: true },
 		noVm: true,
-		async run(_vm, a, { session }) {
+		async run(_vm, a, { session, host, current }) {
 			switch (a.action) {
+				case "hosts":
+					return { text: core.registeredHosts().map((h) => `${h.name}${h.name === host.name ? " *" : ""}\t${h.dir}`).join("\n") };
+				case "host":
+					if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
+					session.host = host;
+					session.current = null;
+					session.currentHost = null;
+					return { text: `current host: ${host.name}; no current VM` };
 				case "use":
 					await core.ensureVm(core.assertName(a.name));
 					await core.boxeryCli(["grants", a.name, "apply", "--quiet"], 120_000).catch(() => {});
 					session.current = a.name;
+					session.host = session.currentHost = host;
 					return { text: `current VM: ${a.name}` };
 				case "none":
 					session.current = null;
+					session.currentHost = null;
 					return { text: "no current VM" };
 				case "list":
-					return { text: `${await core.manage(a)}\ncurrent: ${session.current ?? "(none)"}` };
+					return { text: `${await core.manage(a)}\ncurrent: ${current ?? "(none)"} (host: ${host.name})` };
 				case "new": {
 					const name = a.name ? core.assertName(a.name) : core.newName();
 					const out = await core.manage({ ...a, name });
-					if (a.use) session.current = name;
+					if (a.use) { session.current = name; session.host = session.currentHost = host; }
 					return { text: `${out}${a.use ? `\ncurrent VM: ${name}` : ""}` };
 				}
 				case "rm": {
 					const out = await core.manage(a);
-					if (session.current === a.name) session.current = null;
+					if (session.current === a.name && sameHost(session.currentHost, host)) { session.current = null; session.currentHost = null; }
 					return { text: out };
 				}
 				default:
@@ -183,16 +197,17 @@ const TOOLS = [
 		},
 	},
 ];
+const sameHost = (a, b) => a?.name === b?.name && a?.dir === b?.dir;
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
 
 // ---------------------------------------------------------------- MCP / JSON-RPC
 
 function newSession() {
-	return { id: randomUUID(), current: DEFAULT_VM, inflight: new Map() };
+	return { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map() };
 }
 
 const instructions = (s) =>
-	core.guidance(s.current, {
+	`Current host: ${s.host.name}. VM selections belong only to that host. Every vm_* tool accepts optional host.\n` + core.guidance(s.current, {
 		localToolsNote:
 			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
 	});
@@ -202,14 +217,17 @@ async function callTool(session, params, signal) {
 	if (!tool) throw Object.assign(new Error(`unknown tool ${params?.name}`), { code: -32602 });
 	const args = params.arguments ?? {};
 	try {
+		// Snapshot before any await: concurrent selection must not retarget this call or its cleanup.
+		const host = Object.hasOwn(args, "host") ? core.resolveHost(core.assertHost(args.host)) : session.host;
+		const current = sameHost(session.currentHost, host) ? session.current : null;
 		let vm = null;
 		if (!tool.noVm) {
-			vm = args.vm || session.current;
+			vm = args.vm || current;
 			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', name:…} first.");
 			core.assertName(vm);
 		}
 		const { vm: _drop, ...rest } = args;
-		const r = await tool.run(vm, tool.noVm ? args : rest, { session, signal });
+		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current }));
 		const content = [{ type: "text", text: r.text ?? "" }];
 		if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
 		return { content, isError: !!r.isError };
@@ -355,9 +373,8 @@ function serveHttp(listen) {
 				session = sid && sessions.get(sid);
 				if (!session) return send(404, { jsonrpc: "2.0", id: null, error: { code: -32001, message: "unknown or missing Mcp-Session-Id; re-initialize" } });
 			}
-			const ac = new AbortController();
 			res.on("close", () => {
-				if (!res.writableEnded) for (const a of session.inflight.values()) a.abort();
+				if (!res.writableEnded) for (const m of msgs) session.inflight.get(m?.id)?.abort();
 			});
 			const out = (await Promise.all(msgs.map((m) => handle(session, m)))).filter(Boolean);
 			const headers = { "mcp-session-id": session.id };

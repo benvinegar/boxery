@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2088 # tilde strings below intentionally refer to target home
 # boxery: controller CLI. Runs on your laptop (macOS or Linux). Needs only ssh (+ a browser).
 # Bash 3.2 compatible (stock macOS).
 set -eu
 
-CONF_DIR="${BOXERY_HOME:-$HOME/.boxery}"
-CONF_FILE="$CONF_DIR/config"
-SSH_CONF="$CONF_DIR/ssh_config"
-# shellcheck source=/dev/null
-[ -f "$CONF_FILE" ] && . "$CONF_FILE"
-HOST="${BOXERY_HOST:-${HOST:-}}"   # ssh destination of the VM host, e.g. you@hornet (tailscale name)
-HOST_BIN="${BOXERY_HOST_BIN:-${HOST_BIN:-~/.local/bin/boxery-host}}"
-
-GRANTS_DIR="$CONF_DIR/grants"
-LEASES_DIR="$CONF_DIR/leases"
+# Registry: host-registry/NAME contains one absolute profile directory; default-host contains NAME.
+# "legacy" is reserved for the root profile (and explicitly bypasses a named default).
+ROOT_DIR="${BOXERY_HOME:-$HOME/.boxery}"
+REGISTRY="$ROOT_DIR/host-registry"
 TAB=$(printf '\t')
 NL='
 '
@@ -31,6 +26,75 @@ json_array() { # element per line on stdin → JSON array
 	awk 'NR == 1 { printf "[\n%s", $0; next } { printf ",\n%s", $0 } END { print (NR ? "\n]" : "[]") }'
 }
 has_flag() { f=$1; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
+
+valid_alias() { valid_vm "${1:-}" && [ "$1" != legacy ]; }
+need_alias() { valid_alias "${1:-}" || die "invalid host name: ${1:-} (legacy is reserved)"; }
+# Only an absent path means "no selection"; symlinks (even dangling ones) are metadata.
+metadata_present() { [ -e "$1" ] || [ -L "$1" ]; }
+# Registry files are regular, readable data files, never shell snippets or symlinks.
+one_line() {
+	local line extra
+	[ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || die "invalid registry file: $1 (expected readable regular file, not symlink)"
+	{ IFS= read -r line && ! IFS= read -r extra && [ -z "$extra" ]; } <"$1" || die "invalid registry file: $1"
+	# Bash variables cannot retain NUL bytes. Compare the original bytes, not just the parsed line.
+	cmp -s "$1" <(printf '%s\n' "$line") || die "invalid registry file: $1 (noncanonical bytes)"
+	printf '%s\n' "$line"
+}
+default_host() {
+	local name=legacy
+	if metadata_present "$ROOT_DIR/default-host"; then name=$(one_line "$ROOT_DIR/default-host"); fi
+	profile_dir "$name" >/dev/null
+	printf '%s\n' "$name"
+}
+plain_path() { case $1 in *"$NL"*|*"$TAB"*|*$(printf '\r')*) die "paths cannot contain line breaks or tabs" ;; esac; }
+profile_dir() {
+	if [ "$1" = legacy ]; then printf '%s\n' "$ROOT_DIR"; return; fi
+	need_alias "$1"
+	metadata_present "$REGISTRY/$1" || die "unknown host: $1"
+	dir=$(one_line "$REGISTRY/$1")
+	case $dir in /*) ;; *) die "invalid profile directory for $1" ;; esac
+	plain_path "$dir"
+	[ -f "$dir/config" ] && [ -f "$dir/ssh_config" ] || die "incomplete profile: $1 ($dir)"
+	printf '%s\n' "$dir"
+}
+select_profile() {
+	selected=${1:-}
+	if [ -z "$selected" ]; then selected=$(default_host); fi
+	CONF_DIR=$(profile_dir "$selected")
+	CONF_FILE="$CONF_DIR/config"; SSH_CONF="$CONF_DIR/ssh_config"; GRANTS_DIR="$CONF_DIR/grants"; LEASES_DIR="$CONF_DIR/leases"
+	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; IDENTITY=""
+	# Configs are trusted, user-owned shell files. Never source registry pointers as shell code.
+	# shellcheck source=/dev/null
+	[ ! -f "$CONF_FILE" ] || . "$CONF_FILE"
+	# Older Bash 3.2 printf %q left ~/ unquoted. Restore that literal prefix after source,
+	# without rewriting imported config or evaluating its contents a second time.
+	if [ -f "$CONF_FILE" ] && grep -q '^HOST_BIN=~/' "$CONF_FILE"; then
+		case $HOST_BIN in "$HOME"/*) HOST_BIN="~/${HOST_BIN#"$HOME"/}" ;; esac
+	fi
+	if [ "$selected" = legacy ]; then
+		HOST="${BOXERY_HOST:-$HOST}"; HOST_BIN="${BOXERY_HOST_BIN:-$HOST_BIN}"
+	fi
+}
+# Literal shell serialization (unlike printf %q, never allows a leading ~ to expand on source).
+literal() { local s=$1; s=${s//\'/\'\\\'\'}; printf "'%s'" "$s"; }
+valid_dest() { case $1 in ''|-*|*[!A-Za-z0-9_.@:%+-]*) return 1 ;; esac; }
+check_target() {
+	valid_dest "$HOST" || die "invalid ssh destination: $HOST"
+	case $HOST_BIN in ''|-*) die "invalid host executable path" ;; esac
+	plain_path "$HOST_BIN"
+}
+# Expand only the supported ~/ prefix, on the machine where the executable lives.
+remote_bin() { case $HOST_BIN in '~/'*) printf '"$HOME"/%s' "$(literal "${HOST_BIN#\~/}")" ;; *) literal "$HOST_BIN" ;; esac; }
+# Double-quoted local-shell arguments also pass OpenSSH's ProxyCommand quote validator.
+shell_double() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//\$/\\\$}; s=${s//\`/\\\`}; printf '"%s"' "$s"; }
+ssh_value() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//%/%%}; printf '"%s"' "$s"; }
+# Include applies glob expansion after SSH-config parsing; preserve literal path characters.
+ssh_include_value() {
+	local s=$1
+	s=${s//\\/\\\\}; s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
+	ssh_value "$s"
+}
+
 valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac; [ ${#1} -le 64 ]; }
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
@@ -38,14 +102,14 @@ need_host() { [ -n "$HOST" ] || die "not configured; run: boxery setup user@host
 # HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
 is_local() { [ "$HOST" = local ]; }
 # shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
-local_host_bin() { case $HOST_BIN in "~/"*) echo "$HOME/${HOST_BIN#\~/}" ;; *) echo "$HOST_BIN" ;; esac; }
+local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}" ;; *) printf '%s\n' "$HOST_BIN" ;; esac; }
 # Remote command line with every argument shell-quoted: ssh joins argv with spaces and the remote
 # shell re-parses it, so unquoted args (snapshot names, flags) would be executed on the host.
 quote_args() { out=""; for a in "$@"; do out="$out $(printf %q "$a")"; done; printf '%s' "$out"; }
 h() {
 	need_host
 	if is_local; then "$(local_host_bin)" "$@"
-	else ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN$(quote_args "$@")"; fi
+	else check_target; ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(quote_args "$@")"; fi
 }
 h_stdin() { h "$@"; }  # stdin is passed through by both branches
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
@@ -72,7 +136,7 @@ write_ssh_config() {
 			[ -f "$lf" ] || continue
 			ln=$(sed -n 's/^name=//p' "$lf"); li=$(sed -n 's/^id=//p' "$lf")
 			echo "Host $ln.boxery"
-			echo "  IdentityFile $LEASES_DIR/$li.key"
+			echo "  IdentityFile $(ssh_value "$LEASES_DIR/$li.key")"
 			echo "  IdentitiesOnly yes"
 		done
 		# Per-VM ssh-agent grants survive setup regenerating this file. Never forward to the host.
@@ -85,8 +149,12 @@ write_ssh_config() {
 		echo "Host *.boxery"
 		echo "  ForwardAgent no"
 		echo "  User agent"
-		if is_local; then echo "  ProxyCommand $(local_host_bin) connect %h %p"
-		else echo "  ProxyCommand ssh -o LogLevel=ERROR $HOST $HOST_BIN connect %h %p"; fi
+		if is_local; then proxy="$(shell_double "$(local_host_bin)") connect"
+		else proxy="ssh -o LogLevel=ERROR -- $(shell_double "$HOST") $(shell_double "exec $(remote_bin) connect")"; fi
+		# ssh joins remote argv; the entire executable expression survives the local shell as one arg.
+		# OpenSSH expands percent tokens before the local shell, so escape user-supplied percents.
+		proxy=${proxy//%/%%}
+		echo "  ProxyCommand $proxy %h %p"
 		echo "  StrictHostKeyChecking no"
 		echo "  UserKnownHostsFile /dev/null"
 		echo "  LogLevel ERROR"
@@ -94,38 +162,107 @@ write_ssh_config() {
 		echo "  ServerAliveInterval 10"
 		echo "  ServerAliveCountMax 3"
 		echo "  ControlMaster auto"
-		echo "  ControlPath $CONF_DIR/cm-%h"
+		echo "  ControlPath $(ssh_value "$CONF_DIR/cm-")%h"
 		echo "  ControlPersist 10m"
-		if [ -n "$key" ]; then echo "  IdentityFile $key"; fi
+		if [ -n "$key" ]; then echo "  IdentityFile $(ssh_value "$key")"; fi
 	} >"$SSH_CONF"
 }
 
 cmd_setup() {
-	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--key ~/.ssh/id_ed25519.pub]"
+	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH]"
 	HOST=$1; shift
 	pub=""
-	while [ $# -gt 0 ]; do case $1 in --key) pub=$2; shift 2 ;; *) die "unknown flag $1" ;; esac; done
+	while [ $# -gt 0 ]; do case $1 in --key|--host-bin) [ $# -ge 2 ] || die "$1 needs a value"; if [ "$1" = --key ]; then pub=$2; else HOST_BIN=$2; fi; shift 2 ;; *) die "unknown flag $1" ;; esac; done
+	check_target
 	if [ -z "$pub" ]; then for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ecdsa.pub" "$HOME/.ssh/id_rsa.pub"; do [ -f "$k" ] && { pub=$k; break; }; done; fi
 	[ -f "$pub" ] || die "no ssh public key found; pass --key"
 	IDENTITY=${pub%.pub}
-	mkdir -p "$CONF_DIR"
-	printf 'HOST=%q\nHOST_BIN=%q\nIDENTITY=%q\n' "$HOST" "$HOST_BIN" "$IDENTITY" >"$CONF_FILE"
+	plain_path "$IDENTITY"
 	if is_local; then
 		echo "==> local mode: the VM host is this machine"
 		[ -x "$(local_host_bin)" ] || die "$(local_host_bin) not found; run host/boxery-host init here first"
 		"$(local_host_bin)" help >/dev/null || die "cannot run $(local_host_bin)"
 	else
 		echo "==> checking ssh to $HOST"
-		ssh -o LogLevel=ERROR "$HOST" "$HOST_BIN help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run boxery-host init?)"
+		ssh -o LogLevel=ERROR -- "$HOST" "$(remote_bin) help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run boxery-host init?)"
 	fi
 	echo "==> registering $pub with host (applies to VMs created from now on)"
 	h_stdin add-key <"$pub"
+	mkdir -p "$CONF_DIR"
+	{ printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'; } >"$CONF_FILE.tmp.$$"
+	mv "$CONF_FILE.tmp.$$" "$CONF_FILE"
 	write_ssh_config
-	if [ -f "$HOME/.ssh/config" ] && grep -qF "Include $SSH_CONF" "$HOME/.ssh/config"; then :; else
-		echo "==> add this line to the TOP of ~/.ssh/config so 'ssh NAME.boxery', VS Code, Zed etc. work:"
-		echo "    Include $SSH_CONF"
+	if [ "$CONF_DIR" != "$ROOT_DIR" ] || [ "${selected:-legacy}" != legacy ]; then
+		echo "==> named profile: use boxery --host NAME ssh VM (do not globally Include multiple profiles' *.boxery aliases)"
+	elif [[ $SSH_CONF == *%* ]]; then
+		# Older OpenSSH treats Include's % literally; newer clients expand percent tokens.
+		# No single escaping is portable across both. -F already handles this path literally.
+		echo "==> config path contains %; use boxery ssh VM or ssh -F $(literal "$SSH_CONF") VM.boxery instead of a global Include"
+	else
+		include="Include $(ssh_include_value "$SSH_CONF")"
+		if [ -f "$HOME/.ssh/config" ] && { grep -qxF "$include" "$HOME/.ssh/config" || grep -qxF "Include $SSH_CONF" "$HOME/.ssh/config"; }; then :; else
+			echo "==> add this line to the TOP of ~/.ssh/config so 'ssh NAME.boxery', VS Code, Zed etc. work:"
+			printf '    %s\n' "$include"
+		fi
 	fi
 	echo "==> done. Try: boxery new demo"
+}
+
+# Host mutations share a lock; registration/default files are published with atomic rename.
+cmd_host() {
+	action=${1:-ls}; [ $# -eq 0 ] || shift
+	case $action in
+	ls) [ $# -eq 0 ] || die "usage: boxery host ls"
+		def=$(default_host)
+		printf 'NAME\tDEFAULT\tCONFIG_DIR\n'
+		printf 'legacy\t%s\t%s\n' "$([ "$def" != legacy ] || printf '*')" "$ROOT_DIR"
+		for f in "$REGISTRY"/*; do alias=${f##*/}; valid_alias "$alias" || continue
+			dir=$(profile_dir "$alias")
+			printf '%s\t%s\t%s\n' "$alias" "$([ "$def" != "$alias" ] || printf '*')" "$dir"
+		done; return ;;
+	show) [ $# -eq 1 ] || die "usage: boxery host show NAME"; profile_dir "$1"; return ;;
+	add|use|rm) ;;
+	*) die "usage: boxery host add|ls|show|use|rm" ;;
+	esac
+	[ $# -ge 1 ] || die "host $action needs a name"
+	alias=$1; shift
+	if [ "$action" != use ] || [ "$alias" != legacy ]; then need_alias "$alias"; fi
+	mkdir -p "$REGISTRY"
+	mkdir "$REGISTRY/.lock" 2>/dev/null || die "host registry is locked; retry"
+	cleanup_profile=""
+	trap '[ -z "$cleanup_profile" ] || rm -rf "$cleanup_profile"; rmdir "$REGISTRY/.lock"' EXIT
+	case $action in
+	use) [ $# -eq 0 ] || die "usage: boxery host use NAME|legacy"
+		profile_dir "$alias" >/dev/null
+		# Do not overwrite/remove malformed metadata, or let mv move a file INTO a directory.
+		def=$(default_host)
+		if [ "$alias" = legacy ]; then rm -f "$ROOT_DIR/default-host"
+		else printf '%s\n' "$alias" >"$ROOT_DIR/default-host.tmp.$$"; mv "$ROOT_DIR/default-host.tmp.$$" "$ROOT_DIR/default-host"; fi ;;
+	rm) [ $# -eq 0 ] || die "usage: boxery host rm NAME"
+		[ -f "$REGISTRY/$alias" ] || die "unknown host: $alias"
+		def=$(default_host)
+		[ "$def" != "$alias" ] || die "cannot forget selected default; first run host use OTHER or host use legacy"
+		rm "$REGISTRY/$alias"
+		echo "forgot $alias; profile data, VMs and grants were NOT deleted or revoked" ;;
+	add) ! metadata_present "$REGISTRY/$alias" || die "host already registered: $alias"
+		[ $# -ge 1 ] || die "usage: boxery host add NAME DEST [--key K] [--host-bin PATH] | --config-dir DIR"
+		if [ "$1" = --config-dir ]; then
+			[ $# -eq 2 ] || die "usage: boxery host add NAME --config-dir DIR"
+			dir=$(cd "$2" && pwd -P) || die "no such config directory: $2"
+			[ -f "$dir/config" ] && [ -f "$dir/ssh_config" ] || die "config and ssh_config required: $dir"
+		else
+			dir="$ROOT_DIR/profiles/$alias"
+			! metadata_present "$dir" || die "profile data already exists: $dir (import it explicitly)"
+			mkdir -p "$dir"; cleanup_profile=$dir
+			CONF_DIR=$dir; CONF_FILE="$dir/config"; SSH_CONF="$dir/ssh_config"; GRANTS_DIR="$dir/grants"; LEASES_DIR="$dir/leases"
+			HOST=""; HOST_BIN='~/.local/bin/boxery-host'; IDENTITY=""
+			cmd_setup "$@"
+		fi
+		plain_path "$dir"
+		printf '%s\n' "$dir" >"$REGISTRY/.tmp.$$"; mv "$REGISTRY/.tmp.$$" "$REGISTRY/$alias"
+		cleanup_profile=""
+		echo "registered $alias ($dir); select with: boxery host use $alias" ;;
+	esac
 }
 
 cmd_attach() { # NAME [pi|opencode|shell] [session]
@@ -663,7 +800,11 @@ usage() {
 	cat <<-'EOF'
 		boxery — remote desktop VMs for coding agents
 
-		setup user@host|local [--key K.pub]
+		--host NAME COMMAND             route a command to a registered host (or legacy)
+		host add NAME DEST [--key K.pub] [--host-bin PATH]
+		host add NAME --config-dir DIR   import existing config/ssh_config without setup
+		host ls | show NAME | use NAME|legacy | rm NAME
+		setup user@host|local [--key K.pub] [--host-bin PATH]
 		                                configure the VM host (local = this machine) + register your ssh key
 		new NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
 		ls [--json]                     list VMs (with their grants)
@@ -695,7 +836,17 @@ usage() {
 	EOF
 }
 
+# Canonical root pointers work even when BOXERY_HOME was relative.
+plain_path "$ROOT_DIR"
+case $ROOT_DIR in /*) ;; *) ROOT_DIR="$PWD/$ROOT_DIR"; REGISTRY="$ROOT_DIR/host-registry" ;; esac
+explicit=""
+if [ "${1:-}" = --host ]; then
+	[ $# -ge 3 ] || die "usage: boxery --host NAME COMMAND"
+	explicit=$2; [ -n "$explicit" ] || die "invalid host name"; shift 2
+fi
 cmd=${1:-help}; [ $# -gt 0 ] && shift
+if [ "$cmd" = host ]; then [ -z "$explicit" ] || die "--host does not apply to host management"; cmd_host "$@"; exit; fi
+select_profile "$explicit"
 migrate_legacy_agent_forward
 case $cmd in
 setup) cmd_setup "$@" ;;

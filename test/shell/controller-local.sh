@@ -31,8 +31,8 @@ ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
 bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 
 HOME=$tmp/home "$A" setup local >/dev/null 2>&1 && ok "setup local" || bad "setup local"
-grep -q "^HOST=local" "$BOXERY_HOME/config" && ok "config records HOST=local" || bad "config"
-grep -q "ProxyCommand $ROOT/host/boxery-host connect %h %p" "$BOXERY_HOME/ssh_config" && ok "ProxyCommand runs boxery-host directly" || bad "ProxyCommand: $(grep ProxyCommand "$BOXERY_HOME/ssh_config")"
+grep -q "^HOST='local'" "$BOXERY_HOME/config" && ok "config records HOST=local" || bad "config"
+grep -q "ProxyCommand \"$ROOT/host/boxery-host\" connect %h %p" "$BOXERY_HOME/ssh_config" && ok "ProxyCommand runs boxery-host directly" || bad "ProxyCommand: $(grep ProxyCommand "$BOXERY_HOME/ssh_config")"
 grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key with the local host" || bad "key not registered"
 "$BOXERY_HOST_BIN" build-base >/dev/null 2>&1
 "$A" new w1 >/dev/null 2>&1 && ok "new via local host" || bad "new"
@@ -109,7 +109,7 @@ out=$("$A" acquire --ttl 600 2>/dev/null) && set -- $out && [ "$1" = lp1 ] && ok
 lid=${2:-x}
 [ -f "$BOXERY_HOME/leases/$lid.lease" ] && [ -f "$BOXERY_HOME/leases/$lid.key" ] && ok "lease record + private key stored locally" || bad "local lease files"
 [ "$(stat -c %a "$BOXERY_HOME/leases" 2>/dev/null || stat -f %Lp "$BOXERY_HOME/leases")" = 700 ] && ok "leases dir is 0700" || bad "leases dir perms"
-grep -A2 "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" | grep -q "IdentityFile $BOXERY_HOME/leases/$lid.key" && ok "ssh_config uses the lease key for lp1" || bad "ssh_config lease identity"
+grep -A2 "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" | grep -Fq "IdentityFile \"$BOXERY_HOME/leases/$lid.key\"" && ok "ssh_config uses the lease key for lp1" || bad "ssh_config lease identity"
 grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "lease key authorized in the VM" || bad "lease key not in VM"
 "$A" leases | grep -q "^lp1 " && ok "leases lists it" || bad "leases"
 "$A" leases --json | jq -e --arg i "$lid" 'length == 1 and .[0].name == "lp1" and .[0].lease_id == $i and .[0].ttl == 600 and .[0].expires_in > 0 and (.[0].holder | type) == "string"' >/dev/null && ok "leases --json" || bad "leases --json: $("$A" leases --json)"

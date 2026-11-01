@@ -36,6 +36,12 @@ Cursor and other clients that use a JSON config:
 }
 ```
 
+### Multiple hosts, one server
+
+Register profiles with `boxery host add` and select the startup host with `--host NAME`. Every tool accepts optional `host`; `vm_manage {action:"hosts"}` lists profiles and `{action:"host",host:"NAME"}` changes the session host and clears its VM. An explicit other host never inherits the current VM name. Copy endpoints can use `HOST/VM:/path`.
+
+See [Named hosts](hosts.md). MCP does not acquire or renew pool leases.
+
 ## B. Streamable HTTP on the host, over Tailscale
 
 ```bash
@@ -49,12 +55,13 @@ claude mcp add --transport http boxery https://my-host.<tailnet>.ts.net:8765/mcp
   --header "Authorization: Bearer $BOXERY_MCP_TOKEN"
 ```
 
-In this mode, "local" means **the host**: `vm_copy local:…` copies to and from the host, and grants are read from the host's env, files and ssh agent.
+In this mode, "local" means **the machine running MCP**, not necessarily the selected VM host: `vm_copy local:…` copies to and from that server, and grants are read from its env, files and ssh agent.
 
 ## Options
 
 | Flag | |
 |---|---|
+| `--host NAME` | Registered startup host (otherwise the controller default). Each HTTP session keeps its own host and VM. |
 | `--vm NAME` | Default VM. Without it, the model picks one with `vm_manage {action:"use"}`, and tools fail closed when no `vm` is given. |
 | `--http ADDR:PORT` | Serve Streamable HTTP at `/mcp` instead of stdio. Each MCP session keeps its own current VM. |
 | `--token-file PATH` | Bearer token from a file instead of `$BOXERY_MCP_TOKEN` |

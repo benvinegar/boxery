@@ -4,9 +4,9 @@ set -eu
 CLI="$(cd "$(dirname "$0")/../.." && pwd)/controller/boxery"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-export BOXERY_HOME="$tmp/config"
+export BOXERY_HOME="$tmp/config" HOME="$tmp/home"
 export BOXERY_HOST=test-host
-mkdir -p "$BOXERY_HOME" "$tmp/bin"
+mkdir -p "$BOXERY_HOME" "$HOME/.ssh" "$tmp/bin"
 printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/ssh"
 chmod +x "$tmp/bin/ssh"
 printf 'test public key\n' > "$tmp/key.pub"

@@ -37,6 +37,7 @@ Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at an
 - **Credentials stay home.** VMs never see your LLM keys. Each VM gets a revocable token, and a host-side proxy swaps in the real credential.
 - **Grant access deliberately.** Each VM gets only what you grant it: specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, specific env vars or files. Grants are off by default.
 - **Share a pool safely.** Several agents can lease VMs from a shared pool with exclusive, expiring leases. A VM is wiped back to a clean snapshot when its lease ends.
+- **Several hosts, one MCP server.** Route tools to named hosts with separate SSH configs, grants and lease keys. [Named hosts →](docs/hosts.md)
 - **No daemon on your laptop.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
 
 ## Quick start
@@ -120,7 +121,7 @@ Every integration exposes the same tools:
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | List, create, remove, snapshot, revert, and switch VMs |
 
-Every tool takes an optional `vm`, so one agent can fan work out across several VMs.
+Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
 
 ## How it works
 
@@ -148,6 +149,7 @@ Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so 
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
 | [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
+| [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
 | [Backends](host/backends/README.md) | libvirt, Lima, and the backend contract |

@@ -1,8 +1,8 @@
 // MCP server protocol tests with a fake VM: an `ssh` stub on PATH runs the remote script locally
 // (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -15,7 +15,12 @@ before(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "boxery-mcp-"));
 	const bin = path.join(dir, "bin");
 	const vmroot = path.join(dir, "vm");
+	const tar = execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim();
 	mkdirSync(bin);
+	// Capture the actual wire archive: macOS extraction consumes AppleDouble entries, while Linux
+	// extraction leaves them as ._* files. Checking just the extracted fake VM would miss the bug.
+	writeFileSync(path.join(bin, "tar"), `#!/usr/bin/env bash\nset -eo pipefail\nif [ "$1" = -cf ]; then\n${JSON.stringify(tar)} "$@" | tee ${JSON.stringify(path.join(dir, "copy.tar"))}\nelse exec ${JSON.stringify(tar)} "$@"; fi\n`);
+	chmodSync(path.join(bin, "tar"), 0o755);
 	mkdirSync(path.join(vmroot, "project"), { recursive: true });
 	mkdirSync(path.join(dir, "home"));
 	writeFileSync(path.join(dir, "home/ssh_config"), "# fake\n");
@@ -36,6 +41,7 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	writeFileSync(
 		path.join(bin, "boxery"),
 		`#!/usr/bin/env bash
+[ "$1" != --host ] || shift 2
 case "$*" in
 "ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
@@ -148,6 +154,36 @@ describe("stdio", () => {
 		const r = await c.tool("vm_bash", { command: "yes | head -c 30000000; echo; echo END" });
 		assert.match(r.content[0].text, /END/);
 		assert.ok(r.content[0].text.length < 300_000, `returned ${r.content[0].text.length} chars`);
+	});
+
+	test("vm_copy round-trips a checkout without macOS metadata sidecars", async () => {
+		const src = path.join(dir, "copy source");
+		mkdirSync(path.join(src, ".git/objects/pack"), { recursive: true });
+		const file = "file's.txt";
+		writeFileSync(path.join(src, file), "COPY_OK\n");
+		writeFileSync(path.join(src, ".git/objects/pack/pack-test.idx"), "index\n");
+		if (process.platform === "darwin") {
+			for (const f of [file, ".git/objects/pack/pack-test.idx"])
+				execFileSync("xattr", ["-w", "com.boxery.copy-test", "metadata", path.join(src, f)]);
+		}
+		const uploaded = await c.tool("vm_copy", { from: `local:${src}`, to: "copied-checkout" });
+		assert.equal(uploaded.isError, false, uploaded.content[0].text);
+		// Inspect raw headers: BSD tar also hides AppleDouble entries in its normal listing.
+		const archive = readFileSync(path.join(dir, "copy.tar"));
+		for (let at = 0; at + 512 <= archive.length;) {
+			const name = archive.subarray(at, at + 100).toString().replace(/\0.*$/s, "");
+			if (!name) break;
+			assert.ok(!path.basename(name).startsWith("._"), `wire archive contains AppleDouble entry: ${name}`);
+			const size = Number.parseInt(archive.subarray(at + 124, at + 136).toString().trim(), 8) || 0;
+			at += 512 + Math.ceil(size / 512) * 512;
+		}
+		const dest = path.join(env.VMROOT, "project/copied-checkout");
+		assert.equal(readFileSync(path.join(dest, file), "utf8"), "COPY_OK\n");
+		assert.ok(!readdirSync(dest, { recursive: true }).some((f) => path.basename(f).startsWith("._")), "tar introduced AppleDouble files");
+		const back = path.join(dir, "copy back");
+		const downloaded = await c.tool("vm_copy", { from: "copied-checkout", to: `local:${back}` });
+		assert.equal(downloaded.isError, false, downloaded.content[0].text);
+		assert.equal(readFileSync(path.join(back, file), "utf8"), "COPY_OK\n");
 	});
 
 	test("vm_copy failures are reported, not swallowed", async () => {

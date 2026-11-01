@@ -3,14 +3,76 @@
 // (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const BOXERY_HOME = process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery");
+export const BOXERY_HOME = path.resolve(process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery"));
 export const SSH_CONF = path.join(BOXERY_HOME, "ssh_config");
+// A context is resolved once at a call boundary, then inherited by all nested async work.
+const hostContext = new AsyncLocalStorage();
+const resolvedHosts = new WeakSet();
+let implicitHost; // Existing callers (pi) keep a stable default for this process.
+export const VALID_HOST = /^[a-z][a-z0-9-]{0,30}$/;
+export function assertHost(name) {
+	if (typeof name !== "string" || name !== name.trim() || !VALID_HOST.test(name)) throw new Error(`invalid host name "${name ?? ""}"`);
+	return name;
+}
+function registryLine(file, optional = false) {
+	let fd, text;
+	try {
+		// Validate and read the same object. No-follow prevents a replacement symlink from
+		// changing the target; nonblocking lets fstat reject a replacement FIFO without hanging.
+		fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+		if (!fstatSync(fd).isFile()) throw new Error("expected a readable regular file, not symlink");
+		text = readFileSync(fd, "utf8");
+	} catch (e) {
+		if (optional && e.code === "ENOENT") return null;
+		throw new Error(`invalid registry file: ${file} (${e.message})`);
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+	if (text.length < 2 || text.includes("\0") || !text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) throw new Error(`invalid registry file: ${file}`);
+	return text.slice(0, -1);
+}
+export function resolveHost(host) {
+	if (host && typeof host === "object" && resolvedHosts.has(host)) return host;
+	let name = host;
+	if (name == null) {
+		const file = path.join(BOXERY_HOME, "default-host");
+		name = registryLine(file, true) ?? "legacy";
+	}
+	assertHost(name);
+	let dir = BOXERY_HOME;
+	if (name !== "legacy") {
+		const file = path.join(BOXERY_HOME, "host-registry", name);
+		dir = registryLine(file, true);
+		if (dir == null) throw new Error(`unknown host: ${name}`);
+		if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
+		if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
+	}
+	const resolved = Object.freeze({ name, dir, sshConf: path.join(dir, "ssh_config") });
+	resolvedHosts.add(resolved);
+	return resolved;
+}
+export const currentHost = () => hostContext.getStore() ?? (implicitHost ??= resolveHost());
+export const withHost = (host, fn) => hostContext.run(resolveHost(host), fn);
+export function registeredHosts() {
+	const registry = path.join(BOXERY_HOME, "host-registry");
+	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
+	return [resolveHost("legacy"), ...names.map(resolveHost)];
+}
+/** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
+export function controllerCommand(args) {
+	const host = currentHost();
+	const env = { ...process.env, BOXERY_HOME: host.dir };
+	if (host.name !== "legacy") { delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN; }
+	// Bind the resolved directory, not a registry entry that could change during this call.
+	return { args: ["--host", "legacy", ...args], env };
+}
 export const REMOTE_HOME = "/home/agent";
 export const PROJECT = `${REMOTE_HOME}/project`;
 export const CDP_PORT = 9222;
@@ -52,9 +114,16 @@ export function vmPath(p) {
 	return path.posix.isAbsolute(s) ? path.posix.normalize(s) : path.posix.join(PROJECT, s);
 }
 
-/** Parse "vmname:/path", "local:/path" or a plain path (= current VM). */
+/** Parse "host/vm:/path", "vm:/path", "local:/path" or a plain path (= current VM). */
 export function parseLoc(spec, current) {
-	const m = String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/);
+	const explicit = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
+	if (explicit && !explicit[1].startsWith("/")) {
+		const parts = explicit[1].split("/");
+		if (parts.length !== 2) throw new Error(`invalid host/VM endpoint: ${spec}`);
+		const host = resolveHost(parts[0]);
+		return { host, vm: assertName(parts[1]), path: vmPath(explicit[2]) };
+	}
+	const m = String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
 	if (m) return m[1] === "local" ? { vm: null, path: m[2] } : { vm: m[1], path: vmPath(m[2]) };
 	if (!current) throw new Error(`"${spec}" has no VM prefix and no current VM is set (use NAME:path or local:path)`);
 	return { vm: current, path: vmPath(spec) };
@@ -69,8 +138,9 @@ export function parseLoc(spec, current) {
 export function sshRun(vm, script, opts = {}) {
 	return new Promise((resolve, reject) => {
 		if (!VALID_NAME.test(vm ?? "")) return reject(new Error(`invalid VM name "${vm}"`));
-		if (!existsSync(SSH_CONF)) return reject(new Error(`boxery not set up (${SSH_CONF} missing); run: boxery setup user@host`));
-		const child = spawn("ssh", ["-F", SSH_CONF, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
+		const { sshConf } = currentHost();
+		if (!existsSync(sshConf)) return reject(new Error(`boxery not set up (${sshConf} missing); run: boxery setup user@host`));
+		const child = spawn("ssh", ["-F", sshConf, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
 			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"],
 		});
 		const out = [];
@@ -119,7 +189,8 @@ export async function sshOk(vm, script, opts = {}) {
 
 export function boxeryCli(args, timeoutMs = 300_000) {
 	return new Promise((resolve, reject) => {
-		execFile(BOXERY, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		const command = controllerCommand(args);
+		execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
@@ -140,8 +211,9 @@ export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
 		const inner = `echo $$ > ${pidf}; exec bash -lc ${q(command)}`;
 		const script = `cd ${q(cwd || PROJECT)} 2>/dev/null || cd ${q(PROJECT)} 2>/dev/null || cd ~; setsid -w bash -c ${q(inner)} </dev/null; rc=$?; rm -f ${pidf}; exit $rc`;
 		let timedOut = false;
-		const killRemote = () =>
-			sshRun(vm, `g=$(cat ${pidf} 2>/dev/null); [ -n "$g" ] && { kill -TERM -- -"$g"; sleep 2; kill -KILL -- -"$g"; rm -f ${pidf}; } 2>/dev/null; true`).catch(() => {});
+		const host = currentHost();
+		const killRemote = () => withHost(host, () =>
+			sshRun(vm, `g=$(cat ${pidf} 2>/dev/null); [ -n "$g" ] && { kill -TERM -- -"$g"; sleep 2; kill -KILL -- -"$g"; rm -f ${pidf}; } 2>/dev/null; true`).catch(() => {}));
 		const ac = new AbortController();
 		const onAbort = () => {
 			void killRemote();
@@ -295,27 +367,32 @@ export async function editTool(vm, { path: p, edits, oldText, newText }) {
 // ---------------------------------------------------------------- copy
 
 export async function copyTool({ from, to }, { current, localCwd = process.cwd(), signal } = {}) {
-	const src = parseLoc(from, current);
-	const dst = parseLoc(to, current);
+	const host = currentHost();
+	const src = { host, ...parseLoc(from, current) };
+	const dst = { host, ...parseLoc(to, current) };
 	const localAbs = (s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
 	let tarball;
 	if (src.vm) {
-		tarball = await sshOk(src.vm, `s=${q(src.path)}; cd "$(dirname "$s")" && tar -cf - -- "$(basename "$s")"`, { signal });
+		tarball = await withHost(src.host, () => sshOk(src.vm, `s=${q(src.path)}; cd "$(dirname "$s")" && tar -cf - -- "$(basename "$s")"`, { signal }));
 	} else {
 		const abs = localAbs(src.path);
 		tarball = await new Promise((res, rej) =>
-			execFile("tar", ["-cf", "-", "-C", path.dirname(abs), "--", path.basename(abs)], { encoding: "buffer", maxBuffer: 1 << 30 }, (e, out) =>
-				e ? rej(e) : res(out),
-			),
+			execFile("tar", ["-cf", "-", "-C", path.dirname(abs), "--", path.basename(abs)], {
+				encoding: "buffer",
+				maxBuffer: 1 << 30,
+				// BSD tar packages Mac extended attributes as ._* files, which Linux tar leaves behind.
+				// These can even look like corrupt Git pack indexes. Transfer contents, not Mac metadata.
+				env: { ...process.env, COPYFILE_DISABLE: "1" },
+			}, (e, out) => e ? rej(e) : res(out)),
 		);
 	}
 	const srcBase = path.posix.basename(src.vm ? src.path : localAbs(src.path));
 	if (dst.vm) {
-		await sshOk(
+		await withHost(dst.host, () => sshOk(
 			dst.vm,
 			`set -e; d=${q(dst.path)}; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; tar -xf - -C "$t"; if [ -d "$d" ]; then cp -a "$t"/. "$d"/; else mkdir -p "$(dirname "$d")"; mv "$t"/${q(srcBase)} "$d"; fi`,
 			{ input: tarball, signal },
-		);
+		));
 	} else {
 		const d = localAbs(dst.path);
 		const tmp = path.join(path.dirname(d), `.boxery-copy-${randomBytes(4).toString("hex")}`);
@@ -333,14 +410,15 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 			),
 		);
 	}
-	const fmt = (l) => `${l.vm ?? "local"}:${l.vm ? l.path : localAbs(l.path)}`;
+	const fmt = (l) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${l.vm ? l.path : localAbs(l.path)}`;
 	return { text: `copied ${fmt(src)} → ${fmt(dst)} (${tarball.length} bytes tar)` };
 }
 
 // ---------------------------------------------------------------- computer use
 
 const X = "export DISPLAY=:1; ";
-const screenScale = new Map(); // screenshot px → screen px, per VM
+const screenScale = new Map(); // screenshot px → screen px, per host+VM
+const screenKey = (vm) => `${currentHost().dir}\0${vm}`;
 
 export async function screenshot(vm, maxWidth = 1280) {
 	// geometry on stderr, PNG on stdout (downscaled for model image limits; clicks scale back)
@@ -349,14 +427,14 @@ export async function screenshot(vm, maxWidth = 1280) {
 	const [sw, sh] = r.stderr.trim().split(/\s+/).map(Number);
 	const shotW = Math.min(sw, maxWidth);
 	const scale = sw / shotW;
-	screenScale.set(vm, scale);
+	screenScale.set(screenKey(vm), scale);
 	return {
 		text: `Screen of VM "${vm}": ${sw}x${sh}, shown at ${shotW}x${Math.round(sh / scale)}. Use coordinates in this screenshot's pixels.`,
 		image: { data: r.stdout.toString("base64"), mimeType: "image/png" },
 	};
 }
 
-const toScreen = (vm, n) => Math.round(Number(n) * (screenScale.get(vm) ?? 1600 / 1280));
+const toScreen = (vm, n) => Math.round(Number(n) * (screenScale.get(screenKey(vm)) ?? 1600 / 1280));
 
 async function after(vm, msg, want) {
 	if (want === false) return { text: msg };
@@ -427,8 +505,9 @@ process.exit(0);`;
 
 /** Run a controller command with --json and parse its stdout (stderr is diagnostics only). */
 export function boxeryJson(args, timeoutMs = 60_000) {
+	const command = controllerCommand([...args, "--json"]);
 	return new Promise((resolve, reject) => {
-		execFile(BOXERY, [...args, "--json"], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) return reject(new Error(`boxery ${args.join(" ")} --json: ${(stderr || e.message).trim()}`));
 			try {
 				resolve(JSON.parse(stdout));

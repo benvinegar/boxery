@@ -8,6 +8,23 @@
 
 ## `boxery` (your laptop)
 
+### Named hosts
+
+```bash
+boxery host add laptop local
+boxery host add hornet you@hornet
+boxery host add existing --config-dir "$HOME/.boxery-other"
+boxery host ls
+boxery host show hornet
+boxery host use laptop
+boxery --host hornet ls
+boxery --host hornet acquire                # pool lease on that host
+boxery host use legacy                      # original root profile
+boxery host rm hornet                       # forget only; preserves VMs and profile data
+```
+
+See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal. `--host NAME` precedes the command and also scopes grants and lease keys.
+
 ### Lifecycle
 
 ```bash
