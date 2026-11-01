@@ -170,4 +170,5 @@ backend_snap() { # NAME SNAP
 }
 backend_snap_rm() { virsh snapshot-delete "$(dom "$1")" "$2" >/dev/null; }
 backend_snaps() { virsh snapshot-list "$(dom "$1")"; }
+backend_snap_names() { virsh snapshot-list "$(dom "$1")" --name | sed '/^$/d'; }
 backend_revert() { virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null; }

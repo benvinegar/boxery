@@ -46,6 +46,9 @@ out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 2>/dev/null); set --
 [[ $L2n != "$L1n" ]] && ok "second acquire gets the other VM" || bad "same VM twice: $L1n $L2n"
 if echo "$K2" | "$H" acquire --holder carol --ttl 600 >/dev/null 2>&1; then bad "acquire succeeded on an exhausted pool"; else [[ $? == 4 ]] && ok "exhausted pool → exit 4" || bad "wrong exit code"; fi
 PATTERN="^$L1n  *.*LEASED" has "$H" ls && ok "ls shows LEASED" || bad "ls lease column: $("$H" ls 2>&1 | tr '\n' '|')"
+"$H" ls --json | jq -e --arg n "$L1n" '.[] | select(.name == $n) | .lease.state == "LEASED" and .lease.holder == "alice@mac" and (.lease.expires_at | type) == "number"' >/dev/null && ok "ls --json carries lease state" || bad "ls --json: $("$H" ls --json)"
+"$H" ls --json | jq -e '.[] | select(.name == "pet") | .lease == null' >/dev/null && ok "ls --json: pets have lease null" || bad "ls --json pet"
+"$H" pool ls --json | jq -e --arg n "$L1n" 'length == 2 and (.[] | select(.name == $n) | .state == "LEASED" and .expires_in > 0)' >/dev/null && ok "pool ls --json" || bad "pool ls --json: $("$H" pool ls --json)"
 if "$H" rm "$L1n" >/dev/null 2>&1; then bad "rm of a pool VM allowed"; else ok "rm refuses pool VMs"; fi
 
 echo "agent was here" >"$(vmfile "$L1n" project-file)"

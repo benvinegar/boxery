@@ -19,6 +19,18 @@ NL='
 
 die() { echo "boxery: $*" >&2; exit 1; }
 warn() { echo "boxery: $*" >&2; }
+# ---------------------------------------------------------------- JSON output (no jq on the controller)
+# Field names are stable; see docs/cli.md. Arrays are printed one element per line, like boxery-host.
+json_text() { # STRING → "escaped"  (\ " tab newline escaped; other control characters dropped). For secrets use json_str.
+	printf '"%s"' "$(printf '%s' "$1" | LC_ALL=C tr -d '\001-\010\013-\037' |
+		sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$TAB/\\\\t/g" | awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }')"
+}
+json_str_or_null() { if [ -n "$1" ]; then json_text "$1"; else printf null; fi; }
+json_num_or_null() { case $1 in '' | *[!0-9-]*) printf null ;; *) printf '%s' "$1" ;; esac; }
+json_array() { # element per line on stdin → JSON array
+	awk 'NR == 1 { printf "[\n%s", $0; next } { printf ",\n%s", $0 } END { print (NR ? "\n]" : "[]") }'
+}
+has_flag() { f=$1; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
 valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac; [ ${#1} -le 64 ]; }
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
@@ -243,6 +255,20 @@ grant_spec() {
 	esac
 }
 
+grants_json() { # NAME → [{kind, …}]  (names/paths only, never values)
+	f=$(grant_file "$1")
+	{ [ -f "$f" ] && while IFS="$TAB" read -r kind a b; do
+		case $kind in
+		ssh-agent) echo '{"kind":"ssh-agent"}' ;;
+		env) printf '{"kind":"env","var":%s,"cmd":%s}\n' "$(json_text "$a")" "$(json_str_or_null "$b")" ;;
+		http) au=${b%%;*}; r=${b#*;}; ro=false; [ "${r%%;*}" = ro ] && ro=true
+			printf '{"kind":"http","host":%s,"auth":%s,"readonly":%s,"cmd":%s}\n' "$(json_text "$a")" "$(json_text "$au")" "$ro" "$(json_str_or_null "${r#*;}")" ;;
+		file) printf '{"kind":"file","local":%s,"remote":%s}\n' "$(json_text "$a")" "$(json_text "/home/agent/${b#/home/agent/}")" ;;
+		esac
+	done <"$f"; } | json_array
+}
+grants_inline() { grants_json "$1" | tr -d '\n'; }
+
 grants_summary() { # NAME → "ssh-agent,env:X,file:project/.env"
 	f=$(grant_file "$1"); [ -f "$f" ] || { echo "-"; return; }
 	awk -F'\t' '{ s = ($1=="ssh-agent") ? "ssh-agent" : ($1=="env") ? "env:" $2 : ($1=="http") ? "http:" $2 : "file:" $3; out = out (out ? "," : "") s } END{print out ? out : "-"}' "$f"
@@ -435,9 +461,11 @@ cmd_revoke() { # NAME SPEC...|all
 	grants_changed "$n"
 }
 
-cmd_grants() { # NAME [apply [--quiet]]
+cmd_grants() { # NAME [apply [--quiet] | --json]
 	need_vm "${1:-}"; n=$1
 	if [ "${2:-}" = apply ]; then need_host; grants_apply "$n" "${3:-}"; return; fi
+	if [ "${2:-}" = --json ]; then grants_json "$n"; return; fi
+	[ -z "${2:-}" ] || die "usage: boxery grants NAME [apply [--quiet] | --json]"
 	f=$(grant_file "$n")
 	[ -f "$f" ] || { echo "no grants for $n"; return; }
 	echo "grants for $n (values are read from this machine when applied; never stored):"
@@ -558,18 +586,28 @@ cmd_release() { # NAME|LEASE
 	echo "==> released $name"
 }
 
-cmd_leases() { # local leases
+cmd_leases() { # [--json]   local leases
+	json=0; case ${1:-} in --json) json=1 ;; '') ;; *) die "usage: boxery leases [--json]" ;; esac
 	now=$(date +%s); found=0
 	for f in "$LEASES_DIR"/*.lease; do
 		[ -f "$f" ] || continue; found=1
 		n=$(sed -n 's/^name=//p' "$f"); e=$(sed -n 's/^expires=//p' "$f"); i=$(sed -n 's/^id=//p' "$f")
+		case $e in '' | *[!0-9]*) e=0 ;; esac
+		if [ $json = 1 ]; then
+			left=$((e - now)); [ $left -gt 0 ] || left=0
+			printf '{"name":%s,"lease_id":%s,"expires_at":%s,"expires_in":%s,"ttl":%s,"holder":%s}\n' "$(json_text "$n")" "$(json_text "$i")" "$e" "$left" \
+				"$(json_num_or_null "$(sed -n 's/^ttl=//p' "$f")")" "$(json_str_or_null "$(sed -n 's/^holder=//p' "$f")")"
+			continue
+		fi
 		if [ "$e" -gt "$now" ]; then left="$((e - now))s"; else left=expired; fi
 		printf '%-16s %-10s %s\n' "$n" "$left" "$i"
-	done
-	[ $found = 1 ] || echo "(no leases)"
+	done | if [ $json = 1 ]; then json_array; else cat; fi
+	[ $json = 1 ] || [ $found = 1 ] || echo "(no leases)"
 }
 
-cmd_ls() {
+cmd_ls() { # [--json]
+	if [ "${1:-}" = --json ]; then ls_json; return; fi
+	[ -z "${1:-}" ] || die "usage: boxery ls [--json]"
 	out=$(h ls) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
@@ -578,7 +616,36 @@ cmd_ls() {
 	done
 }
 
-cmd_sessions() { vm_ssh "$1.boxery" 'tmux ls 2>/dev/null || echo "(no tmux sessions)"'; }
+# The host prints one array element per line; add this machine's grants to each VM.
+ls_json() {
+	out=$(h ls --json) || exit $?
+	case $out in '['*) ;; *) die "host returned no JSON for 'ls --json' (update boxery-host on $HOST)" ;; esac
+	printf '%s\n' "$out" | while IFS= read -r line; do
+		case $line in
+		'{"name":"'*)
+			n=${line#\{\"name\":\"}; n=${n%%\"*}
+			valid_vm "$n" || die "bad VM name from host: $n"
+			sep=; case $line in *,) sep=,; line=${line%,} ;; esac
+			printf '%s,"grants":%s}%s\n' "${line%\}}" "$(grants_inline "$n")" "$sep" ;;
+		*) printf '%s\n' "$line" ;;
+		esac
+	done
+}
+
+cmd_sessions() { # NAME [--json]
+	need_vm "${1:-}"
+	case ${2:-} in
+	'') vm_ssh "$1.boxery" 'tmux ls 2>/dev/null || echo "(no tmux sessions)"' ;;
+	--json)
+		out=$(vm_ssh "$1.boxery" "tmux ls -F '#{session_name}${TAB}#{session_windows}${TAB}#{session_created}${TAB}#{session_attached}' 2>/dev/null; true") || die "cannot reach $1"
+		printf '%s\n' "$out" | while IFS="$TAB" read -r sn w c at; do
+			[ -n "$sn" ] || continue
+			case $at in '' | 0) at=false ;; *) at=true ;; esac
+			printf '{"name":%s,"windows":%s,"created":%s,"attached":%s}\n' "$(json_text "$sn")" "$(json_num_or_null "$w")" "$(json_num_or_null "$c")" "$at"
+		done | json_array ;;
+	*) die "usage: boxery sessions NAME [--json]" ;;
+	esac
+}
 
 cmd_prompt() { # NAME "prompt" — fire-and-forget pi task in a detached tmux window, logged to ~/project/.boxery/
 	name=$1; shift; prompt="$*"
@@ -599,30 +666,32 @@ usage() {
 		setup user@host|local [--key K.pub]
 		                                configure the VM host (local = this machine) + register your ssh key
 		new NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
-		ls                              list VMs (with their grants)
+		ls [--json]                     list VMs (with their grants)
 		rm NAME                         destroy VM (revokes its LLM token)
 		start|stop NAME
-		snap NAME [SNAP] | snaps NAME | revert NAME SNAP
+		snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
 		run NAME cmd...                 run a command
 		attach NAME [pi|opencode|shell] [session]
 		                                attach to a persistent tmux session running the agent
 		prompt NAME "task"              start a headless pi task in the background
-		sessions NAME                   list tmux sessions
+		sessions NAME [--json]          list tmux sessions
 		desktop NAME [--no-open]        open the XFCE desktop in your browser (noVNC over ssh)
 		forward NAME PORT [LOCAL]       forward a VM port to localhost
 		acquire [--ttl S] [--wait S]    lease a VM from the shared pool (prints NAME LEASE_ID)
 		renew NAME [--ttl S]            extend your lease;  release NAME   give it back (VM is reset)
-		leases                          your leases;  pool add|rm|ls (admin, on the host)
+		leases [--json]                 your leases;  pool add|rm|ls (admin, on the host)
 		grant NAME SPEC... [--cmd CMD]  give a VM access to something on this machine:
 		                                  ssh-agent | env:VAR | file:LOCAL[=REMOTE]
 		                                  http:HOST --cmd CMD [--auth bearer|basic:USER|header:NAME] [--readonly]
 		                                  github [--readonly]   (http: grants never put the secret in the VM)
 		revoke NAME SPEC...|all         take it away (pushed values are deleted from the VM)
-		grants NAME [apply]             show grants / push them again
+		grants NAME [apply | --json]    show grants / push them again
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
+
+		--json on ls, snaps, sessions, leases, grants prints JSON (fields: docs/cli.md)
 	EOF
 }
 
@@ -640,8 +709,9 @@ snap) need_host
 	if has_pushed_grants "${1:-x}"; then warn "note: $1 has env/file grants; a memory snapshot includes their values (they are re-synced on revert)"; fi
 	h snap "$@" ;;
 new) need_host; cmd_new "$@" ;;
-ls | list) need_host; cmd_ls ;;
-snaps | proxy-log) need_host; h "$cmd" "$@" ;;
+ls | list) need_host; cmd_ls "$@" ;;
+snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
+proxy-log) need_host; h "$cmd" "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; n=$1; shift; vm_ssh "$n.boxery" "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
@@ -650,7 +720,7 @@ forward) need_host; cmd_forward "$@" ;;
 acquire) cmd_acquire "$@" ;;
 renew) cmd_renew "$@" ;;
 release) cmd_release "$@" ;;
-leases) cmd_leases ;;
+leases) cmd_leases "$@" ;;
 pool) need_host; [ -z "${2:-}" ] || drop_master "$2"; h pool "$@"; [ -z "${2:-}" ] || drop_master "$2" ;;
 grant) cmd_grant "$@" ;;
 revoke) cmd_revoke "$@" ;;

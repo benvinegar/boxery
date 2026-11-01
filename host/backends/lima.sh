@@ -179,6 +179,7 @@ backend_snap() {
 }
 backend_snap_rm() { limactl snapshot delete "$(linst "$1")" --tag "$2" >/dev/null 2>&1; }
 backend_snaps() { limactl snapshot list "$(linst "$1")"; }
+backend_snap_names() { limactl snapshot list "$(linst "$1")" --quiet; }
 backend_revert() {
 	[[ $LIMA_VMTYPE == qemu ]] || die "snapshots need Lima's qemu vmType"
 	limactl snapshot apply "$(linst "$1")" --tag "$2" >/dev/null 2>&1 || die "revert failed"

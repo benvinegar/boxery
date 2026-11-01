@@ -418,7 +418,7 @@ export default function (pi: ExtensionAPI) {
 						say("boxery: no current VM");
 						break;
 					case "ls":
-						say(await core.boxeryCli(["ls"], 60_000));
+						say(core.formatVms(await core.listVms()));
 						break;
 					case "rm":
 						if (!arg) throw new Error("usage: /vm rm NAME");
@@ -439,7 +439,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					case "grants":
 						if (!current && !arg) throw new Error("usage: /vm grants [NAME]");
-						say(await core.boxeryCli(["grants", arg || current!.name], 60_000));
+						say(core.formatGrants(arg || current!.name, await core.boxeryJson(["grants", core.assertName(arg || current!.name)])));
 						break;
 					case "desktop": {
 						const name = arg || current?.name;

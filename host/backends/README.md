@@ -11,10 +11,11 @@
 | `backend_build_base` / `backend_has_base` | build / detect the golden desktop image (`image/base-user-data.yaml`) |
 | `backend_exists NAME` | 0 if the VM exists |
 | `backend_new NAME CPUS MEM_MIB DISK_GIB USERDATA` | create + boot a VM from the base and apply the cloud-config in USERDATA |
-| `backend_list` | lines `NAME<TAB>STATE<TAB>ADDR<TAB>DISK` |
+| `backend_list` | lines `NAME<TAB>STATE<TAB>ADDR<TAB>DISK` (empty field = unknown); `boxery-host` turns these into the `ls --json` objects |
 | `backend_ssh_endpoint NAME` / `backend_wait_endpoint NAME` | `HOST PORT` where the VM's sshd is reachable from the host (now / after waiting) |
 | `backend_start/stop/rm NAME` | lifecycle |
-| `backend_snap/revert NAME SNAP`, `backend_snaps NAME` | snapshots (may `die` if unsupported) |
+| `backend_snap/revert NAME SNAP`, `backend_snaps NAME` | snapshots (may `die` if unsupported); `backend_snaps` output is for humans |
+| `backend_snap_names NAME` | snapshot names, one per line (feeds `snaps NAME --json`); fail if the VM does not exist |
 
 Guest contract: Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, XFCE on `:1` with VNC/noVNC on localhost, xdotool + ImageMagick, a `google-chrome` binary and `/opt/boxery/node_modules/playwright-core`, and `boxery-llm.service` reading `/etc/boxery/proxy-upstream`. Building from `image/base-user-data.yaml` provides all of it.
 

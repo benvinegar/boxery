@@ -48,11 +48,21 @@ envsh=$tmp/run/boxery/env.sh
 link=$tmp/vms/w1/home/project/.env
 [[ -L $link ]] && grep -q SECRET_FILE "$link" && ok "file grant linked into project" || bad "file link"
 grep -qx '/.env' "$tmp/vms/w1/home/project/.git/info/exclude" && ok "file grant git-excluded" || bad "exclude"
+"$A" grants w1 --json | jq -e --arg l "$tmp/dev.env" '. == [{kind: "ssh-agent"}, {kind: "env", var: "MY_TOKEN", cmd: null}, {kind: "env", var: "FROM_CMD", cmd: "echo computed"}, {kind: "file", local: $l, remote: "/home/agent/project/.env"}]' >/dev/null && ok "grants --json" || bad "grants --json: $("$A" grants w1 --json)"
+"$A" ls --json | jq -e '.[] | select(.name == "w1") | .state == "running" and (.grants | map(.kind) == ["ssh-agent", "env", "env", "file"])' >/dev/null && ok "ls --json merges local grants" || bad "ls --json: $("$A" ls --json)"
 "$A" revoke w1 env:MY_TOKEN "file:$tmp/dev.env" >/dev/null 2>&1
 if (unset MY_TOKEN; . "$envsh"; [[ -z ${MY_TOKEN:-} && $FROM_CMD == computed ]]) && [[ ! -e $link && ! -L $link ]]; then ok "revoke removes exactly the revoked items"; else bad "revoke: env=$(cat "$envsh") link=$(ls -la "$link" 2>&1)"; fi
 if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted"; else ok "invalid env name rejected"; fi
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
+printf '#!/bin/sh\nprintf "pi\\t2\\t1700000000\\t1\\nweird \\"name\\t1\\t1700000001\\t0\\n"\n' >"$tmp/bin/tmux"; chmod +x "$tmp/bin/tmux"
+"$A" sessions w1 --json | jq -e '. == [{name: "pi", windows: 2, created: 1700000000, attached: true}, {name: "weird \"name", windows: 1, created: 1700000001, attached: false}]' >/dev/null && ok "sessions --json (names escaped)" || bad "sessions --json: $("$A" sessions w1 --json 2>&1)"
+printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/tmux"
+[ "$("$A" sessions w1 --json)" = '[]' ] && ok "sessions --json with no tmux server → []" || bad "sessions --json empty: $("$A" sessions w1 --json 2>&1)"
+rm -f "$tmp/bin/tmux"
+[ "$("$A" leases --json)" = '[]' ] && ok "leases --json with none → []" || bad "leases --json empty"
+[ "$("$A" grants nogrants --json)" = '[]' ] && ok "grants --json with none → []" || bad "grants --json empty"
+"$A" snap w1 s1 >/dev/null 2>&1; [ "$("$A" snaps w1 --json | jq -c .)" = '[{"name":"s1"}]' ] && ok "snaps --json via controller" || bad "snaps --json: $("$A" snaps w1 --json 2>&1)"
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $BOXERY_HOME/grants/w1 ]] && ! grep -q '^Host w1.boxery' "$BOXERY_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
 
 # --- edge (http:) grants: secret goes to the host proxy's route file, never into the VM
@@ -75,6 +85,8 @@ grep -q 'insteadOf = https://github.com/' "$gc" && grep -q '/edge/e1%3Atok123/gi
 HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -qxF "$gc" && ok "gitconfig included once" || bad "include.path"
 "$A" grants e1 apply --quiet >/dev/null 2>&1; [[ $(HOME=$tmp/vms/e1/home git config --global --get-all include.path | grep -c .) == 1 ]] && ok "re-apply does not duplicate the include" || bad "include duplicated"
 "$A" grants e1 | grep -q 'http:github.com.*basic:x-access-token' && ok "grants lists http routes" || bad "grants output"
+"$A" grants e1 --json | jq -e '(map(select(.kind == "http")) | map(.host) == ["github.com", "api.github.com", "registry.npmjs.org", "api.example.com"]) and (.[0].auth == "basic:x-access-token") and (.[3] | .auth == "header:X-Api-Key" and .readonly == true and .cmd == "echo k3y") and (.[0].readonly == false)' >/dev/null && ok "grants --json lists http routes (no secret)" || bad "grants --json http: $("$A" grants e1 --json)"
+! "$A" grants e1 --json | grep -q "$EDGE_SECRET" && ok "grants --json never prints the secret" || bad "secret in grants --json"
 for badspec in http:127.0.0.1 http:localhost http:api.example.com:8443 http:https://x.com http:x.com/path "http:a b.com" http:-x.com; do
 	if "$A" grant e1 "$badspec" --cmd 'echo x' >/dev/null 2>&1; then bad "accepted $badspec"; else ok "rejected $badspec"; fi
 done
@@ -100,6 +112,7 @@ lid=${2:-x}
 grep -A2 "^Host lp1.boxery" "$BOXERY_HOME/ssh_config" | grep -q "IdentityFile $BOXERY_HOME/leases/$lid.key" && ok "ssh_config uses the lease key for lp1" || bad "ssh_config lease identity"
 grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "lease key authorized in the VM" || bad "lease key not in VM"
 "$A" leases | grep -q "^lp1 " && ok "leases lists it" || bad "leases"
+"$A" leases --json | jq -e --arg i "$lid" 'length == 1 and .[0].name == "lp1" and .[0].lease_id == $i and .[0].ttl == 600 and .[0].expires_in > 0 and (.[0].holder | type) == "string"' >/dev/null && ok "leases --json" || bad "leases --json: $("$A" leases --json)"
 "$A" renew lp1 >/dev/null 2>&1 && ok "renew by name" || bad "renew"
 if "$A" acquire >/dev/null 2>&1; then bad "second acquire on a 1-VM pool succeeded"; else ok "pool exhausted for a second acquire"; fi
 "$A" release lp1 >/dev/null 2>&1 && ok "release" || bad "release"

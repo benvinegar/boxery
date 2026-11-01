@@ -28,6 +28,7 @@ backend_rm() { backend_exists "$1" || die "no such vm: $1"; rm -rf "${FAKE:?}/$1
 backend_snap() { rm -rf "${FAKE:?}/.snap-$1-$2"; cp -a "$FAKE/$1" "$FAKE/.snap-$1-$2"; }
 backend_snap_rm() { rm -rf "${FAKE:?}/.snap-$1-$2"; }
 backend_snaps() { ls -d "$FAKE"/.snap-"$1"-* 2>/dev/null | sed "s#.*/.snap-$1-##"; }
+backend_snap_names() { backend_exists "$1" || die "no such vm: $1"; backend_snaps "$1" || true; }
 backend_revert() {
 	[[ -d $FAKE/.snap-$1-$2 ]] || die "no snapshot $2"
 	[[ -z ${BOXERY_FAKE_FAIL_REVERT:-} ]] || die "fake backend: injected revert failure"

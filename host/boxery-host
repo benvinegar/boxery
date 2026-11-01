@@ -137,6 +137,24 @@ lease_set_keys() { # NAME [PUBKEY]
 		vm_ssh_cmd "$h" "$p" 'umask 077; mkdir -p ~/.ssh && cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys'
 }
 
+# ---------------------------------------------------------------- JSON output (stable fields: docs/cli.md)
+# Arrays are printed one element per line ("[", "{…},", …, "]"): still plain JSON, and the controller
+# (which has no jq) relies on it to add local fields to each element.
+JSON_ARRAY='if length == 0 then "[]" else "[\n" + (map(tojson) | join(",\n")) + "\n]" end'
+pool_json() { leases list | jq -r "map({name, state, holder, acquired_at, expires_at, expires_in}) | $JSON_ARRAY"; }
+ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state → [{name,state,addr,disk,lease}]
+	local pool; pool=$(leases list 2>/dev/null) || pool=""; [[ -n $pool ]] || pool='[]'
+	backend_list | jq -R -s -r --argjson pool "$pool" '
+		def nz: if . == null or . == "" then null else . end;
+		($pool | map({key: .name, value: {state, holder, expires_at}}) | from_entries) as $p |
+		split("\n") | map(select(length > 0) | split("\t") |
+			{name: .[0], state: (.[1] | nz), addr: (.[2] | nz), disk: (.[3] | nz), lease: ($p[.[0]] // null)}) | '"$JSON_ARRAY"
+}
+snaps_json() { # NAME → [{name}]
+	local names; names=$(backend_snap_names "$1") || exit 1
+	jq -R -s -r "split(\"\\n\") | map(select(length > 0) | {name: .}) | $JSON_ARRAY" <<<"$names"
+}
+
 # RESETTING(gen) → revert to the clean snapshot → FREE (or BROKEN if anything fails).
 lease_reset() { # NAME GEN
 	local name=$1 gen=$2 ok=0 ep h p
@@ -153,7 +171,7 @@ lease_reset() { # NAME GEN
 	else leases finish "$name" "$gen" BROKEN >/dev/null; log "$name reset FAILED → BROKEN (fix it, then: boxery-host pool rm $name && boxery-host pool add $name)"; fi
 }
 
-cmd_pool() { # add NAME | rm NAME [--force] | ls
+cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 	local sub=${1:-ls}; shift || true
 	case $sub in
 	add)
@@ -183,10 +201,12 @@ cmd_pool() { # add NAME | rm NAME [--force] | ls
 		fi
 		log "$1 removed from the pool" ;;
 	ls)
+		local j; j=$(pool_json) || die "lease store error"
+		if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
 		printf '%-16s %-10s %-10s %s\n' NAME LEASE EXPIRES HOLDER
-		leases list | jq -r '.[] | [.name, .state, (if .expires_in then "\(.expires_in)s" else "-" end), (.holder // "-")] | @tsv' |
+		jq -r '.[] | [.name, .state, (if .expires_in then "\(.expires_in)s" else "-" end), (.holder // "-")] | @tsv' <<<"$j" |
 			while IFS=$'\t' read -r n st ex ho; do printf '%-16s %-10s %-10s %s\n' "$n" "$st" "$ex" "$ho"; done ;;
-	*) die "usage: pool add NAME | rm NAME [--force] | ls" ;;
+	*) die "usage: pool add NAME | rm NAME [--force] | ls [--json]" ;;
 	esac
 }
 
@@ -403,13 +423,13 @@ cmd_new() {
 	echo "$name $host:$port"
 }
 
-cmd_ls() {
-	local pool; pool=$(leases list 2>/dev/null | jq -r '.[] | "\(.name)\t\(.state)"' 2>/dev/null || true)
+cmd_ls() { # [--json]
+	local j; j=$(ls_json)
+	if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
+	[[ -z ${1:-} ]] || die "usage: ls [--json]"
 	printf '%-16s %-10s %-16s %-10s %s\n' NAME STATE ADDR DISK LEASE
-	backend_list | while IFS=$'\t' read -r n st addr disk; do
-		local l; l=$(awk -F'\t' -v n="$n" '$1==n{print $2}' <<<"$pool")
-		printf '%-16s %-10s %-16s %-10s %s\n' "$n" "$st" "$addr" "$disk" "${l:--}"
-	done
+	jq -r '.[] | [.name, .state // "-", .addr // "-", .disk // "-", .lease.state // "-"] | @tsv' <<<"$j" |
+		while IFS=$'\t' read -r n st addr disk l; do printf '%-16s %-10s %-16s %-10s %s\n' "$n" "$st" "$addr" "$disk" "$l"; done
 }
 
 cmd_ip() { valid_name "$1"; local ep; ep=$(backend_ssh_endpoint "$1"); echo "${ep% *}"; }
@@ -440,7 +460,10 @@ cmd_snap() { # NAME [SNAPNAME]
 	backend_snap "$1" "$s"
 	log "snapshot $1@$s"
 }
-cmd_snaps() { valid_name "$1"; backend_snaps "$1"; }
+cmd_snaps() { # NAME [--json]
+	valid_name "${1:-}"
+	case ${2:-} in --json) snaps_json "$1" ;; '') backend_snaps "$1" ;; *) die "usage: snaps NAME [--json]" ;; esac
+}
 cmd_revert() {
 	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"; valid_snap "$2"
 	backend_revert "$1" "$2"
@@ -493,13 +516,13 @@ usage() {
 		  build-base                build the golden desktop image (one-time)
 		  add-key < key.pub         authorize a controller's ssh key for new VMs
 		  new NAME [--cpus N --mem MiB --disk GiB]
-		  ls | ip NAME | start NAME | stop NAME | rm NAME
-		  snap NAME [SNAP] | snaps NAME | revert NAME SNAP
+		  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+		  snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
 		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
 		  proxy-log [N]             recent LLM + edge proxy requests
 		  edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
-		  pool add NAME | rm NAME [--force] | ls     shared pool of leasable VMs
+		  pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
 		  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
 		  renew LEASE [--ttl S] | release LEASE | reap
 	EOF
@@ -515,7 +538,7 @@ backend) echo "$BACKEND" ;;
 build-base) cmd_build_base ;;
 add-key) cmd_add_key ;;
 new) cmd_new "$@" ;;
-ls | list) cmd_ls ;;
+ls | list) cmd_ls "$@" ;;
 ip) cmd_ip "$@" ;;
 connect) cmd_connect "$@" ;;
 start) cmd_start "$@" ;;

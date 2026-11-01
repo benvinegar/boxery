@@ -4,6 +4,7 @@
 
 - [`boxery`](#boxery-your-laptop) runs on your laptop (bash 3.2 + ssh).
 - [`boxery-host`](#boxery-host-the-vm-host) runs on the VM host. You'll rarely call it directly.
+- [JSON output](#json-output): `--json` on every listing command, for scripts and agents.
 
 ## `boxery` (your laptop)
 
@@ -12,7 +13,7 @@
 ```bash
 boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--cpus 4 --mem 8192 --disk 40] [--grant SPEC]…
-boxery ls                                    # VMs, with their grants
+boxery ls [--json]                           # VMs, with their grants
 boxery start demo | stop demo
 boxery rm demo                               # also revokes its LLM proxy token
 ```
@@ -21,7 +22,7 @@ boxery rm demo                               # also revokes its LLM proxy token
 
 ```bash
 boxery snap demo before-refactor             # ~2 s
-boxery snaps demo
+boxery snaps demo [--json]
 boxery revert demo before-refactor
 ```
 
@@ -33,7 +34,7 @@ boxery run demo 'git -C project log --oneline'
 boxery attach demo                           # pi in tmux. Ctrl-b d detaches; it keeps running.
 boxery attach demo opencode                  # or: shell
 boxery prompt demo "fix the failing tests and commit"   # headless pi task in its own tmux session
-boxery sessions demo                         # list tmux sessions
+boxery sessions demo [--json]                # list tmux sessions
 ```
 
 `prompt` logs to `~/project/.boxery/task-*.log` in the VM. Attach to a task with `boxery attach demo pi task-…`.
@@ -52,7 +53,7 @@ Editors: once the `Include ~/.boxery/ssh_config` line is in your `~/.ssh/config`
 ```bash
 boxery grant demo ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]
 boxery revoke demo SPEC… | all
-boxery grants demo [apply]
+boxery grants demo [apply | --json]
 ```
 
 See [Grants](grants.md).
@@ -63,7 +64,7 @@ See [Grants](grants.md).
 boxery acquire [--ttl S] [--wait S]          # prints "NAME LEASE_ID"
 boxery renew NAME [--ttl S]
 boxery release NAME                          # VM is reset to its clean snapshot
-boxery leases                                # your leases
+boxery leases [--json]                       # your leases
 boxery pool add|rm|ls                        # admin
 ```
 
@@ -82,15 +83,139 @@ init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + b
 build-base                      build the golden desktop image (one time)
 add-key < key.pub               authorize a controller's ssh key for new VMs
 new NAME [--cpus N --mem MiB --disk GiB]
-ls | ip NAME | start NAME | stop NAME | rm NAME
-snap NAME [SNAP] | snaps NAME | revert NAME SNAP
+ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
 proxy-log [N]
 
-pool add NAME | rm NAME [--force] | ls
+pool add NAME | rm NAME [--force] | ls [--json]
 acquire --holder H [--ttl S] [--wait S]    (lease ssh pubkey on stdin)
 renew LEASE [--ttl S] | release LEASE | reap
 ```
+
+## JSON output
+
+Every listing command takes `--json` and prints one JSON value on stdout. Errors go to stderr with a non-zero exit status; nothing else is printed on stdout. Field names below are stable: new fields may be added, existing ones are not renamed or removed without a major version bump.
+
+Conventions:
+
+- Timestamps are Unix epoch seconds (numbers). Durations are seconds.
+- A field that is unknown or does not apply is `null`, never `""` or `"-"`.
+- Arrays are printed one element per line. That is still ordinary JSON; parse it as a whole.
+- Empty lists print `[]`.
+
+The controller (`boxery`) needs no `jq`; it builds JSON with `printf`. The host (`boxery-host`) uses `jq`, which it already requires.
+
+### Controller (`boxery`, on your laptop)
+
+#### `boxery ls --json`
+
+VMs on the host, plus the grants this machine has given each one.
+
+```json
+[
+{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"grants":[{"kind":"ssh-agent"}]},
+{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"grants":[]}
+]
+```
+
+| Field | Type | |
+|---|---|---|
+| `name` | string | VM name |
+| `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima) |
+| `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
+| `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
+| `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}` (see `pool ls`) |
+| `grants` | array | this machine's grants for the VM, same objects as `grants --json` |
+
+#### `boxery grants NAME --json`
+
+Local grant records (names and paths only; values are never stored or printed).
+
+```json
+[
+{"kind":"ssh-agent"},
+{"kind":"env","var":"GITHUB_TOKEN","cmd":"gh auth token"},
+{"kind":"file","local":"/Users/ben/app/.env","remote":"/home/agent/project/.env"}
+]
+```
+
+| `kind` | Fields |
+|---|---|
+| `ssh-agent` | (none) |
+| `env` | `var` (string), `cmd` (string \| null: command that produces the value; `null` = read from the local environment) |
+| `file` | `local` (absolute local path), `remote` (absolute path in the VM) |
+| `http` | `host`, `auth` (`bearer`, `basic:USER`, `header:NAME`), `readonly` (boolean), `cmd` (command that produces the secret) |
+
+#### `boxery leases --json`
+
+Leases held by this machine (from `~/.boxery/leases`).
+
+```json
+[
+{"name":"pool-1","lease_id":"l-0123456789abcdef0123456789abcdef","expires_at":1793462400,"expires_in":1712,"ttl":1800,"holder":"ben@mac"}
+]
+```
+
+| Field | Type | |
+|---|---|---|
+| `name` | string | leased VM |
+| `lease_id` | string | `l-` + 32 hex |
+| `expires_at` | number | last known expiry (updated by `renew`) |
+| `expires_in` | number | seconds left, `0` once expired |
+| `ttl` | number \| null | TTL used for renewals |
+| `holder` | string \| null | holder name sent to the host |
+
+#### `boxery sessions NAME --json`
+
+tmux sessions in the VM (agents started by `attach` / `prompt`).
+
+```json
+[
+{"name":"pi","windows":1,"created":1793460000,"attached":true},
+{"name":"task-20261031-120000","windows":1,"created":1793460100,"attached":false}
+]
+```
+
+#### `boxery snaps NAME --json`
+
+Snapshots of a VM, passed through from `boxery-host snaps NAME --json`.
+
+```json
+[
+{"name":"before-refactor"}
+]
+```
+
+### Host (`boxery-host`, on the VM host)
+
+#### `boxery-host ls --json`
+
+Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `lease`. Built in one place from the backend's `backend_list` lines and the lease store.
+
+#### `boxery-host snaps NAME --json`
+
+`[{"name": …}]`, from the backend's `backend_snap_names`.
+
+#### `boxery-host pool ls --json`
+
+Every pool VM and its lease state.
+
+```json
+[
+{"name":"pool-1","state":"LEASED","holder":"ben@mac","acquired_at":1793460600,"expires_at":1793462400,"expires_in":1800},
+{"name":"pool-2","state":"FREE","holder":null,"acquired_at":null,"expires_at":null,"expires_in":null}
+]
+```
+
+| Field | Type | |
+|---|---|---|
+| `state` | string | `FREE`, `ACQUIRING`, `LEASED`, `RESETTING`, `BROKEN` |
+| `holder` | string \| null | who holds it |
+| `acquired_at`, `expires_at` | number \| null | lease start / expiry |
+| `expires_in` | number \| null | seconds left (only while `LEASED`; may be negative until the reaper runs) |
+
+Run it on the host, or from the controller as `boxery pool ls --json`.
 
 ## Configuration
 

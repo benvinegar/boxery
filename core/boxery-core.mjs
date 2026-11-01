@@ -425,9 +425,48 @@ process.exit(0);`;
 
 // ---------------------------------------------------------------- lifecycle
 
+/** Run a controller command with --json and parse its stdout (stderr is diagnostics only). */
+export function boxeryJson(args, timeoutMs = 60_000) {
+	return new Promise((resolve, reject) => {
+		execFile(BOXERY, [...args, "--json"], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+			if (e) return reject(new Error(`boxery ${args.join(" ")} --json: ${(stderr || e.message).trim()}`));
+			try {
+				resolve(JSON.parse(stdout));
+			} catch {
+				reject(new Error(`boxery ${args.join(" ")} --json: not JSON: ${stdout.slice(0, 200)}`));
+			}
+		});
+	});
+}
+
+/** VMs on the host: [{name, state, addr, disk, lease, grants}] (fields: docs/cli.md). */
+export const listVms = () => boxeryJson(["ls"]);
+
+const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
+
+/** Human-readable table for tools and /vm ls. */
+export function formatVms(vms) {
+	if (!vms.length) return "(no VMs)";
+	const rows = [["NAME", "STATE", "ADDR", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
+	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
+}
+
+export function formatGrants(name, grants) {
+	if (!grants.length) return `no grants for ${name}`;
+	const line = (g) =>
+		g.kind === "ssh-agent"
+			? "ssh-agent   forward the user's local ssh agent"
+			: g.kind === "env"
+				? `env:${g.var}${g.cmd ? `   (from: ${g.cmd})` : ""}`
+				: g.kind === "http"
+					? `http:${g.host}   (${g.auth}${g.readonly ? ", read-only" : ""}; injected by the host proxy, never in the VM)`
+					: `file:${g.local} → ${g.remote}`;
+	return [`grants for ${name}:`, ...grants.map((g) => `  ${line(g)}`)].join("\n");
+}
+
 export async function vmExists(name) {
-	const out = await boxeryCli(["ls"], 60_000);
-	return out.split("\n").some((l) => l.split(/\s+/)[0] === name);
+	return (await listVms()).some((v) => v.name === name);
 }
 
 /** Make sure VM `name` exists (create it if not) and answers over ssh. */
@@ -445,7 +484,7 @@ export async function manage({ action, name, snapshot }) {
 	const need = () => assertName(name);
 	switch (action) {
 		case "list":
-			return boxeryCli(["ls"], 60_000);
+			return formatVms(await listVms());
 		case "new":
 			return boxeryCli(["new", name ? need() : newName()]);
 		case "rm":
@@ -455,7 +494,7 @@ export async function manage({ action, name, snapshot }) {
 		case "revert":
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000);
 		case "grants":
-			return boxeryCli(["grants", need()], 60_000);
+			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:
 			throw new Error(`unknown action ${action}`);
 	}

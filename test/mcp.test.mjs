@@ -33,7 +33,17 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	// macOS has no setsid; emulate "new process group + wait" with perl (present on macOS and Linux).
 	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- "$@"\n`);
 	chmodSync(path.join(bin, "setsid"), 0o755);
-	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash\necho "stub boxery $*"\n[ "$1" = ls ] && printf 'NAME STATE\\nfakevm running\\n'\nexit 0\n`);
+	writeFileSync(
+		path.join(bin, "boxery"),
+		`#!/usr/bin/env bash
+case "$*" in
+"ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
+"grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
+*) echo "stub boxery $*" ;;
+esac
+exit 0
+`,
+	);
 	chmodSync(path.join(bin, "ssh"), 0o755);
 	chmodSync(path.join(bin, "boxery"), 0o755);
 	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") };
@@ -167,10 +177,12 @@ describe("stdio", () => {
 	});
 
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
-		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
+		const list = (await c.tool("vm_manage", { action: "list" })).content[0].text;
+		assert.match(list, /current: fakevm/);
+		assert.match(list, /^fakevm +running +10\.0\.0\.2 +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
-		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /stub boxery grants fakevm/);
+		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
 		assert.equal((await c.tool("vm_manage", { action: "bogus" })).isError, true);
 	});
 });

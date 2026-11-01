@@ -34,16 +34,20 @@ echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://1
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
 "$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", lease: null} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
 expect "start" "$H" start a1
 expect "snap" "$H" snap a1 s1
 "$H" snaps a1 | grep -qx s1 && ok "snaps" || bad snaps
+[[ $("$H" snaps a1 --json | jq -c .) == '[{"name":"s1"}]' ]] && ok "snaps --json" || bad "snaps --json: $("$H" snaps a1 --json)"
+expect_fail "snaps --json of unknown VM fails" "$H" snaps nope --json
 expect "revert" "$H" revert a1 s1
 expect_fail "revert to unknown snapshot fails" "$H" revert a1 nope
 expect_fail "connect rejects non-ssh ports" "$H" connect a1 80
 expect "rm" "$H" rm a1
+[[ $("$H" ls --json) == '[]' ]] && ok "ls --json with no VMs → []" || bad "ls --json empty: $("$H" ls --json)"
 jq -e 'has("a1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "rm revokes the proxy token" || bad "token not revoked"
 expect_fail "rm of unknown VM fails" "$H" rm a1
 BOXERY_BACKEND=nope expect_fail "unknown backend rejected" "$H" ls
