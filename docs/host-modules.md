@@ -10,7 +10,11 @@ The host is being extracted incrementally into Node, not rewritten wholesale. Th
 |---|---|---|
 | `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles and grants | Host lease decisions or hypervisor mechanics |
 | `host/boxery-host` | Host configuration, initialization, VM/image commands, recovery dispatch, backend loading and guest SSH effects | Lease acquire/reset/reaper ordering |
-| `host/boxery-lifecycle.mjs` | Lease CLI parsing/output, direct SQLite/journal bindings, subprocess adapter and held-lock validation | Lease policy or hypervisor commands |
+| `host/boxery-lifecycle.mjs` | Lease CLI parsing/output, direct SQLite/journal/backend bindings and held-lock validation | Lease policy or hypervisor commands |
+| `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
+| `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
+| `host/config.mjs` | `$BOXERY_CONF`, `host.env` settings, journaled backend settings | Anything with side effects |
+| `host/images.mjs`, `host/recovery.mjs` | Restoring a VM from its image; inventory drift checks | Lock acquisition (callers hold or take locks) |
 | `host/lease-workflows.mjs` | Lease workflow ordering, stale-state decisions, reset outcomes and retry/reap policy | Files, environment variables, subprocesses, SQLite implementation or CLI formatting |
 | `host/boxery-leases.mjs` | Transactional lease state machine, generations/incarnations, expiry and claim eligibility | Guest side effects |
 | `host/boxery-operations.mjs` | Resource arbitration, worker supervision, durable intent storage and abandoned-operation recovery scheduling | Guest or lease workflow policy |
@@ -26,13 +30,13 @@ boxery-host CLI
     → lease-workflows.mjs (policy)
       → boxery-leases.mjs (short state transactions)
       → boxery-operations.mjs (locks + journal)
-      → boxery-host __backend (allowlisted argv bridge)
-        → existing backend functions / guest SSH
+      → backend.mjs → backend.sh FUNCTION ARG… (one allowlisted backend function per process)
+      → guest.mjs (ssh to the VM)
 ```
 
 Acquiring a resource still uses the existing supervisor and held-lock callbacks. The shell callback names are compatibility shims into Node. Before a held-lock entry point executes policy, the runtime checks the inherited resource set. Backend subprocesses are never detached: they stay in the supervisor's worker process group, so crash fencing from #17 continues to cover them.
 
-The private `__backend` bridge offers only the effects required by these workflows: restore a VM, wait for SSH readiness, install lease keys, execute a guest command, and run inventory reconciliation. It dispatches a fixed action allowlist and passes arguments as argv; it does not evaluate a caller-supplied host function. These private entry points are implementation details, not new public CLI or authorization APIs.
+Backend effects run as `host/backend.sh FUNCTION ARG…`: a small Bash prelude (`die`, `log`, `need`, `wait_ssh`, `vm_ssh_cmd` and the settings backends read) sources `host/backends/$BOXERY_BACKEND.sh` and runs one function from the backend contract. Anything else is refused, and arguments are argv, never evaluated. Each call is a separate process in the caller's process group, so a killed operation's backend commands are stopped with it.
 
 ## Policy dependencies
 

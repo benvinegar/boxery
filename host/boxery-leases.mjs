@@ -269,6 +269,14 @@ export function finish(db, name, gen, state) {
 	return r.changes === 1;
 }
 
+/** The VM vanished from the backend: fence its row (any lease ends) until someone repairs it. */
+export function markMissing(db, name) {
+	db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
+		pubkey=NULL, acquired_at=NULL, expires_at=NULL, boot_id=NULL, updated_at=?
+		WHERE name=? AND state!='BROKEN'`).run(now(), name);
+	return get(db, name);
+}
+
 // ---------------------------------------------------------------- CLI
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -281,11 +289,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 			case "add": out(add(db, a[0])); break;
 			case "remove": out(remove(db, a[0], a[1] === "--force")); break;
 			case "get": out(get(db, a[0])); break;
-			case "missing":
-				db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
-					pubkey=NULL, acquired_at=NULL, expires_at=NULL, boot_id=NULL, updated_at=?
-					WHERE name=? AND state!='BROKEN'`).run(now(), a[0]);
-				out(get(db, a[0])); break;
+			case "missing": out(markMissing(db, a[0])); break;
 			case "list": out(list(db)); break;
 			case "begin-reset-name": out(beginResetName(db, a[0], a[1])); break;
 			default: throw new Error(`unknown op ${op}`);
