@@ -29,8 +29,9 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 
 ```bash
 boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
-boxery new demo                              # ~13 s   [--cpus 4 --mem 8192 --disk 40] [--grant SPEC]…
-boxery ls [--json]                           # VMs, with their grants
+boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
+boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
+boxery ls [--json]                           # VMs, with their shape and grants
 boxery start demo | stop demo
 boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
@@ -41,7 +42,7 @@ boxery rm demo                               # also revokes its LLM proxy token
 ### Snapshots and forks
 
 ```bash
-boxery fork demo try-a try-b                 # copy demo (running or not) into 2 new VMs, ~15–25 s   [--grants]
+boxery fork demo try-a try-b                 # copy demo (running or not) into 2 new VMs, ~15–25 s   [--grants] [--shape S]
 boxery snap demo before-refactor             # ~1 s, the VM keeps running
 boxery snaps demo [--json]
 boxery revert demo before-refactor           # VM keeps its name, address and token
@@ -50,7 +51,7 @@ boxery snap-rm demo before-refactor
 boxery images                                # every snapshot on the host
 ```
 
-A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
+A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Forks get the source's size (cpus, memory, disk) unless you pass `--shape` or size flags. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
 
 Snapshots and forks are built on one backend primitive, the image (a copy of a VM's disk named `VM@LABEL`). They hold disk state only, never memory, so secrets pushed by grants (tmpfs) are never captured. `rm` removes a VM's snapshots too. Snapshots made by boxery versions before images are still listed (marked legacy) and can be reverted or deleted. How each backend implements images: [backends](../host/backends/README.md#images-one-primitive-for-snapshots-forks-and-pool-resets).
 
@@ -129,8 +130,9 @@ boxery proxy-log [N]                         # which VM called which LLM provide
 init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
 build-base                      build the golden desktop image (one time)
 add-key < key.pub               authorize a controller's ssh key for new VMs
-new NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
-fork SRC DST... [--cpus N --mem MiB --disk GiB]
+new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
+fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
+shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
 snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
@@ -164,8 +166,8 @@ VMs on the host, plus the grants this machine has given each one.
 
 ```json
 [
-{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"grants":[{"kind":"ssh-agent"}]},
-{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"grants":[]}
+{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"}]},
+{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"shape":"large","cpus":8,"mem":16384,"grants":[]}
 ]
 ```
 
@@ -176,7 +178,23 @@ VMs on the host, plus the grants this machine has given each one.
 | `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
 | `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
 | `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}` (see `pool ls`) |
+| `shape` | string \| null | shape the VM was created with, `custom` if size flags overrode it, `null` for VMs created before shapes |
+| `cpus` | number \| null | vCPUs the VM was created with (`null` if unknown) |
+| `mem` | number \| null | memory in MiB the VM was created with (`null` if unknown) |
 | `grants` | array | this machine's grants for the VM, same objects as `grants --json` |
+
+#### `boxery shapes --json`
+
+VM sizes the host offers, after merging its `shapes.json` over the built-ins ([Shapes](shapes.md)).
+
+```json
+{"default":"standard","shapes":{"small":{"cpus":2,"mem":4096,"disk":20},"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}
+```
+
+| Field | Type | |
+|---|---|---|
+| `default` | string | shape used when `new` gets no `--shape` or size flags |
+| `shapes` | object | shape name → `{cpus, mem (MiB), disk (GiB)}` |
 
 #### `boxery grants NAME --json`
 

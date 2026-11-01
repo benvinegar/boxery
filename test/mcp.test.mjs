@@ -43,7 +43,8 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 		`#!/usr/bin/env bash
 [ "$1" != --host ] || shift 2
 case "$*" in
-"ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
+"ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
+"shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 *) echo "stub boxery $*" ;;
 esac
@@ -215,7 +216,7 @@ describe("stdio", () => {
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
 		const list = (await c.tool("vm_manage", { action: "list" })).content[0].text;
 		assert.match(list, /current: fakevm/);
-		assert.match(list, /^fakevm +running +10\.0\.0\.2 +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
+		assert.match(list, /^fakevm +running +10\.0\.0\.2 +standard +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
@@ -230,6 +231,18 @@ describe("stdio", () => {
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid VM name/);
 		assert.equal((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: Array.from({ length: 9 }, (_, i) => `f${i}`) })).isError, true);
+	});
+
+	test("vm_manage shapes lists sizes; new/fork pass a validated shape", async () => {
+		const shapes = (await c.tool("vm_manage", { action: "shapes" })).content[0].text;
+		assert.match(shapes, /^standard \(default\) +4 +8 GiB +40 GiB$/m);
+		assert.match(shapes, /^large +8 +16 GiB +80 GiB$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", name: "big", shape: "large" })).content[0].text, /stub boxery new big --shape large$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", name: "plain" })).content[0].text, /stub boxery new plain$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", name: "fakevm", to: "f1", shape: "large" })).content[0].text, /stub boxery fork fakevm f1 --shape large$/m);
+		const bad = await c.tool("vm_manage", { action: "new", name: "x", shape: "large; touch /tmp/pwned" });
+		assert.equal(bad.isError, true);
+		assert.match(bad.content[0].text, /invalid shape/);
 	});
 });
 

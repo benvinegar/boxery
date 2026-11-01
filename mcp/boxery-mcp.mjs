@@ -163,7 +163,8 @@ const TOOLS = [
 	{
 		name: "vm_manage",
 		description:
-			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | fork | rm | snap | snaps | revert | use | none | grants | hosts | host. " +
+			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | fork | rm | snap | snaps | revert | use | none | grants | shapes | hosts | host. " +
+			"`shapes` lists the VM sizes (cpus/mem/disk) the host offers; pass `shape` to `new`/`fork` when a task needs more (or less) than the default. " +
 			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants). `hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
@@ -171,11 +172,12 @@ const TOOLS = [
 			type: "object",
 			properties: {
 				...hostProp,
-				action: { type: "string", enum: ["list", "new", "fork", "rm", "snap", "snaps", "revert", "use", "none", "grants", "hosts", "host"] },
+				action: { type: "string", enum: ["list", "new", "fork", "rm", "snap", "snaps", "revert", "use", "none", "grants", "shapes", "hosts", "host"] },
 				name: { type: "string" },
 				snapshot: { type: "string" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean" },
+				shape: { type: "string", description: "for new/fork: VM size by name (see action:'shapes'); default: the host's default shape (fork: the source's size)" },
 			},
 			required: ["action"],
 		},
