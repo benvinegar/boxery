@@ -96,6 +96,32 @@ boxery forward demo 3000                     # localhost:3000 → the VM's dev s
 
 Editors: once the `Include ~/.boxery/ssh_config` line is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
 
+### Moving code in and out of a VM
+
+Agents are expected to work inside the VM, so code usually gets there with `git clone` in the VM (add a [`github` grant](grants.md) for private repos). To hand off a local checkout, including unpushed commits and uncommitted work, use plain git and rsync over the `demo.boxery` ssh alias (needs the `Include` line above). No GitHub round trip or VM credentials are involved:
+
+```bash
+# once, if the VM has no copy yet
+ssh demo.boxery git init -q project/modem
+
+# commits (pushed to a new branch: git refuses to update the VM's checked-out branch)
+git push demo.boxery:project/modem HEAD:refs/heads/handoff
+ssh demo.boxery git -C project/modem switch handoff
+
+# uncommitted changes, plus untracked files that .gitignore doesn't exclude
+git diff --binary HEAD | ssh demo.boxery git -C project/modem apply
+git ls-files --others --exclude-standard -z | rsync -a --from0 --files-from=- ./ demo.boxery:project/modem/
+```
+
+The other way, fetch the VM agent's commits without touching your working tree:
+
+```bash
+git fetch demo.boxery:project/modem 'refs/heads/*:refs/remotes/demo/*'
+git log demo/handoff
+```
+
+For files that aren't in a repo, use `vm_copy` (pi/MCP) or `scp`/`rsync` to `demo.boxery`.
+
 ### Grants
 
 ```bash
