@@ -35,12 +35,10 @@
     "prepublishOnly": "npm test"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-coding-agent": { "optional": true }
   },
   "pi": {
     "extensions": ["./extension/index.ts"],

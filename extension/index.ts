@@ -9,9 +9,10 @@
  *   vm_browser                                              Playwright → Chrome on the VM desktop
  *   vm_manage                                               list / new / fork / rm / snap / snaps / revert / use / grants
  *
- * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs;
- * both share core/boxery-core.mjs. Here, bash/read/write/edit reuse pi's own tool engines (same
- * rendering, truncation and edit semantics as the built-ins) on top of ssh-backed operations.
+ * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs.
+ * Both are built from one tool table (core/boxery-tools.mjs) on top of core/boxery-core.mjs. Here,
+ * bash/read/write/edit run on pi's own tool engines (same rendering, truncation and edit semantics
+ * as the built-ins) over ssh-backed operations.
  *
  *   pi --vm demo [--vm-grant ssh-agent,env:GH_TOKEN,file:.env]
  *   pi --vm new      throwaway VM, removed when pi quits
@@ -25,9 +26,10 @@ import {
 	createReadToolDefinition,
 	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 // @ts-ignore: plain ESM shared with the MCP server
 import * as core from "../core/boxery-core.mjs";
+// @ts-ignore: the vm_* tool table the MCP server is built from too
+import { manageAction, TOOLS, VM_PARAM } from "../core/boxery-tools.mjs";
 
 const { PROJECT, q } = core;
 
@@ -86,14 +88,11 @@ export default function (pi: ExtensionAPI) {
 	let renewTimer: NodeJS.Timeout | null = null;
 	let desktopProc: ChildProcess | null = null;
 
-	const vmParam = Type.Optional(Type.String({ description: "VM name (default: the current VM)" }));
-	const shotParam = Type.Optional(Type.Boolean({ description: "Return a screenshot after the action (default true)" }));
 	const pick = (vm?: string) => {
 		const name = vm || current?.name;
 		if (!name) throw new Error("No VM given and no current VM. Pass `vm`, or create/select one with vm_manage.");
 		return core.assertName(name);
 	};
-	const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
 
 	const engines = (vm: string) => {
 		const ops = fileOps(vm);
@@ -114,118 +113,6 @@ export default function (pi: ExtensionAPI) {
 				return typeof v === "function" ? v.bind(t) : v;
 			},
 		});
-
-	// ------------------------------------------------------------ files and shell
-
-	const bashDef = createBashToolDefinition(PROJECT);
-	const readDef = createReadToolDefinition(PROJECT);
-	const writeDef = createWriteToolDefinition(PROJECT);
-	const editDef = createEditToolDefinition(PROJECT);
-	const withVm = (schema: any) => ({ ...schema, properties: { ...schema.properties, vm: vmParam } });
-	const where = "in an boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
-
-	pi.registerTool({
-		name: "vm_bash",
-		label: "vm bash",
-		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd /home/agent/project. Use rg / fdfind / ls here for searching. Output is truncated like bash.`,
-		promptSnippet: "Run shell commands in the VM (project work)",
-		parameters: withVm(bashDef.parameters),
-		renderCall: bashDef.renderCall as any,
-		renderResult: bashDef.renderResult as any,
-		async execute(id, p: any, signal, onUpdate, ctx) {
-			const { vm, ...rest } = p;
-			return (engines(pick(vm)).bash as any).execute(id, rest, signal, onUpdate, vmCtx(ctx));
-		},
-	});
-
-	for (const [name, def, verb] of [
-		["vm_read", readDef, "Read a file"],
-		["vm_write", writeDef, "Create or overwrite a file"],
-		["vm_edit", editDef, "Edit a file"],
-	] as const) {
-		const key = name.slice(3) as "read" | "write" | "edit";
-		pi.registerTool({
-			name,
-			label: name.replace("_", " "),
-			description: `${verb} ${where} ${key === "read" ? "Images are returned as images. Supports offset/limit like read." : key === "edit" ? "Same exact-text replacement semantics as edit." : "Parent directories are created."}`,
-			promptSnippet: `${verb.split(" ")[0]} files in the VM`,
-			parameters: withVm((def as any).parameters),
-			async execute(id, p: any, signal, onUpdate, ctx) {
-				const { vm, ...rest } = p;
-				return (engines(pick(vm))[key] as any).execute(id, { ...rest, path: core.vmPath(rest.path) }, signal, onUpdate, vmCtx(ctx));
-			},
-		});
-	}
-
-	pi.registerTool({
-		name: "vm_copy",
-		label: "vm copy",
-		description:
-			"Copy a file or directory between this machine and a VM, or between VMs. Locations are `local:/path`, `NAME:/path`, or a bare path (= current VM). " +
-			"Directories are copied recursively. Example: from `local:./notes.md` to `notes.md`.",
-		parameters: Type.Object({ from: Type.String(), to: Type.String() }),
-		async execute(_id, p: any, signal, _u, ctx) {
-			return toPi(await core.copyTool(p, { current: current?.name, localCwd: ctx?.cwd, signal }));
-		},
-	});
-
-	// ------------------------------------------------------------ computer use + browser
-
-	const desktopTool = (name: string, description: string, params: any, fn: (vm: string, p: any, signal?: AbortSignal) => Promise<any>) =>
-		pi.registerTool({
-			name,
-			label: name.replace("_", " "),
-			description,
-			parameters: Type.Object({ ...params, vm: vmParam }),
-			async execute(_id, p: any, signal) {
-				const { vm, ...rest } = p;
-				return toPi(await fn(pick(vm), rest, signal));
-			},
-		});
-
-	desktopTool("vm_screenshot", "Screenshot of a VM's desktop (DISPLAY=:1).", {}, (vm) => core.screenshot(vm));
-	desktopTool(
-		"vm_click",
-		"Click at (x, y), in screenshot pixels, on a VM's desktop.",
-		{
-			x: Type.Number(),
-			y: Type.Number(),
-			button: Type.Optional(Type.String({ description: "left (default), right or middle" })),
-			double: Type.Optional(Type.Boolean({ description: "Double-click" })),
-			screenshot: shotParam,
-		},
-		(vm, p) => core.click(vm, p),
-	);
-	desktopTool("vm_type", "Type text into the focused window on a VM's desktop.", { text: Type.String(), screenshot: shotParam }, (vm, p) => core.typeText(vm, p));
-	desktopTool(
-		"vm_key",
-		'Press keys on a VM\'s desktop, xdotool syntax, space-separated: "Return", "ctrl+l", "ctrl+shift+t", "Escape".',
-		{ keys: Type.String(), screenshot: shotParam },
-		(vm, p) => core.pressKeys(vm, p),
-	);
-	desktopTool(
-		"vm_scroll",
-		"Scroll at (x, y), in screenshot pixels, on a VM's desktop.",
-		{
-			x: Type.Number(),
-			y: Type.Number(),
-			direction: Type.String({ description: "up, down, left or right" }),
-			amount: Type.Optional(Type.Number({ description: "Wheel clicks (default 5)" })),
-			screenshot: shotParam,
-		},
-		(vm, p) => core.scroll(vm, p),
-	);
-	desktopTool(
-		"vm_browser",
-		"Drive Google Chrome on a VM's desktop with Playwright (the user can watch it). `code` is the body of an async function receiving (page, context, browser); " +
-			"its return value comes back as JSON. Chrome starts if needed and keeps state between calls. Example: `await page.goto('https://example.com'); return await page.title();`",
-		{
-			code: Type.String(),
-			screenshot: Type.Optional(Type.Boolean({ description: "Also return a screenshot of the page (default false)" })),
-			timeout: Type.Optional(Type.Number({ description: "Seconds (default 60)" })),
-		},
-		(vm, p, signal) => core.browser(vm, p, { signal }),
-	);
 
 	// ------------------------------------------------------------ VM lifecycle + current VM
 
@@ -302,50 +189,65 @@ export default function (pi: ExtensionAPI) {
 		setCurrent({ name, ephemeral }, ctx);
 	}
 
-	pi.registerTool({
-		name: "vm_manage",
-		label: "vm manage",
-		description:
-			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | fork | rm | snap | snaps | revert | use | none | grants. " +
-			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name); each copy has the disk (not running processes) and its own identity. " +
-			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
-		parameters: Type.Object({
-			action: Type.String(),
-			name: Type.Optional(Type.String()),
-			snapshot: Type.Optional(Type.String({ description: "snapshot name for snap/revert" })),
-			to: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: "for fork: new VM name(s)" })),
-			use: Type.Optional(Type.Boolean({ description: "for new: also make it the current VM" })),
-		}),
-		async execute(_id, p: any, _s, _u, ctx: any) {
-			switch (p.action) {
-				case "use":
-					await useVm(core.assertName(p.name), ctx);
-					return text(`current VM: ${p.name}`);
-				case "none":
-					setCurrent(null, ctx);
-					return text("no current VM");
-				case "list":
-					return text(`${await core.manage(p)}\ncurrent: ${current?.name ?? "(none)"}`);
-				case "new": {
-					const name = p.name ? core.assertName(p.name) : core.newName();
-					const out = await core.manage({ ...p, name });
-					if (p.use) setCurrent({ name, ephemeral: false }, ctx);
-					return text(`${out}${p.use ? `\ncurrent VM: ${name}` : ""}`);
-				}
-				case "rm": {
-					if (current?.name === p.name) {
-						if (current.lease) throw new Error(`${p.name} is leased from the pool; use vm_manage {action:"none"} to release it`);
-						current = { ...current, ephemeral: false }; // we delete it below; setCurrent must not race us
-						setCurrent(null, ctx);
-					}
-					return text(await core.manage(p));
-				}
-				default:
-					return text(await core.manage(p));
-			}
-		},
+	/** A current VM that is about to be removed stops being current first (leases are released instead). */
+	function forgetBeforeRm(name: string, ctx: any, releaseHint: string) {
+		if (current?.name !== name) return;
+		if (current.lease) throw new Error(`${name} is leased from the pool; ${releaseHint} to release it`);
+		current = { ...current, ephemeral: false }; // the caller deletes it; setCurrent must not race it
+		setCurrent(null, ctx);
+	}
+
+	// ------------------------------------------------------------ vm_* tools (shared table: core/boxery-tools.mjs)
+
+	// bash/read/write/edit run on pi's own tool engines (same rendering, truncation and edit semantics
+	// as the built-ins), so they keep those engines' parameter schemas; everything else is the table's.
+	const engineDefs: Record<string, any> = {
+		bash: createBashToolDefinition(PROJECT),
+		read: createReadToolDefinition(PROJECT),
+		write: createWriteToolDefinition(PROJECT),
+		edit: createEditToolDefinition(PROJECT),
+	};
+	const promptSnippets: Record<string, string> = {
+		vm_bash: "Run shell commands in the VM (project work)",
+		vm_read: "Read files in the VM",
+		vm_write: "Create files in the VM",
+		vm_edit: "Edit files in the VM",
+	};
+	const withVm = (schema: any) => ({ ...schema, properties: { ...schema.properties, vm: VM_PARAM } });
+	const manageSession = (ctx: any) => ({
+		current: current?.name ?? null,
+		use: (name: string) => useVm(name, ctx),
+		adopt: (name: string) => setCurrent({ name, ephemeral: false }, ctx),
+		clear: () => setCurrent(null, ctx),
+		removing: (name: string) => forgetBeforeRm(name, ctx, 'use vm_manage {action:"none"}'),
 	});
+
+	for (const t of TOOLS as any[]) {
+		const base = { name: t.name, label: t.name.replace("_", " "), description: t.description, promptSnippet: promptSnippets[t.name] };
+		if (t.engine) {
+			const def = engineDefs[t.engine];
+			pi.registerTool({
+				...base,
+				parameters: withVm(def.parameters),
+				...(t.engine === "bash" ? { renderCall: def.renderCall, renderResult: def.renderResult } : {}),
+				async execute(id, p: any, signal, onUpdate, ctx) {
+					const { vm, ...rest } = p;
+					const args = t.engine === "bash" ? rest : { ...rest, path: core.vmPath(rest.path) };
+					return (engines(pick(vm)) as any)[t.engine].execute(id, args, signal, onUpdate, vmCtx(ctx));
+				},
+			});
+			continue;
+		}
+		pi.registerTool({
+			...base,
+			parameters: t.parameters,
+			async execute(_id, p: any, signal, _u, ctx) {
+				if (t.name === "vm_manage") return toPi(await manageAction(p, manageSession(ctx)));
+				const { vm, ...rest } = p;
+				return toPi(await t.run(t.noVm ? null : pick(vm), t.noVm ? p : rest, { signal, current: current?.name, localCwd: ctx?.cwd }));
+			},
+		});
+	}
 
 	// ------------------------------------------------------------ session wiring
 
@@ -431,11 +333,7 @@ export default function (pi: ExtensionAPI) {
 						break;
 					case "rm":
 						if (!arg) throw new Error("usage: /vm rm NAME");
-						if (current?.name === arg) {
-							if (current.lease) throw new Error(`${arg} is leased from the pool; use /vm off to release it`);
-							current = { ...current, ephemeral: false };
-							setCurrent(null, ctx);
-						}
+						forgetBeforeRm(arg, ctx, "use /vm off");
 						say(await core.boxeryCli(["rm", arg], 120_000));
 						break;
 					case "grant":
