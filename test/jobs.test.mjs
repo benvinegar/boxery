@@ -6,6 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
+import { MAX_BYTES } from "../core/boxery-core.mjs";
 
 const exec = promisify(execFile);
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -222,21 +223,51 @@ test("logs tails/follows through completion, strips ANSI, and wait timeout never
 	await wait(id);
 });
 
-test("ANSI-filtered follow delivers a short update before the command completes", async () => {
+test("ANSI-filtered follow delivers newline-free CR progress before the command completes", async () => {
 	const release = path.join(dir, "stream-release");
-	const id = await start(["bash", "-c", `sleep 0.3; printf '\\033[32mlive\\033[0m\\n'; while [ ! -f '${release}' ]; do sleep 0.05; done; echo done`]);
+	const id = await start(["bash", "-c", `sleep 0.3; printf '\\033[32mprogress 50%%\\033[0m\\r'; while [ ! -f '${release}' ]; do sleep 0.05; done; echo done`]);
 	const p = spawn(CLI, ["logs", "fakevm", id, "-f", "--strip-ansi"], { env });
 	let output = "", error = "";
 	p.stdout.on("data", (d) => { output += d; });
 	p.stderr.on("data", (d) => { error += d; });
 	const closed = new Promise((resolve) => p.on("close", resolve));
 	try {
-		await until(() => output.includes("live\n"), "short ANSI-filtered update was buffered until completion");
+		await until(() => output.includes("progress 50%\r"), "newline-free ANSI-filtered update was buffered until completion");
 		assert.equal(existsSync(path.join(jobdir(), `${id}.exit`)), false);
-		assert.equal(output, "live\n");
+		assert.equal(output, "progress 50%\r");
 	} finally { writeFileSync(release, ""); }
 	assert.equal(await closed, 0, error);
-	assert.equal(output, "live\ndone\n");
+	assert.equal(output, "progress 50%\rdone\n");
+	await wait(id);
+});
+
+test("ANSI-filtered follow retains escape state across writes without buffering OSC content", async () => {
+	const gates = Array.from({ length: 4 }, (_, i) => path.join(dir, `escape-release-${i}`));
+	const gate = (i) => `while [ ! -f '${gates[i]}' ]; do sleep 0.05; done`;
+	const id = await start(["bash", "-c", `printf 'ready\\r\\033'; ${gate(0)};
+		printf '[32mprogress\\r\\033[0m\\033]8;;'; head -c 65536 /dev/zero | tr '\\000' x;
+		${gate(1)}; printf '\\033'; sleep 0.4; printf '\\\\link\\033]8;;\\007';
+		${gate(2)}; printf '\\033'; sleep 0.4; printf 'Mend\\r'; ${gate(3)}; echo done`]);
+	const p = spawn(CLI, ["logs", "fakevm", id, "-f", "--strip-ansi"], { env });
+	let output = "", error = "";
+	p.stdout.on("data", (d) => { output += d; });
+	p.stderr.on("data", (d) => { error += d; });
+	const closed = new Promise((resolve) => p.on("close", resolve));
+	try {
+		await until(() => output === "ready\r", "prefix before split CSI was not delivered");
+		writeFileSync(gates[0], "");
+		await until(() => output.includes("progress\r"), "split CSI did not finish");
+		await delay(400); // Let the unterminated OSC cross multiple filter reads.
+		assert.equal(output, "ready\rprogress\r");
+		writeFileSync(gates[1], "");
+		await until(() => output.endsWith("link"), "split OSC terminator did not finish");
+		writeFileSync(gates[2], "");
+		await until(() => output.endsWith("end\r"), "split two-byte escape did not finish");
+		assert.equal(output, "ready\rprogress\rlinkend\r");
+		assert.equal(existsSync(path.join(jobdir(), `${id}.exit`)), false);
+	} finally { for (const f of gates) writeFileSync(f, ""); }
+	assert.equal(await closed, 0, error);
+	assert.equal(output, "ready\rprogress\rlinkend\rdone\n");
 	await wait(id);
 });
 
@@ -313,10 +344,30 @@ test("MCP bounds guest wire output before line/ANSI processing and keeps huge-li
 	writeFileSync(log, `${"€".repeat(18000)}END`);
 	const utf = await c.tool({ action: "logs", job: id });
 	assert.match(text(utf), /€+END$/); assert.ok(!text(utf).includes("�"));
+	assert.ok(Buffer.byteLength(text(utf).replace(/^\[output truncated\]\n/, "")) <= MAX_BYTES);
 	writeFileSync(log, "one\ntwo\nthree\n");
 	const short = await c.tool({ action: "logs", job: id, lines: 1 });
 	assert.equal(text(short), "three\n");
 	assert.equal(text(await c.tool({ action: "logs", job: id, lines: 0 })), "(no output)");
+});
+
+test("MCP caps the decoded UTF-8 body even when invalid bytes expand", async () => {
+	const id = await start(["true"]); await wait(id);
+	const log = path.join(jobdir(), `${id}.log`);
+	const c = client();
+	for (const stripAnsi of [false, true]) {
+		for (const size of [64 * 1024, 20 * 1024]) {
+			writeFileSync(log, Buffer.concat([Buffer.from([0x80, 0xbf]), Buffer.alloc(size, 0xff), Buffer.from("END")]));
+			const r = await c.tool({ action: "logs", job: id, stripAnsi });
+			assert.equal(r.isError, false, text(r));
+			assert.match(text(r), /^\[output truncated\]\n�+END$/);
+			const body = text(r).replace(/^\[output truncated\]\n/, "");
+			assert.ok(Buffer.byteLength(body) <= MAX_BYTES, `${Buffer.byteLength(body)} decoded bytes`);
+			assert.ok(Buffer.byteLength(body) >= MAX_BYTES - 2, "keep the useful suffix, not whole lines");
+		}
+		writeFileSync(log, Buffer.concat([Buffer.from([0x80, 0xbf, 0xff]), Buffer.from("prefix END")]));
+		assert.equal(text(await c.tool({ action: "logs", job: id, stripAnsi })), "�prefix END");
+	}
 });
 
 test("real tmux launches the runner and records completion before its session disappears", async (t) => {
@@ -338,6 +389,35 @@ test("real tmux launches the runner and records completion before its session di
 			const fast = await start(["true"], overrides);
 			assert.equal((await cli(["wait", "fakevm", fast], overrides)).code, 0);
 		}
+	} finally { await exec(tmux, ["-S", socket, "kill-server"]).catch(() => {}); }
+});
+
+test("real tmux termination loses the runner without publishing successful completion", async (t) => {
+	let tmux;
+	try { tmux = (await exec("sh", ["-c", "command -v tmux"])).stdout.trim(); }
+	catch { t.skip("tmux not installed; real session termination requires tmux"); return; }
+	const realbin = path.join(dir, "signal-bin"); mkdirSync(realbin);
+	const socket = path.join(dir, "signal-tmux.sock");
+	const wrapper = path.join(realbin, "tmux");
+	writeFileSync(wrapper, `#!/bin/bash\nexec ${JSON.stringify(tmux)} -S ${JSON.stringify(socket)} -f /dev/null "$@"\n`); chmodSync(wrapper, 0o755);
+	const overrides = { PATH: `${realbin}:${env.PATH}`, TMUX: "" };
+	try {
+		const id = await start(["bash", "-c", "echo begun; sleep 30; echo done; exit 17"], overrides);
+		const log = path.join(jobdir(), `${id}.log`);
+		await until(() => readFileSync(log, "utf8").includes("begun\n"), "real command never started");
+		await exec(tmux, ["-S", socket, "kill-session", "-t", `=${id}`]);
+		const r = await cli(["wait", "fakevm", id], overrides);
+		assert.notEqual(r.code, 0, r.stderr);
+		assert.match(r.stderr, /lost/);
+		assert.equal((await cli(["logs", "fakevm", id], overrides)).stdout, "begun\n");
+		assert.equal(existsSync(path.join(jobdir(), `${id}.exit`)), false);
+		const jobs = JSON.parse((await cli(["jobs", "fakevm", "--json"], overrides)).stdout);
+		assert.ok(jobs.some((j) => j.id === id && j.state === "lost" && j.exit_code === null));
+		// A signal to only the command is a real completed failure, not a lost runner.
+		const child = await start(["bash", "-c", "kill -TERM $$"], overrides);
+		assert.equal((await cli(["wait", "fakevm", child], overrides)).code, 143);
+		const record = JSON.parse((await cli(["jobs", "fakevm", "--json"], overrides)).stdout).find((j) => j.id === child);
+		assert.equal(record.state, "completed"); assert.equal(record.exit_code, 143);
 	} finally { await exec(tmux, ["-S", socket, "kill-server"]).catch(() => {}); }
 });
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Guest-side job protocol, sent over ssh by the CLI and shared core. Requires bash + tmux.
+# Guest-side job protocol, sent over ssh by the CLI and shared core.
+# Requires bash + tmux; optional --strip-ansi also requires Perl.
 # shellcheck disable=SC2088 # literal ~ prefixes are expanded in the guest runner
 set -eu
 umask 077
@@ -46,6 +47,9 @@ start)
 	{
 		printf '%s\n' '#!/usr/bin/env bash' "job=$(quote "$d/$id")"
 		printf '%s\n' 'trap '\''rc=$?; printf "%s\n" "$rc" > "$job.exit.tmp"; mv -- "$job.exit.tmp" "$job.exit"'\'' EXIT'
+		# Losing the runner is not command completion. Child-only signals still
+		# return through the normal EXIT trap with the actual command status.
+		printf '%s\n' 'trap '\''trap - EXIT; exit 129'\'' HUP' 'trap '\''trap - EXIT; exit 130'\'' INT' 'trap '\''trap - EXIT; exit 143'\'' TERM'
 		# Only the detached runner publishes readiness, before executing the command.
 		printf 'mv -- %s "$job.meta" || exit $?\n' "$(quote "$reservation")"
 		printf '( %s &&%s ) </dev/null >"$job.log" 2>&1\n' "$cdline" "$line"
@@ -126,11 +130,37 @@ logs)
 		done
 	}
 	if "$strip"; then
-		# CSI (colors/cursor), OSC (titles/hyperlinks), and two-byte escape sequences.
-		# GNU -u and BSD -l both flush each output line instead of block buffering.
-		buffering=-l
-		if sed --version >/dev/null 2>&1; then buffering=-u; fi
-		stream | LC_ALL=C sed "$buffering" -E $'s/\033\\]([^\007\033]|\033[^\\\\])*(\007|\033\\\\)//g; s/\033\\[[0-?]*[ -/]*[@-~]//g; s/\033[@-_]//g'
+		# Byte-stream filter: flush ordinary bytes (including CR) without waiting
+		# for a newline. Only parser state survives reads, never an OSC or line.
+		stream | perl -e '
+			use strict; use warnings;
+			binmode STDIN; binmode STDOUT; $| = 1;
+			my $state = "text";
+			while (1) {
+				my $n = sysread(STDIN, my $chunk, 8192);
+				die "read log: $!\n" unless defined $n;
+				last unless $n;
+				my $out = "";
+				for my $c (split //, $chunk) {
+					if ($state eq "text") {
+						if ($c eq "\e") { $state = "esc"; } else { $out .= $c; }
+					} elsif ($state eq "esc") {
+						if ($c eq "[") { $state = "csi"; }
+						elsif ($c eq "]") { $state = "osc"; }
+						else { $out .= "\e$c" unless $c =~ /[@-_]/; $state = "text"; }
+					} elsif ($state eq "csi") {
+						$state = "text" if $c =~ /[@-~]/ || $c !~ /[ -?]/;
+					} elsif ($state eq "osc") {
+						if ($c eq "\a") { $state = "text"; }
+						elsif ($c eq "\e") { $state = "osc_esc"; }
+					} else {
+						if ($c eq "\\" || $c eq "\a") { $state = "text"; }
+						elsif ($c ne "\e") { $state = "osc"; }
+					}
+				}
+				print $out;
+			}
+		'
 	else stream; fi
 	;;
 wait)

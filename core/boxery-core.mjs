@@ -346,8 +346,18 @@ export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi
 		// line via the shared whole-line truncator. Skip a clipped UTF-8 prefix.
 		let start = 0;
 		while (start < r.stdout.length && (r.stdout[start] & 0xc0) === 0x80) start++;
-		const log = r.stdout.subarray(start).toString();
-		const truncated = r.stderr.includes("boxery jobs: output byte-truncated");
+		let log = r.stdout.subarray(start).toString();
+		// Invalid UTF-8 decodes to replacement characters, which can expand the
+		// encoded response beyond the raw guest cap. Keep a character-safe suffix,
+		// not whole lines: a single huge line can still have a useful ending.
+		const decoded = Buffer.from(log);
+		const responseTruncated = decoded.length > MAX_BYTES;
+		if (responseTruncated) {
+			let cut = decoded.length - MAX_BYTES;
+			while (cut < decoded.length && (decoded[cut] & 0xc0) === 0x80) cut++;
+			log = decoded.subarray(cut).toString();
+		}
+		const truncated = responseTruncated || r.stderr.includes("boxery jobs: output byte-truncated");
 		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}` };
 	}
 	if (action === "wait") {
