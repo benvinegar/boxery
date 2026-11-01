@@ -50,8 +50,12 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	// vm_jobs needs tmux in the VM; the fake keeps it off the developer's server and works where tmux isn't installed.
 	writeFileSync(path.join(bin, "tmux"), fakeTmux());
 	chmodSync(path.join(bin, "tmux"), 0o755);
-	// Screen grabs: a 1600x1000 desktop; `import` prints the format it was asked for.
-	writeFileSync(path.join(bin, "xdotool"), `#!/usr/bin/env bash\n[ "$1" = getdisplaygeometry ] && echo "1600 1000"\nexit 0\n`);
+	// Screen grabs: a 1600x1000 desktop; `import` prints the format it was asked for. A file
+	// ~/.xdotool-mode in the fake VM makes the geometry query warn first ("warn") or fail ("fail").
+	writeFileSync(
+		path.join(bin, "xdotool"),
+		`#!/usr/bin/env bash\nmode=$(cat ~/.xdotool-mode 2>/dev/null)\n[ "$mode" = fail ] && { echo "Error: Can't open display: :1"; exit 1; }\n[ "$mode" = warn ] && echo "Xlib:  extension \\"RANDR\\" missing on display \\":1\\"."\n[ "$1" = getdisplaygeometry ] && echo "1600 1000"\nexit 0\n`,
+	);
 	writeFileSync(path.join(bin, "import"), `#!/usr/bin/env bash\nfor a; do :; done; printf '%s' "\${a%%:*}-bytes"\n`);
 	chmodSync(path.join(bin, "xdotool"), 0o755);
 	chmodSync(path.join(bin, "import"), 0o755);
@@ -474,6 +478,41 @@ describe("live view (MCP Apps)", () => {
 		const shot = await c.tool("vm_screenshot", {});
 		assert.equal(shot.content[1].mimeType, "image/png");
 		assert.equal(shot.structuredContent, undefined);
+	});
+});
+
+describe("screenshots", () => {
+	let c;
+	before(async () => {
+		c = client(["--vm", "fakevm"]);
+		await c.call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+	});
+	after(() => c.close());
+	const mode = (m) => writeFileSync(path.join(env.VMROOT, ".xdotool-mode"), m);
+
+	test("the screen size is found after X11 warnings", async () => {
+		mode("warn");
+		try {
+			const shot = await c.tool("vm_screenshot", {});
+			assert.equal(shot.isError, false, shot.content[0].text);
+			assert.match(shot.content[0].text, /1600x1000, shown at 1280x800/);
+		} finally {
+			rmSync(path.join(env.VMROOT, ".xdotool-mode"));
+		}
+	});
+
+	test("without a screen size, screenshots fail clearly instead of returning NaN sizes", async () => {
+		mode("fail");
+		try {
+			for (const tool of ["vm_screenshot", "vm_view", "vm_view_frame"]) {
+				const r = await c.tool(tool, { vm: "fakevm" });
+				assert.equal(r.isError, true, tool);
+				assert.match(r.content[0].text, /desktop not ready, couldn't read the screen size \(Error: Can't open display: :1\)/, tool);
+			}
+		} finally {
+			rmSync(path.join(env.VMROOT, ".xdotool-mode"));
+		}
+		assert.equal((await c.tool("vm_screenshot", {})).isError, false);
 	});
 });
 

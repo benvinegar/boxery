@@ -530,7 +530,14 @@ export async function screenshot(vm, maxWidth = 1280, { jpeg = false } = {}) {
 	const out = jpeg ? "-quality 70 jpeg:-" : "png:-";
 	const r = await desktopRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' ${out}`, { timeoutMs: 30_000 });
 	if (r.code !== 0) throw new Error(r.stderr.trim() || "screenshot failed");
-	const [sw, sh] = r.stderr.trim().split(/\s+/).map(Number);
+	// Find the "W H" line: X11 warnings can come first while the desktop starts. Without it there is
+	// no scale for clicks, so fail rather than return a NaN-sized shot.
+	const geometry = r.stderr.toString().match(/^(\d+) (\d+)$/m);
+	if (!geometry) {
+		const why = r.stderr.toString().trim().split("\n")[0];
+		throw new Error(`VM "${vm}": desktop not ready, couldn't read the screen size${why ? ` (${why})` : ""}. If the VM just started, try again in a few seconds.`);
+	}
+	const [sw, sh] = [Number(geometry[1]), Number(geometry[2])];
 	const shotW = Math.min(sw, maxWidth);
 	const scale = sw / shotW;
 	const shotH = Math.round(sh / scale);
