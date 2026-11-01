@@ -35,7 +35,7 @@ boxery host add hornet --config-dir "$HOME/.boxery-hornet"
 boxery host use laptop
 boxery --host laptop ls
 boxery --host hornet ls
-node mcp/boxery-mcp.mjs --host laptop --vm demo
+boxery-mcp --host laptop --vm demo
 ```
 
 Both `config` and `ssh_config` must already exist. Import records the canonical absolute directory. Each distinct host must have its own config directory, SSH control paths and grant store. Importing the same directory under two aliases does not create isolation or change the imported SSH config. Legacy setup prints an SSH-config-quoted/escaped `Include` recommendation; named setup instead recommends explicit host routing. Avoid including multiple profiles' `*.boxery` sections in your global SSH config: duplicate VM aliases are ambiguous there. Prefer `boxery --host NAME ssh demo`, or `ssh -F "$(boxery host show NAME)/ssh_config" demo.boxery`. Legacy setup quotes its optional global Include recommendation; for paths containing `%`, it recommends `-F` instead because OpenSSH versions differ on percent expansion in Include.

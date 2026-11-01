@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
+  <img src="https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
 </p>
 
 ---
@@ -46,19 +46,18 @@ Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at an
 On a **Linux host** with KVM and libvirt ([full requirements](docs/install.md#linux-host-libvirtkvm)):
 
 ```bash
-git clone https://github.com/benvinegar/boxery.git ~/boxery && cd ~/boxery
-./host/boxery-host init          # storage pool, LLM proxy, lease reaper, ~/.local/bin symlinks
-./host/boxery-host build-base    # golden desktop image (~3 min, one time)
+npm install -g boxery
+boxery-host init                 # storage pool, LLM proxy, lease reaper, ~/.local/bin symlinks
+boxery-host build-base           # golden desktop image (~3 min, one time)
 ```
 
 On **your laptop**:
 
 ```bash
-git clone https://github.com/benvinegar/boxery.git ~/boxery
-ln -s ~/boxery/controller/boxery /usr/local/bin/boxery
+npm install -g boxery            # the boxery CLI + boxery-mcp
 boxery setup you@my-host         # checks ssh, registers your key
 
-pi install ~/boxery              # the pi extension
+pi install npm:boxery            # the pi extension
 pi --vm demo                     # pi with a VM named "demo" (created if missing)
 ```
 
@@ -89,8 +88,7 @@ pi --vm pool   # lease one
 
 ```bash
 claude mcp add boxery -- \
-  node ~/boxery/mcp/boxery-mcp.mjs \
-  --vm demo
+  npx -y -p boxery boxery-mcp --vm demo
 ```
 
 [MCP server →](docs/mcp.md)

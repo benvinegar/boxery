@@ -13,7 +13,13 @@ import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
 
-const VERSION = "0.5.0";
+const VERSION = (() => {
+	try {
+		return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+	} catch {
+		return "0.0.0";
+	}
+})();
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 // ---------------------------------------------------------------- args

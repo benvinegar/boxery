@@ -17,10 +17,10 @@ The server runs locally and reaches VMs over the same ssh path as the CLI.
 
 ```bash
 # Claude Code
-claude mcp add boxery -- node ~/boxery/mcp/boxery-mcp.mjs --vm demo
+claude mcp add boxery -- npx -y -p boxery boxery-mcp --vm demo
 
 # pi (or just use the extension)
-pi mcp add boxery -- node ~/boxery/mcp/boxery-mcp.mjs --vm demo
+pi mcp add boxery -- npx -y -p boxery boxery-mcp --vm demo
 ```
 
 Cursor and other clients that use a JSON config:
@@ -29,8 +29,8 @@ Cursor and other clients that use a JSON config:
 {
   "mcpServers": {
     "boxery": {
-      "command": "node",
-      "args": ["/Users/you/boxery/mcp/boxery-mcp.mjs", "--vm", "demo"]
+      "command": "npx",
+      "args": ["-y", "-p", "boxery", "boxery-mcp", "--vm", "demo"]
     }
   }
 }
@@ -47,7 +47,7 @@ See [Named hosts](hosts.md). MCP does not acquire or renew pool leases.
 ```bash
 # on the host
 export BOXERY_MCP_TOKEN=$(openssl rand -hex 32)
-node mcp/boxery-mcp.mjs --http 127.0.0.1:8765 --allow-user you@example.com
+boxery-mcp --http 127.0.0.1:8765 --allow-user you@example.com
 tailscale serve --bg --https=8765 http://127.0.0.1:8765     # tailnet only. Never `tailscale funnel`.
 
 # on a client

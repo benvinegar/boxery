@@ -1,18 +1,48 @@
 {
   "name": "boxery",
   "version": "0.6.0",
-  "private": true,
   "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",
-  "keywords": ["pi-package"],
+  "keywords": ["pi-package", "mcp", "mcp-server", "vm", "computer-use", "coding-agent", "libvirt", "lima", "kvm"],
+  "homepage": "https://github.com/benvinegar/boxery#readme",
+  "bugs": { "url": "https://github.com/benvinegar/boxery/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/benvinegar/boxery.git" },
+  "author": "Ben Vinegar",
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=20" },
+  "os": ["linux", "darwin"],
+  "bin": {
+    "boxery": "controller/boxery",
+    "boxery-host": "host/boxery-host",
+    "boxery-mcp": "mcp/boxery-mcp.mjs"
+  },
+  "files": [
+    "controller/",
+    "core/",
+    "extension/",
+    "host/",
+    "image/",
+    "mcp/boxery-mcp.mjs",
+    "proxy/",
+    "docs/*.md",
+    "ARCHITECTURE.md"
+  ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:shell": "bash test/shell/run.sh",
-    "lint": "bash test/lint.sh"
+    "lint": "bash test/lint.sh",
+    "prepublishOnly": "npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "typebox": { "optional": true }
   },
   "pi": {
-    "extensions": ["./extension/index.ts"]
+    "extensions": ["./extension/index.ts"],
+    "image": "https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png"
   }
 }
