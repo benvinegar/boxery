@@ -1,11 +1,9 @@
-<p align="center">
+<h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/mark-dark.svg">
-    <img src="docs/brand/mark-light.svg" alt="boxery logo" width="72">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-dark.svg">
+    <img src="docs/brand/lockup-light.svg" alt="boxery" width="220">
   </picture>
-</p>
-
-<h1 align="center">boxery</h1>
+</h1>
 
 <p align="center">
   <strong>Self-serve VMs for any coding agent, on any host.</strong><br>
