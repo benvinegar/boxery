@@ -18,9 +18,9 @@ const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot 
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
-export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "images", "use", "none"];
+export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
-export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "version"];
+export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version"];
 
 const INFO_OUTPUT = {
 	type: "object",
@@ -32,6 +32,7 @@ const INFO_OUTPUT = {
 		vm: { type: "string", description: "grants/snaps: the VM" },
 		grants: { type: "array", items: { type: "object" } },
 		snapshots: { type: "array", items: { type: "object" } },
+		images: { type: "array", items: { type: "object" }, description: "images: [{image (VM@SNAP), created, size}], every snapshot on the host" },
 		controller: {
 			type: "object",
 			description: "version: this controller's {version, describe}; describe is `git describe --tags --always --dirty` of a git checkout, null for npm installs",
@@ -204,11 +205,11 @@ export const TOOLS = [
 		description:
 			`Create, change and select boxery VMs (Ubuntu desktop VMs on the user's VM host). action: ${MANAGE_ACTIONS.join(" | ")}. ` +
 			"`vm` is the VM to act on (`new`: the new VM's name, default generated; `fork`: the source). " +
-			"`new` creates a VM (with use:true also selects it); pass `shape` (see vm_info shapes) or cpus/mem/disk when a task needs more (or less) than the default, and `from:'VM@SNAP'` to create it from an image. " +
+			"`new` creates a VM (with use:true also selects it); pass `shape` (see vm_info shapes) or cpus/mem/disk when a task needs more (or less) than the default, and `from:'VM@SNAP'` to create it from an image (see vm_info images). " +
 			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
 			"`fork` copies VM `vm` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
-			"`snap` snapshots VM `vm` (as `snapshot`, optional); `revert` restores snapshot `snapshot` and `snap-rm` deletes it (see vm_info snaps); `images` lists every snapshot on the host as VM@SNAP. " +
+			"`snap` snapshots VM `vm` (as `snapshot`, optional); `revert` restores snapshot `snapshot` and `snap-rm` deletes it (see vm_info snaps). " +
 			"`use` makes `vm` the current VM (default for all vm_* tools; created if missing); `none` clears it.",
 		parameters: {
 			type: "object",
@@ -216,7 +217,7 @@ export const TOOLS = [
 				action: { type: "string", enum: MANAGE_ACTIONS },
 				vm: { type: "string", description: "the VM to act on; new: the new VM's name (default: generated); fork: the source VM" },
 				snapshot: { type: "string", description: "snapshot name for snap/revert/snap-rm" },
-				from: { type: "string", description: "for new: image to create the VM from, VM@SNAP (see action:'images')" },
+				from: { type: "string", description: "for new: image to create the VM from, VM@SNAP (see vm_info images)" },
 				headless: { type: "boolean", description: "for new: no desktop (default false: XFCE desktop, Chrome, computer use)" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean", description: "for new: also make it the current VM" },
@@ -235,7 +236,7 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
-			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (only the user can change grants); `snaps` the snapshots of VM `vm`; " +
+			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (only the user can change grants); `snaps` the snapshots of VM `vm`; `images` every snapshot on the host as VM@SNAP (what vm_manage new takes as `from`); " +
 			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
 			"`vm` defaults to the current VM.",
 		parameters: {
@@ -300,6 +301,10 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 			const vm = target();
 			const snapshots = await core.listSnaps(vm);
 			return { text: core.formatSnaps(vm, snapshots), structured: { vm, snapshots } };
+		}
+		case "images": {
+			const images = await core.listImages();
+			return { text: core.formatImages(images), structured: { images } };
 		}
 		case "version": {
 			const v = await core.versions();

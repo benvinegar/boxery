@@ -72,6 +72,7 @@ case "$*" in
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
+"images --json") echo '[{"image":"fakevm@s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
 *) echo "stub boxery $*" ;;
@@ -296,7 +297,7 @@ describe("stdio", () => {
 		assert.match(bad.content[0].text, /invalid shape/);
 	});
 
-	test("vm_manage start/stop/resize/snap-rm/images/new-from reach the controller validated", async () => {
+	test("vm_manage start/stop/resize/snap-rm/new-from reach the controller validated", async () => {
 		const out = async (a) => (await c.tool("vm_manage", a)).content[0].text;
 		const err = async (a, re) => {
 			const r = await c.tool("vm_manage", a);
@@ -311,7 +312,6 @@ describe("stdio", () => {
 		await err({ action: "resize", vm: "fakevm", cpus: 0 }, /cpus must be a positive integer/);
 		assert.match(await out({ action: "snap-rm", vm: "fakevm", snapshot: "s1" }), /stub boxery snap-rm fakevm s1$/m);
 		await err({ action: "snap-rm", vm: "fakevm" }, /invalid snapshot name/);
-		assert.match(await out({ action: "images" }), /stub boxery images$/m);
 		assert.match(await out({ action: "new", vm: "copy", from: "fakevm@s1" }), /stub boxery new copy --from fakevm@s1$/m);
 		assert.match(await out({ action: "new", vm: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
 		assert.match(await out({ action: "fork", vm: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
@@ -368,6 +368,9 @@ describe("protocol features", () => {
 		const snaps = await c.tool("vm_info", { action: "snaps", vm: "fakevm" });
 		assert.match(snaps.content[0].text, /^s1\t2026-10-01T00:00:00Z\t1\.2G$/);
 		assert.equal(snaps.structuredContent.snapshots[0].name, "s1");
+		const images = await c.tool("vm_info", { action: "images" });
+		assert.match(images.content[0].text, /^fakevm@s1\t2026-10-01T00:00:00Z\t1\.2G$/);
+		assert.equal(images.structuredContent.images[0].image, "fakevm@s1");
 		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
 		const version = await c.tool("vm_info", { action: "version" });
 		assert.equal(version.structuredContent.behind, true);
@@ -378,7 +381,7 @@ describe("protocol features", () => {
 	});
 
 	test("vm_manage has no lookup actions and needs an explicit vm", async () => {
-		for (const action of ["list", "shapes", "grants", "snaps"]) {
+		for (const action of ["list", "shapes", "grants", "snaps", "images"]) {
 			const r = await c.tool("vm_manage", { action, vm: "fakevm" });
 			assert.equal(r.isError, true, action);
 			assert.match(r.content[0].text, new RegExp(`use vm_info \\{action:"${action}"\\}`), action);

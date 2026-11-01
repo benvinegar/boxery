@@ -39,7 +39,7 @@ const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for cod
   ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]
                             change a VM's size; a running VM is restarted. Disk only grows
-  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
+  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
   connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
   proxy-log [N]             recent LLM + edge proxy requests
   edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
@@ -112,8 +112,11 @@ async function snaps(rt, [name, arg]) {
 	for (const l of await snapsLines(rt, name)) print(l.join("\t"));
 }
 
-async function images(rt) {
-	print(table([40, 20], [["IMAGE", "CREATED", "SIZE"], ...(await rt.vms.images()).map((i) => [i.image, i.created, i.size])]));
+async function images(rt, [arg]) {
+	const imgs = await rt.vms.images();
+	if (arg === "--json") return print(jsonArray(imgs.map((i) => ({ image: i.image, created: i.created || null, size: i.size && i.size !== "-" ? i.size : null }))));
+	if (arg) fail("usage: images [--json]");
+	print(table([40, 20], [["IMAGE", "CREATED", "SIZE"], ...imgs.map((i) => [i.image, i.created, i.size])]));
 }
 
 async function ip(rt, [name]) {

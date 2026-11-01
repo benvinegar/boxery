@@ -1252,7 +1252,7 @@ snap) need_host
 new) need_host; cmd_new "$@" ;;
 fork) need_host; cmd_fork "$@" ;;
 snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
-images) need_host; h images ;;
+images) need_host; h images "$@" ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;

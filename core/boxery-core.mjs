@@ -774,6 +774,9 @@ export const listShapes = () => boxeryJson(["shapes"]);
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
 
+/** Every image on the host (snapshots, addressed VM@SNAP): [{image, created, size}] (docs/cli.md). */
+export const listImages = () => boxeryJson(["images"]);
+
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
 export const versions = () => boxeryJson(["version"]);
 
@@ -788,6 +791,11 @@ export function formatVersions({ controller, host, behind }) {
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
 	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
+}
+
+export function formatImages(images) {
+	if (!images.length) return "no images (snapshots) on the host";
+	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}`).join("\n");
 }
 
 export function assertShape(s) {
@@ -889,8 +897,6 @@ export async function manage(a, opts = {}) {
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
 		case "snap-rm":
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
-		case "images":
-			return boxeryCli(["images"], 60_000);
 		default:
 			throw new Error(`unknown action ${action}`);
 	}

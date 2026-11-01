@@ -154,7 +154,7 @@ new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
-snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
+snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
 proxy-log [N]
 
@@ -333,6 +333,10 @@ Same objects as `boxery ls --json` without `grants` (grants live on the controll
 #### `boxery-host snaps NAME --json`
 
 `[{"name", "created", "size"}]`, from the backend's `backend_images`.
+
+#### `boxery-host images --json`
+
+`[{"image", "created", "size"}]`: every image on the host (`VM@SNAP`), from the backend's `backend_images`; empty fields are `null`.
 
 #### `boxery-host pool ls --json`
 
