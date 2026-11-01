@@ -23,7 +23,7 @@ user=""
 while [ $# -gt 0 ]; do case $1 in -o|-p|-i|-L|-R|-F|-W) shift 2 ;; -l) user=$2; shift 2 ;; -*) shift ;; *) break ;; esac; done
 host=$1; shift
 case $host in
-exe.dev) exec fake-exe "$@" ;;
+exe.dev) echo "Warning: Permanently added 'exe.dev' (RSA) to the list of known hosts." >&2; exec fake-exe "$@" ;;   # first-contact noise on stderr
 vm.exe.xyz) vm=${user#vm+} ;;
 *.exe.xyz) vm=${host%.exe.xyz} ;;
 *) exit 0 ;;
@@ -111,6 +111,7 @@ expect "build-base" "$H" build-base
 called "exe.dev rm bxtest-build" && ok "a previous builder VM is removed first" || bad "stale builder"
 called "exe.dev new  --name=bxtest-build --no-email --cpu=2 --memory=4GB --disk=20GB" && ok "builder: exeuntu VM within the plan" || bad "new: $(grep 'exe.dev new' "$CALLS")"
 called "exe.dev rename bxtest-build bxtest-base" && [[ $(st bxtest-base) == paused ]] && ok "builder renamed to the base and paused" || bad "base: $(st bxtest-base)"
+grep -x sync "$S/bxtest-base/edge.log" >/dev/null && ok "base is synced before it's paused (copies read its disk)" || bad "base not synced"
 B=$S/bxtest-base/script.1
 bash -n "$B" && ok "build script parses" || bad "build script syntax"
 grep -F 'useradd -m -s /bin/bash -c "boxery agent" -G sudo,adm agent' "$B" >/dev/null && grep -F '/etc/sudoers.d/90-boxery-agent' "$B" >/dev/null && ok "build creates the agent user (no cloud-init on exeuntu)" || bad "agent user"
@@ -127,6 +128,7 @@ called "exe.dev cp bxtest-base bxtest-v-v1 --copy-tags=false --cpu=2 --memory=4G
 grep -F "capping to 2 vCPU" "$tmp/err" >/dev/null && ok "capping is logged" || bad "no capping log"
 I=$S/bxtest-v-v1/script.1
 bash -n "$I" && ok "identity script parses" || bad "identity syntax"
+[[ ! -e $E/v1/identity.sh ]] && ok "identity script (it carries the proxy token) is never left on disk" || bad "identity.sh left behind"
 grep -x 'ssh-ed25519 AAAAtestmgmt mgmt@host' "$I" >/dev/null && grep -F 'cat >/home/agent/.ssh/authorized_keys <<' "$I" >/dev/null && ok "authorized_keys replaced with the host's keys" || bad "keys"
 up=$(grep -F '/etc/boxery/proxy-upstream' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' | head -1 | cut -c6- | base64 -d 2>/dev/null || true)
 [[ $up == "TCP:127.0.0.1:18088" ]] && ok "guest proxy upstream is the tunnel's -R end" || bad "upstream: $up"
@@ -137,7 +139,7 @@ grep -F "ExecStart=$E/v1/tunnel.sh" "$U" >/dev/null && grep -F 'Restart=always' 
 [[ -f $UNITS/enabled.boxery-exe-bxtest-v-v1.service && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "tunnel enabled (survives host reboots) and running" || bad "unit state"
 bash -n "$E/v1/tunnel.sh" && ok "tunnel.sh parses" || bad "tunnel.sh syntax"
 : >"$CALLS"; bash "$E/v1/tunnel.sh"
-for a in "-N" "ExitOnForwardFailure=yes" "-L 127.0.0.1:22401:127.0.0.1:22" "-R 127.0.0.1:18088:127.0.0.1:9999" "bxtest-v-v1.exe.xyz" "StrictHostKeyChecking=accept-new" "ControlPath=none"; do
+for a in "-N" "ForwardAgent=no" "ExitOnForwardFailure=yes" "-L 127.0.0.1:22401:127.0.0.1:22" "-R 127.0.0.1:18088:127.0.0.1:9999" "bxtest-v-v1.exe.xyz" "StrictHostKeyChecking=accept-new" "ControlPath=none"; do
 	called "$a" && ok "tunnel passes $a" || bad "tunnel lacks $a: $(cat "$CALLS")"
 done
 
@@ -152,7 +154,8 @@ jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists box
 # --- stop / start
 : >"$CALLS"
 expect "stop" "$H" stop v1
-called "exe.dev pause bxtest-v-v1" && grep -F 'sudo rm -rf /run/user/*/boxery' "$S/bxtest-v-v1/edge.log" >/dev/null && ok "stop drops pushed grants, then pauses" || bad "stop: $(cat "$CALLS")"
+called "exe.dev pause bxtest-v-v1" && grep -F 'sudo rm -rf /run/user/*/boxery; sync' "$S/bxtest-v-v1/edge.log" >/dev/null && ok "stop drops pushed grants and syncs, then pauses" || bad "stop: $(cat "$CALLS")"
+grep -F 'ssh -a -x -o ForwardAgent=no' "$CALLS" >/dev/null && ok "edge ssh never forwards the host's agent" || bad "agent forwarding not disabled"
 [[ ! -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "stop stops the tunnel" || bad "tunnel still up"
 lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "paused" and .addr == null' >/dev/null && ok "paused VM: no addr" || bad "ls stopped: $(lsj)"
 expect_fail "ip of a stopped VM fails" "$H" ip v1
@@ -191,6 +194,7 @@ grep -F 'hostname f1' "$S/bxtest-v-f1/script.1" >/dev/null && grep -F '/home/age
 out=$("$H" fork v1 g1 g2 2>/dev/null) && [[ $(echo "$out" | wc -l | tr -d ' ') == 2 ]] && ok "fork into two VMs" || bad "fork: $out"
 imgs=("$S"/bxtest-i-*); [[ ${#imgs[@]} == 1 ]] && ok "fork removes its temporary image" || bad "images left: $(ls "$S")"
 for n in v2 f1 g1 g2; do "$H" rm "$n" >/dev/null 2>&1; done
+expect_fail "names ending in '-' are refused (not a valid exe.dev name)" "$H" new trail-
 
 # --- rm
 : >"$CALLS"
@@ -222,7 +226,8 @@ mkdir -p "$E/half" "$S/bxtest-v-half" "$S/bxtest-s-half"; echo 77 >"$E/half/slot
 touch "$HOME/.config/systemd/user/boxery-exe-bxtest-v-half.service" "$UNITS/boxery-exe-bxtest-v-half.service"
 rec backend_cleanup_new half && [[ ! -d $E/half && ! -d $S/bxtest-v-half && ! -d $S/bxtest-s-half && ! -f $UNITS/boxery-exe-bxtest-v-half.service && ! -f $HOME/.config/systemd/user/boxery-exe-bxtest-v-half.service ]] && ok "cleanup_new removes a half-created VM: exe.dev VM, staging copy, tunnel, state" || bad "cleanup_new"
 rec backend_cleanup_new half && ok "cleanup_new is idempotent" || bad "cleanup_new second run"
-mkdir "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -d $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's slot lock" || bad "slot lock"
+mkdir "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ -d $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new leaves a fresh slot lock (a live new may hold it)" || bad "fresh slot lock removed"
+touch -t 202001010000 "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -d $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's stale slot lock" || bad "stale slot lock"
 FAIL_LS=1 rec backend_cleanup_new p1 2>/dev/null && bad "cleanup_new succeeded without exe.dev" || ok "cleanup_new fails (keeps the journal) when exe.dev is unreachable"
 mkdir -p "$S/$(img x@y)"; echo running >"$S/$(img x@y)/status"   # a cp killed before its comment
 rec backend_cleanup_image x@y && [[ ! -d $S/$(img x@y) ]] && rec backend_cleanup_image x@y && ok "cleanup_image removes an unlabelled image, idempotently" || bad "cleanup_image"
@@ -260,6 +265,11 @@ e=$( (UNREGISTERED=1 backend_check) 2>&1 ) && bad "unregistered key accepted" ||
 : >"$CALLS"
 (BOXERY_EXE_EGRESS=integrations BOXERY_EXE_POOL=build; . "$ROOT/host/backends/exe.sh"; mkdir -p "$tmp/ud"; printf '#cloud-config\nssh_authorized_keys:\n  - "k"\n' >"$tmp/ud/u"; backend_new eg 2 2048 20 "$tmp/ud/u") >/dev/null 2>&1
 called "exe.dev cp bxtest-base bxtest-v-eg --copy-tags=false --cpu=2 --memory=2GB --pool=build --egress=integrations" && ok "BOXERY_EXE_POOL and BOXERY_EXE_EGRESS reach cp" || bad "pool/egress: $(grep 'exe.dev cp' "$CALLS")"
+(BOXERY_EXE_EGRESS=integrations BOXERY_EXE_POOL=build; . "$ROOT/host/backends/exe.sh"; backend_capture eg eg@c) >/dev/null 2>&1
+called "exe.dev cp bxtest-v-eg $(img eg@c) --copy-tags=false --pool=build --egress=integrations" && ok "… and the capture's image VM (it boots the agent's disk)" || bad "capture flags: $(grep 'exe.dev cp' "$CALLS")"
+evil='{"vms":[{"vm_name":"x","comment":"boxery-image:a@b:x[$(touch '"$tmp"'/pwned)]","ssh_host":"-oProxyCommand=touch '"$tmp"'/pwned2"}]}'
+d=$(exe_disk_of_image x "$evil"); h=$(exe_dest x "$evil")
+[[ -z $d && $h == x.exe.xyz && ! -e $tmp/pwned && ! -e $tmp/pwned2 ]] && ok "hostile exe.dev fields (disk, ssh_host) are rejected" || bad "disk='$d' dest='$h'"
 # launchd (macOS hosts)
 stub launchctl 'echo "launchctl $*" >>"$CALLS"; case $1 in print) [[ -f $UNITS/launchd ]] ;; bootstrap) touch "$UNITS/launchd" ;; bootout) rm -f "$UNITS/launchd" ;; esac'
 : >"$CALLS"

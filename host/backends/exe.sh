@@ -37,8 +37,11 @@ EXE_BASE_DISK=20                                 # GB, the base VM's disk (copie
 EXE_SUPERVISOR=${BOXERY_EXE_SUPERVISOR:-$([[ $(uname) == Darwin ]] && echo launchd || echo systemd)}
 EXE_POLL=${BOXERY_EXE_POLL:-15}                  # seconds between build-base progress checks
 EXE_MAX_SLOT=500
-EXE_SSH=(ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
-	-o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$EXE_DIR/known_hosts" -o ControlMaster=no -o ControlPath=none)
+# Never forward the host's agent or X11 into a guest, whatever ~/.ssh/config says: guest root would get
+# the exe.dev account key, i.e. root in every VM. LogLevel=ERROR keeps ssh's notices out of JSON replies.
+EXE_SSH=(ssh -a -x -o ForwardAgent=no -o ForwardX11=no -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15
+	-o ServerAliveCountMax=4 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$EXE_DIR/known_hosts"
+	-o ControlMaster=no -o ControlPath=none -o LogLevel=ERROR)
 [[ -z $EXE_KEY ]] || EXE_SSH+=(-o IdentitiesOnly=yes -i "$EXE_KEY")
 # Pin effective settings in operation journals, so crash recovery acts on the same account and names.
 export BOXERY_EXE_DIR=$EXE_DIR BOXERY_EXE_KEY=$EXE_KEY BOXERY_EXE_PORT_BASE=$EXE_PORT_BASE BOXERY_EXE_GUEST_PORT=$EXE_GUEST_PORT
@@ -68,14 +71,17 @@ exe_cmd() { "${EXE_SSH[@]}" exe.dev "$@" </dev/null; }   # </dev/null: never eat
 # exe.dev command with JSON output; prints the JSON. Fails (with exe.dev's message) on a non-zero exit
 # or an {"error": …} reply. --json goes first so free-text arguments (comment) can't swallow it.
 exe_do() {
-	local out rc=0 msg
-	out=$(exe_cmd "$1" --json "${@:2}" 2>&1) || rc=$?
+	local out rc=0 msg ef
+	ef=$(mktemp) || return 1
+	out=$(exe_cmd "$1" --json "${@:2}" 2>"$ef") || rc=$?   # stderr apart: ssh notices aren't JSON
 	if ((rc == 0)) && jq -e 'type == "object" and has("error")' <<<"$out" >/dev/null 2>&1; then rc=1; fi
 	if ((rc != 0)); then
 		msg=$(jq -r '.error // empty' <<<"$out" 2>/dev/null) || msg=""
-		echo "boxery-host: exe.dev $1: ${msg:-${out:0:300}}" >&2
+		echo "boxery-host: exe.dev $1: ${msg:-${out:0:300}} $(head -c 300 "$ef")" >&2
+		rm -f "$ef"
 		return 1
 	fi
+	rm -f "$ef"
 	printf '%s\n' "$out"
 }
 # The account's VMs as {"vms": [...]}. An unreachable exe.dev is an error, never an empty account.
@@ -92,7 +98,9 @@ exe_has() { jq -e --arg n "$1" 'any(.vms[]; .vm_name == $n)' <<<"$2" >/dev/null;
 exe_dest() { # VM [LS_JSON]
 	local j=${2:-} d
 	[[ -n $j ]] || j=$(exe_ls) || return 1
-	d=$(jq -r --arg n "$1" '.vms[] | select(.vm_name == $n) | if (.ssh_user // "") != "" then "-l \(.ssh_user) \(.ssh_host)" else (.ssh_host // .ssh_dest // "") end' <<<"$j")
+	# Only plain host/user names: these become ssh arguments (a "-oProxyCommand=…" must never get through).
+	d=$(jq -r --arg n "$1" 'def ok: type == "string" and test("^[A-Za-z0-9][A-Za-z0-9.+_-]*$");
+		.vms[] | select(.vm_name == $n) | if (.ssh_user | ok) and (.ssh_host | ok) then "-l \(.ssh_user) \(.ssh_host)" elif (.ssh_host | ok) then .ssh_host else "" end' <<<"$j")
 	echo "${d:-$1.exe.xyz}"
 }
 # Run a command in a VM through exe.dev's edge, as the image's login user (exedev, passwordless sudo).
@@ -115,8 +123,11 @@ exe_cp() {
 	exe_do rm "$dst" >/dev/null 2>&1 || true
 	return 1
 }
-exe_pause() { exe_do pause "$1" >/dev/null || log "warning: could not pause $1 (it keeps using pool memory)"; }
-exe_disk_of_image() { jq -r --arg n "$1" '.vms[] | select(.vm_name == $n) | .comment // "" | split(":")[2] // ""' <<<"$2"; }   # IMAGE_VM LS_JSON
+# pause keeps RAM, and a cp only copies the disk: flush the guest first (best effort, it may be booting).
+exe_sync() { exe_edge "$1" 'sync' </dev/null >/dev/null 2>&1; }
+exe_pause() { exe_sync "$1" || true; exe_do pause "$1" >/dev/null || log "warning: could not pause $1 (it keeps using pool memory)"; }
+# IMAGE_VM LS_JSON → the disk size (GB) in its comment, digits only: it ends up in (( arithmetic )).
+exe_disk_of_image() { jq -r --arg n "$1" '.vms[] | select(.vm_name == $n) | .comment // "" | split(":")[2] // "" | select(test("^[0-9]{1,5}$")) // ""' <<<"$2"; }
 
 # ---------------------------------------------------------------- per-VM tunnel (supervised ssh)
 exe_tunnel_write() { # NAME LS_JSON: tunnel.sh + supervisor definition (not started)
@@ -214,7 +225,7 @@ backend_check() {
 	if [[ $EXE_SUPERVISOR == launchd ]]; then need launchctl; else need systemctl; fi
 	[[ -z $EXE_PREFIX || $EXE_PREFIX =~ ^[a-z][a-z0-9-]{0,19}$ ]] || die "BOXERY_EXE_PREFIX must match [a-z][a-z0-9-]{0,19}"
 	local out
-	out=$(exe_cmd whoami --json 2>&1) || die "exe.dev doesn't know this host's ssh key: ${out:0:200}
+	out=$(exe_cmd whoami --json 2>/dev/null) || die "exe.dev doesn't know this host's ssh key: ${out:0:200}
   Run 'ssh exe.dev' once in a terminal (re-registering with your account's email adds the key), or set BOXERY_EXE_KEY."
 	jq -e '.email' <<<"$out" >/dev/null 2>&1 || die "unexpected 'whoami' reply from exe.dev: ${out:0:200}"
 }
@@ -255,6 +266,7 @@ exe_build_post() {
 		UNIT
 		systemctl enable boxery-agent-session.service
 		touch /var/log/boxery-exe.ok
+		sync   # the base is copied from its disk; nothing may stay in the page cache
 	EOF
 }
 
@@ -344,6 +356,7 @@ exe_identity_script() { # USERDATA NAME
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d vm src j srcdisk slot
 	[[ -n $EXE_PREFIX ]] || die "no exe.dev prefix; run: boxery-host init --backend exe"
+	[[ $name != *- ]] || die "exe.dev names can't end with '-': $name"
 	d=$(exe_dir "$name"); vm=$(exe_vm "$name")
 	j=$(exe_ls) || exit 1
 	if [[ -n $from ]]; then
@@ -367,9 +380,8 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	# shellcheck disable=SC2086  # flags: word list
 	exe_cp "$src" "$vm" $flags || die "exe.dev cp $src → $vm failed"
 	local i; for i in $(seq 60); do exe_edge "$vm" true </dev/null >/dev/null 2>&1 && break; ((i < 60)) || die "no ssh to $vm"; sleep 2; done
-	exe_identity_script "$userdata" "$name" >"$d/identity.sh" || die "could not prepare $name's identity"
-	exe_edge "$vm" 'sudo bash -s' <"$d/identity.sh" >/dev/null || die "applying $name's identity failed"
-	rm -f "$d/identity.sh"
+	# Piped, never written to disk: it carries the proxy token.
+	exe_identity_script "$userdata" "$name" | exe_edge "$vm" 'sudo bash -s' >/dev/null || die "applying $name's identity failed"
 	j=$(exe_ls) || exit 1
 	exe_tunnel_write "$name" "$j"
 	exe_tunnel_start "$name"
@@ -423,8 +435,9 @@ backend_stop() {
 	backend_exists "$1" || die "no such vm: $1"
 	local vm; vm=$(exe_vm "$1")
 	exe_tunnel_stop "$1"
-	# pause keeps RAM; a real shutdown would drop the grants pushed to tmpfs, so drop them first.
-	exe_edge "$vm" 'sudo rm -rf /run/user/*/boxery' </dev/null >/dev/null 2>&1 || true
+	# pause keeps RAM; a real shutdown would drop the grants pushed to tmpfs, so drop them first. sync:
+	# a later snapshot or fork copies the paused VM's disk, not its page cache.
+	exe_edge "$vm" 'sudo rm -rf /run/user/*/boxery; sync' </dev/null >/dev/null 2>&1 || log "warning: couldn't reach $1 to flush it before pausing"
 	exe_do pause "$vm" >/dev/null || die "exe.dev pause $vm failed"
 }
 
@@ -448,10 +461,15 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 	exe_has "$vm" "$j" || die "$1 is gone from exe.dev ($vm)"
 	exe_has "$img" "$j" && die "image $2 exists"
 	disk=$(cat "$(exe_dir "$1")/disk" 2>/dev/null || echo "$EXE_BASE_DISK")
+	# A paused VM was synced by stop (or by its capture), so its disk is current.
 	if [[ $(exe_status "$vm" "$j") == running ]]; then
-		exe_edge "$vm" sync </dev/null >/dev/null 2>&1 || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
+		exe_sync "$vm" || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
 	fi
-	exe_cp "$vm" "$img" || die "copying $1 failed"
+	# The image VM boots the agent's disk until it's paused: same pool and egress policy as a VM.
+	local flags; flags=$(exe_pool_flag)
+	[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
+	# shellcheck disable=SC2086
+	exe_cp "$vm" "$img" $flags || die "copying $1 failed"
 	# The comment names the image; without it the copy isn't listed (cleanup_image still finds it).
 	exe_do comment "$img" "'boxery-image:$2:$disk'" >/dev/null || { exe_do rm "$img" >/dev/null 2>&1 || true; die "labelling image $2 failed"; }
 	exe_pause "$img"   # a paused image holds disk only, no pool CPU or memory
@@ -500,7 +518,9 @@ backend_reimage() { # NAME IMAGE: same exe.dev name (endpoint) and tunnel slot; 
 backend_cleanup_new() { # NAME: remove a VM whose create was interrupted, whatever got created
 	[[ -n $EXE_PREFIX ]] || { rm -rf "$(exe_dir "$1")"; return 0; }
 	exe_destroy "$1"
-	rmdir "$EXE_DIR/.slot.lock" 2>/dev/null || true   # held only for milliseconds; a leftover means its holder died
+	# Held for milliseconds; one older than a minute belongs to a dead holder. A fresh one may be a live
+	# `new`'s: leave it.
+	if [[ -d $EXE_DIR/.slot.lock && -n $(find "$EXE_DIR/.slot.lock" -maxdepth 0 -mmin +1 2>/dev/null) ]]; then rmdir "$EXE_DIR/.slot.lock" 2>/dev/null || true; fi
 }
 backend_cleanup_image() { # IMAGE: labelled or not (a cp killed before its comment)
 	[[ -n $EXE_PREFIX ]] || return 0
