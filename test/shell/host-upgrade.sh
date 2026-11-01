@@ -59,8 +59,9 @@ healthy() { node -e 'Promise.all(process.argv.slice(1).map((p) => fetch(`http://
 for _ in $(seq 50); do healthy "$port" "$((port + 1))" && break; sleep 0.1; done
 
 v=$("$H" version --json)
-[[ $(jq -r .install <<<"$v") == git && $(jq -r .describe <<<"$v") == v0.7.0 && $(jq -r .version <<<"$v") == 0.7.0 ]] && ok "version --json" || bad "version: $v"
-"$H" version | grep -q '^0.7.0 .*git' && ok "version (text)" || bad "version text: $("$H" version)"
+pv=$(jq -r .version "$SRC/package.json")   # the package's version; the tags here are only fixtures
+[[ $(jq -r .install <<<"$v") == git && $(jq -r .describe <<<"$v") == v0.7.0 && $(jq -r .version <<<"$v") == "$pv" ]] && ok "version --json" || bad "version: $v"
+"$H" version | grep -qF "$pv (v0.7.0)" && "$H" version | grep -q 'git' && ok "version (text)" || bad "version text: $("$H" version)"
 
 out=$("$H" upgrade 2>&1) && grep -q "up to date" <<<"$out" && ok "upgrade when current is a no-op" || bad "no-op: $out"
 grep -q "profiles: $p1, $p2" <<<"$out" && ok "upgrade finds every profile whose services run this install" || bad "profiles: $out"
