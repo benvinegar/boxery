@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-`mcp/boxery-mcp.mjs` exposes the same 12 `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
+`mcp/boxery-mcp.mjs` exposes the same `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). Both are built from one tool table, `core/boxery-tools.mjs`, so their tool names, descriptions and schemas match; MCP adds an optional `host` argument and the `hosts`/`host` actions of `vm_manage`.
 
 There are two ways to run it:
 
@@ -59,6 +59,21 @@ claude mcp add --transport http boxery https://my-host.<tailnet>.ts.net:8765/mcp
 ```
 
 In this mode, "local" means **the machine running MCP**, not necessarily the selected VM host: `vm_copy local:…` copies to and from that server, and grants are read from its env, files and ssh agent.
+
+## Background jobs
+
+Use `vm_jobs` for long commands instead of holding a `vm_bash` call open:
+
+```json
+{"action":"start","command":"pnpm test","cwd":"app"}
+{"action":"list"}
+{"action":"logs","job":"job-a1b2c3D4E5F6","lines":200,"stripAnsi":true}
+{"action":"wait","job":"job-a1b2c3D4E5F6","timeout":30}
+```
+
+Every call accepts optional `host` and `vm`, using the session selection by default. `start` accepts shell syntax like `vm_bash` and returns `{"id":"job-…"}`. Jobs run in detached tmux sessions and survive client disconnects. `cwd` defaults to `~/project` (home if absent); relative directories are below `~/project`.
+
+`list` returns JSON records with `id`, `state`, `started_at` (Unix seconds) and `exit_code` (number or null). `wait` returns one such record; failed commands and `lost` jobs are tool errors. Timeout returns a still-running record with `timed_out:true`, not a tool error. Waiting defaults to 120 seconds (1–3600 allowed); cancellation and timeout only stop observation, never the job. `logs` returns a bounded tail (default 200 lines, at most 2000 lines/50KB), without following indefinitely. The guest caps the raw byte tail before selecting lines or stripping ANSI, so even a huge newline-free log transfers at most 50KB. A `[output truncated]` notice means that the raw byte cap or the decoded response-body cap clipped the snapshot; incomplete leading UTF-8 characters are dropped. Invalid UTF-8 may expand during decoding, so the response also keeps only a character-safe 50KB UTF-8 suffix (excluding the marker). Optional ANSI stripping requires Perl in the guest. Logs stay in the VM at `~/.boxery/jobs/ID.log`; commands may print secrets there. See [CLI jobs](cli.md#background-command-jobs) for lifecycle details.
 
 ## Options
 

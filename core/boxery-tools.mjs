@@ -14,7 +14,7 @@ export const VM_PARAM = { type: "string", description: "VM name (default: the cu
 const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
-export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "snap", "snaps", "revert", "use", "none", "grants"];
+export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "snap", "snaps", "revert", "use", "none", "grants", "shapes"];
 
 export const TOOLS = [
 	{
@@ -25,6 +25,27 @@ export const TOOLS = [
 		parameters: obj({ command: { type: "string" }, timeout: { type: "number", description: "Seconds (default 120)" } }, ["command"]),
 		annotations: { destructiveHint: true, openWorldHint: true },
 		run: (vm, a, x) => core.bashTool(vm, a, x),
+	},
+	{
+		name: "vm_jobs",
+		title: "VM jobs",
+		description:
+			"Detached command jobs in a VM. start runs a bash command in tmux (survives disconnects), returning a job ID; list returns state/start time/exit code; logs returns a bounded output tail; " +
+			"wait observes completion, returning exit_code or timed_out:true. Timeout/cancellation never kills the job. Jobs lost to VM reboot or tmux termination have state lost. Optional vm defaults to the current VM.",
+		parameters: obj(
+			{
+				action: { type: "string", enum: ["start", "list", "logs", "wait"] },
+				command: { type: "string", description: "start: bash command, like vm_bash" },
+				cwd: { type: "string", description: "start: working directory (default ~/project; relative paths below it)" },
+				job: { type: "string", description: "logs/wait: ID returned by start" },
+				lines: { type: "integer", minimum: 0, maximum: core.MAX_LINES, description: "logs: last N lines (default 200)" },
+				stripAnsi: { type: "boolean", description: "logs: strip terminal escape codes" },
+				timeout: { type: "integer", minimum: 1, maximum: 3600, description: "wait: seconds to observe (default 120)" },
+			},
+			["action"],
+		),
+		annotations: { destructiveHint: true, openWorldHint: true },
+		run: (vm, a, x) => core.jobsTool(vm, a, x),
 	},
 	{
 		name: "vm_read",
@@ -154,6 +175,7 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			`Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: ${MANAGE_ACTIONS.join(" | ")}. ` +
+			"`shapes` lists the VM sizes (cpus/mem/disk) the host offers; pass `shape` to `new`/`fork` when a task needs more (or less) than the default. " +
 			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
@@ -165,6 +187,7 @@ export const TOOLS = [
 				snapshot: { type: "string", description: "snapshot name for snap/revert" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean", description: "for new: also make it the current VM" },
+				shape: { type: "string", description: "for new/fork: VM size by name (see action:'shapes'); default: the host's default shape (fork: the source's size)" },
 			},
 			required: ["action"],
 		},

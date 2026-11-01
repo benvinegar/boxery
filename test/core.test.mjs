@@ -88,14 +88,23 @@ test("guidance mentions the current VM and the local/VM split", () => {
 
 test("formatVms / formatGrants render the --json shapes", () => {
 	const vms = [
-		{ name: "a1", state: "running", addr: "10.0.0.2", disk: "1GiB", lease: null, grants: [] },
+		{ name: "a1", state: "running", addr: "10.0.0.2", disk: "1GiB", lease: null, shape: "large", cpus: 8, mem: 16384, grants: [] },
 		{ name: "pool-1", state: "running", addr: null, disk: null, lease: { state: "LEASED", holder: "me@x", expires_at: 1 }, grants: [{ kind: "ssh-agent" }, { kind: "file", local: "/l/.env", remote: "/home/agent/project/.env" }] },
 	];
 	const lines = core.formatVms(vms).split("\n");
-	assert.match(lines[0], /^NAME +STATE +ADDR +LEASE +GRANTS$/);
-	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +- +-$/);
-	assert.match(lines[2], /^pool-1 +running +- +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/);
+	assert.match(lines[0], /^NAME +STATE +ADDR +SHAPE +LEASE +GRANTS$/);
+	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +large +- +-$/);
+	assert.match(lines[2], /^pool-1 +running +- +- +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -");
 	assert.equal(core.formatVms([]), "(no VMs)");
 	assert.equal(core.formatGrants("a1", []), "no grants for a1");
 	assert.match(core.formatGrants("a1", [{ kind: "env", var: "T", cmd: "op read x" }]), /env:T +\(from: op read x\)/);
+});
+
+test("formatShapes / assertShape", () => {
+	const lines = core.formatShapes({ default: "standard", shapes: { small: { cpus: 2, mem: 4096, disk: 20 }, standard: { cpus: 4, mem: 8192, disk: 40 } } }).split("\n");
+	assert.match(lines[0], /^SHAPE +CPUS +MEM +DISK$/);
+	assert.match(lines[1], /^small +2 +4 GiB +20 GiB$/);
+	assert.match(lines[2], /^standard \(default\) +4 +8 GiB +40 GiB$/);
+	assert.equal(core.assertShape("gpu-ish"), "gpu-ish");
+	for (const bad of ["", "Large", "x;id", "-a", "a".repeat(32), 4]) assert.throws(() => core.assertShape(bad), /invalid shape/);
 });

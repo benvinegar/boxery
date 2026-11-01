@@ -147,13 +147,14 @@ lease_set_keys() { # NAME [PUBKEY]
 # (which has no jq) relies on it to add local fields to each element.
 JSON_ARRAY='if length == 0 then "[]" else "[\n" + (map(tojson) | join(",\n")) + "\n]" end'
 pool_json() { leases list | jq -r "map({name, state, holder, acquired_at, expires_at, expires_in}) | $JSON_ARRAY"; }
-ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state → [{name,state,addr,disk,lease}]
+ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state + recorded size → [{name,state,addr,disk,lease,shape,cpus,mem}]
 	local pool; pool=$(leases list 2>/dev/null) || pool=""; [[ -n $pool ]] || pool='[]'
-	backend_list | jq -R -s -r --argjson pool "$pool" '
+	backend_list | jq -R -s -r --argjson pool "$pool" --argjson sz "$(vm_shapes_json)" '
 		def nz: if . == null or . == "" then null else . end;
 		($pool | map({key: .name, value: {state, holder, expires_at}}) | from_entries) as $p |
 		split("\n") | map(select(length > 0) | split("\t") |
-			{name: .[0], state: (.[1] | nz), addr: (.[2] | nz), disk: (.[3] | nz), lease: ($p[.[0]] // null)}) | '"$JSON_ARRAY"
+			{name: .[0], state: (.[1] | nz), addr: (.[2] | nz), disk: (.[3] | nz), lease: ($p[.[0]] // null),
+			 shape: (if $sz[.[0]] == null then null else ($sz[.[0]].shape // "custom") end), cpus: $sz[.[0]].cpus, mem: $sz[.[0]].mem}) | '"$JSON_ARRAY"
 }
 snaps_json() { # NAME → [{name, created, size, legacy}]   (cmd_snaps' tab lines)
 	local lines; lines=$(snaps_lines "$1") || exit 1
@@ -285,12 +286,12 @@ recover_operation() {
 		name=$(jq -r '.[0]' <<<"$data")
 		case $kind in
 		create)
-			backend_cleanup_new "$name"
+			backend_cleanup_new "$name"; vm_shape_del "$name"
 			token_del "$name"; edge_clear "$name" ;;
 		remove)
 			backend_cleanup_new "$name"
 			# rm can have crashed between deleting the VM and deleting its images.
-			cleanup_vm_images "$name"
+			cleanup_vm_images "$name"; vm_shape_del "$name"
 			token_del "$name"; edge_clear "$name" ;;
 		capture) backend_recover_capture "$name" "$(jq -r '.[1]' <<<"$data")" "$(jq -r '.[2]' <<<"$data")" ;;
 		fork-image) backend_cleanup_image "$name" ;;
@@ -323,7 +324,7 @@ _reconcile_vm() {
 	if ! awk -F '\t' -v n="$1" '$1 == n { found=1 } END { exit !found }' <<<"$inventory"; then
 		row=$(leases get "$1") || return 1
 		if [[ $row != null ]]; then leases missing "$1" >/dev/null; log "$1 missing from backend → BROKEN"; fi
-		token_del "$1"; edge_clear "$1"
+		token_del "$1"; edge_clear "$1"; vm_shape_del "$1"
 	fi
 }
 _reconcile_drift() {
@@ -477,10 +478,63 @@ with_vm_lock() { # NAME function args...
 	esac
 }
 
-cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
-	local name="" cpus=4 mem=8192 disk=40 from=""
+# ---------------------------------------------------------------- shapes (VM sizes)
+# Named sizes: built-ins in host/shapes.json, overridden/extended by $CONF/shapes.json on this host.
+# A user entry with a built-in's name overrides only the fields it sets; a new name needs all three.
+# Each VM's resolved size is recorded in $CONF/vm-shapes/NAME.json so forks copy it.
+SHAPES_BUILTIN=$ROOT/host/shapes.json
+shapes_json() { # → {default, shapes: {NAME: {cpus, mem, disk}}} (validated)
+	local user='{}'
+	if [[ -f $CONF/shapes.json ]]; then
+		user=$(jq -ce 'if type == "object" then . else error("not an object") end' "$CONF/shapes.json" 2>/dev/null) ||
+			die "$CONF/shapes.json is not a JSON object"
+	fi
+	local out
+	out=$(jq -ce --argjson u "$user" '
+		def pos: type == "number" and . >= 1 and . == floor;
+		{default: ($u.default // .default),
+		 shapes: (reduce (($u.shapes // {}) | to_entries[]) as $e (.shapes; .[$e.key] = ((.[$e.key] // {}) + $e.value)))}
+		| .default as $d
+		| if ($d | type) != "string" or (.shapes | has($d) | not) then error("default shape \($d | tojson) is not defined")
+		  elif any(.shapes | keys[]; test("^[a-z][a-z0-9-]{0,30}$") | not) then error("shape names must match [a-z][a-z0-9-]*")
+		  elif any(.shapes[]; ([.cpus, .mem, .disk] | all(pos)) | not) then error("every shape needs whole-number cpus, mem (MiB) and disk (GiB) >= 1")
+		  else .shapes |= with_entries(.value |= {cpus, mem, disk}) end' "$SHAPES_BUILTIN" 2>&1) ||
+		die "invalid shapes in $CONF/shapes.json: ${out#*): }"
+	printf '%s\n' "$out"
+}
+shape_get() { # NAME → "CPUS MEM DISK" (dies if unknown)
+	local j; j=$(shapes_json) || exit 1
+	jq -er --arg s "$1" '.shapes[$s] // empty | "\(.cpus) \(.mem) \(.disk)"' <<<"$j" ||
+		die "unknown shape '$1' (have: $(jq -r '.shapes | keys | join(", ")' <<<"$j"))"
+}
+shape_default() { local j; j=$(shapes_json) || exit 1; jq -r .default <<<"$j"; }
+vm_shape_file() { echo "$CONF/vm-shapes/$1.json"; }
+vm_shape_set() { # NAME SHAPE CPUS MEM DISK  (SHAPE "" = custom size)
+	mkdir -p "$CONF/vm-shapes"
+	jq -cn --arg s "$2" --argjson c "$3" --argjson m "$4" --argjson d "$5" \
+		'{shape: (if $s == "" then null else $s end), cpus: $c, mem: $m, disk: $d}' >"$(vm_shape_file "$1").tmp"
+	mv "$(vm_shape_file "$1").tmp" "$(vm_shape_file "$1")"
+}
+vm_shape_del() { rm -f "$(vm_shape_file "$1")" "$(vm_shape_file "$1").tmp"; }
+vm_shapes_json() { # → {NAME: {shape, cpus, mem, disk}} for VMs with a record
+	local f; { for f in "$CONF"/vm-shapes/*.json; do [[ -f $f ]] || continue
+		jq -c --arg n "$(basename "$f" .json)" '{($n): .}' "$f" 2>/dev/null || true; done; } | jq -cs 'add // {}'
+}
+
+cmd_shapes() { # [--json]
+	local j; j=$(shapes_json) || exit 1
+	if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
+	[[ -z ${1:-} ]] || die "usage: shapes [--json]"
+	printf '%-16s %5s %9s %9s\n' SHAPE CPUS MEM_MIB DISK_GIB
+	jq -r '.default as $d | .shapes | to_entries[] | [(.key + (if .key == $d then " *" else "" end)), .value.cpus, .value.mem, .value.disk] | @tsv' <<<"$j" |
+		while IFS=$'\t' read -r n c m d; do printf '%-16s %5s %9s %9s\n' "$n" "$c" "$m" "$d"; done
+}
+
+cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
+	local name="" shape="" cpus="" mem="" disk="" from=""
 	while (($#)); do
 		case $1 in
+		--shape) [[ ${2:-} =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid shape name '${2:-}'"; shape=$2; shift 2 ;;
 		--cpus) valid_num "$1" "${2:-}"; cpus=$2; shift 2 ;;
 		--mem) valid_num "$1" "${2:-}"; mem=$2; shift 2 ;;
 		--disk) valid_num "$1" "${2:-}"; disk=$2; shift 2 ;;
@@ -489,14 +543,22 @@ cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 		*) name=$1; shift ;;
 		esac
 	done
-	[[ -n $name ]] || die "usage: new NAME [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE]"
+	[[ -n $name ]] || die "usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE]"
 	valid_name "$name"
+	# Size: the shape (default shape if none), then explicit flags. Any flag makes it a custom size.
+	local base; base=$(shape_get "${shape:-$(shape_default)}") || exit 1
+	local bc bm bd; read -r bc bm bd <<<"$base"
+	[[ -n $shape || -n $cpus$mem$disk ]] || shape=$(shape_default)
+	[[ -z $cpus$mem$disk ]] || shape=""
+	cpus=${cpus:-$bc}; mem=${mem:-$bm}; disk=${disk:-$bd}
+	((cpus >= 1 && mem >= 1 && disk >= 1)) || die "--cpus, --mem and --disk must be >= 1"
 	backend_exists "$name" && die "$name already exists"
 	backend_has_base || die "no base image; run: boxery-host build-base"
 	[[ -z $from ]] || image_exists "$from" || die "no such image: $from (boxery-host images)"
 	local action userdata; action=$(intent create "$name")
 	userdata=$(boxery_seed "$name")
 	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata" "$from"
+	vm_shape_set "$name" "$shape" "$cpus" "$mem" "$disk"
 	local ep host port; ep=$(backend_wait_endpoint "$name"); host=${ep% *}; port=${ep#* }
 	log "$name reachable at $host:$port; waiting for ssh + cloud-init"
 	wait_ssh "$host" "$port"
@@ -519,9 +581,9 @@ cmd_ls() { # [--json]
 	local j; j=$(ls_json)
 	if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
 	[[ -z ${1:-} ]] || die "usage: ls [--json]"
-	printf '%-16s %-10s %-16s %-10s %s\n' NAME STATE ADDR DISK LEASE
-	jq -r '.[] | [.name, .state // "-", .addr // "-", .disk // "-", .lease.state // "-"] | @tsv' <<<"$j" |
-		while IFS=$'\t' read -r n st addr disk l; do printf '%-16s %-10s %-16s %-10s %s\n' "$n" "$st" "$addr" "$disk" "$l"; done
+	printf '%-16s %-10s %-16s %-10s %-10s %s\n' NAME STATE ADDR DISK SHAPE LEASE
+	jq -r '.[] | [.name, .state // "-", .addr // "-", .disk // "-", .shape // "-", .lease.state // "-"] | @tsv' <<<"$j" |
+		while IFS=$'\t' read -r n st addr disk sh l; do printf '%-16s %-10s %-16s %-10s %-10s %s\n' "$n" "$st" "$addr" "$disk" "$sh" "$l"; done
 }
 
 cmd_ip() { valid_name "$1"; local ep; ep=$(backend_ssh_endpoint "$1"); echo "${ep% *}"; }
@@ -584,11 +646,13 @@ resize_vm() { # NAME CPUS MEM DISK (empty = unchanged); holds the VM lock
 		if ! is_pool "$name"; then pet_set_keys "$name"; fi
 	fi
 	sz=$(backend_size "$name") || die "$name was resized, but its new size cannot be read"; read -r cpus mem disk <<<"$sz"
+	vm_shape_set "$name" "" "$cpus" "$mem" "$disk"   # no longer its shape's size: custom
 	log "$name resized: ${c} vCPU, ${m} MiB, ${d} GiB → ${cpus} vCPU, ${mem} MiB, ${disk} GiB"
 }
 
 _rm() {
 	backend_rm "$1"
+	vm_shape_del "$1"
 	# Forks and image readers hold this source's lock until all copies are independent.
 	cleanup_vm_images "$1"
 }
@@ -693,20 +757,34 @@ cmd_edge_set() {
 	log "$1: edge routes → $(jq -r 'keys | join(", ")' <<<"$in")"
 }
 
-# fork SRC DST... [--cpus N --mem MiB --disk GiB]: capture SRC once (it keeps running), then boot every
-# DST from that image with its own identity (hostname, proxy token, ssh keys, network). Prints
-# "DST ADDR" per fork, like new. The capture is temporary: forks never depend on it.
+# fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]: capture SRC once (it keeps running), then
+# boot every DST from that image with its own identity (hostname, proxy token, ssh keys, network). Prints
+# "DST ADDR" per fork, like new. The capture is temporary: forks never depend on it. Forks get SRC's
+# recorded size unless --shape or a size flag is given (flags override SRC's size field by field).
 cmd_fork() {
-	local src="" dsts=() flags=() d
+	local src="" dsts=() flags=() shape="" d
 	while (($#)); do
 		case $1 in
 		--cpus | --mem | --disk) valid_num "$1" "${2:-}"; flags+=("$1" "$2"); shift 2 ;;
+		--shape) [[ ${2:-} =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid shape name '${2:-}'"; shape=$2; shift 2 ;;
 		-*) die "unknown flag $1" ;;
 		*) if [[ -z $src ]]; then src=$1; else dsts+=("$1"); fi; shift ;;
 		esac
 	done
-	[[ -n $src && ${#dsts[@]} -gt 0 ]] || die "usage: fork SRC DST... [--cpus N --mem MiB --disk GiB]"
+	[[ -n $src && ${#dsts[@]} -gt 0 ]] || die "usage: fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]"
 	valid_name "$src"; backend_exists "$src" || die "no such vm: $src"
+	# Size: --shape, else SRC's recorded size, else (VMs made before shapes) its size per the backend,
+	# else the default shape.
+	local sizing=() label="" rec sz=""; rec=$(vm_shape_file "$src")
+	if [[ -f $rec ]]; then sz=$(jq -r '"\(.cpus) \(.mem) \(.disk)"' "$rec")
+	elif declare -F backend_size >/dev/null; then sz=$(backend_size "$src" 2>/dev/null) || sz=""; fi
+	if [[ -n $shape ]]; then sizing=(--shape "$shape"); shape_get "$shape" >/dev/null || exit 1
+	elif [[ $sz =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+		local c m k; read -r c m k <<<"$sz"
+		local i; for ((i = 0; i < ${#flags[@]}; i += 2)); do case ${flags[i]} in --cpus) c="" ;; --mem) m="" ;; --disk) k="" ;; esac; done
+		sizing=(${c:+--cpus "$c"} ${m:+--mem "$m"} ${k:+--disk "$k"})
+		[[ ${#flags[@]} -gt 0 || ! -f $rec ]] || label=$(jq -r '.shape // ""' "$rec")
+	fi
 	for d in "${dsts[@]}"; do
 		valid_name "$d"; backend_exists "$d" && die "$d already exists"
 		[[ $(printf '%s\n' "${dsts[@]}" | grep -cxF "$d") == 1 ]] || die "duplicate fork name $d"
@@ -718,9 +796,15 @@ cmd_fork() {
 	log "captured $src in $((SECONDS - t0))s; booting ${#dsts[*]} fork(s)"
 	# Boot the forks in parallel; print results in argument order.
 	local out=$CONF/work/$BOXERY_OPERATION_ID/fork-output rc=0; mkdir -p "$out"
-	for d in "${dsts[@]}"; do ( cmd_new "$d" ${flags[@]+"${flags[@]}"} --from "$img" >"$out/$d" ) & done
+	for d in "${dsts[@]}"; do ( cmd_new "$d" ${sizing[@]+"${sizing[@]}"} ${flags[@]+"${flags[@]}"} --from "$img" >"$out/$d" ) & done
 	wait
-	for d in "${dsts[@]}"; do if [[ -s $out/$d ]]; then cat "$out/$d"; else rc=1; log "fork $d failed"; fi; done
+	for d in "${dsts[@]}"; do
+		if [[ -s $out/$d ]]; then
+			cat "$out/$d"
+			# an exact copy of SRC's size keeps SRC's shape name
+			if [[ -n $label ]]; then jq -c --arg s "$label" '.shape = $s' "$(vm_shape_file "$d")" >"$(vm_shape_file "$d").tmp" && mv "$(vm_shape_file "$d").tmp" "$(vm_shape_file "$d")"; fi
+		else rc=1; log "fork $d failed"; fi
+	done
 	rm -rf "$out"
 	backend_image_rm "$img"
 	intent_done "$cleanup"
@@ -740,10 +824,12 @@ usage() {
 		  init [--backend libvirt|lima|cloud-hypervisor]  install proxy services + backend setup, symlinks
 		  build-base                build the golden desktop image (one-time)
 		  add-key < key.pub         authorize a controller's ssh key for new VMs
-		  new NAME [--cpus N --mem MiB --disk GiB]
+		  new NAME [--shape S] [--cpus N --mem MiB --disk GiB]
 		  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1)
-		  fork SRC DST... [--cpus N --mem MiB --disk GiB]
+		  fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 		                            copy a VM (running or not) into new VMs with their own identity
+		                            (same size as SRC unless --shape or size flags are given)
+		  shapes [--json]           VM sizes (built-ins + $CONF/shapes.json; * = default)
 		  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
 		  resize NAME [--cpus N] [--mem MiB] [--disk GiB]
 		                            change a VM's size; a running VM is restarted. Disk only grows
@@ -780,6 +866,7 @@ build-base) cmd_build_base ;;
 add-key) cmd_add_key ;;
 new) cmd_new "$@" ;;
 ls | list) cmd_ls "$@" ;;
+shapes) cmd_shapes "$@" ;;
 ip) cmd_ip "$@" ;;
 connect) cmd_connect "$@" ;;
 start) cmd_start "$@" ;;
