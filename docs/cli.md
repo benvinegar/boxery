@@ -125,12 +125,17 @@ See [Shared pool & leases](pool.md).
 
 ```bash
 boxery proxy-log [N]                         # which VM called which LLM provider
+boxery version [--json]                      # controller + host versions; warns when the host is behind
+boxery upgrade-host [--check] [--ref REF]    # update boxery on the host (see Install → Upgrading)
 ```
 
 ## `boxery-host` (the VM host)
 
 ```
 init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
+version [--json]                this install's version, commit and kind (git | npm)
+upgrade [--check] [--ref REF] [--wait S] [--reinit]
+                                update this install, re-run init for each profile using it, check, roll back on failure
 build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
 new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]

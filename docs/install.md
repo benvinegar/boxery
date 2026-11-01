@@ -16,6 +16,7 @@ They can be the same machine.
 - [Laptop / controller](#laptop--controller)
 - [LLM providers for in-VM agents](#llm-providers-for-in-vm-agents)
 - [Verify](#verify)
+- [Upgrading](#upgrading)
 
 ## Linux host (libvirt/KVM)
 
@@ -40,7 +41,7 @@ boxery-host init                 # storage pool, proxy + vsock + reaper user ser
 boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Node 22, pi, opencode (~3 min)
 ```
 
-`init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path, so after `npm update -g boxery-vm` (or switching Node versions with nvm/fnm) re-run `boxery-host init`.
+`init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path and the node and tools found on your `PATH` at `init` time, so after switching Node versions with nvm/fnm re-run `boxery-host init`. To update boxery itself, see [Upgrading](#upgrading).
 
 ## macOS host (Lima)
 
@@ -130,3 +131,36 @@ boxery rm demo
 ```
 
 To check everything at once, run `./e2e.sh` from the controller. It covers create, in-VM agents, proxy, desktop, extension, grants, leases, snapshots and rm.
+
+## Upgrading
+
+From the controller:
+
+```bash
+boxery version                      # controller and host versions; warns when the host is behind
+boxery upgrade-host --check         # what would change, without changing it
+boxery upgrade-host                 # or: boxery --host hornet upgrade-host
+```
+
+Or on the host itself: `boxery-host upgrade [--check]`.
+
+`upgrade` works out how boxery is installed on the host and updates it in place:
+
+- **git checkout** on a branch: `git pull --ff-only` from its upstream. It refuses a checkout with uncommitted changes or local commits. A detached checkout moves to the newest `v*` tag.
+- **global npm install**: `npm install -g boxery-vm@latest`. It never downgrades unless you pass `--ref`.
+- `--ref REF` pins a tag, branch or npm version, including an older one.
+
+It then re-runs `init` for **every profile whose services run that install**. For example, it re-runs both the libvirt profile and a second Lima profile with its own `BOXERY_CONF`. Each profile keeps the node its services already use. Services that belong to other installs are listed and left alone.
+
+Before changing anything, it waits for VM operations already in flight in each profile to finish, up to `--wait` seconds (600 by default). It exits with code 75 if they don't finish in time, and nothing changes. New operations wait behind the upgrade (see [lifecycle](lifecycle.md)).
+
+After `init`, it checks every profile the way its services run. `boxery-host ls` must work with the reaper's `PATH`, and the LLM proxy must answer `/healthz`. If any check fails, the code goes back to the previous version and `init` runs again.
+
+Hosts installed before `upgrade` existed need one manual update, on the host:
+
+```bash
+cd ~/boxery && git pull --ff-only    # or: npm update -g boxery-vm
+boxery-host init                     # and BOXERY_CONF=… boxery-host init for each extra profile
+```
+
+`upgrade-host` is a CLI command for you, not a `vm_*` tool. Agents can see version skew with `vm_info {action:"version"}`. They are told to pass the upgrade on to you rather than run it. An agent that could swap the code next to your credentials is a risk the read-only tools don't carry.
