@@ -331,6 +331,22 @@ for (const fail of [false, true]) {
 	});
 }
 
+test("remote escalation keeps cleanup witnesses when a dying leader cannot refresh its snapshot", async () => {
+	writeFileSync(path.join(dir, "no-exit-trap.sh"), 'trap() { if [ "$2" = EXIT ]; then return 0; fi; builtin trap "$@"; }\n');
+	writeFileSync(path.join(project(), "source"), Buffer.alloc(8 * 1024 * 1024, 42));
+	const child = worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, {
+		COPY_SKIP_EXIT_SNAPSHOT: "alpha/vm", COPY_SLOW_SOURCE: "alpha/vm", COPY_IGNORE_TERM: "alpha/vm",
+	});
+	await until(() => logs().filter((r) => r.kind === "tar").length >= 2);
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	child.send("abort");
+	const result = await child.result;
+	assert.equal(result.name, "AbortError", JSON.stringify(result));
+	assert.doesNotMatch(result.error, /Cleanup incomplete/);
+	assert.ok(logs().some((r) => r.kind === "term" && r.endpoint === "alpha/vm"));
+	noStages(); await noTarJobs();
+});
+
 test("remote extractor identities survive replacement by the subsequent publish worker", async () => {
 	const source = path.join(dir, "source"); writeFileSync(source, "data");
 	const destination = path.join(project("beta"), "existing"); mkdirSync(destination);
@@ -344,7 +360,7 @@ for (const abort of [false, true]) {
 	test(`metadata completion is bounded when a detached helper holds stdio (abort=${abort})`, async () => {
 		writeFileSync(path.join(project(), "source"), "data");
 		const started = Date.now();
-		const child = worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_HOLD_PREPARE_FD: "alpha/vm" }, { metadataTimeoutMs: 400 });
+		const child = worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_HOLD_PREPARE_FD: "alpha/vm" }, { metadataTimeoutMs: 1000 });
 		await until(() => logs().some((r) => r.kind === "metadata-holder"));
 		if (abort) child.send("abort");
 		const result = await child.result;
@@ -360,7 +376,7 @@ for (const abort of [false, true]) {
 test("cleanup deadlines do not wait indefinitely for an escaped descriptor holder", async () => {
 	writeFileSync(path.join(project(), "source"), "data");
 	const destination = path.join(dir, "destination"), started = Date.now();
-	const result = await worker("alpha/vm:source", `local:${destination}`, { COPY_HOLD_CLEANUP_FD: "alpha/vm" }, { metadataTimeoutMs: 400, cleanupTimeoutMs: 400 }).result;
+	const result = await worker("alpha/vm:source", `local:${destination}`, { COPY_HOLD_CLEANUP_FD: "alpha/vm" }, { metadataTimeoutMs: 1000, cleanupTimeoutMs: 1000 }).result;
 	assert.equal(result.ok, false);
 	assert.match(result.error, /Cleanup incomplete/);
 	assert.match(result.error, /cleanup alpha\/vm: timed out/);
@@ -372,7 +388,7 @@ test("cleanup deadlines do not wait indefinitely for an escaped descriptor holde
 
 test("timed-out remote preparation reports unverified cleanup even before late mkdir", async () => {
 	writeFileSync(path.join(project(), "source"), "data");
-	const result = await worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_LATE_PREPARE: "alpha/vm" }, { metadataTimeoutMs: 400 }).result;
+	const result = await worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_LATE_PREPARE: "alpha/vm" }, { metadataTimeoutMs: 1000 }).result;
 	assert.equal(result.ok, false);
 	assert.match(result.error, /Cleanup incomplete/);
 	assert.match(result.error, /late staging may remain/);

@@ -149,17 +149,20 @@ async function cleanRemote(stage, timeout = 15_000) {
 	const c = q(stage.control), tomb = q(`${stage.control}.cleanup`);
 	const live = '$2 == g && $3 !~ /^[ZX]/ { found=1 } END { exit !found }';
 	const matches = `function born(s,i) { for(i=4;i<=NF;i++) s=s (i>4?" ":"") $i; return s }
-		FILENAME == ARGV[1] { if($2==g && $3 !~ /^[ZX]/) known[$1]=born(); next }
-		$2==g && $3 !~ /^[ZX]/ && ($1 in known) && known[$1]==born() { found=1 }
+		FILENAME != ARGV[ARGC-1] { if($2==g && $3 !~ /^[ZX]/) known[$1 SUBSEP born()]=1; next }
+		$2==g && $3 !~ /^[ZX]/ && (($1 SUBSEP born()) in known) { found=1 }
 		END { exit !found }`;
+	// Keep cleanup's observations separate from EXIT updates: signal/trap timing must not
+	// erase the live-member identities needed for escalation after a parent terminates.
 	const script = `set -e; c=${c}; t=${tomb}; failed=0; ` +
 		`if [ -d "$c" ]; then mv "$c" "$t"; fi; if [ -d "$t" ]; then ` +
 		`owns() { LC_ALL=C TZ=UTC ps -eo pid=,pgid=,stat=,lstart= >"$t/current" || exit 1; ` +
-		`local rc=0; awk -v g="$g" ${q(matches)} "$record" "$t/current" || rc=$?; [ "$rc" -le 1 ] || exit "$rc"; return "$rc"; }; ` +
+		`local rc=0; awk -v g="$g" ${q(matches)} "$record" "$t/witness.$g" "$t/current" || rc=$?; [ "$rc" -le 1 ] || exit "$rc"; return "$rc"; }; ` +
+		`remember() { awk -v g="$g" ${q('$2 == g { $1=$1; print }')} "$t/current" >"$t/witness.$g"; }; ` +
 		`for record in "$t"/pgid.*; do case "$record" in *.tmp) continue ;; esac; [ -f "$record" ] || continue; ` +
 		'g=${record##*.}; case "$g" in \'\'|*[!0-9]*) continue ;; esac; [ "$g" -gt 1 ] || continue; ' +
-		`if owns; then kill -TERM -- -"$g" 2>/dev/null || true; sleep 0.2; ` +
-		`if owns; then kill -KILL -- -"$g" 2>/dev/null || true; fi; ` +
+		`: >"$t/witness.$g"; if owns; then remember; kill -TERM -- -"$g" 2>/dev/null || true; sleep 0.2; ` +
+		`if owns; then remember; kill -KILL -- -"$g" 2>/dev/null || true; fi; ` +
 		`for attempt in 1 2 3 4 5 6 7 8 9 10; do if owns; then sleep 0.05; else break; fi; done; fi; ` +
 		`if awk -v g="$g" ${q(live)} "$t/current"; then echo "cannot stop or verify copy group $g" >&2; failed=1; fi; done; ` +
 		`if ! rm -rf "$t"; then find -P "$t" -type d -exec chmod u+rwx '{}' ';'; rm -rf "$t"; fi; ` +

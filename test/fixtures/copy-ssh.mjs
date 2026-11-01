@@ -34,6 +34,8 @@ if (preparing && process.env.COPY_LATE_PREPARE === endpoint) {
 	await new Promise(() => {}); // the transport is killed at its deadline, not its remote helper
 }
 if (preparing && process.env.COPY_SLOW_PREPARE === endpoint) await new Promise((r) => setTimeout(r, 200));
-const child = spawn("bash", ["-c", script], { env: { ...process.env, COPY_ENDPOINT: endpoint, HOME: root }, cwd: root, stdio: "inherit" });
+const env = { ...process.env, COPY_ENDPOINT: endpoint, HOME: root };
+if (process.env.COPY_SKIP_EXIT_SNAPSHOT === endpoint) env.BASH_ENV = path.join(process.env.COPY_ROOT, "no-exit-trap.sh");
+const child = spawn("bash", ["-c", script], { env, cwd: root, stdio: "inherit" });
 child.on("error", () => { process.exitCode = 255; });
 child.on("close", (code) => { process.exitCode = code ?? 255; });
