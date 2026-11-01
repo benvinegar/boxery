@@ -28,4 +28,5 @@
 - **[Lifecycle recovery](lifecycle.md)**: operation locks, crash recovery, reconciliation and upgrade precautions.
 - **[Host module boundaries](host-modules.md)**: Node lease policy, runtime adapters, state stores and shell backends.
 - **[Architecture](../ARCHITECTURE.md)**: design notes, roadmap, failure modes.
+- **[Brand assets](brand/README.md)**: logo mark, wordmark lockup, favicons and colors.
 - **[Contributing](../CONTRIBUTING.md)**: test layers and CI.

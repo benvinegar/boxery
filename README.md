@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/mark-dark.svg">
+    <img src="docs/brand/mark-light.svg" alt="boxery logo" width="72">
+  </picture>
+</p>
+
 <h1 align="center">boxery</h1>
 
 <p align="center">
