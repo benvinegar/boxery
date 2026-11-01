@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-The host uses `host/boxery-operations.mjs` to supervise VM mutations. Lease workflow policy lives in `host/lease-workflows.mjs`, with CLI/SQLite/backend bindings in `host/boxery-lifecycle.mjs`; see [host module boundaries](host-modules.md). It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the CLI starts a supervisor for each operation, and the existing reaper performs recovery.
+The host uses `host/boxery-operations.mjs` to supervise VM mutations. Lease workflow policy lives in `host/lease-workflows.mjs`, with CLI/SQLite/backend bindings in `host/boxery-lifecycle.mjs`; see [host module boundaries](host-modules.md). It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the `boxery-host` process that receives a command is the operation's supervisor, its worker is `boxery-host.mjs __worker …` in a separate process group, and the existing reaper performs recovery.
 
 ## Lock boundary
 
@@ -22,7 +22,7 @@ All preconditions that can race with another VM mutation are checked inside thes
 
 Pool claims exclude resource-locked VMs, including the interval between a reset committing FREE and its worker exiting. Reset candidates are observations only: the reaper rechecks generation, pool incarnation (`epoch`), state and deadline after obtaining the lock. Removing/re-adding a pool member changes its epoch, preventing a stale callback from matching a reused numeric generation. Guest side effects run under the same lock as these checks.
 
-`init`, `build-base`, and direct hypervisor commands are administrative operations outside this protocol. Do not run them concurrently with lifecycle commands. Stop older boxery-host processes before upgrading; old processes do not participate in the SQLite lock protocol. The retired `locks/` directories and `.tokens.lock` are no longer consulted.
+`init`, `build-base`, and direct hypervisor commands are administrative operations outside this protocol. Do not run them concurrently with lifecycle commands. Stop older boxery-host processes before upgrading; old processes do not participate in the SQLite lock protocol. Journals written by an older boxery-host (including the Bash one) replay unchanged: intent kinds and their data are a stable format. The retired `locks/` directories and `.tokens.lock` are no longer consulted.
 
 ## Process lifetime
 

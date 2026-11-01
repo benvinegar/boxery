@@ -81,5 +81,7 @@ export function createBackend(env = process.env) {
 		},
 		legacySnaps: async (name, options) => (await meta("backend_legacy_snaps", [name], options)).split("\n").filter(Boolean),
 		guestProxyUpstream: async () => (await meta("guest_proxy_upstream")).trim(),
+		/** image/layers as cloud-config write_files lines (the prelude's layer_files) */
+		layerFiles: async () => (await meta("__layer_files")).split("\n").filter(Boolean),
 	};
 }

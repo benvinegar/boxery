@@ -1,0 +1,89 @@
+// Pool membership and edge credential routes. Leases themselves: lease-workflows.mjs.
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import * as leases from "./boxery-leases.mjs";
+import { captureVm } from "./images.mjs";
+import { restorePetAccess } from "./vms.mjs";
+import { fail, jsonArray, log, POOL_SNAP, print, readFd, sleep, table, validName } from "./util.mjs";
+
+export function poolLs(rt, [arg]) {
+	let rows;
+	try { rows = leases.list(rt.db()); } catch { fail("lease store error"); }
+	rows = rows.map(({ name, state, holder, acquired_at, expires_at, expires_in }) => ({ name, state, holder, acquired_at, expires_at, expires_in }));
+	if (arg === "--json") return print(jsonArray(rows));
+	print(table([16, 10, 10], [["NAME", "LEASE", "EXPIRES", "HOLDER"],
+		...rows.map((r) => [r.name, r.state, r.expires_in == null ? "-" : `${r.expires_in}s`, r.holder ?? "-"])]));
+}
+
+// authorized_keys in a pool VM := the host key (+ the lease holder's). This is the fence: a VM in the
+// pool accepts nobody else, and resetting it (reimage from its clean image) drops the lease key again.
+export async function setLeaseKeys(rt, name, pubkey) {
+	await rt.guest.setKeys(await rt.vms.sshEndpoint(name), [rt.guest.hostPubkey(), ...(pubkey ? [pubkey] : [])]);
+}
+
+export async function poolAdd(rt, [name]) {
+	validName(name);
+	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
+	if (rt.poolRow(name)) fail(`${name} is already in the pool`);
+	const ep = await rt.vms.sshEndpoint(name); // must be running
+	const action = rt.intent("pool-add", name);
+	// The clean snapshot must not carry a previous user's pushed grants (tmpfs) or keys.
+	await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"');
+	try { await setLeaseKeys(rt, name); } catch { fail(`could not lock down ssh keys on ${name}`); }
+	// authorized_keys only gates *new* logins: end existing ssh sessions (not the desktop) so nobody
+	// keeps access through a connection opened before the VM joined the pool.
+	await rt.guest.run(ep, 'sudo pkill -u agent -x sshd 2>/dev/null; sudo pkill -f "^sshd: agent" 2>/dev/null; true');
+	await sleep(1000);
+	await rt.guest.run(ep, "sync");
+	if (await rt.vms.imageExists(`${name}@${POOL_SNAP}`)) await rt.vms.call("backend_image_rm", [`${name}@${POOL_SNAP}`]);
+	if (await rt.vms.has("backend_legacy_snap_rm")) await rt.vms.call("backend_legacy_snap_rm", [name, POOL_SNAP]).catch(() => {});
+	await captureVm(rt, name, `${name}@${POOL_SNAP}`);
+	leases.add(rt.db(), name);
+	rt.done(action);
+	log(`${name} added to the pool (only lease holders can reach it now)`);
+}
+
+export async function poolRm(rt, [name, force]) {
+	validName(name);
+	const row = rt.poolRow(name);
+	if (!row) fail(`${name} is not a pool VM`);
+	if (force !== "--force" && !["FREE", "BROKEN"].includes(row.state)) fail(`${name} is active; release it first (or --force)`);
+	const action = rt.intent("pool-rm", name);
+	leases.remove(rt.db(), name, force === "--force");
+	await restorePetAccess(rt, name);
+	await rt.vms.call("backend_cleanup_image", [`${name}@${POOL_SNAP}`]);
+	rt.done(action);
+	log(`${name} removed from the pool`);
+}
+
+// ---------------------------------------------------------------- edge grants
+// Per-VM HTTP credential routes for the proxy's /edge/ path (values never enter the VM).
+// stdin: {"HOST": {"headers": {"Name": "value"}, "readonly": bool}, …}   ({} clears)
+const DNS_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
+const RESERVED = new Set(["host", "content-length", "connection", "transfer-encoding", "te", "upgrade", "proxy-connection", "keep-alive", "trailer"]);
+const isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Same host/header rules as the proxy: nothing that could smuggle a header or reach an IP/port. */
+export function validRoutes(routes) {
+	return isObject(routes) && Object.entries(routes).every(([host, r]) => DNS_NAME.test(host) && isObject(r)
+		&& [undefined, null, false, true].includes(r.readonly)
+		&& (r.headers == null || r.headers === false || (isObject(r.headers) && Object.entries(r.headers).every(([k, v]) =>
+			/^[A-Za-z0-9-]{1,64}$/.test(k) && !RESERVED.has(k.toLowerCase()) && typeof v === "string" && !/[\r\n\0]/.test(v) && v.length <= 8192))));
+}
+
+export async function edgeSet(rt, [name]) {
+	validName(name);
+	if (!await rt.vms.exists(name)) fail(`no such VM: ${name}`);
+	let routes;
+	try { routes = JSON.parse(readFd(0, { limit: 262144 })); } catch { routes = null; }
+	if (!validRoutes(routes)) fail("edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)");
+	const dir = path.join(rt.conf, "edge");
+	mkdirSync(dir, { recursive: true });
+	chmodSync(dir, 0o700);
+	if (!Object.keys(routes).length) { rt.clearEdge(name); log(`${name}: edge routes cleared`); return; }
+	const tmp = path.join(dir, `.${name}.${randomBytes(4).toString("hex")}`);
+	writeFileSync(tmp, JSON.stringify({ hosts: routes }), { mode: 0o600, flag: "wx" });
+	renameSync(tmp, path.join(dir, `${name}.json`)); // atomic: the proxy never reads a partial file
+	log(`${name}: edge routes → ${Object.keys(routes).sort().join(", ")}`);
+}

@@ -2,14 +2,16 @@
 // Short SQLite transactions arbitrate resource locks; no transaction spans a VM operation.
 // A supervisor owns every worker process group. A successor kills an abandoned group BEFORE
 // replaying its durable intents. Workers wait on fd 3 until their identity is committed.
+// The supervisor runs in the calling boxery-host process; the worker is `boxery-host.mjs __worker …`.
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { identity, machineBootId, open, PS_ENV, tx as transaction, VALID_NAME } from "./boxery-leases.mjs";
+import { SETTINGS } from "./config.mjs";
 
-const SELF = fileURLToPath(import.meta.url);
+const HOST = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const assertName = (n) => { if (!VALID_NAME.test(n ?? "")) throw new Error(`invalid VM name: ${n}`); return n; };
 // Unlike lease test clocks (BOXERY_BOOT_ID), process fencing must use the actual machine boot identity.
@@ -37,9 +39,9 @@ export function resources(command, args) {
 }
 
 const row = (db, id) => db.prepare("SELECT * FROM operations WHERE id=?").get(id);
-const actions = (db, id) => db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id).map((r) => ({ ...r, data: JSON.parse(r.data) }));
+export const actions = (db, id) => db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id).map((r) => ({ ...r, data: JSON.parse(r.data) }));
 
-// Shared by shell CLI workers and the Node lifecycle adapter; ownership and storage stay here.
+// Used by workers (boxery-host.mjs and the lease runtime); ownership and storage stay here.
 export function recordIntent(db, operationId, kind, data) {
 	const op = row(db, operationId);
 	if (!op || !alive(op)) throw new Error("operation no longer owns its locks");
@@ -67,16 +69,15 @@ function stopAbandoned(r) {
 	throw new Error(`worker group ${r.child} did not stop; recovery deferred`);
 }
 
-async function worker(db, op, host, args, recovery = false) {
+async function worker(db, op, args, recovery = false) {
 	const env = { ...process.env, BOXERY_OPERATION_ID: op.id, BOXERY_LOCKS: `:${JSON.parse(op.resources).join(":")}:` };
 	for (const [key, value] of Object.entries(JSON.parse(op.env))) {
 		if (value == null) delete env[key];
 		else env[key] = value;
 	}
-	// Close the gate after reading it: anything the worker starts inherits its fds, and a daemon that
-	// outlives it (Lima's hostagent, via limactl start) would hold the pipe open, so "close" never fires.
-	// A bare `exec 3<&-`: `exec "$@" 3<&-` makes bash keep a restorable copy (fd 10) that is inherited.
-	const child = spawn("bash", ["-c", 'IFS= read -r gate <&3 || exit 1; exec 3<&-; exec "$@"', "boxery-worker", host, ...args], {
+	// The worker reads the gate, then closes fd 3: a daemon it starts (Lima's hostagent, via limactl
+	// start) must not hold the pipe open, or "close" never fires here.
+	const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", HOST, "__worker", ...args], {
 		env, detached: true, stdio: [recovery ? "ignore" : "inherit", "inherit", "inherit", "pipe"],
 	});
 	// Install listeners before opening the gate (a fast child may exit immediately).
@@ -110,17 +111,17 @@ function finish(db, id, conf) {
 		db.prepare("DELETE FROM operations WHERE id=?").run(id);
 	});
 }
-async function recover(db, op, host, conf) {
+async function recover(db, op, conf) {
 	if (actions(db, op.id).length) {
 		process.stderr.write(`==> recovering abandoned ${op.command} (${op.id})\n`);
-		if (await worker(db, op, host, ["__recover"], true) !== 0 || actions(db, op.id).length) throw new Error(`recovery failed for ${op.id}; journal retained`);
+		if (await worker(db, op, ["__recover"], true) !== 0 || actions(db, op.id).length) throw new Error(`recovery failed for ${op.id}; journal retained`);
 	}
 	finish(db, op.id, conf);
 }
 
 // Claim all resources atomically, including fork source/destinations and image readers.
 // Recovery takes ownership of the OLD operation and its complete lock set before doing work.
-async function acquire(db, wanted, command, env, host, conf, reconcile = false) {
+async function acquire(db, wanted, command, env, conf, reconcile = false) {
 	const owner = process.pid, ownerStart = identity(owner);
 	for (;;) {
 		const result = transaction(db, () => {
@@ -140,63 +141,55 @@ async function acquire(db, wanted, command, env, host, conf, reconcile = false) 
 			for (const n of wanted) db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES(?,?)").run(n, id);
 			return { operation: row(db, id) };
 		});
-		if (result.recovery) { await recover(db, result.recovery, host, conf); continue; }
+		if (result.recovery) { await recover(db, result.recovery, conf); continue; }
 		if (result.done) return null;
 		if (result.operation) return result.operation;
 		await sleep(50);
 	}
 }
 
-// Persist only backend routing settings, never arbitrary environment variables or credentials.
-const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BOXERY_BASE_VOL", "BOXERY_DOMAIN_PREFIX", "BOXERY_NET", "LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE", "BOXERY_LIMA_ARCH", "BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
-async function main() {
-	const [mode, confArg, ...args] = process.argv.slice(2);
-	const conf = path.resolve(confArg);
+// Persist only backend routing settings (config.mjs SETTINGS), never arbitrary variables or credentials.
+const journaled = (conf, env) => ({ BOXERY_CONF: conf, ...Object.fromEntries(SETTINGS.map((k) => [k, env[k] ?? null])) });
+function openStore(conf) {
 	mkdirSync(conf, { recursive: true, mode: 0o700 });
-	const db = open(path.join(conf, "leases.db"));
-	const id = process.env.BOXERY_OPERATION_ID;
-	if (mode === "token") {
-		transaction(db, () => {
-			const file = path.join(conf, "tokens.json");
-			let tokens;
-			try { tokens = JSON.parse(readFileSync(file, "utf8")); }
-			catch (e) { if (e.code !== "ENOENT") throw e; tokens = {}; }
-			assertName(args[1]);
-			if (args[0] === "set") tokens[args[1]] = args[2];
-			else if (args[0] === "del") delete tokens[args[1]];
-			else throw new Error("unknown token operation");
-			const tmp = `${file}.tmp`;
-			writeFileSync(tmp, JSON.stringify(tokens), { mode: 0o600 });
-			renameSync(tmp, file);
-		});
-		return;
-	}
-	if (mode === "intent") {
-		const [kind, ...data] = args;
-		console.log(recordIntent(db, id, kind, data)); return;
-	}
-	if (mode === "done") { completeIntent(db, id, args[0]); return; }
-	if (mode === "intents") { console.log(JSON.stringify(actions(db, id))); return; }
-	const env = { BOXERY_CONF: conf, ...Object.fromEntries(SETTINGS.map((k) => [k, process.env[k] ?? null])) };
-	if (mode === "reconcile") { await acquire(db, [], "reconcile", env, args[0], conf, true); return; }
-	let names, host, command, childArgs;
-	if (mode === "dispatch") {
-		[host, command] = args;
-		childArgs = ["__dispatch", command, ...args.slice(2)];
-		names = resources(command, args.slice(2));
-	} else if (mode === "run") {
-		const name = assertName(args[0]); host = args[1]; command = args[2];
-		names = [name]; childArgs = ["__call", ...args.slice(2)];
-	} else throw new Error(`unknown operation mode: ${mode}`);
-	const op = await acquire(db, names, command, env, host, conf);
-	const rc = await worker(db, op, host, childArgs);
-	// Success must have committed every intent. On failure, compensate under the same locks.
-	if (actions(db, op.id).length) {
-		await recover(db, op, host, conf);
-		process.exitCode = rc || 1; // a compensated operation did not complete successfully
-	} else {
-		finish(db, op.id, conf);
-		process.exitCode = rc;
-	}
+	return open(path.join(conf, "leases.db"));
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === SELF) main().catch((e) => { console.error(`boxery-operations: ${e.message}`); process.exitCode = 1; });
+
+/** Run `boxery-host.mjs __worker ARGS…` holding NAMES (all of them, atomically) for its whole lifetime.
+ * Recovers abandoned operations on those resources first. Resolves with the worker's exit status;
+ * a worker that left intents behind is compensated under the same locks and reported as failed. */
+export async function supervise({ conf, names, command, args, env = process.env }) {
+	const db = openStore(conf);
+	try {
+		const op = await acquire(db, [...new Set(names)].sort(), command, journaled(conf, env), conf);
+		const rc = await worker(db, op, args);
+		if (actions(db, op.id).length) {
+			await recover(db, op, conf);
+			return rc || 1;
+		}
+		finish(db, op.id, conf);
+		return rc;
+	} finally { db.close(); }
+}
+
+/** Recover every abandoned operation on this host; live operations are left alone. */
+export async function reconcileAbandoned(conf) {
+	const db = openStore(conf);
+	try { await acquire(db, [], "reconcile", {}, conf, true); } finally { db.close(); }
+}
+
+/** tokens.json[NAME] := VALUE (undefined deletes). A short transaction serializes read/modify/rename. */
+export function updateToken(db, conf, name, value) {
+	transaction(db, () => {
+		const file = path.join(conf, "tokens.json");
+		let tokens;
+		try { tokens = JSON.parse(readFileSync(file, "utf8")); }
+		catch (e) { if (e.code !== "ENOENT") throw e; tokens = {}; }
+		assertName(name);
+		if (value === undefined) delete tokens[name];
+		else tokens[name] = value;
+		const tmp = `${file}.tmp`;
+		writeFileSync(tmp, JSON.stringify(tokens), { mode: 0o600 });
+		renameSync(tmp, file);
+	});
+}

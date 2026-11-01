@@ -5,6 +5,7 @@
 # be a backend contract function (host/backends/README.md). Arguments stay argv; nothing is evaluated.
 #   host/backend.sh __functions             contract functions this backend defines, one per line
 #   host/backend.sh __connect NAME [PORT]   stdio to the VM's sshd (the ssh ProxyCommand; never starts Node)
+#   host/backend.sh __layer_files           image/layers as cloud-config write_files entries (for seeds)
 # Called by host/backend.mjs, and by host/boxery-host for connect.
 set -euo pipefail
 
@@ -32,6 +33,20 @@ wait_ssh() { # HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 180 = 
 	die "timed out waiting for ssh on $1:${2:-22}"
 }
 
+# image/layers: plumbing (every VM) → devtools → desktop, plus their runner. A headless VM's seed and the
+# desktop build's cloud-config carry them as write_files entries (indented for a top-level write_files:).
+layer_files() {
+	local f dst mode
+	for f in lib plumbing devtools desktop provision; do
+		case $f in
+		provision) dst=/usr/local/sbin/boxery-provision mode=0755 ;;
+		lib) dst=/usr/local/lib/boxery/layers/lib.sh mode=0644 ;;
+		*) dst=/usr/local/lib/boxery/layers/$f.sh mode=0755 ;;
+		esac
+		printf '  - path: %s\n    permissions: "%s"\n    encoding: b64\n    content: %s\n' "$dst" "$mode" "$(base64 <"$ROOT/image/layers/$f.sh" | tr -d '\n')"
+	done
+}
+
 f="$ROOT/host/backends/$BACKEND.sh"
 [[ -f $f ]] || die "unknown backend '$BACKEND' (have: $(ls "$ROOT/host/backends" | sed -n 's/\.sh$//p' | tr '\n' ' '))"
 # shellcheck source=/dev/null
@@ -42,6 +57,7 @@ CONTRACT=" backend_check backend_init backend_proxy_services backend_proxy_bind 
 	backend_rm backend_size backend_resize backend_capture backend_images backend_image_rm backend_reimage backend_cleanup_new
 	backend_cleanup_image backend_recover_capture backend_legacy_snaps backend_legacy_revert backend_legacy_snap_rm "
 case ${1:-} in
+__layer_files) layer_files ;;
 __functions)
 	for fn in $CONTRACT; do if declare -F "$fn" >/dev/null; then echo "$fn"; fi; done ;;
 __connect)
