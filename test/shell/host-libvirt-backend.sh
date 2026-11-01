@@ -84,4 +84,21 @@ called "blockpull boxery-dt vda --base $POOL_DIR/$BASE_VOL" && ok "...the base f
 rm "$V/boxery-dt.qcow2" "$V/boxery-dt@s1.qcow2"
 [[ $(dependents "$BASE_VOL") == 0 ]] && ok "headless VMs alone don't block build-base" || bad "dependents after rm: $(dependents "$BASE_VOL")"
 
+# --- inventory: ssh endpoint as HOST:PORT, the volume's Capacity and Allocation in bytes
+virsh() {
+	case "$1 ${2:-}" in
+	"list --all") printf 'boxery-up\nboxery-down\nother-vm\n' ;;
+	"domstate boxery-up") echo running ;;
+	"domstate boxery-down") echo "shut off" ;;
+	"domifaddr boxery-up") printf ' Name MAC address Protocol Address\n----\n vnet0 52:54:00:aa:bb:cc ipv4 192.0.2.10/24\n' ;;
+	"domifaddr boxery-down") return 1 ;;
+	"vol-info --pool")
+		[[ $4 == boxery-up.qcow2 && ${5:-} == --bytes ]] || return 1
+		printf 'Name:           boxery-up.qcow2\nType:           file\nCapacity:       42949672960 bytes\nAllocation:     1116691456 bytes\n' ;;
+	esac
+}
+printf 'up\trunning\t192.0.2.10:22\t42949672960\t1116691456\ndown\tshut off\t\t\t\n' >"$tmp/list.want"
+backend_list >"$tmp/list.got"
+diff -u "$tmp/list.want" "$tmp/list.got" >/dev/null && ok "backend_list: NAME STATE HOST:22 CAPACITY ALLOCATION (empty = unknown), only this host's domains" || bad "backend_list: $(sed -n l "$tmp/list.got")"
+
 echo "passed: $pass  failed: $fail"; ((fail == 0))

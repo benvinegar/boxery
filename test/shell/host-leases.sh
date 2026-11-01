@@ -36,7 +36,7 @@ K2="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIleasekeytwoleasekeytwo holder2"
 "$H" build-base >/dev/null 2>&1
 for n in p1 p2; do "$H" new "$n" >/dev/null 2>&1; "$H" pool add "$n" >/dev/null 2>&1; done
 "$H" new pet >/dev/null 2>&1
-[[ $("$H" pool ls | grep -c FREE) == 2 ]] && ok "pool add → 2 FREE" || bad "pool ls: $("$H" pool ls)"
+[[ $("$H" pool ls | grep -c free) == 2 ]] && ok "pool add → 2 FREE" || bad "pool ls: $("$H" pool ls)"
 [[ $(cat "$(vmfile p1 .ssh/authorized_keys)") == *mgmt@host* && $(grep -c . "$(vmfile p1 .ssh/authorized_keys)") == 1 ]] && ok "pool VM accepts only the host key" || bad "authorized_keys: $(cat "$(vmfile p1 .ssh/authorized_keys)")"
 
 out=$(echo "$K1" | "$H" acquire --holder alice@mac --ttl 600 2>/dev/null); set -- $out; L1n=$1 L1=$2
@@ -45,10 +45,10 @@ grep -q holder1 "$(vmfile "$L1n" .ssh/authorized_keys)" && ok "lease key install
 out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 2>/dev/null); set -- $out2; L2n=$1
 [[ $L2n != "$L1n" ]] && ok "second acquire gets the other VM" || bad "same VM twice: $L1n $L2n"
 if echo "$K2" | "$H" acquire --holder carol --ttl 600 >/dev/null 2>&1; then bad "acquire succeeded on an exhausted pool"; else [[ $? == 4 ]] && ok "exhausted pool → exit 4" || bad "wrong exit code"; fi
-PATTERN="^$L1n  *.*LEASED" has "$H" ls && ok "ls shows LEASED" || bad "ls lease column: $("$H" ls 2>&1 | tr '\n' '|')"
-"$H" ls --json | jq -e --arg n "$L1n" '.[] | select(.name == $n) | .lease.state == "LEASED" and .lease.holder == "alice@mac" and (.lease.expires_at | type) == "number"' >/dev/null && ok "ls --json carries lease state" || bad "ls --json: $("$H" ls --json)"
+PATTERN="^$L1n  *.*leased" has "$H" ls && ok "ls shows LEASED" || bad "ls lease column: $("$H" ls 2>&1 | tr '\n' '|')"
+"$H" ls --json | jq -e --arg n "$L1n" '.[] | select(.name == $n) | .lease.state == "leased" and .lease.holder == "alice@mac" and (.lease.expires_at | type) == "number"' >/dev/null && ok "ls --json carries lease state" || bad "ls --json: $("$H" ls --json)"
 "$H" ls --json | jq -e '.[] | select(.name == "pet") | .lease == null' >/dev/null && ok "ls --json: pets have lease null" || bad "ls --json pet"
-"$H" pool ls --json | jq -e --arg n "$L1n" 'length == 2 and (.[] | select(.name == $n) | .state == "LEASED" and .expires_in > 0)' >/dev/null && ok "pool ls --json" || bad "pool ls --json: $("$H" pool ls --json)"
+"$H" pool ls --json | jq -e --arg n "$L1n" 'length == 2 and (.[] | select(.name == $n) | .state == "leased" and .expires_in > 0)' >/dev/null && ok "pool ls --json" || bad "pool ls --json: $("$H" pool ls --json)"
 if "$H" rm "$L1n" >/dev/null 2>&1; then bad "rm of a pool VM allowed"; else ok "rm refuses pool VMs"; fi
 
 echo "agent was here" >"$(vmfile "$L1n" project-file)"
@@ -57,29 +57,29 @@ echo "agent was here" >"$(vmfile "$L1n" project-file)"
 ! grep -q holder1 "$(vmfile "$L1n" .ssh/authorized_keys)" && ok "release removed the lease key (fenced)" || bad "old key still authorized"
 [[ ! -e $(vmfile "$L1n" project-file) ]] && ok "release reset the VM to its clean snapshot" || bad "leftover state after release"
 if "$H" renew "$L1" >/dev/null 2>&1; then bad "renew of a released lease worked"; else ok "released lease can't be renewed"; fi
-PATTERN="^$L1n *FREE" has "$H" pool ls && ok "VM back to FREE" || bad "state after release: $("$H" pool ls)"
+PATTERN="^$L1n *free" has "$H" pool ls && ok "VM back to FREE" || bad "state after release: $("$H" pool ls)"
 
 # expiry → reap
 BOXERY_NOW=$(( $(date +%s) + 3600 )) "$H" reap >/dev/null 2>&1
 ! grep -q holder2 "$(vmfile "$L2n" .ssh/authorized_keys)" && ok "reaper reset the expired lease (key gone)" || bad "expired lease not reaped"
-[[ $("$H" pool ls | grep -c FREE) == 2 ]] && ok "both VMs FREE after reap" || bad "$("$H" pool ls)"
+[[ $("$H" pool ls | grep -c free) == 2 ]] && ok "both VMs FREE after reap" || bad "$("$H" pool ls)"
 
 # host reboot voids leases
 out=$(echo "$K1" | "$H" acquire --holder alice --ttl 3600 2>/dev/null); set -- $out
 BOXERY_BOOT_ID=boot-2 "$H" reap >/dev/null 2>&1
-PATTERN="^$1 *FREE" has "$H" pool ls && ok "leases from before a reboot are reaped" || bad "reboot: $("$H" pool ls)"
+PATTERN="^$1 *free" has "$H" pool ls && ok "leases from before a reboot are reaped" || bad "reboot: $("$H" pool ls)"
 
 # key install fails during acquire → VM goes back, never stuck ACQUIRING
 if echo "$K1" | BOXERY_FAKE_SSH_FAIL=1 "$H" acquire --holder alice >/dev/null 2>&1; then bad "acquire succeeded without installing the key"; else ok "acquire fails when the key can't be installed"; fi
-out=$("$H" pool ls 2>/dev/null); ! grep -q ACQUIRING <<<"$out" && ok "failed acquire leaves nothing ACQUIRING" || bad "stuck: $("$H" pool ls)"
-PATTERN=BROKEN has "$H" pool ls && ok "...and the VM it couldn't reach is marked BROKEN" || bad "expected BROKEN: $("$H" pool ls)"
+out=$("$H" pool ls 2>/dev/null); ! grep -q acquiring <<<"$out" && ok "failed acquire leaves nothing ACQUIRING" || bad "stuck: $("$H" pool ls)"
+PATTERN=broken has "$H" pool ls && ok "...and the VM it couldn't reach is marked BROKEN" || bad "expected BROKEN: $("$H" pool ls)"
 
 # a failed reset marks the VM BROKEN and it's never handed out again
 out=$(echo "$K1" | "$H" acquire --holder alice 2>/dev/null) || true
 [[ -n $out ]] || { bad "no FREE VM left for the failed-reset test: $("$H" pool ls)"; out="x x"; }
 set -- $out
 BOXERY_FAKE_FAIL_REVERT=1 "$H" release "$2" >/dev/null 2>&1 || true
-PATTERN="^$1 *BROKEN" has "$H" pool ls && ok "failed reset → BROKEN" || bad "after failed reset of $1: $("$H" pool ls | tr "\n" "|")"
+PATTERN="^$1 *broken" has "$H" pool ls && ok "failed reset → BROKEN" || bad "after failed reset of $1: $("$H" pool ls | tr "\n" "|")"
 if echo "$K1" | "$H" acquire --holder alice >/dev/null 2>&1; then bad "a BROKEN VM was leased"; else ok "BROKEN VMs are not leased"; fi
 
 # concurrent acquires from separate processes against a fresh pool of 4

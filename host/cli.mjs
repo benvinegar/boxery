@@ -16,7 +16,7 @@ import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { addKey, buildBase, init } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
-import { vmShapes } from "./shapes.mjs";
+import { addVmShape, vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, print, readFd, table, validName } from "./util.mjs";
 import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
 
@@ -45,32 +45,53 @@ const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for cod
   edge-set NAME < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
   pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
-  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
+  acquire --holder H [--ttl S] [--wait S]    lease a free pool VM (lease ssh pubkey on stdin)
   renew LEASE [--ttl S] | release LEASE | reap | reconcile
 `;
 const POOL_USAGE = "usage: pool add NAME | rm NAME [--force] | ls [--json]";
 
 // ---------------------------------------------------------------- listings
+const GIB = 1024 ** 3;
+const gib = (bytes) => (bytes == null ? null : Math.round((bytes / GIB) * 100) / 100);
+/** A size record for a VM that has none (made before shapes, or outside boxery): ask the backend, and
+ *  keep the answer as a custom size so later listings don't. null if the backend can't tell. */
+async function backfillSize(rt, name) {
+	try {
+		if (!await rt.vms.has("backend_size")) return null;
+		const [cpus, mem, disk] = await rt.vms.size(name, { quiet: true });
+		const rec = { shape: null, cpus, mem, disk };
+		try { addVmShape(rt.conf, name, rec); } catch { /* unwritable config: still list the size */ }
+		return rec;
+	} catch { return null; } // one VM's size must not break the listing
+}
+/** The `ls --json` objects (docs/cli.md). Lease states are lowercase here, like VM states; the lease
+ *  store's own states (FREE, LEASED, …) stay internal. */
 async function lsJson(rt) {
 	let pool = [];
 	try { pool = leases.list(rt.db()); } catch { /* listing VMs must not depend on the lease store */ }
-	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state, holder: r.holder, expires_at: r.expires_at }]));
+	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state.toLowerCase(), holder: r.holder, expires_at: r.expires_at }]));
 	const sizes = vmShapes(rt.conf), kinds = vmKinds(rt.conf);
+	const vms = await rt.vms.list();
+	await Promise.all(vms.filter((vm) => !sizes[vm.name]).map(async (vm) => { sizes[vm.name] = await backfillSize(rt, vm.name); }));
 	const nz = (v) => (v === "" ? null : v);
-	return (await rt.vms.list()).map((vm) => {
+	return vms.map((vm) => {
 		const sz = sizes[vm.name];
-		return { name: vm.name, state: nz(vm.state), addr: nz(vm.addr), disk: nz(vm.disk), tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null,
-			shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null, desktop: kinds[vm.name] !== "headless" };
+		return { name: vm.name, state: nz(vm.state), ssh_addr: nz(vm.ssh), disk_size: gib(vm.diskBytes) ?? sz?.disk ?? null, disk_used: gib(vm.diskUsedBytes),
+			tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null, shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null,
+			desktop: kinds[vm.name] !== "headless" };
 	});
 }
 // A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
-const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.addr ?? "-"));
+const fmtSsh = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? "-"));
+// USED/SIZE in GiB ("0.5/40GiB"), or only the size when the backend can't tell what's used.
+const fmtDisk = (v) => (v.disk_size == null && v.disk_used == null ? "-"
+	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
 async function ls(rt, [arg]) {
 	const vms = await lsJson(rt);
 	if (arg === "--json") return print(jsonArray(vms));
 	if (arg) fail("usage: ls [--json]");
-	print(table([16, 10, 18, 10, 10, 9], [["NAME", "STATE", "ADDR", "DISK", "SHAPE", "KIND", "LEASE"],
-		...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.disk ?? "-", v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
+	print(table([16, 10, 18, 12, 10, 9], [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE"],
+		...vms.map((v) => [v.name, v.state ?? "-", fmtSsh(v), fmtDisk(v), v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
 }
 
 function shapes(rt, [arg]) {

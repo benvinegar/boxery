@@ -50,13 +50,15 @@ boxery leases                    # what you hold
 - **Expiring.** TTLs run from 1 minute to 8 hours (default 30 min). The pi extension renews at a third of the TTL. A reaper on the host (systemd timer or launchd agent, every minute) resets expired leases. A sleeping laptop or a crashed agent never strands a VM.
 - **Fenced.** Release or expiry resets the VM to its clean image, which also removes the lease key. Forking a leased VM doesn't carry the lease key over. A holder whose lease is gone is locked out, even with a connection that was already open.
 - **Reboot-safe.** Leases are tied to the host's boot ID. After a host reboot, every lease is void and gets reset.
-- **Crash-safe.** State lives in SQLite (`~/.config/boxery/leases.db`) as a small state machine with generation fencing. A failed acquire or reset never leaves a VM half-assigned. Such VMs are marked `BROKEN` instead, and `pool ls` shows them.
+- **Crash-safe.** State lives in SQLite (`~/.config/boxery/leases.db`) as a small state machine with generation fencing. A failed acquire or reset never leaves a VM half-assigned. Such VMs are marked `broken` instead, and `pool ls` shows them.
 
 ```
-FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / reboot──▶ RESETTING ──▶ FREE
-                                                                          └──fail──▶ BROKEN
+free ──acquire──▶ acquiring ──▶ leased ──release / expiry / reboot──▶ resetting ──▶ free
+                                                                          └──fail──▶ broken
 ```
 
-To recover a `BROKEN` VM, fix it, then run `boxery pool rm NAME && boxery pool add NAME`.
+`pool ls` and `ls` (its LEASE column, `lease.state` in `--json`) show these states.
+
+To recover a `broken` VM, fix it, then run `boxery pool rm NAME && boxery pool add NAME`.
 
 Design notes: [ARCHITECTURE.md → Leases](../ARCHITECTURE.md#leases). Not built yet (gateway, `--keep`, profiles): [plan](plans/2026-11-01-profiles-and-lease-extensions.md).

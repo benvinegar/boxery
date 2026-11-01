@@ -68,7 +68,7 @@ echo "$*" >> "$BOXERY_HOME/calls"
 case "$*" in
 "acquire "*) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;
 "renew "*) echo "pool-1 9999999999" ;;
-"ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
+"ls --json") echo '[{"name":"fakevm","state":"running","ssh_addr":"10.0.0.2:22","disk_size":40,"disk_used":1.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
@@ -267,7 +267,7 @@ describe("stdio", () => {
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
 		const list = (await c.tool("vm_info", { action: "list" })).content[0].text;
 		assert.match(list, /current: fakevm/);
-		assert.match(list, /^fakevm +running +10\.0\.0\.2 +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
+		assert.match(list, /^fakevm +running +10\.0\.0\.2:22 +1\.5\/40GiB +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_info", { action: "grants", vm: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
