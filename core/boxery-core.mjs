@@ -863,13 +863,16 @@ const grantedAlready = (g, grants) =>
 				? grants.some((x) => x.kind === "file" && x.local === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
 				: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
 
+/** ~/… for paths in the user's home: clients truncate long prompt lines. */
+const tildePath = (p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync(homedir()).length)}` : p);
+
 /** What the user is agreeing to, in their terms. The agent's reason comes last and is labelled as such. */
 function grantPrompt(vm, host, g, reason) {
 	const where = host === "legacy" ? `VM "${vm}"` : `VM "${vm}" on host "${host}"`;
 	const what = {
 		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
 		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
-		file: [`file: ${g.local} → ${REMOTE_HOME}/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
+		file: [`file: ${tildePath(g.local)}`, `  → in the VM: ~/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
 		github: [
 			`github${g.readonly ? " (read-only)" : ""}: git over https and the GitHub API, as this machine's \`gh auth token\`.`,
 			`The token stays on the VM host's proxy; the VM never holds it.${g.readonly ? " Only clone/fetch and GET requests are allowed." : " That includes git push and API writes."}`,

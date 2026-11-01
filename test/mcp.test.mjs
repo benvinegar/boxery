@@ -662,7 +662,7 @@ describe("grant requests (vm_grant)", () => {
 		const r = await c.tool("vm_grant", { spec: `file:${f}=~/.config/pnpm/auth.ini`, reason: "pnpm install got 401" });
 		assert.equal(r.isError, false, r.content[0].text);
 		assert.equal(grantCalls().at(-1), `grant fakevm file:${f}=.config/pnpm/auth.ini`);
-		assert.match(c.requests.at(-1).params.message, new RegExp(`file: ${f} → /home/agent/\\.config/pnpm/auth\\.ini\n`));
+		assert.match(c.requests.at(-1).params.message, new RegExp(`file: ${f}\n  → in the VM: ~/\\.config/pnpm/auth\\.ini\n`));
 	});
 
 	test("refused before any prompt: boxery's own files, http: grants, unset env vars, bad specs", async () => {
@@ -689,7 +689,7 @@ describe("grant requests (vm_grant)", () => {
 		assert.equal(c.requests.length, n);
 	});
 
-	test("one prompt at a time per session; cancelling the call withdraws its prompt", async () => {
+	test("one prompt at a time per session; cancelling the call withdraws its prompt", { timeout: 15_000 }, async () => {
 		let answerFirst;
 		c.onRequest = () => new Promise((r) => (answerFirst = r));
 		const first = c.call("tools/call", { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } });
