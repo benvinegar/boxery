@@ -146,7 +146,7 @@ Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so 
 | [Install](docs/install.md) | Linux host, macOS host, laptop setup, LLM providers |
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
-| [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command |
+| [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
 | [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
