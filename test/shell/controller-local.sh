@@ -19,7 +19,7 @@ cat >"$tmp/bin/ssh" <<STUB
 for a in "\$@"; do case \$a in -O) exit 0 ;; esac; done
 host=""; port=""; while [ \$# -gt 0 ]; do case \$1 in -p) port=\$2; shift 2 ;; -F|-o|-i) shift 2 ;; *.boxery) host=\${1%.boxery}; shift; break ;; agent@*) shift; break ;; *) shift ;; esac; done
 if [ -z "\$host" ] && [ -n "\$port" ]; then for d in $tmp/vms/*/; do [ "\$(cat "\$d/port" 2>/dev/null)" = "\$port" ] && host=\$(basename "\$d"); done; fi
-case "\$*" in *cloud-init*|*6080*) exit 0 ;; esac
+case "\$*" in *cloud-init*|*6080*|*boxery-provision*) exit 0 ;; esac
 [ -n "\$host" ] || exit 0
 vm=$tmp/vms/\$host; [ -d "\$vm" ] || { echo "no such vm" >&2; exit 255; }
 mkdir -p "\$vm/home/project/.git/info"
@@ -42,6 +42,10 @@ grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key wi
 "$A" ls --json | jq -e '.[] | select(.name == "w2") | .shape == "custom" and .cpus == 3' >/dev/null && ok "ls --json has shape fields" || bad "ls shape: $("$A" ls --json)"
 "$A" shapes --json | jq -e '.default == "standard" and .shapes.large.cpus == 8' >/dev/null && ok "shapes --json via controller" || bad "shapes: $("$A" shapes --json 2>&1)"
 if "$A" new w4 --shape 'x;id' >/dev/null 2>&1; then bad "invalid --shape accepted"; else ok "invalid --shape rejected by the controller"; fi
+"$A" new hc --headless >/dev/null 2>&1 && [ "$(cat "$tmp/vms/hc/from")" = stock ] && ok "new --headless passed to the host" || bad "new --headless"
+"$A" ls --json | grep '"name":"hc"' | grep -q '"desktop":false,"grants":' && ok "ls --json: desktop false, with grants" || bad "ls --json headless: $("$A" ls --json)"
+"$A" ls | grep -q '^hc .* headless ' && ok "ls shows KIND" || bad "ls KIND: $("$A" ls)"
+"$A" rm hc >/dev/null 2>&1 || true
 if "$A" shapes bogus >/dev/null 2>&1; then bad "shapes bogus accepted"; else ok "shapes rejects extra args"; fi
 "$A" rm w2 >/dev/null 2>&1; "$A" rm w3 >/dev/null 2>&1
 

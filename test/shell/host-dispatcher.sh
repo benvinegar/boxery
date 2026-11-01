@@ -34,7 +34,7 @@ echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://1
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
 "$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
-"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", lease: null, shape: "custom", cpus: 2, mem: 2048} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
@@ -114,5 +114,45 @@ for args in "rz" "rz --cpus" "rz --cpus 0" "rz --cpus x" "rz --mem 256" "rz --di
 done
 [[ $(sz) == "2 2048 20" ]] && ok "rejected invocations left the size alone" || bad "size changed: $(sz)"
 "$H" rm rz >/dev/null 2>&1 || true
+
+echo; # --- headless VMs: the stock image + plumbing/devtools layers at first boot, no build-base
+mv "$BOXERY_FAKE_DIR/.base" "$tmp/base.off"
+expect_fail "a desktop VM still needs the base" "$H" new nob
+out=$("$H" new hl --headless 2>&1) && [[ $(cat "$BOXERY_FAKE_DIR/hl/from") == stock ]] && ok "new --headless needs no base: boots the stock image" || bad "new --headless: $out"
+[[ $out == *"plumbing devtools installed"* && $out == *"hl ready (headless"* && $out != *noVNC* ]] && ok "new --headless waits for the layers, not for noVNC" || bad "headless new output: $out"
+ud=$tmp/hl-user-data; cp "$BOXERY_FAKE_DIR/hl/user-data" "$ud"
+grep -q '^users:$' "$ud" && grep -q '^  - name: agent$' "$ud" && grep -A9 '^users:' "$ud" | grep -q 'AAAAlaptop' && ok "headless seed creates agent with the VM's keys (stock image's default user isn't agent)" || bad "headless users: $(grep -A10 '^users:' "$ud")"
+for f in /usr/local/sbin/boxery-provision /usr/local/lib/boxery/layers/plumbing.sh /usr/local/lib/boxery/layers/devtools.sh /usr/local/lib/boxery/layers/desktop.sh /usr/local/lib/boxery/layers/lib.sh; do
+	b64=$(awk -v p="  - path: $f" '$0 == p {f=1} f&&/content:/{print $2; exit}' "$ud")
+	n=$(basename "$f" .sh); [[ $n == boxery-provision ]] && n=provision
+	[[ -n $b64 && $(echo "$b64" | base64 -d) == "$(cat "$ROOT/image/layers/$n.sh")" ]] && ok "headless seed carries $f" || bad "seed lacks $f"
+done
+grep -A1 'path: /etc/boxery/provision$' "$ud" | grep -q 'content: plumbing devtools$' && ok "headless seed asks for plumbing + devtools only" || bad "provision list"
+awk '/^runcmd:/{f=1;next} f&&/^  - /{print; exit}' "$ud" | grep -q 'boxery-provision' && ok "provisioning is the first runcmd step (before boxery-llm restarts)" || bad "runcmd order"
+"$H" ls --json | jq -e 'map(select(.name == "hl"))[0].desktop == false' >/dev/null && ok "ls --json: desktop false" || bad "ls --json: $("$H" ls --json)"
+"$H" ls | grep -q '^hl .* headless  *-$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
+! grep -q '^users:' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'boxery-provision' "$BOXERY_FAKE_DIR/a2/user-data" && ok "desktop seeds are unchanged (no users:, no layers)" || bad "desktop seed changed"
+"$H" snap hl s1 >/dev/null 2>&1
+out=$("$H" new hl2 --from hl@s1 2>&1) && [[ $(cat "$BOXERY_FAKE_DIR/hl2/from") == hl@s1 ]] && ! grep -q boxery-provision "$BOXERY_FAKE_DIR/hl2/user-data" && ok "new --from a headless image: no base, no reprovisioning" || bad "from headless image: $out"
+"$H" ls --json | jq -e 'map(select(.name == "hl2"))[0].desktop == false' >/dev/null && ok "...and stays headless" || bad "hl2 kind"
+"$H" new hl3 --from hl@s1 --headless >/dev/null 2>&1 && ok "--headless with a headless image is fine" || bad "hl3"
+out=$("$H" fork hl hf 2>&1) && "$H" ls --json | jq -e 'map(select(.name == "hf"))[0].desktop == false' >/dev/null && ok "a fork of a headless VM is headless" || bad "fork: $out"
+mv "$tmp/base.off" "$BOXERY_FAKE_DIR/.base"
+"$H" snap a2 d1 >/dev/null 2>&1
+out=$("$H" new dx --from a2@d1 --headless 2>&1) && bad "--headless with a desktop image accepted" || { [[ $out == *"has a desktop"* && ! -d $BOXERY_FAKE_DIR/dx ]] && ok "--headless with a desktop image is refused" || bad "refusal: $out"; }
+"$H" fork a2 df >/dev/null 2>&1 && "$H" ls --json | jq -e 'map(select(.name == "df"))[0].desktop == true' >/dev/null && ok "a fork of a desktop VM is a desktop" || bad "desktop fork"
+"$H" rm hl >/dev/null 2>&1 && [[ ! -e $BOXERY_CONF/vm-kind/hl ]] && ok "rm drops the kind record" || bad "kind record left"
+BOXERY_FAKE_FAIL_NEW=1 "$H" new hlf --headless >/dev/null 2>&1 || true; [[ ! -e $BOXERY_CONF/vm-kind/hlf && ! -d $BOXERY_FAKE_DIR/hlf ]] && ok "a failed headless new leaves no record" || bad "hlf leftovers"
+for n in hl2 hl3 hf df; do "$H" rm "$n" >/dev/null 2>&1; done
+# The desktop build's cloud-config: the template with every layer at its marker
+bu=$(BOXERY_CACHE=$tmp/cache "$H" __call base_userdata 2>&1) && [[ -f $bu ]] && ok "base_userdata writes the build cloud-config" || bad "base_userdata: $bu"
+! grep -q '@boxery-layers' "$bu" && [[ $(grep -c '^  - path: ' "$bu") == $(($(grep -c '^  - path: ' "$ROOT/image/base-user-data.yaml") + 5)) ]] && ok "...with the 5 layer files in place of the marker" || bad "layers not inserted: $(grep 'path:' "$bu")"
+node "$ROOT/host/cloudconfig-sh.mjs" "$bu" >"$tmp/files.sh" && grep -q '/usr/local/sbin/boxery-provision' "$tmp/files.sh" && grep -q '/usr/local/sbin/boxery-build.sh' "$tmp/files.sh" && ok "cloudconfig-sh.mjs (Lima, exe) reads it" || bad "cloudconfig-sh on the build config"
+# YAML check with whatever parser this machine has (PyYAML, or macOS's Ruby); skipped if none.
+yaml_keys() { python3 -c 'import sys, yaml; print(" ".join(sorted(yaml.safe_load(open(sys.argv[1])))))' "$1" 2>/dev/null || ruby -ryaml -e 'puts YAML.load_file(ARGV[0]).keys.sort.join(" ")' "$1" 2>/dev/null; }
+if python3 -c 'import yaml' 2>/dev/null || ruby -ryaml -e '' 2>/dev/null; then
+	[[ $(yaml_keys "$bu") == "hostname package_update power_state runcmd users write_files" ]] && ok "the build cloud-config is valid YAML" || bad "build cloud-config YAML: $(yaml_keys "$bu")"
+	[[ $(yaml_keys "$ud") == "bootcmd fqdn hostname runcmd ssh_authorized_keys ssh_pwauth users write_files" ]] && ok "the headless seed is valid YAML" || bad "headless seed YAML: $(yaml_keys "$ud")"
+else ok "(no YAML parser: YAML checks skipped)"; fi
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

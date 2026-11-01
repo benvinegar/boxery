@@ -62,10 +62,37 @@ intent() { operations intent "$@"; }
 intent_done() { operations 'done' "$1"; }
 lifecycle() { BOXERY_CONF=$CONF BOXERY_BACKEND=$BACKEND "${NODE[@]}" "$ROOT/host/boxery-lifecycle.mjs" "$@"; }
 
+# ---------------------------------------------------------------- image layers (image/layers/)
+# plumbing (every VM) → devtools → desktop. The desktop base build applies all three; a headless VM boots
+# the backend's stock image and applies plumbing + devtools at first boot. Both get every layer's file
+# and the runner (boxery-provision) as cloud-config write_files entries.
+layer_files() { # → write_files list entries (indented for a top-level write_files:)
+	local f dst mode
+	for f in lib plumbing devtools desktop provision; do
+		case $f in
+		provision) dst=/usr/local/sbin/boxery-provision mode=0755 ;;
+		lib) dst=/usr/local/lib/boxery/layers/lib.sh mode=0644 ;;
+		*) dst=/usr/local/lib/boxery/layers/$f.sh mode=0755 ;;
+		esac
+		printf '  - path: %s\n    permissions: "%s"\n    encoding: b64\n    content: %s\n' "$dst" "$mode" "$(base64 <"$ROOT/image/layers/$f.sh" | tr -d '\n')"
+	done
+}
+# The desktop build's cloud-config: image/base-user-data.yaml with the layers at its marker line.
+base_userdata() { # → path
+	local out=$CACHE/base-user-data.yaml line
+	mkdir -p "$CACHE"
+	while IFS= read -r line; do
+		if [[ $line == "  # @boxery-layers" ]]; then layer_files || die "could not read image/layers"; else printf '%s\n' "$line"; fi
+	done <"$ROOT/image/base-user-data.yaml" >"$out.tmp" || die "could not write $out"
+	mv "$out.tmp" "$out"
+	echo "$out"
+}
+
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
+# PROVISION (headless VMs on the stock image): layers to apply at first boot, e.g. "plumbing devtools".
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
-boxery_seed() { # NAME → path of a user-data file
-	local name=$1 tmp=$CONF/work/$BOXERY_OPERATION_ID/$1
+boxery_seed() { # NAME [PROVISION] → path of a user-data file
+	local name=$1 provision=${2:-} tmp=$CONF/work/$BOXERY_OPERATION_ID/$1
 	mkdir -p "$tmp"; chmod 700 "$CONF/work" "$CONF/work/$BOXERY_OPERATION_ID" "$tmp"
 	local secret
 	secret=$(rand_hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token"
@@ -101,6 +128,11 @@ boxery_seed() { # NAME → path of a user-data file
 		echo "ssh_pwauth: false"
 		echo "ssh_authorized_keys:"
 		while IFS= read -r k; do printf '  - %s\n' "$(jq -Rn --arg k "$k" '$k')"; done <<<"$keys"
+		if [[ -n $provision ]]; then
+			# The stock image's default user isn't agent (plumbing makes it so for VMs made from this disk).
+			printf 'users:\n  - name: agent\n    gecos: boxery agent\n    groups: [sudo, adm]\n    shell: /bin/bash\n    sudo: "ALL=(ALL) NOPASSWD:ALL"\n    lock_passwd: true\n    ssh_authorized_keys:\n'
+			while IFS= read -r k; do printf '      - %s\n' "$(jq -Rn --arg k "$k" '$k')"; done <<<"$keys"
+		fi
 		# First boot of this instance (also when the disk came from another VM: fork): start with no
 		# authorized keys (cloud-init's ssh module merges into the existing file, and a fork's disk carries
 		# its source's keys) and a fresh machine-id. bootcmd runs before sshd starts.
@@ -109,13 +141,19 @@ boxery_seed() { # NAME → path of a user-data file
 		echo "  - [cloud-init-per, instance, boxery-machine-id, sh, -c, 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null']"
 		echo "write_files:"
 		printf '  - path: /etc/boxery/proxy-upstream\n    content: %s\n' "$(guest_proxy_upstream)"
+		if [[ -n $provision ]]; then
+			layer_files
+			printf '  - path: /etc/boxery/provision\n    content: %s\n' "$provision"
+		fi
 		for pair in ".pi/agent/models.json:pi_models" ".pi/agent/settings.json:pi_settings" ".config/opencode/opencode.json:oc_config" ".boxery/token:cred"; do
 			local f=${pair%%:*} var=${pair##*:}
 			printf '  - path: /home/agent/%s\n    owner: agent:agent\n    permissions: "0600"\n    defer: true\n    encoding: b64\n    content: %s\n' \
 				"$f" "$(printf '%s' "${!var}" | base64 | tr -d '\n')"
 		done
+		echo "runcmd:"
+		# Backends without a cloud-init seed (Lima, exe) run boxery-provision themselves (README: backend_new).
+		[[ -z $provision ]] || echo '  - [bash, -c, "/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1"]'
 		cat <<-'EOF'
-			runcmd:
 			  - [bash, -c, "[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service 2>/dev/null || systemctl restart agentvm-llm.service"]  # agentvm-*: pre-rename images
 			  - [bash, -c, "chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'"]
 		EOF
@@ -147,14 +185,15 @@ lease_set_keys() { # NAME [PUBKEY]
 # (which has no jq) relies on it to add local fields to each element.
 JSON_ARRAY='if length == 0 then "[]" else "[\n" + (map(tojson) | join(",\n")) + "\n]" end'
 pool_json() { leases list | jq -r "map({name, state, holder, acquired_at, expires_at, expires_in}) | $JSON_ARRAY"; }
-ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state + recorded size → [{name,state,addr,disk,lease,shape,cpus,mem}]
+ls_json() { # backend_list (NAME<TAB>STATE<TAB>ADDR<TAB>DISK) + lease state + recorded size and kind → [{name,state,addr,disk,lease,shape,cpus,mem,desktop}]
 	local pool; pool=$(leases list 2>/dev/null) || pool=""; [[ -n $pool ]] || pool='[]'
-	backend_list | jq -R -s -r --argjson pool "$pool" --argjson sz "$(vm_shapes_json)" '
+	backend_list | jq -R -s -r --argjson pool "$pool" --argjson sz "$(vm_shapes_json)" --argjson kind "$(vm_kinds_json)" '
 		def nz: if . == null or . == "" then null else . end;
 		($pool | map({key: .name, value: {state, holder, expires_at}}) | from_entries) as $p |
 		split("\n") | map(select(length > 0) | split("\t") |
 			{name: .[0], state: (.[1] | nz), addr: (.[2] | nz), disk: (.[3] | nz), lease: ($p[.[0]] // null),
-			 shape: (if $sz[.[0]] == null then null else ($sz[.[0]].shape // "custom") end), cpus: $sz[.[0]].cpus, mem: $sz[.[0]].mem}) | '"$JSON_ARRAY"
+			 shape: (if $sz[.[0]] == null then null else ($sz[.[0]].shape // "custom") end), cpus: $sz[.[0]].cpus, mem: $sz[.[0]].mem,
+			 desktop: ($kind[.[0]] != "headless")}) | '"$JSON_ARRAY"
 }
 snaps_json() { # NAME → [{name, created, size, legacy}]   (cmd_snaps' tab lines)
 	local lines; lines=$(snaps_lines "$1") || exit 1
@@ -286,12 +325,12 @@ recover_operation() {
 		name=$(jq -r '.[0]' <<<"$data")
 		case $kind in
 		create)
-			backend_cleanup_new "$name"; vm_shape_del "$name"
+			backend_cleanup_new "$name"; vm_shape_del "$name"; vm_kind_del "$name"
 			token_del "$name"; edge_clear "$name" ;;
 		remove)
 			backend_cleanup_new "$name"
 			# rm can have crashed between deleting the VM and deleting its images.
-			cleanup_vm_images "$name"; vm_shape_del "$name"
+			cleanup_vm_images "$name"; vm_shape_del "$name"; vm_kind_del "$name"
 			token_del "$name"; edge_clear "$name" ;;
 		capture) backend_recover_capture "$name" "$(jq -r '.[1]' <<<"$data")" "$(jq -r '.[2]' <<<"$data")" ;;
 		fork-image) backend_cleanup_image "$name" ;;
@@ -324,7 +363,7 @@ _reconcile_vm() {
 	if ! awk -F '\t' -v n="$1" '$1 == n { found=1 } END { exit !found }' <<<"$inventory"; then
 		row=$(leases get "$1") || return 1
 		if [[ $row != null ]]; then leases missing "$1" >/dev/null; log "$1 missing from backend → BROKEN"; fi
-		token_del "$1"; edge_clear "$1"; vm_shape_del "$1"
+		token_del "$1"; edge_clear "$1"; vm_shape_del "$1"; vm_kind_del "$1"
 	fi
 }
 _reconcile_drift() {
@@ -468,7 +507,8 @@ cmd_add_key() { # pubkey on stdin
 	log "key registered ($(wc -l <"$CONF/authorized_keys") total)"
 }
 
-cmd_build_base() { backend_check; backend_build_base; }
+# BASE_USERDATA: the desktop build's cloud-config, for backend_build_base.
+cmd_build_base() { backend_check; BASE_USERDATA=$(base_userdata); export BASE_USERDATA; backend_build_base; }
 
 # All conflicting resources are held through the whole operation, not individual backend calls.
 with_vm_lock() { # NAME function args...
@@ -521,6 +561,17 @@ vm_shapes_json() { # → {NAME: {shape, cpus, mem, disk}} for VMs with a record
 		jq -c --arg n "$(basename "$f" .json)" '{($n): .}' "$f" 2>/dev/null || true; done; } | jq -cs 'add // {}'
 }
 
+# Desktop or headless, per VM: $CONF/vm-kind/NAME (no record: desktop, like every VM before headless
+# existed). Fixed for a VM's life; a VM made from an image or a fork gets its source VM's kind (an image
+# VM@LABEL is a disk of VM). The guest has /etc/boxery/headless too, for tools that run in it.
+vm_kind() { cat "$CONF/vm-kind/$1" 2>/dev/null || echo desktop; }
+vm_kind_set() { mkdir -p "$CONF/vm-kind"; echo "$2" >"$CONF/vm-kind/$1.tmp" && mv "$CONF/vm-kind/$1.tmp" "$CONF/vm-kind/$1"; }
+vm_kind_del() { rm -f "$CONF/vm-kind/$1" "$CONF/vm-kind/$1.tmp"; }
+vm_kinds_json() { # → {NAME: "headless"} for VMs with a non-default kind
+	local f; { for f in "$CONF"/vm-kind/*; do [[ -f $f && $f != *.tmp ]] || continue
+		jq -cn --arg n "$(basename "$f")" --arg k "$(cat "$f")" '{($n): $k}'; done; } | jq -cs 'add // {}'
+}
+
 cmd_shapes() { # [--json]
 	local j; j=$(shapes_json) || exit 1
 	if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
@@ -530,10 +581,11 @@ cmd_shapes() { # [--json]
 		while IFS=$'\t' read -r n c m d; do printf '%-16s %5s %9s %9s\n' "$n" "$c" "$m" "$d"; done
 }
 
-cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
-	local name="" shape="" cpus="" mem="" disk="" from=""
+cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
+	local name="" shape="" cpus="" mem="" disk="" from="" headless=""
 	while (($#)); do
 		case $1 in
+		--headless) headless=1; shift ;;
 		--shape) [[ ${2:-} =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid shape name '${2:-}'"; shape=$2; shift 2 ;;
 		--cpus) valid_num "$1" "${2:-}"; cpus=$2; shift 2 ;;
 		--mem) valid_num "$1" "${2:-}"; mem=$2; shift 2 ;;
@@ -543,7 +595,7 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 		*) name=$1; shift ;;
 		esac
 	done
-	[[ -n $name ]] || die "usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE]"
+	[[ -n $name ]] || die "usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless]"
 	valid_name "$name"
 	# Size: the shape (default shape if none), then explicit flags. Any flag makes it a custom size.
 	local base; base=$(shape_get "${shape:-$(shape_default)}") || exit 1
@@ -553,16 +605,33 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 	cpus=${cpus:-$bc}; mem=${mem:-$bm}; disk=${disk:-$bd}
 	((cpus >= 1 && mem >= 1 && disk >= 1)) || die "--cpus, --mem and --disk must be >= 1"
 	backend_exists "$name" && die "$name already exists"
-	backend_has_base || die "no base image; run: boxery-host build-base"
-	[[ -z $from ]] || image_exists "$from" || die "no such image: $from (boxery-host images)"
-	local action userdata; action=$(intent create "$name")
-	userdata=$(boxery_seed "$name")
-	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata" "$from"
+	# Where the disk comes from: an image (its VM's kind), the stock image (headless), or the desktop base.
+	local kind=desktop src="" provision=""
+	if [[ -n $from ]]; then
+		image_exists "$from" || die "no such image: $from (boxery-host images)"
+		kind=$(vm_kind "${from%@*}"); src=$from
+		[[ -z $headless || $kind == headless ]] || die "$from has a desktop, and a VM made from an image keeps it (drop --headless)"
+	elif [[ -n $headless ]]; then
+		kind=headless src=stock provision="plumbing devtools"
+	else
+		backend_has_base || die "no base image; run: boxery-host build-base (or: new $name --headless, which needs none)"
+	fi
+	local action userdata t0=$SECONDS; action=$(intent create "$name")
+	userdata=$(boxery_seed "$name" "$provision")
+	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata" "$src"
 	vm_shape_set "$name" "$shape" "$cpus" "$mem" "$disk"
+	vm_kind_set "$name" "$kind"
 	local ep host port; ep=$(backend_wait_endpoint "$name"); host=${ep% *}; port=${ep#* }
-	log "$name reachable at $host:$port; waiting for ssh + cloud-init"
+	log "$name reachable at $host:$port; waiting for ssh + cloud-init${provision:+ (installing $provision)}"
 	wait_ssh "$host" "$port"
 	vm_ssh_cmd "$host" "$port" 'cloud-init status --wait >/dev/null 2>&1; true'
+	if [[ -n $provision ]]; then
+		if ! vm_ssh_cmd "$host" "$port" 'test -f /var/log/boxery-provision.ok'; then
+			vm_ssh_cmd "$host" "$port" 'sudo tail -30 /var/log/boxery-provision.log' >&2 || true
+			die "installing $provision on $name failed (log above: /var/log/boxery-provision.log in the VM)"
+		fi
+		log "$name: $provision installed $((SECONDS - t0))s after create"
+	fi
 	# A VM made from an image starts with another VM's disk. Whatever the backend did to give it its own
 	# identity, make sure of the parts boxery's security depends on: exactly this host's keys (never the
 	# source's lease holder), and nothing pushed by grants (tmpfs, so normally gone already).
@@ -570,10 +639,12 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 		pet_set_keys "$name" || die "could not reset ssh keys on $name"
 		vm_ssh_cmd "$host" "$port" 'rm -rf "/run/user/$(id -u)/boxery"' || true
 	fi
-	vm_ssh_cmd "$host" "$port" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
-		log "warning: noVNC not answering yet"
+	if [[ $kind == desktop ]]; then
+		vm_ssh_cmd "$host" "$port" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
+			log "warning: noVNC not answering yet"
+	fi
 	intent_done "$action"
-	log "$name ready"
+	log "$name ready ($kind, $((SECONDS - t0))s)"
 	echo "$name $host:$port"
 }
 
@@ -581,9 +652,9 @@ cmd_ls() { # [--json]
 	local j; j=$(ls_json)
 	if [[ ${1:-} == --json ]]; then printf '%s\n' "$j"; return; fi
 	[[ -z ${1:-} ]] || die "usage: ls [--json]"
-	printf '%-16s %-10s %-16s %-10s %-10s %s\n' NAME STATE ADDR DISK SHAPE LEASE
-	jq -r '.[] | [.name, .state // "-", .addr // "-", .disk // "-", .shape // "-", .lease.state // "-"] | @tsv' <<<"$j" |
-		while IFS=$'\t' read -r n st addr disk sh l; do printf '%-16s %-10s %-16s %-10s %-10s %s\n' "$n" "$st" "$addr" "$disk" "$sh" "$l"; done
+	printf '%-16s %-10s %-16s %-10s %-10s %-9s %s\n' NAME STATE ADDR DISK SHAPE KIND LEASE
+	jq -r '.[] | [.name, .state // "-", .addr // "-", .disk // "-", .shape // "-", (if .desktop then "desktop" else "headless" end), .lease.state // "-"] | @tsv' <<<"$j" |
+		while IFS=$'\t' read -r n st addr disk sh k l; do printf '%-16s %-10s %-16s %-10s %-10s %-9s %s\n' "$n" "$st" "$addr" "$disk" "$sh" "$k" "$l"; done
 }
 
 cmd_ip() { valid_name "$1"; local ep; ep=$(backend_ssh_endpoint "$1"); echo "${ep% *}"; }
@@ -652,7 +723,7 @@ resize_vm() { # NAME CPUS MEM DISK (empty = unchanged); holds the VM lock
 
 _rm() {
 	backend_rm "$1"
-	vm_shape_del "$1"
+	vm_shape_del "$1"; vm_kind_del "$1"
 	# Forks and image readers hold this source's lock until all copies are independent.
 	cleanup_vm_images "$1"
 }
@@ -822,10 +893,11 @@ usage() {
 		boxery-host — Ubuntu desktop VMs for coding agents (backend: $BACKEND)
 
 		  init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
-		  build-base                build the golden desktop image (one-time)
+		  build-base                build the golden desktop image (one-time; headless VMs don't need it)
 		  add-key < key.pub         authorize a controller's ssh key for new VMs
-		  new NAME [--shape S] [--cpus N --mem MiB --disk GiB]
-		  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1)
+		  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+		                            --headless: no desktop; boots the stock image, no build-base needed
+		  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
 		  fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 		                            copy a VM (running or not) into new VMs with their own identity
 		                            (same size as SRC unless --shape or size flags are given)

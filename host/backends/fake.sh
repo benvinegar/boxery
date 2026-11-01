@@ -24,12 +24,14 @@ fake_disk_copy() { # SRC_DIR DST_DIR: copy everything that isn't hypervisor stat
 	mkdir -p "$2"
 	(cd "$1" && find . -mindepth 1 -maxdepth 1 ! -name port ! -name state ! -name size ! -name user-data -exec cp -a {} "$2/" \;)
 }
-backend_new() { # NAME CPUS MEM DISK USERDATA [IMAGE]
+backend_new() { # NAME CPUS MEM DISK USERDATA [SOURCE: VM@LABEL image | stock]
 	mkdir -p "$FAKE/$1/home" "$FAKE/.ports"
 	local p=22000; while ! mkdir "$FAKE/.ports/$p" 2>/dev/null; do p=$((p + 1)); done   # atomic: parallel creates
 	echo "$p" >"$FAKE/$1/port"
 	[[ -z ${BOXERY_FAKE_FAIL_NEW:-} ]] || { echo running >"$FAKE/$1/state"; die "fake backend: injected failure"; }
-	if [[ -n ${6:-} ]]; then
+	if [[ ${6:-} == stock ]]; then
+		echo stock >"$FAKE/$1/from"   # the stock image: no base needed
+	elif [[ -n ${6:-} ]]; then
 		[[ -d $FAKE/.images/$6 ]] || die "no such image: $6"
 		fake_disk_copy "$FAKE/.images/$6" "$FAKE/$1"
 		# what cloud-init's per-instance bootcmd does on a real guest (see boxery_seed)

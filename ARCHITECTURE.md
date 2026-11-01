@@ -52,7 +52,8 @@ Non-goals (for now): macOS/Windows guests, GPU passthrough, multi-host clusterin
 |---|---|---|
 | `controller/boxery` | laptop | bash 3.2 CLI: `setup`, `new/ls/rm/start/stop`, `fork`, `snap/snaps/revert/snap-rm/images`, `ssh/run/attach/prompt/sessions`, `desktop/forward`, `proxy-log`. Writes `~/.boxery/ssh_config` (`*.boxery` → `ProxyCommand ssh host boxery-host connect %h %p`, ControlMaster). |
 | `host/boxery-host` | host | backend-agnostic VM manager: `init`, `build-base`, `add-key`, VM lifecycle, **images** (snapshots, forks, pool clean state), leases, `connect` (nc to VM:22). Per-VM cloud-init seed (keys, token, agent configs, per-instance identity reset). |
-| `image/base-user-data.yaml` | host | Golden image: XFCE, TigerVNC, noVNC, Firefox (deb), Node 22, pi, opencode, tmux, socat, qemu-guest-agent. |
+| `image/layers/*.sh` | guest | boxery's additions to the starting image, in three layers: plumbing (agent user, LLM proxy bridge, sshd/sysctl/cloud-init/tmux config), devtools (git, build tools, Node 22, pi, opencode, ripgrep), desktop (XFCE, TigerVNC, noVNC, Firefox, Chrome, playwright-core). Headless VMs get the first two at first boot. |
+| `image/base-user-data.yaml` | host | Golden desktop image build: the three layers, then clone preparation. |
 | `proxy/boxery-proxy.mjs` | host | LLM proxy on 127.0.0.1:8088, also exposed on vsock:8088. Routes `/chatgpt` (Codex OAuth from host `~/.pi/agent/auth.json`, auto-refresh), `/openai`, `/anthropic`, `/ollama`. Per-VM bearer token. Refuses WebSocket, so clients use SSE. |
 | `e2e.sh` | laptop | 10 checks: create, services, proxy, isolation, pi, opencode, background task, desktop tunnel, snapshot/revert, rm. ~34 s. |
 

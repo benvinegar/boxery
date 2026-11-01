@@ -27,6 +27,7 @@ stub systemctl 'echo "systemctl $*" >>"$CALLS"; u=${3:-}
 case $2 in show-environment) [[ -z ${FAIL_SYSTEMD:-} ]] ;; start) [[ -z ${FAIL_START:-} ]] || exit 1; [[ -z ${SLOW_START:-} ]] || sleep 60; touch "$UNITS/$u" ;; stop) rm -f "$UNITS/$u" ;; is-active) [[ -f "$UNITS/${4:-}" ]] ;; esac'
 # GNU cp flags the backend uses; BSD cp (macOS) lacks them
 stub cp '[[ -z ${FAIL_CP:-} ]] || exit 1; a=(); for x in "$@"; do case $x in --reflink=*|--sparse=*) ;; *) a+=("$x") ;; esac; done; exec /bin/cp "${a[@]}"'
+stub flock 'exit 0'   # util-linux; not on macOS
 export PATH="$tmp/bin:$PATH"
 touch "$BOXERY_CH_DIR/base.qcow2"
 
@@ -124,6 +125,22 @@ called "ip link del bxch1" && ok "rm deletes the TAP" || bad "tap not deleted"
 [[ ! -e $I/v1@cold.qcow2 ]] && ok "rm deletes the VM's images" || bad "images left: $(ls "$I")"
 jq -e 'has("v1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "rm revokes the proxy token" || bad token
 "$H" new v3 >/dev/null 2>&1; [[ $(cat "$V/v3/slot") == 1 ]] && ok "freed slot 1 is reused" || bad "slot reuse: $(cat "$V/v3/slot")"
+
+# --- headless: an overlay on stock.qcow2 (the plain cloud image), the layers in the seed
+arch=amd64; [[ $(uname -m) != aarch64 && $(uname -m) != arm64 ]] || arch=arm64
+mkdir -p "$HOME/.cache/boxery"; ci=$HOME/.cache/boxery/noble-$arch.img
+echo cloud-image >"$ci"
+mv "$BOXERY_CH_DIR/base.qcow2" "$tmp/base.off"
+: >"$CALLS"
+out=$("$H" new hl --headless 2>&1) && ok "new --headless without a base" || bad "new --headless: $out"
+[[ $(cat "$BOXERY_CH_DIR/stock.qcow2" 2>/dev/null) == cloud-image ]] && ok "stock.qcow2 is a copy of the cloud image" || bad "stock.qcow2"
+called "qemu-img create -q -f qcow2 -F qcow2 -b $BOXERY_CH_DIR/stock.qcow2 $V/hl/disk.qcow2" && ok "headless overlay backed by stock.qcow2" || bad "qemu-img: $(grep qemu-img "$CALLS")"
+grep -q 'path: /usr/local/sbin/boxery-provision' "$V/hl/seed.iso.user-data" && grep -q '^users:' "$V/hl/seed.iso.user-data" && ok "seed carries the layers and creates agent" || bad "headless seed"
+echo hl-disk >"$V/hl/disk.qcow2"
+"$H" snap hl s1 >/dev/null 2>&1 && [[ $(cat "$BOXERY_CH_DIR/images/hl@s1.qcow2") == hl-disk ]] && ok "snapshot of a headless VM" || bad "headless snap"
+"$H" new hl2 --from hl@s1 >/dev/null 2>&1 && [[ $(cat "$V/hl2/disk.qcow2") == hl-disk ]] && ! grep -q boxery-provision "$V/hl2/seed.iso.user-data" && ok "new --from a headless image: copy, no reprovisioning" || bad "headless new --from"
+"$H" rm hl >/dev/null 2>&1; "$H" rm hl2 >/dev/null 2>&1
+mv "$tmp/base.off" "$BOXERY_CH_DIR/base.qcow2"
 
 # --- a failed create cleans up its TAP, directory and token
 : >"$CALLS"

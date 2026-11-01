@@ -7,10 +7,11 @@ POOL=${BOXERY_POOL:-boxery}
 POOL_DIR=${BOXERY_POOL_DIR:-/var/lib/libvirt/images/boxery}
 NET=${BOXERY_NET:-default}
 BASE_VOL=${BOXERY_BASE_VOL:-boxery-base.qcow2}
+STOCK_VOL=${BOXERY_STOCK_VOL:-boxery-stock.qcow2}   # the plain cloud image headless VMs boot (no build-base)
 BASE_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 PREFIX=${BOXERY_DOMAIN_PREFIX:-boxery-}   # libvirt domain prefix; user-facing names omit it
 # Pin effective defaults in operation journals, even if host.env changes before recovery.
-export BOXERY_POOL=$POOL BOXERY_POOL_DIR=$POOL_DIR BOXERY_BASE_VOL=$BASE_VOL BOXERY_DOMAIN_PREFIX=$PREFIX BOXERY_NET=$NET
+export BOXERY_POOL=$POOL BOXERY_POOL_DIR=$POOL_DIR BOXERY_BASE_VOL=$BASE_VOL BOXERY_STOCK_VOL=$STOCK_VOL BOXERY_DOMAIN_PREFIX=$PREFIX BOXERY_NET=$NET
 dom() { echo "$PREFIX$1"; }
 exists() { virsh dominfo "$(dom "$1")" >/dev/null 2>&1; }
 
@@ -63,17 +64,42 @@ backend_proxy_services() {
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 
-backend_build_base() {
-	local name=boxery-base-build
+cloud_image() { # download the Ubuntu cloud image once
 	mkdir -p "$CACHE"
 	if [[ ! -f $CACHE/noble.img ]]; then
 		log "downloading Ubuntu 24.04 cloud image"
-		curl -fL --progress-bar -o "$CACHE/noble.img.part" "$BASE_IMG_URL" && mv "$CACHE/noble.img.part" "$CACHE/noble.img"
+		curl -fL --progress-bar -o "$CACHE/noble.img.part.$$" "$BASE_IMG_URL" && mv "$CACHE/noble.img.part.$$" "$CACHE/noble.img" ||
+			{ rm -f "$CACHE/noble.img.part.$$"; die "downloading $BASE_IMG_URL failed"; }
 	fi
-	# Existing VMs are qcow2 overlays backed by $BASE_VOL; rewriting it would corrupt them.
-	local deps; deps=$(virsh list --all --name | grep -c "^$PREFIX" || true)
+}
+# The stock volume: the cloud image as it is, uploaded on the first headless `new`. Concurrent `new`s
+# wait for one upload (flock; the backend is Linux-only).
+stock_ensure() {
+	mkdir -p "$CACHE"
+	(
+		flock 9
+		virsh vol-info --pool "$POOL" "$STOCK_VOL" >/dev/null 2>&1 && exit 0
+		cloud_image
+		log "uploading the stock Ubuntu image ($STOCK_VOL)"
+		upload_vol "$CACHE/noble.img" "$STOCK_VOL" qcow2 || { virsh vol-delete --pool "$POOL" "$STOCK_VOL" >/dev/null 2>&1; die "uploading $STOCK_VOL failed"; }
+	) 9>"$CACHE/stock.lock" || exit 1
+}
+# Volumes (VM disks, images) whose backing chain ends at VOL. Every boxery disk is one overlay deep.
+dependents() { # VOL → count
+	virsh pool-refresh "$POOL" >/dev/null 2>&1 || true
+	virsh vol-list "$POOL" 2>/dev/null | awk -v p="$PREFIX" 'NR > 2 && index($1, p) == 1 && $1 ~ /\.qcow2$/ {print $1}' | while read -r v; do
+		[[ $v == "$BASE_VOL" || $v == "$STOCK_VOL" || $(root_vol "$v") != "$1" ]] || echo "$v"
+	done | wc -l | tr -d ' '
+}
+
+backend_build_base() {
+	local name=boxery-base-build
+	cloud_image
+	# Existing desktop VMs and their images are qcow2 overlays backed by $BASE_VOL; rewriting it would
+	# corrupt them. Headless VMs are backed by $STOCK_VOL and don't count.
+	local deps; deps=$(dependents "$BASE_VOL")
 	if virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1 && ((deps > 0)); then
-		die "$deps VM(s) depend on $BASE_VOL; remove them first (versioned templates are planned, see ARCHITECTURE.md)"
+		die "$deps VM disk(s)/image(s) depend on $BASE_VOL; remove them first (versioned templates are planned, see ARCHITECTURE.md)"
 	fi
 	virsh destroy "$name" >/dev/null 2>&1 || true
 	virsh undefine "$name" >/dev/null 2>&1 || true
@@ -82,7 +108,7 @@ backend_build_base() {
 	virsh vol-resize --pool "$POOL" "$BASE_VOL" 20G >/dev/null
 	local tmp; tmp=$(mktemp -d)
 	printf 'instance-id: boxery-base-%s\nlocal-hostname: boxery-base\n' "$(date +%s)" >"$tmp/meta-data"
-	cloud-localds "$tmp/seed.iso" "$ROOT/image/base-user-data.yaml" "$tmp/meta-data"
+	cloud-localds "$tmp/seed.iso" "$BASE_USERDATA" "$tmp/meta-data"
 	upload_vol "$tmp/seed.iso" boxery-base-seed.iso raw
 	rm -rf "$tmp"
 	virsh vol-delete --pool "$POOL" build.log >/dev/null 2>&1 || true
@@ -116,7 +142,8 @@ backend_build_base() {
 backend_has_base() { virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1; }
 backend_exists() { exists "$1"; }
 
-# Disks: every VM disk and every image is a qcow2 overlay directly on $BASE_VOL (chain depth 1).
+# Disks: every VM disk and every image is a qcow2 overlay directly on a root volume (chain depth 1):
+# $BASE_VOL (desktop) or $STOCK_VOL (headless). An image has its VM's root.
 #   VM disk:  $PREFIX$NAME.qcow2        image:  $PREFIX$IMAGE.qcow2 (IMAGE = vm@label, so '@' marks images)
 # capture = shallow live block copy of a VM's overlay into a new overlay on the base (the VM keeps
 # running; filesystems are frozen through the guest agent for the final sync). A VM made from an image
@@ -128,13 +155,18 @@ vol_bytes() { virsh vol-info --pool "$POOL" "$(vol "$1")" --bytes | awk '/Capaci
 new_overlay() { # VOLNAME BYTES BACKING_VOL
 	virsh vol-create-as "$POOL" "$1" "$2" --format qcow2 --backing-vol "$3" --backing-vol-format qcow2 >/dev/null
 }
-# Pull everything above the base into the VM's own overlay. Needs the domain running.
-pull_to_base() { # NAME
-	virsh blockpull "$(dom "$1")" vda --base "$POOL_DIR/$BASE_VOL" --wait >/dev/null || die "blockpull failed for $1"
+# The root volume under VOLNAME (its backing file), e.g. boxery-base.qcow2.
+root_vol() { # VOLNAME → volume name ($BASE_VOL if it has no backing file: shouldn't happen)
+	local p; p=$(virsh vol-dumpxml --pool "$POOL" "$1" 2>/dev/null | awk '/<backingStore>/ { b = 1 } b && /<path>/ { sub(/.*<path>/, ""); sub(/<\/path>.*/, ""); print; exit }')
+	if [[ -n $p ]]; then echo "${p##*/}"; else echo "$BASE_VOL"; fi
+}
+# Pull everything above the root into the VM's own overlay. Needs the domain running.
+pull_to_base() { # NAME ROOT_VOL
+	virsh blockpull "$(dom "$1")" vda --base "$POOL_DIR/$2" --wait >/dev/null || die "blockpull failed for $1"
 }
 legacy_snaps() { virsh snapshot-list "$(dom "$1")" --name 2>/dev/null | grep -v '^$' || true; }
 
-backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
+backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d; d=$(dom "$1")
 	local tmp; tmp=$(mktemp -d)
 	printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$name" "$(date +%s)" "$name" >"$tmp/meta-data"
@@ -145,12 +177,14 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	upload_vol "$tmp/seed.iso" "$d-seed.iso" raw
 	rm -rf "$tmp"
 	local bytes=$((disk * 1024 * 1024 * 1024)) backing=$BASE_VOL
-	if [[ -n $from ]]; then
+	if [[ $from == stock ]]; then
+		stock_ensure; backing=$STOCK_VOL
+	elif [[ -n $from ]]; then
 		virsh vol-info --pool "$POOL" "$(vol "$from")" >/dev/null 2>&1 || die "no such image: $from"
 		local ib; ib=$(vol_bytes "$from"); if ((ib > bytes)); then bytes=$ib; fi
 		backing=$(vol "$from")
 	fi
-	log "creating $name (${cpus} vCPU, ${mem} MiB, $((bytes / 1073741824)) GiB overlay on ${from:-$BASE_VOL})"
+	log "creating $name (${cpus} vCPU, ${mem} MiB, $((bytes / 1073741824)) GiB overlay on $backing)"
 	new_overlay "$d.qcow2" "$bytes" "$backing"
 	virt-install --name "$d" --memory "$mem" --vcpus "$cpus" --osinfo ubuntu24.04 \
 		--disk "vol=$POOL/$d.qcow2,bus=virtio" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
@@ -161,7 +195,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 		--metadata "description=boxery $name" \
 		--import --noautoconsole >/dev/null
 	virsh autostart "$d" >/dev/null 2>&1 || true
-	[[ -z $from ]] || pull_to_base "$name"
+	[[ -z $from || $from == stock ]] || pull_to_base "$name" "$(root_vol "$backing")"
 	wait_ip "$name" >/dev/null
 }
 
@@ -259,7 +293,7 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 	local name=$1 img=$2 d st started=0 frozen=0 rc=0; d=$(dom "$1")
 	exists "$name" || die "no such vm: $name"
 	st=$(virsh domstate "$d" | head -1)
-	new_overlay "$(vol "$img")" "$(vol_bytes "$name")" "$BASE_VOL" || die "could not create $img"
+	new_overlay "$(vol "$img")" "$(vol_bytes "$name")" "$(root_vol "$(vol "$name")")" || die "could not create $img"
 	# blockcopy needs a running domain; boot a stopped one paused (the guest never runs).
 	if [[ $st != running && $st != paused ]]; then
 		virsh start "$d" --paused >/dev/null || { virsh vol-delete --pool "$POOL" "$(vol "$img")" >/dev/null; die "could not start $name paused to capture it"; }
@@ -306,7 +340,7 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 	fi
 	new_overlay "$d.qcow2" "$bytes" "$(vol "$img")" || die "could not create $name's disk from $img"
 	virsh start "$d" >/dev/null || die "could not start $name"
-	pull_to_base "$name"
+	pull_to_base "$name" "$(root_vol "$(vol "$img")")"
 }
 
 # VMs from before images used libvirt internal snapshots. Still listed, revertable and deletable.
