@@ -2,7 +2,9 @@
 // (extension/index.ts) are both built from this table, so names, descriptions and schemas cannot drift.
 //
 // Entry: { name, title, description, parameters (plain JSON Schema, incl. `vm`), annotations (MCP
-// hints), run(vm, args, ctx) → {text, image?, isError?} }. ctx: { signal, current, localCwd }.
+// hints), outputSchema? (MCP structuredContent), run(vm, args, ctx) → {text, image?, structured?, isError?} }.
+// ctx: { signal, current, localCwd, progress? }. progress(message) reports a status line while the
+// tool runs (MCP progress notifications); front-ends without it pass nothing.
 //   engine: pi runs this tool with its own built-in engine (same rendering/truncation as bash, read, …)
 //   noVm:   the front-end does not resolve a VM; the tool gets every argument (vm_copy, vm_manage)
 // vm_manage and vm_lease have no `run`: "current VM" and held leases are front-end session state.
@@ -17,6 +19,20 @@ const obj = (properties, required = []) => ({ type: "object", properties: { ...p
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
+export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps"];
+
+const INFO_OUTPUT = {
+	type: "object",
+	properties: {
+		vms: { type: "array", items: { type: "object" }, description: "list: VMs on the host" },
+		current: { type: ["string", "null"], description: "list: the current VM" },
+		default: { type: "string", description: "shapes: the default shape" },
+		shapes: { type: "object", description: "shapes: {NAME: {cpus, mem (MiB), disk (GiB)}}" },
+		name: { type: "string", description: "grants/snaps: the VM" },
+		grants: { type: "array", items: { type: "object" } },
+		snapshots: { type: "array", items: { type: "object" } },
+	},
+};
 
 export const TOOLS = [
 	{
@@ -47,6 +63,7 @@ export const TOOLS = [
 			["action"],
 		),
 		annotations: { destructiveHint: true, openWorldHint: true },
+		outputSchema: core.JOBS_OUTPUT,
 		run: (vm, a, x) => core.jobsTool(vm, a, x),
 	},
 	{
@@ -55,7 +72,7 @@ export const TOOLS = [
 		engine: "read",
 		description: `Read a file ${where} Images come back as images. offset/limit are 1-based line numbers.`,
 		parameters: obj({ path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, ["path"]),
-		annotations: { readOnlyHint: true },
+		annotations: { readOnlyHint: true, openWorldHint: false },
 		run: (vm, a) => core.readTool(vm, a),
 	},
 	{
@@ -64,7 +81,7 @@ export const TOOLS = [
 		engine: "write",
 		description: `Create or overwrite a file ${where} Parent directories are created.`,
 		parameters: obj({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
-		annotations: { destructiveHint: true },
+		annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
 		run: (vm, a) => core.writeTool(vm, a),
 	},
 	{
@@ -82,7 +99,7 @@ export const TOOLS = [
 			},
 			["path", "edits"],
 		),
-		annotations: { destructiveHint: true },
+		annotations: { destructiveHint: true, openWorldHint: false },
 		run: (vm, a) => core.editTool(vm, a),
 	},
 	{
@@ -93,7 +110,7 @@ export const TOOLS = [
 			"Copy a file or directory between the machine this agent runs on and a VM, or between VMs. Locations: `local:/path` (this machine), `NAME:/path` (a VM on the current host), " +
 			"`HOST/NAME:/path` (a VM on another registered host), or a bare path (= current VM). Directories copy recursively. Example: from `local:./notes.md` to `notes.md`.",
 		parameters: obj({ from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
-		annotations: { destructiveHint: true },
+		annotations: { destructiveHint: true, openWorldHint: false },
 		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, localCwd: x.localCwd, signal: x.signal }),
 	},
 	{
@@ -101,7 +118,7 @@ export const TOOLS = [
 		title: "VM screenshot",
 		description: "Screenshot of a VM's desktop (DISPLAY=:1).",
 		parameters: obj({}),
-		annotations: { readOnlyHint: true },
+		annotations: { readOnlyHint: true, openWorldHint: false },
 		run: (vm) => core.screenshot(vm),
 	},
 	{
@@ -182,7 +199,8 @@ export const TOOLS = [
 			"`images` lists every snapshot on the host as VM@SNAP; `new` with `from:'VM@SNAP'` creates a VM from one; `snap-rm` deletes snapshot `snapshot` of VM `name`. " +
 			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants).",
+			"`grants` shows what the VM may access from the user's machine (only the user can change grants). " +
+			"For lookups (list, shapes, grants, snaps) prefer vm_info, which is read-only.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -199,7 +217,24 @@ export const TOOLS = [
 			},
 			required: ["action"],
 		},
-		annotations: { destructiveHint: true },
+		annotations: { destructiveHint: true, openWorldHint: false },
+	},
+	{
+		name: "vm_info",
+		title: "VM info",
+		noVm: true,
+		description:
+			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
+			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `name` may access from the user's machine; `snaps` the snapshots of VM `name`. " +
+			"`name` defaults to the current VM.",
+		parameters: {
+			type: "object",
+			properties: { action: { type: "string", enum: INFO_ACTIONS }, name: { type: "string", description: "VM for grants/snaps (default: the current VM)" } },
+			required: ["action"],
+		},
+		annotations: { readOnlyHint: true, openWorldHint: false },
+		outputSchema: INFO_OUTPUT,
+		run: (_vm, a, x) => infoAction(a, x),
 	},
 	{
 		name: "vm_lease",
@@ -226,6 +261,37 @@ export const TOOLS = [
 	},
 ];
 
+/** vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output. */
+export async function infoAction(a, { current, listNote } = {}) {
+	const vmName = () => {
+		const name = a.name ?? current;
+		if (!name) throw new Error("No VM given and no current VM. Pass `name`.");
+		return core.assertName(name);
+	};
+	switch (a.action) {
+		case "list": {
+			const vms = await core.listVms();
+			return { text: `${core.formatVms(vms)}\ncurrent: ${current ?? "(none)"}${listNote ?? ""}`, structured: { vms, current: current ?? null } };
+		}
+		case "shapes": {
+			const shapes = await core.listShapes();
+			return { text: core.formatShapes(shapes), structured: shapes };
+		}
+		case "grants": {
+			const name = vmName();
+			const grants = await core.boxeryJson(["grants", name]);
+			return { text: core.formatGrants(name, grants), structured: { name, grants } };
+		}
+		case "snaps": {
+			const name = vmName();
+			const snapshots = await core.listSnaps(name);
+			return { text: core.formatSnaps(name, snapshots), structured: { name, snapshots } };
+		}
+		default:
+			throw new Error(`unknown action ${a.action}`);
+	}
+}
+
 /**
  * vm_manage, given a front-end's "current VM" session:
  *   s.current            the current VM name (or null)
@@ -235,6 +301,7 @@ export const TOOLS = [
  *   s.removing?(name)    before rm (may throw to refuse); s.removed?(name) after it
  *   s.listNote           appended to the list output
  *   s.keeper?            the session's core.LeaseKeeper: leased VMs cannot be removed
+ *   s.progress?(message) status lines from long controller operations (MCP progress)
  */
 export async function manageAction(a, s) {
 	switch (a.action) {
@@ -250,19 +317,19 @@ export async function manageAction(a, s) {
 			return { text: `${await core.manage(a)}\ncurrent: ${s.current ?? "(none)"}${s.listNote ?? ""}` };
 		case "new": {
 			const name = a.name ? core.assertName(a.name) : core.newName();
-			const out = await core.manage({ ...a, name });
+			const out = await core.manage({ ...a, name }, { progress: s.progress });
 			if (a.use) s.adopt(name);
 			return { text: `${out}${a.use ? `\ncurrent VM: ${name}` : ""}` };
 		}
 		case "rm": {
 			if (s.keeper?.find(a.name)) throw new Error(`${a.name} is leased from the pool; release it with vm_lease {action:"release"}`);
 			await s.removing?.(a.name);
-			const out = await core.manage(a);
+			const out = await core.manage(a, { progress: s.progress });
 			s.removed?.(a.name);
 			return { text: out };
 		}
 		default:
-			return { text: await core.manage(a) };
+			return { text: await core.manage(a, { progress: s.progress }) };
 	}
 }
 

@@ -109,7 +109,7 @@ export function assertImage(s) {
 }
 
 export function assertName(name) {
-	if (!name || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
+	if (typeof name !== "string" || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
 	return name;
 }
 
@@ -194,15 +194,20 @@ export async function sshOk(vm, script, opts = {}) {
 	return r.stdout;
 }
 
-export function boxeryCli(args, timeoutMs = 300_000) {
+/** opts.progress(line): called with each non-empty output line as it arrives (MCP progress). */
+export function boxeryCli(args, timeoutMs = 300_000, { progress } = {}) {
 	return new Promise((resolve, reject) => {
 		const command = controllerCommand(args);
-		execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		const child = execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
+		if (progress) for (const s of [child.stdout, child.stderr]) s?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
 	});
 }
+
+/** The last non-empty line of an output chunk, for progress messages. */
+export const lastLine = (d) => String(d).split("\n").map((l) => l.trim()).filter(Boolean).pop()?.slice(0, 200) ?? "";
 
 /**
  * Run a command in a VM as its own process group, so abort/timeout kill the remote job too.
@@ -291,12 +296,13 @@ export function truncTail(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
-export async function bashTool(vm, { command, timeout }, { signal } = {}) {
+export async function bashTool(vm, { command, timeout }, { signal, progress } = {}) {
 	// Bounded tail buffer: an endless producer (`yes`) can't exhaust memory.
 	const chunks = [];
 	let held = 0;
 	const keep = 4 * MAX_BYTES;
 	const onData = (d) => {
+		if (progress && lastLine(d)) progress(lastLine(d));
 		chunks.push(d);
 		held += d.length;
 		while (held - chunks[0].length >= keep) held -= chunks.shift().length;
@@ -347,7 +353,7 @@ export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi
 	if (signal?.aborted) throw new Error("aborted (detached job was not stopped)");
 	if (r.code !== 0) throw new Error(r.stderr.trim() || `job operation failed (exit ${r.code ?? "timeout"})`);
 	const out = r.stdout.toString().trim();
-	if (action === "start") return { text: JSON.stringify({ id: out }) };
+	if (action === "start") return { text: JSON.stringify({ id: out }), structured: { id: out } };
 	if (action === "logs") {
 		// The guest already bounds bytes and lines; do not drop an oversized final
 		// line via the shared whole-line truncator. Skip a clipped UTF-8 prefix.
@@ -365,15 +371,40 @@ export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi
 			log = decoded.subarray(cut).toString();
 		}
 		const truncated = responseTruncated || r.stderr.includes("boxery jobs: output byte-truncated");
-		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}` };
+		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}`, structured: { log, truncated } };
 	}
 	if (action === "wait") {
 		const result = JSON.parse(out);
 		if (result.state === "running") result.timed_out = true;
-		return { text: JSON.stringify(result), isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
+		return { text: JSON.stringify(result), structured: result, isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
 	}
-	return { text: out };
+	try {
+		return { text: out, structured: { jobs: JSON.parse(out) } };
+	} catch {
+		return { text: out }; // unparseable job metadata: still show the raw list
+	}
 }
+
+const JOB_RECORD = {
+	type: "object",
+	properties: {
+		id: { type: "string" },
+		state: { type: "string", enum: ["running", "completed", "lost"] },
+		started_at: { type: ["number", "null"], description: "Unix seconds" },
+		exit_code: { type: ["integer", "null"] },
+	},
+};
+/** vm_jobs structuredContent: start → {id}; list → {jobs}; logs → {log, truncated}; wait → a job record (+timed_out). */
+export const JOBS_OUTPUT = {
+	type: "object",
+	properties: {
+		...JOB_RECORD.properties,
+		timed_out: { type: "boolean" },
+		jobs: { type: "array", items: JOB_RECORD },
+		log: { type: "string" },
+		truncated: { type: "boolean" },
+	},
+};
 
 export async function readTool(vm, { path: p, offset, limit }) {
 	const rp = vmPath(p);
@@ -590,6 +621,14 @@ export const listVms = () => boxeryJson(["ls"]);
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 export const listShapes = () => boxeryJson(["shapes"]);
 
+/** Snapshots of VM NAME: [{name, created, size, legacy}] (docs/cli.md). */
+export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
+
+export function formatSnaps(name, snaps) {
+	if (!snaps.length) return `no snapshots of ${name}`;
+	return snaps.map((s) => `${s.name}\t${s.legacy ? "(legacy)" : (s.created ?? "-")}\t${s.size ?? "-"}`).join("\n");
+}
+
 export function assertShape(s) {
 	if (typeof s !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(s)) throw new Error(`invalid shape name: ${s}`);
 	return s;
@@ -638,8 +677,8 @@ export async function ensureVm(name, notify = () => {}) {
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
 
-/** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
-export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk }) {
+/** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
+export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk }, opts = {}) {
 	const need = () => assertName(name);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
@@ -653,30 +692,30 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
 			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
-			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000);
+			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
 		case "snaps":
 			return boxeryCli(["snaps", need()], 60_000);
 		case "list":
 			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : [])]);
+			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : [])], undefined, opts);
 		case "shapes":
 			return formatShapes(await listShapes());
 		case "rm":
-			return boxeryCli(["rm", need()], 120_000);
+			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":
 		case "stop":
-			return boxeryCli([action, need()], 300_000);
+			return boxeryCli([action, need()], 300_000, opts);
 		case "resize": {
 			const args = sizeArgs();
 			if (!args.length) throw new Error("resize needs cpus, mem and/or disk");
-			return boxeryCli(["resize", need(), ...args], 600_000);
+			return boxeryCli(["resize", need(), ...args], 600_000, opts);
 		}
 		case "snap":
-			return boxeryCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000);
+			return boxeryCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000, opts);
 		case "revert":
-			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000);
+			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
 		case "snap-rm":
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
 		case "images":
@@ -693,15 +732,15 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 export function guidance(current, { localToolsNote } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
 	if (!current)
-		return `boxery: vm_manage lists and creates remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+		return `boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
 	return [
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
 		local,
 		"The VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`).",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
-		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_manage {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
-		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
+		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
+		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
 		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }

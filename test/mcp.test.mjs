@@ -49,6 +49,8 @@ case "$*" in
 "ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
+"snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G","legacy":false}]' ;;
+"new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
 *) echo "stub boxery $*" ;;
 esac
 exit 0
@@ -65,13 +67,15 @@ function client(args = []) {
 	const p = spawn(process.execPath, [SERVER, ...args], { env, stdio: ["pipe", "pipe", "ignore"] });
 	let buf = "";
 	const waiting = new Map();
+	const notifications = [];
 	p.stdout.on("data", (d) => {
 		buf += d;
 		let nl;
 		while ((nl = buf.indexOf("\n")) >= 0) {
 			const msg = JSON.parse(buf.slice(0, nl));
 			buf = buf.slice(nl + 1);
-			waiting.get(msg.id)?.(msg);
+			if (msg.id === undefined) notifications.push(msg);
+			else waiting.get(msg.id)?.(msg);
 		}
 	});
 	let id = 0;
@@ -82,7 +86,7 @@ function client(args = []) {
 			p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method, params })}\n`);
 		});
 	const tool = async (name, args) => (await call("tools/call", { name, arguments: args })).result;
-	return { p, call, tool, notify: (method) => p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`), close: () => p.kill() };
+	return { p, call, tool, notifications, notify: (method) => p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`), close: () => p.kill() };
 }
 
 describe("stdio", () => {
@@ -100,7 +104,7 @@ describe("stdio", () => {
 	test("tools/list exposes the vm_* tools with schemas", async () => {
 		const { tools } = (await c.call("tools/list")).result;
 		const names = tools.map((t) => t.name);
-		for (const n of ["vm_bash", "vm_jobs", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage", "vm_lease"])
+		for (const n of ["vm_bash", "vm_jobs", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage", "vm_lease", "vm_info"])
 			assert.ok(names.includes(n), n);
 		for (const t of tools) assert.equal(t.inputSchema.type, "object", t.name);
 		assert.ok(!tools.some((t) => "run" in t), "internal fields not leaked");
@@ -116,6 +120,10 @@ describe("stdio", () => {
 			assert.ok(host, `${t.name} takes host`);
 			if (t.name === "vm_manage") {
 				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts", "host"]);
+				continue;
+			}
+			if (t.name === "vm_info") {
+				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts"]);
 				continue;
 			}
 			assert.equal(t.description, shared.description, t.name);
@@ -288,6 +296,107 @@ describe("stdio", () => {
 	});
 });
 
+describe("protocol features", () => {
+	let c;
+	before(async () => {
+		c = client(["--vm", "fakevm"]);
+		await c.call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+	});
+	after(() => c.close());
+
+	test("2025-11-25 clients get serverInfo description and tool titles", async () => {
+		const init = await c.call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		assert.match(init.result.serverInfo.description, /desktop VMs/);
+		const { tools } = (await c.call("tools/list")).result;
+		assert.equal(tools.find((t) => t.name === "vm_bash").title, "VM bash");
+	});
+
+	test("vm_info is read-only and returns structured results", async () => {
+		const { tools } = (await c.call("tools/list")).result;
+		const info = tools.find((t) => t.name === "vm_info");
+		assert.equal(info.annotations.readOnlyHint, true);
+		assert.equal(info.outputSchema.type, "object");
+		assert.equal(tools.find((t) => t.name === "vm_read").annotations.openWorldHint, false);
+		const list = await c.tool("vm_info", { action: "list" });
+		assert.match(list.content[0].text, /current: fakevm/);
+		assert.equal(list.structuredContent.vms[0].name, "fakevm");
+		assert.equal(list.structuredContent.current, "fakevm");
+		assert.equal(list.structuredContent.host, "legacy");
+		assert.equal((await c.tool("vm_info", { action: "shapes" })).structuredContent.default, "standard");
+		const grants = await c.tool("vm_info", { action: "grants" });
+		assert.equal(grants.structuredContent.name, "fakevm", "name defaults to the current VM");
+		assert.equal(grants.structuredContent.grants[0].kind, "file");
+		const snaps = await c.tool("vm_info", { action: "snaps", name: "fakevm" });
+		assert.match(snaps.content[0].text, /^s1\t2026-10-01T00:00:00Z\t1\.2G$/);
+		assert.equal(snaps.structuredContent.snapshots[0].name, "s1");
+		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
+		assert.equal((await c.tool("vm_info", { action: "snaps", name: "Bad;Name" })).isError, true);
+		assert.equal((await c.tool("vm_info", { action: "grants", name: ["fakevm"] })).isError, true, "names must be strings, not arrays that coerce");
+	});
+
+	test("vm_manage keeps its lookup actions", async () => {
+		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
+	});
+
+	test("vm_jobs declares an output schema and returns structured records", async () => {
+		const { tools } = (await c.call("tools/list")).result;
+		assert.ok(tools.find((t) => t.name === "vm_jobs").outputSchema.properties.jobs);
+		const start = await c.tool("vm_jobs", { action: "start", command: "echo job-out" });
+		assert.equal(start.isError, false, start.content[0].text);
+		assert.match(start.structuredContent.id, /^job-/);
+		assert.deepEqual(JSON.parse(start.content[0].text), start.structuredContent);
+		const wait = await c.tool("vm_jobs", { action: "wait", job: start.structuredContent.id, timeout: 10 });
+		assert.equal(wait.structuredContent.state, "completed");
+		assert.equal(wait.structuredContent.exit_code, 0);
+		const list = await c.tool("vm_jobs", { action: "list" });
+		assert.ok(list.structuredContent.jobs.some((j) => j.id === start.structuredContent.id));
+		const logs = await c.tool("vm_jobs", { action: "logs", job: start.structuredContent.id });
+		assert.match(logs.structuredContent.log, /job-out/);
+		assert.equal(logs.structuredContent.truncated, false);
+		// A job whose metadata is empty must not hide the others or break the JSON.
+		writeFileSync(path.join(env.VMROOT, ".boxery/jobs/job-AAAAAAAAAAAA.meta"), "");
+		const withBad = await c.tool("vm_jobs", { action: "list" });
+		assert.equal(withBad.isError, false, withBad.content[0].text);
+		assert.equal(withBad.structuredContent.jobs.find((j) => j.id === "job-AAAAAAAAAAAA").started_at, null);
+	});
+
+	test("progress notifications stream status lines when the client sends a progressToken", async () => {
+		const r = await c.call("tools/call", { name: "vm_bash", arguments: { command: "echo first; sleep 1.2; echo second" }, _meta: { progressToken: "tok-1" } });
+		assert.equal(r.result.isError, false);
+		const mine = c.notifications.filter((n) => n.method === "notifications/progress" && n.params.progressToken === "tok-1");
+		assert.deepEqual(mine.map((n) => n.params.message), ["first", "second"]);
+		assert.deepEqual(mine.map((n) => n.params.progress), [1, 2], "progress increases");
+		const managed = await c.call("tools/call", { name: "vm_manage", arguments: { action: "new", name: "slow" }, _meta: { progressToken: 7 } });
+		assert.equal(managed.result.isError, false);
+		assert.deepEqual(c.notifications.filter((n) => n.params?.progressToken === 7).map((n) => n.params.message), ["==> creating slow", "==> slow is ready"]);
+		const before = c.notifications.length;
+		await c.tool("vm_bash", { command: "echo quiet" });
+		assert.equal(c.notifications.length, before, "no token, no notifications");
+	});
+});
+
+describe("older protocol versions", () => {
+	let c;
+	before(async () => {
+		c = client(["--vm", "fakevm"]);
+		const init = await c.call("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		assert.equal(init.result.protocolVersion, "2025-03-26");
+		assert.equal(init.result.serverInfo.description, undefined);
+	});
+	after(() => c.close());
+
+	test("no outputSchema, tool title or structuredContent before 2025-06-18", async () => {
+		const { tools } = (await c.call("tools/list")).result;
+		for (const t of tools) {
+			assert.equal(t.outputSchema, undefined, t.name);
+			assert.equal(t.title, undefined, t.name);
+		}
+		const r = await c.tool("vm_info", { action: "list" });
+		assert.equal(r.structuredContent, undefined);
+		assert.match(r.content[0].text, /current: fakevm/);
+	});
+});
+
 describe("leases", () => {
 	const LEASE = "l-0123456789abcdef0123456789abcdef";
 	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
@@ -381,5 +490,21 @@ describe("http", () => {
 		assert.equal(del.status, 204);
 		assert.equal(readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n").at(-1), "release l-0123456789abcdef0123456789abcdef", "DELETE releases the session's leases");
 		assert.equal((await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, { ...auth, "mcp-session-id": sid })).status, 404, "deleted session");
+	});
+
+	test("progress arrives as SSE only when requested; plain calls stay JSON", async () => {
+		const auth = { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x" };
+		const sid = (await post(init, auth)).headers.get("mcp-session-id");
+		const r = await post({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo one; sleep 1.2; echo two" }, _meta: { progressToken: "p" } } }, { ...auth, "mcp-session-id": sid });
+		assert.equal(r.status, 200);
+		assert.match(r.headers.get("content-type"), /text\/event-stream/);
+		const events = (await r.text()).split("\n\n").filter(Boolean).map((e) => JSON.parse(e.replace(/^event: message\ndata: /, "")));
+		assert.deepEqual(events.filter((e) => e.method === "notifications/progress").map((e) => e.params.message), ["one", "two"]);
+		assert.match(events.at(-1).result.content[0].text, /one\ntwo/);
+		const asNotification = await post({ jsonrpc: "2.0", method: "tools/call", params: { name: "vm_bash", arguments: { command: "true" }, _meta: { progressToken: "n" } } }, { ...auth, "mcp-session-id": sid });
+		assert.equal(asNotification.status, 202, "a tools/call without id gets no stream");
+		const noSse = await post({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo x" }, _meta: { progressToken: "q" } } }, { ...auth, "mcp-session-id": sid, accept: "application/json" });
+		assert.match(noSse.headers.get("content-type"), /application\/json/);
+		assert.match((await noSse.json()).result.content[0].text, /x/);
 	});
 });

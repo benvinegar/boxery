@@ -78,7 +78,7 @@ Every `vm_*` tool accepts optional `host`. For example:
 {"host":"hornet","vm":"demo","command":"hostname"}
 ```
 
-`vm_manage` adds read-only `{"action":"hosts"}` and session selection `{"action":"host","host":"hornet"}`. Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `vm_manage` cannot register hosts, change the persistent CLI default, add credentials or grant access.
+`vm_manage` adds read-only `{"action":"hosts"}` (also on `vm_info`) and session selection `{"action":"host","host":"hornet"}`. Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `vm_manage` cannot register hosts, change the persistent CLI default, add credentials or grant access.
 
 Selection mutations complete in completion order; concurrent ordinary tool calls keep the host+VM snapshot they started with. Screenshot scaling is keyed by profile directory and VM name.
 

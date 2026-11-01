@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
-import { leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
+import { INFO_ACTIONS, infoAction, leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
 
 const VERSION = (() => {
 	try {
@@ -22,6 +22,10 @@ const VERSION = (() => {
 	}
 })();
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+// Fields newer revisions added are sent only to clients that negotiated them (versions are ISO dates).
+const since = (session, version) => session.protocolVersion >= version;
+const PROGRESS_INTERVAL_MS = 1000; // at most one status line per second per call
+const HEARTBEAT_MS = 5000; // and an elapsed-time line when a call has been quiet this long
 
 // ---------------------------------------------------------------- args
 
@@ -44,8 +48,8 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // ---------------------------------------------------------------- tools
 
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
-// vm_manage gains hosts/host because the session's host is MCP state. vm_manage/vm_lease act on the
-// session's current VM and leases.
+// vm_manage gains hosts/host (vm_info gains hosts) because the session's host is MCP state.
+// vm_manage/vm_lease act on the session's current VM and leases.
 const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
@@ -53,9 +57,8 @@ const manageMcp = (t) => ({
 	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host"].join(" | "))} ` +
 		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
 	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host"] } } },
-	run(_vm, a, { session, host, current }) {
-		if (a.action === "hosts")
-			return { text: core.registeredHosts().map((h) => `${h.name}${h.name === host.name ? " *" : ""}\t${h.dir}`).join("\n") };
+	run(_vm, a, { session, host, current, progress }) {
+		if (a.action === "hosts") return hostsResult(host);
 		if (a.action === "host") {
 			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
 			session.host = host;
@@ -68,8 +71,9 @@ const manageMcp = (t) => ({
 			current,
 			keeper: session.keeper,
 			listNote: ` (host: ${host.name})`,
+			progress,
 			async use(name) {
-				await core.ensureVm(name);
+				await core.ensureVm(name, progress);
 				await core.boxeryCli(["grants", name, "apply", "--quiet"], 120_000).catch(() => {});
 				adopt(name);
 			},
@@ -79,6 +83,21 @@ const manageMcp = (t) => ({
 		});
 	},
 });
+const infoMcp = (t) => ({
+	...t,
+	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts.`,
+	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...INFO_ACTIONS, "hosts"] } } },
+	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: { type: "array", items: { type: "object" } } } },
+	async run(_vm, a, { host, current }) {
+		if (a.action === "hosts") return hostsResult(host);
+		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})` });
+		return a.action === "list" ? { ...r, structured: { ...r.structured, host: host.name } } : r;
+	},
+});
+function hostsResult(host) {
+	const hosts = core.registeredHosts().map((h) => ({ name: h.name, dir: h.dir, current: h.name === host.name }));
+	return { text: hosts.map((h) => `${h.name}${h.current ? " *" : ""}\t${h.dir}`).join("\n"), structured: { hosts } };
+}
 const leaseMcp = (t) => ({
 	...t,
 	run(_vm, a, { session, host, current }) {
@@ -90,10 +109,12 @@ const leaseMcp = (t) => ({
 		});
 	},
 });
-const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t.name === "vm_lease" ? leaseMcp(t) : t)).map((t) => ({
+const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t.name === "vm_lease" ? leaseMcp(t) : t.name === "vm_info" ? infoMcp(t) : t)).map((t) => ({
 	name: t.name,
+	title: t.title,
 	description: t.description,
 	inputSchema: withHost(t.parameters),
+	outputSchema: t.outputSchema,
 	annotations: { title: t.title, ...t.annotations },
 	noVm: t.noVm,
 	run: t.run,
@@ -105,7 +126,7 @@ const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
 
 const allSessions = new Set();
 function newSession() {
-	const session = { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), lastActive: Date.now() };
+	const session = { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), protocolVersion: PROTOCOL_VERSIONS.at(-1), lastActive: Date.now() };
 	// Leases are renewed while the session is in use: a call is running, or one ran within the TTL.
 	// An abandoned session (HTTP client gone without DELETE) stops renewing, and the host reaper resets the VM.
 	session.keeper = new core.LeaseKeeper({
@@ -117,6 +138,41 @@ function newSession() {
 	});
 	allSessions.add(session);
 	return session;
+}
+
+/** tools/list for this session: title/outputSchema only for clients on 2025-06-18 or later. */
+const listTools = (session) =>
+	TOOLS.map(({ run: _r, noVm: _n, title, outputSchema, ...t }) =>
+		since(session, "2025-06-18") ? { ...t, title, ...(outputSchema ? { outputSchema } : {}) } : t);
+
+/**
+ * Progress reporter for one tools/call, or undefined when the client sent no progressToken.
+ * Status lines are rate-limited; a quiet call still reports elapsed time, so clients that reset
+ * their request timeout on progress keep waiting for slow forks and snapshots.
+ */
+function progressReporter(token, notify, tool) {
+	if (token == null || !notify) return undefined;
+	const started = Date.now();
+	let n = 0;
+	let last = 0;
+	let done = false;
+	const send = (message) => {
+		if (done) return; // never after the response
+		last = Date.now();
+		notify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: ++n, message } });
+	};
+	// Check every second, so a quiet gap never exceeds HEARTBEAT_MS by more than a tick.
+	const timer = setInterval(() => {
+		if (Date.now() - last >= HEARTBEAT_MS) send(`${tool}: running (${Math.round((Date.now() - started) / 1000)}s)`);
+	}, PROGRESS_INTERVAL_MS);
+	timer.unref?.();
+	return {
+		progress: (message) => Date.now() - last >= PROGRESS_INTERVAL_MS && send(message),
+		stop: () => {
+			done = true;
+			clearInterval(timer);
+		},
+	};
 }
 
 /** Give back a session's leases (the host resets those VMs) and forget it. */
@@ -137,7 +193,7 @@ const instructions = (s) =>
 			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
 	});
 
-async function callTool(session, params, signal) {
+async function callTool(session, params, signal, progress) {
 	const tool = TOOL_MAP.get(params?.name);
 	if (!tool) throw Object.assign(new Error(`unknown tool ${params?.name}`), { code: -32602 });
 	const args = params.arguments ?? {};
@@ -152,17 +208,21 @@ async function callTool(session, params, signal) {
 			core.assertName(vm);
 		}
 		const { vm: _drop, ...rest } = args;
-		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current }));
+		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress }));
 		const content = [{ type: "text", text: r.text ?? "" }];
 		if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
-		return { content, isError: !!r.isError };
+		const structured = r.structured !== undefined && since(session, "2025-06-18") ? { structuredContent: r.structured } : {};
+		return { content, ...structured, isError: !!r.isError };
 	} catch (e) {
 		return { content: [{ type: "text", text: String(e?.message ?? e) }], isError: true };
 	}
 }
 
-/** Handle one JSON-RPC message. Returns a response object, or null for notifications. */
-async function handle(session, msg) {
+/**
+ * Handle one JSON-RPC message. Returns a response object, or null for notifications.
+ * notify(message) sends a server notification tied to this request (progress), when the transport can.
+ */
+async function handle(session, msg, notify) {
 	const { id, method, params } = msg ?? {};
 	const isRequest = id !== undefined && id !== null;
 	session.lastActive = Date.now();
@@ -172,10 +232,14 @@ async function handle(session, msg) {
 		switch (method) {
 			case "initialize": {
 				const want = params?.protocolVersion;
+				session.protocolVersion = PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0];
+				const serverInfo = { name: "boxery", title: "boxery VMs", version: VERSION };
+				if (since(session, "2025-11-25"))
+					Object.assign(serverInfo, { description: "Self-hosted Ubuntu desktop VMs for coding agents: shell, files, computer use and Chrome.", websiteUrl: "https://github.com/benvinegar/boxery" });
 				return reply({
-					protocolVersion: PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0],
+					protocolVersion: session.protocolVersion,
 					capabilities: { tools: { listChanged: false } },
-					serverInfo: { name: "boxery", title: "boxery VMs", version: VERSION },
+					serverInfo,
 					instructions: instructions(session),
 				});
 			}
@@ -187,13 +251,15 @@ async function handle(session, msg) {
 			case "ping":
 				return reply({});
 			case "tools/list":
-				return reply({ tools: TOOLS.map(({ run: _r, noVm: _n, ...t }) => t) });
+				return reply({ tools: listTools(session) });
 			case "tools/call": {
 				const ac = new AbortController();
 				if (isRequest) session.inflight.set(id, ac);
+				const reporter = isRequest ? progressReporter(params?._meta?.progressToken, notify, params?.name) : undefined;
 				try {
-					return reply(await callTool(session, params, ac.signal));
+					return reply(await callTool(session, params, ac.signal, reporter?.progress));
 				} finally {
+					reporter?.stop();
 					session.inflight.delete(id);
 				}
 			}
@@ -227,7 +293,7 @@ function serveStdio() {
 				continue;
 			}
 			// Requests run concurrently (tool calls can be slow); responses are matched by id.
-			for (const m of Array.isArray(msg) ? msg : [msg]) handle(session, m).then((r) => r && send(r));
+			for (const m of Array.isArray(msg) ? msg : [msg]) handle(session, m, send).then((r) => r && send(r));
 		}
 	});
 	process.stdin.on("end", async () => {
@@ -309,13 +375,23 @@ function serveHttp(listen) {
 			res.on("close", () => {
 				if (!res.writableEnded) for (const m of msgs) session.inflight.get(m?.id)?.abort();
 			});
-			const out = (await Promise.all(msgs.map((m) => handle(session, m)))).filter(Boolean);
 			const headers = { "mcp-session-id": session.id };
+			// Progress needs a stream: answer as SSE only when the client accepts it and asked for progress;
+			// everything else keeps the plain JSON response.
+			const wantsProgress = msgs.some((m) => m?.id != null && m.method === "tools/call" && m.params?._meta?.progressToken != null);
+			if (wantsProgress && String(req.headers.accept ?? "").includes("text/event-stream")) {
+				res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers });
+				const event = (obj) => !res.writableEnded && res.write(`event: message\ndata: ${JSON.stringify(obj)}\n\n`);
+				await Promise.all(msgs.map((m) => handle(session, m, event).then((r) => r && event(r))));
+				return res.end();
+			}
+			const out = (await Promise.all(msgs.map((m) => handle(session, m)))).filter(Boolean);
 			if (!out.length) return send(202, null, headers);
 			return send(200, Array.isArray(msg) ? out : out[0], headers);
 		} catch (e) {
 			log("error", e?.stack ?? e);
 			if (!res.headersSent) send(500, { error: String(e?.message ?? e) });
+			else res.end(); // mid-SSE: close the stream rather than leave it hanging
 		}
 	});
 	server.requestTimeout = 0;

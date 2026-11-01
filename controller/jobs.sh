@@ -23,7 +23,8 @@ state() {
 	fi
 }
 record() {
-	printf '{"id":"%s","state":"%s","started_at":%s,"exit_code":%s}' "$id" "$status" "$(cat "$d/$id.meta")" "$code"
+	local started; started=$(cat "$d/$id.meta" 2>/dev/null) || true
+	printf '{"id":"%s","state":"%s","started_at":%s,"exit_code":%s}' "$id" "$status" "${started:-null}" "$code"
 }
 action=${1:-}; [ $# -eq 0 ] || shift
 case $action in
