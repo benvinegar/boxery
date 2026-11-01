@@ -165,4 +165,53 @@ rm -f "$tmp/pwned"
 [ ! -e "$tmp/pwned" ] && ok "remote transport quotes every argument" || bad "INJECTION via remote transport"
 "$A" rm w2 >/dev/null 2>&1 || true
 
+# --- run: exact argv like docker exec; a shell is explicit (bash -c); cwd like vm_bash (#11)
+"$A" new w5 >/dev/null 2>&1
+vh=$tmp/vms/w5/home tilde='~' nl='
+'
+exp=$(printf '[%s]' 'a  b' '$HOME' "it's" '' 'x;y' '*' "l1${nl}l2" '~')
+out=$("$A" run w5 printf '[%s]' 'a  b' '$HOME' "it's" '' 'x;y' '*' "l1${nl}l2" '~' 2>/dev/null) || true
+[ "$out" = "$exp" ] && ok "run passes args through as an exact argv" || bad "run argv: $out"
+rm -f "$tmp/pwned"
+"$A" run w5 echo "x; touch $tmp/pwned" >/dev/null 2>&1 || true
+"$A" run w5 echo '$(touch '"$tmp"'/pwned)' >/dev/null 2>&1 || true
+[ ! -e "$tmp/pwned" ] && ok "run args cannot inject commands into the VM shell" || bad "INJECTION via run args"
+[ "$("$A" run w5 bash -c 'echo "$HOME" ~ | tr a-z A-Z' 2>&1)" = "$(printf '%s %s' "$vh" "$vh" | tr a-z A-Z)" ] \
+	&& ok "bash -c gives a shell line with pipes, ~ and \$VAR" || bad "bash -c"
+rc=0; err=$("$A" run w5 'echo hi' 2>&1 >/dev/null) || rc=$?
+[ "$rc" = 127 ] && ok "a whole command line in one argument is one command name" || bad "single arg: rc=$rc"
+case $err in *"hint:"*"run w5 bash -c 'echo hi'"*) ok "...and the error says how to run it as a shell line" ;; *) bad "no hint: $err" ;; esac
+rc=0; err=$("$A" run w5 nosuchcmd 2>&1 >/dev/null) || rc=$?
+[ "$rc" = 127 ] && case $err in *hint:*) false ;; esac && ok "no hint for an ordinary missing command" || bad "spurious hint: $err"
+# the silent case (exit 0, literal $VAR or ~) gets a note on stderr; data and code that only look like it do not
+noted() { "$A" run w5 "$@" 2>&1 >/dev/null | grep -q '^boxery: note:.*bash -c'; }
+n=0; for a in '$HOME' '~' "$tilde/x" '--dir=$HOME/x' '${X:-y}'; do noted echo "$a" && n=$((n + 1)); done
+[ "$n" = 5 ] && ok "a literal ~ or \$VAR argument gets a note pointing at bash -c" || bad "notes: $n of 5"
+q=0; noted echo 'cost $5' && q=1; noted echo '$lower' && q=1; noted awk 'BEGIN { print "$NF" }' && q=1
+noted bash -c 'echo $HOME' && q=1; noted /usr/bin/env true && q=1
+[ "$q" = 0 ] && ok "no note for \$5, lowercase, awk/bash code or plain args" || bad "spurious literal note"
+[ "$("$A" run w5 -- printf %s ok 2>&1)" = ok ] && ok "-- ends run's options" || bad "-- separator"
+mkdir -p "$vh/project/dir with space"
+[ "$("$A" run w5 pwd 2>&1)" = "$vh/project" ] && ok "run starts in ~/project, like vm_bash" || bad "default cwd: $("$A" run w5 pwd 2>&1)"
+[ "$("$A" run w5 --cwd 'dir with space' pwd 2>&1)" = "$vh/project/dir with space" ] \
+	&& ok "a relative --cwd is under ~/project and keeps spaces" || bad "--cwd relative"
+[ "$("$A" run w5 --cwd "$tilde" pwd 2>&1)" = "$vh" ] && ok "--cwd ~ is the VM home" || bad "--cwd ~"
+[ "$("$A" run w5 --cwd "$tilde/project/dir with space" pwd 2>&1)" = "$vh/project/dir with space" ] \
+	&& ok "--cwd expands ~/ in the VM" || bad "--cwd ~/"
+[ "$("$A" run w5 --cwd "$vh/project" pwd 2>&1)" = "$vh/project" ] && ok "an absolute --cwd is used as is" || bad "--cwd absolute"
+rc=0; "$A" run w5 --cwd nope touch ran >/dev/null 2>&1 || rc=$?
+[ "$rc" != 0 ] && [ ! -e "$vh/project/ran" ] && ok "a missing --cwd fails before running anything" || bad "--cwd nope: rc=$rc"
+rc=0; "$A" run w5 sh -c 'exit 7' >/dev/null 2>&1 || rc=$?
+[ "$rc" = 7 ] && ok "run returns the command's exit code" || bad "exit code: $rc"
+"$A" run --help 2>&1 | grep -q "bash -c" && ok "run --help shows the examples" || bad "run --help"
+u=0
+"$A" run >/dev/null 2>&1 && u=1
+"$A" run w5 >/dev/null 2>&1 && u=1
+"$A" run w5 -- >/dev/null 2>&1 && u=1
+"$A" run w5 --cwd >/dev/null 2>&1 && u=1
+"$A" run w5 --cwd project >/dev/null 2>&1 && u=1
+"$A" run 'bad;name' true >/dev/null 2>&1 && u=1
+[ "$u" = 0 ] && ok "run rejects usage errors and invalid VM names" || bad "a malformed run invocation was accepted"
+"$A" rm w5 >/dev/null 2>&1 || true
+
 echo; echo "passed: $pass  failed: $fail"; [ "$fail" -eq 0 ]

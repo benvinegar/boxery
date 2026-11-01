@@ -34,7 +34,7 @@ From the CLI or scripts:
 
 ```bash
 read NAME LEASE < <(boxery acquire --ttl 1800 --wait 60)
-boxery run "$NAME" 'make test'
+boxery run "$NAME" make test           # runs in ~/project
 boxery renew "$NAME"             # extend
 boxery release "$NAME"           # give it back; the VM is reset
 boxery leases                    # what you hold
