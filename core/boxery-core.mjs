@@ -452,13 +452,31 @@ export function applyEdits(original, edits) {
 	return out + original.slice(pos);
 }
 
-export async function editTool(vm, { path: p, edits, oldText, newText }) {
+const atomicEditHelper = readFileSync(new URL("./atomic-edit.mjs", import.meta.url), "utf8");
+const editScript = `set -e; umask 077
+ d="$HOME/.boxery-edit"
+ [ ! -L "$d" ]; mkdir -m 700 -p "$d"
+ [ -d "$d" ] && [ -O "$d" ] && [ "$(stat -c %a "$d")" = 700 ] || { echo 'unsafe edit lock directory' >&2; exit 1; }
+ l="$d/edit.lock"
+ [ ! -L "$l" ] && { [ ! -e "$l" ] || [ -f "$l" ]; } || { echo 'unsafe edit lock file' >&2; exit 1; }
+ exec flock -w 60 "$l" node --input-type=module -e ${q(`${atomicEditHelper}\nawait main(${applyEdits.toString()});`)}`;
+
+export async function editTool(vm, { path: p, edits, oldText, newText }, { signal } = {}) {
+	if (signal?.aborted) throw new Error("edit cancelled");
 	const rp = vmPath(p);
 	const list = Array.isArray(edits) && edits.length ? edits : oldText != null ? [{ oldText, newText }] : [];
 	if (!list.length) throw new Error("provide edits: [{oldText, newText}]");
-	const original = (await sshOk(vm, `test -w ${q(rp)} || { printf 'cannot write %s\\n' ${q(rp)} >&2; exit 1; }; cat -- ${q(rp)}`)).toString("utf8");
-	const updated = applyEdits(original, list);
-	await sshOk(vm, `cat > ${q(rp)}`, { input: updated });
+	const input = JSON.stringify({ path: rp, edits: list });
+	if (signal?.aborted) throw new Error("edit cancelled");
+	if (Buffer.byteLength(input) > 3 * 16 * 1024 * 1024) throw new Error("edit request too large");
+	try {
+		const result = await sshRun(vm, editScript, { input, signal, timeoutMs: 120_000, maxBytes: 64 * 1024 });
+		if (signal?.aborted) throw new Error("edit cancelled");
+		if (result.code !== 0) throw new Error(result.stderr.trim() || `edit interrupted (exit ${result.code})`);
+		if (JSON.parse(result.stdout.toString("utf8"))?.committed !== true) throw new Error("invalid edit acknowledgement");
+	} catch (cause) {
+		throw new Error(`${cause.message}; commit outcome may be unknown; reread before retrying`, { cause });
+	}
 	return { text: `edited ${rp}: ${list.length} replacement(s)` };
 }
 
