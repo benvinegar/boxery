@@ -11,8 +11,8 @@ export BOXERY_CONF=$tmp/conf BOXERY_BACKEND=exe BOXERY_EXE_DIR=$tmp/exe BOXERY_E
 export BOXERY_EXE_POLL=0 BOXERY_PROXY_PORT=9999 BOXERY_SSH_WAIT_TRIES=2 HOME=$tmp/home CALLS=$tmp/calls.log UNITS=$tmp/units EXE_STATE=$tmp/cloud
 mkdir -p "$tmp/bin" "$BOXERY_CONF" "$HOME" "$UNITS" "$EXE_STATE"
 touch "$CALLS"
-# the stuck worker: sleep under a path of our own, so pgrep can't see other tests' sleeps
-export STUCK=$tmp/bin/stuck; ln -s "$(command -v sleep)" "$STUCK"
+# the stuck worker sleeps for a duration of our own (60.PID), so pgrep can't see other tests' sleeps
+export STUCK=60.$$
 echo "ssh-ed25519 AAAAtestmgmt mgmt@host" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" >"$tmp/bin/$1"; chmod +x "$tmp/bin/$1"; }
@@ -67,7 +67,7 @@ new)
 	echo "{\"vm_name\":\"$n\"}" ;;
 cp)
 	[ -z "${FAIL_CP:-}" ] || err "injected cp failure"
-	[ -z "${SLOW_CP:-}" ] || "$STUCK" 60
+	[ -z "${SLOW_CP:-}" ] || sleep "$STUCK"
 	vm "${pos[0]}"; [ ! -d "$S/${pos[1]}" ] || err "VM ${pos[1]} already exists"
 	mkdir "$S/${pos[1]}"; cp "$S/${pos[0]}/data" "$S/${pos[1]}/data"; echo running >"$S/${pos[1]}/status"; echo "${flags[*]}" >"$S/${pos[1]}/args"
 	echo "{\"vm_name\":\"${pos[1]}\",\"copied_from\":\"${pos[0]}\"}" ;;
@@ -319,12 +319,12 @@ rec backend_reimage p2 p2@c && [[ $(gens p2) == "$(V p2) " && $(st "$(V p2)") ==
 
 # --- a create killed mid-way is recovered through backend_cleanup_new (docs/lifecycle.md)
 SLOW_CP=1 "$H" new crash >/dev/null 2>&1 & cli=$!
-for _ in $(seq 200); do pgrep -f "$STUCK" >/dev/null && break; sleep 0.05; done
+for _ in $(seq 200); do pgrep -f "sleep $STUCK\$" >/dev/null && break; sleep 0.05; done
 [[ -f $E/crash/slot ]] && ok "create got as far as exe.dev cp" || bad "crash: no state"
 kill -9 "$cli" 2>/dev/null; wait "$cli" 2>/dev/null || true
 "$H" reconcile >/dev/null 2>&1
 [[ ! -d $E/crash ]] && jq -e 'has("crash") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "reconcile recovers an interrupted create: state and token gone" || bad "crash recovery: $(ls "$E")"
-pgrep -f "$STUCK" >/dev/null && { bad "abandoned worker still running"; pkill -f "$STUCK"; } || ok "abandoned worker group stopped"
+pgrep -f "sleep $STUCK\$" >/dev/null && { bad "abandoned worker still running"; pkill -f "sleep $STUCK\$"; } || ok "abandoned worker group stopped"
 
 # --- helpers (sourced)
 die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
