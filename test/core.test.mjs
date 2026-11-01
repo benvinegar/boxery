@@ -88,18 +88,22 @@ test("guidance mentions the current VM and the local/VM split", () => {
 
 test("formatVms / formatGrants render the --json shapes", () => {
 	const vms = [
-		{ name: "a1", state: "running", addr: "10.0.0.2", disk: "1GiB", lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [] },
-		{ name: "pool-1", state: "running", addr: null, disk: null, lease: { state: "LEASED", holder: "me@x", expires_at: 1 }, grants: [{ kind: "ssh-agent" }, { kind: "file", local: "/l/.env", remote: "/home/agent/project/.env" }] },
+		{ name: "a1", state: "running", ssh_addr: "10.0.0.2:22", disk_size: 40, disk_used: 1.04, lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [] },
+		{ name: "pool-1", state: "running", ssh_addr: null, disk_size: null, disk_used: null, lease: { state: "leased", holder: "me@x", expires_at: 1 }, grants: [{ kind: "ssh-agent" }, { kind: "file", local: "/l/.env", remote: "/home/agent/project/.env" }] },
+		{ name: "x1", state: "running", ssh_addr: "127.0.0.1:22401", disk_size: 20, disk_used: null, tunnel: "up", lease: null, shape: "custom", desktop: true, grants: [] },
 	];
 	const lines = core.formatVms(vms).split("\n");
-	assert.match(lines[0], /^NAME +STATE +ADDR +SHAPE +KIND +LEASE +GRANTS$/);
-	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +large +headless +- +-$/);
-	assert.match(lines[2], /^pool-1 +running +- +- +desktop +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts)");
+	assert.match(lines[0], /^NAME +STATE +SSH +DISK +SHAPE +KIND +LEASE +GRANTS$/);
+	assert.match(lines[1], /^a1 +running +10\.0\.0\.2:22 +1\.0\/40GiB +large +headless +- +-$/, "DISK is used/size in GiB");
+	assert.match(lines[2], /^pool-1 +running +- +- +- +desktop +leased +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts)");
+	assert.match(lines[3], /^x1 +running +127\.0\.0\.1:22401 +20GiB +custom /, "only the size when usage is unknown");
 	assert.equal(core.formatVms([]), "(no VMs)");
+	const old = core.formatVms([{ name: "o1", state: "running", addr: "10.0.0.3", lease: { state: "FREE" }, grants: [] }]).split("\n");
+	assert.match(old[1], /^o1 +running +10\.0\.0\.3 +- +- +desktop +free +-$/, "hosts from before ssh_addr and lowercase lease states");
 	const exe = [
-		{ name: "e1", state: "running", addr: null, tunnel: "connecting", grants: [] },
-		{ name: "e2", state: "paused", addr: null, tunnel: "down", grants: [] },
-		{ name: "e3", state: "running", addr: "127.0.0.1:22401", tunnel: "up", grants: [] },
+		{ name: "e1", state: "running", ssh_addr: null, tunnel: "connecting", grants: [] },
+		{ name: "e2", state: "paused", ssh_addr: null, tunnel: "down", grants: [] },
+		{ name: "e3", state: "running", ssh_addr: "127.0.0.1:22401", tunnel: "up", grants: [] },
 	];
 	const el = core.formatVms(exe).split("\n");
 	assert.match(el[1], /^e1 +running +tunnel connecting /, "a running exe.dev VM without its tunnel says so");

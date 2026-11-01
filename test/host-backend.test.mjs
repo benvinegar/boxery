@@ -64,9 +64,12 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.deepEqual(await b.list(), []);
 	fakeVm("a1"); fakeVm("b2", { state: "shut off", port: 22001, size: "4 8192 40" });
 	assert.deepEqual(await b.list(), [
-		{ name: "a1", state: "running", addr: "127.0.0.1:22000", disk: "1GiB", tunnel: "" },
-		{ name: "b2", state: "shut off", addr: "127.0.0.1:22001", disk: "1GiB", tunnel: "" },
+		{ name: "a1", state: "running", ssh: "127.0.0.1:22000", diskBytes: 10 * 2 ** 30, diskUsedBytes: 2 ** 29, tunnel: "" },
+		{ name: "b2", state: "shut off", ssh: "", diskBytes: 40 * 2 ** 30, diskUsedBytes: 2 ** 29, tunnel: "" },
 	]);
+	writeFileSync(path.join(dir, "vms", "b2", "size"), "");
+	assert.equal((await b.list())[1].diskBytes, null, "an empty or non-numeric size field is unknown (null)");
+	writeFileSync(path.join(dir, "vms", "b2", "size"), "4 8192 40");
 	assert.equal(await b.exists("a1"), true);
 	assert.equal(await b.exists("zz"), false);
 	assert.deepEqual(await b.sshEndpoint("a1"), { host: "127.0.0.1", port: "22000" });

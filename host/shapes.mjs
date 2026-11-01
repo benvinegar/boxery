@@ -1,7 +1,7 @@
 // Shapes: named VM sizes. Built-ins in host/shapes.json, overridden or extended by $CONF/shapes.json.
 // A user entry with a built-in's name overrides only the fields it sets; a new name needs all three.
 // Each VM's resolved size is recorded in $CONF/vm-shapes/NAME.json, so forks and `ls` know it.
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const NAME = /^[a-z][a-z0-9-]{0,30}$/;
@@ -70,6 +70,16 @@ export function setVmShape(conf, name, { shape = null, cpus, mem, disk }) {
 	const file = recordFile(conf, name);
 	writeFileSync(`${file}.tmp`, `${JSON.stringify({ shape: shape || null, cpus: Number(cpus), mem: Number(mem), disk: Number(disk) })}\n`);
 	renameSync(`${file}.tmp`, file);
+}
+/** Record NAME's size only if it has no record yet (atomic, never replaces one): for callers that hold
+ *  no VM lock, such as `ls`, so a concurrent new/resize always wins. false if a record exists. */
+export function addVmShape(conf, name, { shape = null, cpus, mem, disk }) {
+	mkdirSync(path.join(conf, "vm-shapes"), { recursive: true });
+	const file = recordFile(conf, name), tmp = `${file}.${process.pid}.tmp`;
+	writeFileSync(tmp, `${JSON.stringify({ shape: shape || null, cpus: Number(cpus), mem: Number(mem), disk: Number(disk) })}\n`);
+	try { linkSync(tmp, file); return true; }
+	catch (e) { if (e.code === "EEXIST") return false; throw e; }
+	finally { rmSync(tmp, { force: true }); }
 }
 export function deleteVmShape(conf, name) {
 	rmSync(recordFile(conf, name), { force: true });

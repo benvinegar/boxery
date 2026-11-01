@@ -198,12 +198,15 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	wait_ip "$name" >/dev/null
 }
 
-backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK
+backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES
 	local domains; domains=$(virsh list --all --name) || die "cannot list libvirt domains"
 	printf '%s\n' "$domains" | awk -v p="$PREFIX" 'index($0,p) == 1' | while read -r d; do
-		local n=${d#"$PREFIX"}
-		printf '%s\t%s\t%s\t%s\n' "$n" "$(virsh domstate "$d" | head -1)" "$(vm_ip "$n")" \
-			"$(virsh vol-info --pool "$POOL" "$d.qcow2" 2>/dev/null | awk '/Allocation/{print $2$3}')"
+		local n=${d#"$PREFIX"} ip
+		ip=$(vm_ip "$n") || ip=""   # a stopped domain has no lease: domifaddr fails
+		# The volume's Capacity is the disk's configured size; its Allocation is what the overlay
+		# takes on the host (the base it sits on is shared, and not counted).
+		printf '%s\t%s\t%s\t%s\n' "$n" "$(virsh domstate "$d" | head -1)" "${ip:+$ip:22}" \
+			"$(virsh vol-info --pool "$POOL" "$(vol "$n")" --bytes 2>/dev/null | awk '/^Capacity:/ { c = $2 } /^Allocation:/ { a = $2 } END { printf "%s\t%s", c, a }')"
 	done
 }
 

@@ -34,7 +34,7 @@ echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://1
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
 "$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
-"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", ssh_addr: .[0].ssh_addr, disk_size: 10, disk_used: 0.5, tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true} and (.[0].ssh_addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1

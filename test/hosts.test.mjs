@@ -34,7 +34,7 @@ before(() => {
 [ "$1" != --host ] || shift 2
 tag="PROFILE:$(basename "$BOXERY_HOME") OVERRIDES:\${BOXERY_HOST-}:\${BOXERY_HOST_BIN-}"
 case "$*" in
-"ls --json") printf '[{"name":"fakevm","state":"running","addr":"%s"}]\\n' "$tag" ;;
+"ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$tag" ;;
 "grants "*" --json") printf '[{"kind":"file","local":"%s","remote":"fixture"}]\\n' "$tag" ;;
 *) printf '%s\\nCOMMAND:%s\\n' "$tag" "$*" ;;
 esac
@@ -124,7 +124,7 @@ const [a,b] = await Promise.all(['alpha','beta'].map(h => c.withHost(h, async ()
   c.sshOk('fakevm', 'printf %s "$HOST_TAG"'),
   c.listVms()
  ]);
- assert.equal(listed[0].addr, 'PROFILE:' + h + ' OVERRIDES::', 'JSON subprocess stays host-scoped');
+ assert.equal(listed[0].ssh_addr, 'PROFILE:' + h + ' OVERRIDES::', 'JSON subprocess stays host-scoped');
  return ssh.toString();
 })));
 assert.deepEqual([a,b], ['alpha','beta']);

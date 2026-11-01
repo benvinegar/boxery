@@ -955,8 +955,8 @@ cmd_ls() { # [--json]
 	out=$(h ls) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
-		if [ "$n" = NAME ]; then printf '%-85s %s\n' "$line" GRANTS
-		else printf '%-85s %s\n' "$line" "$(grants_summary "$n")"; fi
+		if [ "$n" = NAME ]; then printf '%-90s %s\n' "$line" GRANTS
+		else printf '%-90s %s\n' "$line" "$(grants_summary "$n")"; fi
 	done
 }
 

@@ -283,15 +283,22 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	backend_start "$name"
 }
 
-backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK
-	local d n st addr
+backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES
+	local d n st ssh disk size used
 	# An unreachable user manager would make every VM look stopped; that's an error, not an empty host.
 	systemctl --user show-environment >/dev/null 2>&1 || die "cannot reach the systemd user manager (systemctl --user)"
 	for d in "$CH_DIR"/vms/*/; do
 		[[ -f $d/slot ]] || continue
-		n=$(basename "$d") st="shut off" addr=""
-		if ch_active "$n"; then st=running addr=$(ch_ip "$n"); fi
-		printf '%s\t%s\t%s\t%s\n' "$n" "$st" "$addr" "$(du -k "$d/disk.qcow2" 2>/dev/null | awk '{ if ($1 < 1048576) printf "%.0fMiB", $1 / 1024; else printf "%.1fGiB", $1 / 1048576 }')"
+		n=$(basename "$d") st="shut off" ssh="" size="" used="" disk=${d%/}/disk.qcow2
+		if ch_active "$n"; then st=running ssh="$(ch_ip "$n"):22"; fi
+		if [[ -f $disk ]]; then
+			# virtual size from the qcow2 header (-U: the running VMM may hold the image); used = the
+			# overlay's allocated blocks (its backing base/stock image is shared and not counted)
+			size=$(qemu-img info -U --output=json "$disk" 2>/dev/null | jq -r '."virtual-size" // empty' 2>/dev/null) || size=""
+			used=$(du -k "$disk" 2>/dev/null | awk '{ print $1 }') || used=""
+			if [[ $used =~ ^[0-9]+$ ]]; then used=$((used * 1024)); else used=""; fi
+		fi
+		printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$st" "$ssh" "$size" "$used"
 	done
 }
 

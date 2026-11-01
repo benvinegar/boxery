@@ -223,7 +223,7 @@ done
 "$H" new v2 --cpus 8 >/dev/null 2>"$tmp/err"
 [[ $(jq -r .type "$S/sb/$(ID v2)/create.json") == large && $(cat "$E/v2/slot") == 2 ]] && grep -F "boat type large: 8 vCPU, 16384 MiB, 111 GiB" "$tmp/err" >/dev/null && ok "8 vCPU → large (logged); second VM gets slot 2" || bad "v2: $(cat "$tmp/err")"
 j=$(lsj)
-jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == "127.0.0.1:22601" and .disk == "51GiB"' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
+jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .ssh_addr == "127.0.0.1:22601" and .disk_size == 51 and .disk_used == null' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
 jq -e 'map(select(.name == "v1"))[0] | .tunnel == "up"' <<<"$j" >/dev/null && ok "ls --json: the tunnel's state" || bad "tunnel: $j"
 e=$("$H" new hl --headless 2>&1) && bad "headless accepted" || { [[ $e == *"headless VMs (new --headless) aren't supported on boat"* ]] && ok "new --headless is refused clearly" || bad "headless: $e"; }
 jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists boxery VMs only (not the base, builders or the account's other sandboxes)" || bad "ls names: $j"
@@ -239,7 +239,7 @@ ip1=$(cat "$S/sb/$(ID v1)/ip")
 expect "stop" "$H" stop v1
 called "curl POST /sandboxes/$(ID v1)/stop" && [[ $(st "$(ID v1)") == archived ]] && grep -x sync "$S/sb/$(ID v1)/edge.log" >/dev/null && ok "stop syncs, stops and waits until boat has saved the disk" || bad "stop: $(cat "$CALLS")"
 [[ ! -f $UNITS/boxery-boat-bxtest-v1.service ]] && ok "stop stops the tunnel" || bad "tunnel still up"
-lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "shut off" and .addr == null' >/dev/null && ok "stopped VM: shut off, no addr" || bad "ls stopped: $(lsj)"
+lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "shut off" and .ssh_addr == null' >/dev/null && ok "stopped VM: shut off, no addr" || bad "ls stopped: $(lsj)"
 : >"$CALLS"
 expect "stop of a stopped VM" "$H" stop v1
 ! called "/stop" && ok "… is a no-op on boat" || bad "second stop: $(cat "$CALLS")"

@@ -7,10 +7,11 @@ import { captureVm } from "./images.mjs";
 import { restorePetAccess } from "./vms.mjs";
 import { fail, jsonArray, log, POOL_SNAP, print, readFd, sleep, table, validName } from "./util.mjs";
 
+// Lease states print lowercase (free, leased, …) like VM states; the lease store keeps its own FREE, LEASED, ….
 export function poolLs(rt, [arg]) {
 	let rows;
 	try { rows = leases.list(rt.db()); } catch { fail("lease store error"); }
-	rows = rows.map(({ name, state, holder, acquired_at, expires_at, expires_in }) => ({ name, state, holder, acquired_at, expires_at, expires_in }));
+	rows = rows.map(({ name, state, holder, acquired_at, expires_at, expires_in }) => ({ name, state: state.toLowerCase(), holder, acquired_at, expires_at, expires_in }));
 	if (arg === "--json") return print(jsonArray(rows));
 	print(table([16, 10, 10], [["NAME", "LEASE", "EXPIRES", "HOLDER"],
 		...rows.map((r) => [r.name, r.state, r.expires_in == null ? "-" : `${r.expires_in}s`, r.holder ?? "-"])]));
