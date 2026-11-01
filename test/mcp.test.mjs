@@ -42,7 +42,10 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 		path.join(bin, "boxery"),
 		`#!/usr/bin/env bash
 [ "$1" != --host ] || shift 2
+echo "$*" >> "$BOXERY_HOME/calls"
 case "$*" in
+"acquire "*) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;
+"renew "*) echo "pool-1 9999999999" ;;
 "ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
@@ -97,7 +100,7 @@ describe("stdio", () => {
 	test("tools/list exposes the vm_* tools with schemas", async () => {
 		const { tools } = (await c.call("tools/list")).result;
 		const names = tools.map((t) => t.name);
-		for (const n of ["vm_bash", "vm_jobs", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage"])
+		for (const n of ["vm_bash", "vm_jobs", "vm_read", "vm_write", "vm_edit", "vm_copy", "vm_screenshot", "vm_click", "vm_type", "vm_key", "vm_scroll", "vm_browser", "vm_manage", "vm_lease"])
 			assert.ok(names.includes(n), n);
 		for (const t of tools) assert.equal(t.inputSchema.type, "object", t.name);
 		assert.ok(!tools.some((t) => "run" in t), "internal fields not leaked");
@@ -285,6 +288,44 @@ describe("stdio", () => {
 	});
 });
 
+describe("leases", () => {
+	const LEASE = "l-0123456789abcdef0123456789abcdef";
+	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
+
+	test("vm_lease acquires, tracks, renews and releases pool VMs per session; leases end with the session", async () => {
+		const c = client();
+		await c.call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		const lease = async (a) => (await c.tool("vm_lease", a)).content[0].text;
+		const err = async (tool, a, re) => {
+			const r = await c.tool(tool, a);
+			assert.equal(r.isError, true, JSON.stringify(a));
+			assert.match(r.content[0].text, re);
+		};
+		try {
+			assert.equal(await lease({ action: "list" }), "this session holds no leases");
+			await err("vm_lease", { action: "acquire", ttl: 5 }, /ttl must be/);
+			assert.match(await lease({ action: "acquire", ttl: 600, wait: 5 }), new RegExp(`^leased pool-1 \\(lease ${LEASE}, ttl 600s.*\ncurrent VM: pool-1$`));
+			assert.equal(calls().at(-1), "acquire --ttl 600 --wait 5");
+			assert.match(await lease({ action: "list" }), new RegExp(`^pool-1\t${LEASE}\texpires in 600s .*\tcurrent$`));
+			assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: pool-1/);
+			await err("vm_manage", { action: "rm", name: "pool-1" }, /leased from the pool/);
+			assert.equal(await lease({ action: "renew", ttl: 900 }), "renewed pool-1 for 900s");
+			assert.equal(calls().at(-1), `renew ${LEASE} --ttl 900`);
+			await err("vm_lease", { action: "renew", name: "fakevm" }, /holds no lease on fakevm/);
+			assert.match(await lease({ action: "release" }), /^released pool-1; .*\nno current VM$/);
+			assert.equal(calls().at(-1), `release ${LEASE}`);
+			await err("vm_bash", { command: "true" }, /no current VM/);
+			await err("vm_lease", { action: "release", name: "pool-1" }, /holds no lease/);
+			assert.doesNotMatch(await lease({ action: "acquire", use: false }), /current VM/);
+			assert.equal(calls().at(-1), "acquire --ttl 1800 --wait 60");
+		} finally {
+			c.p.stdin.end(); // stdio session over: its leases are released before the server exits
+			await new Promise((r) => c.p.on("exit", r));
+		}
+		assert.equal(calls().at(-1), `release ${LEASE}`);
+	});
+});
+
 describe("http", () => {
 	let p, port;
 	const token = "t0ken";
@@ -334,8 +375,11 @@ describe("http", () => {
 		assert.equal((await post({ jsonrpc: "2.0", method: "notifications/initialized" }, { ...auth, "mcp-session-id": sid })).status, 202);
 		const call = await (await post({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo via-http" } } }, { ...auth, "mcp-session-id": sid })).json();
 		assert.match(call.result.content[0].text, /via-http/);
+		const acq = await (await post({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "vm_lease", arguments: { action: "acquire", use: false } } }, { ...auth, "mcp-session-id": sid })).json();
+		assert.match(acq.result.content[0].text, /^leased pool-1/);
 		const del = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "DELETE", headers: { ...auth, "mcp-session-id": sid } });
 		assert.equal(del.status, 204);
+		assert.equal(readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n").at(-1), "release l-0123456789abcdef0123456789abcdef", "DELETE releases the session's leases");
 		assert.equal((await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, { ...auth, "mcp-session-id": sid })).status, 404, "deleted session");
 	});
 });

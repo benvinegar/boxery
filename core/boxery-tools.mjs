@@ -5,8 +5,8 @@
 // hints), run(vm, args, ctx) → {text, image?, isError?} }. ctx: { signal, current, localCwd }.
 //   engine: pi runs this tool with its own built-in engine (same rendering/truncation as bash, read, …)
 //   noVm:   the front-end does not resolve a VM; the tool gets every argument (vm_copy, vm_manage)
-// vm_manage has no `run`: "current VM" is front-end session state. Each front-end calls
-// manageAction() with its own session hooks.
+// vm_manage and vm_lease have no `run`: "current VM" and held leases are front-end session state.
+// Each front-end calls manageAction() / leaseAction() with its own session hooks.
 import * as core from "./boxery-core.mjs";
 
 const where = "in a boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
@@ -14,6 +14,7 @@ export const VM_PARAM = { type: "string", description: "VM name (default: the cu
 const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
+export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
 
@@ -200,6 +201,29 @@ export const TOOLS = [
 		},
 		annotations: { destructiveHint: true },
 	},
+	{
+		name: "vm_lease",
+		title: "VM lease",
+		noVm: true,
+		description:
+			"Lease a VM from the host's shared pool (VMs an admin set aside for agents, CI and other users). action: acquire | renew | release | list. " +
+			"`acquire` waits up to `wait` seconds for a free pool VM, leases it for `ttl` seconds and (unless use=false) makes it the current VM. " +
+			"Leases are exclusive and renewed automatically while this session is active; they end when released, when the session ends, or if renewal stops. " +
+			"When a lease ends the VM is reset to its clean image and everything done in it is lost: copy results out (vm_copy, git push) before `release`. " +
+			"`list` shows this session's leases; `renew`/`release` take `name` (default: the current VM). A leased VM cannot be removed with vm_manage rm.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: { type: "string", enum: LEASE_ACTIONS },
+				name: { type: "string", description: "renew/release: the leased VM (default: the current VM)" },
+				ttl: { type: "integer", minimum: core.LEASE_TTL.min, maximum: core.LEASE_TTL.max, description: `acquire/renew: lease length in seconds (default ${core.LEASE_TTL.default})` },
+				wait: { type: "integer", minimum: 0, maximum: 3600, description: "acquire: seconds to wait for a free VM (default 60)" },
+				use: { type: "boolean", description: "acquire: make the leased VM the current VM (default true)" },
+			},
+			required: ["action"],
+		},
+		annotations: { destructiveHint: true },
+	},
 ];
 
 /**
@@ -210,6 +234,7 @@ export const TOOLS = [
  *   s.clear()            no current VM
  *   s.removing?(name)    before rm (may throw to refuse); s.removed?(name) after it
  *   s.listNote           appended to the list output
+ *   s.keeper?            the session's core.LeaseKeeper: leased VMs cannot be removed
  */
 export async function manageAction(a, s) {
 	switch (a.action) {
@@ -230,6 +255,7 @@ export async function manageAction(a, s) {
 			return { text: `${out}${a.use ? `\ncurrent VM: ${name}` : ""}` };
 		}
 		case "rm": {
+			if (s.keeper?.find(a.name)) throw new Error(`${a.name} is leased from the pool; release it with vm_lease {action:"release"}`);
 			await s.removing?.(a.name);
 			const out = await core.manage(a);
 			s.removed?.(a.name);
@@ -237,5 +263,35 @@ export async function manageAction(a, s) {
 		}
 		default:
 			return { text: await core.manage(a) };
+	}
+}
+
+/**
+ * vm_lease, given a front-end session: s.keeper (core.LeaseKeeper), s.current, s.adopt(name) and
+ * s.clear() as for manageAction.
+ */
+export async function leaseAction(a, s) {
+	const target = () => core.assertName(a.name ?? s.current ?? "");
+	switch (a.action) {
+		case "acquire": {
+			const l = await s.keeper.acquire({ ttl: a.ttl ?? undefined, wait: a.wait ?? undefined });
+			if (a.use !== false) s.adopt(l.name);
+			return { text: `leased ${l.name} (lease ${l.id}, ttl ${l.ttl}s, renewed automatically while this session is active)${a.use !== false ? `\ncurrent VM: ${l.name}` : ""}` };
+		}
+		case "renew": {
+			const l = await s.keeper.renew(target(), a.ttl ?? undefined);
+			return { text: `renewed ${l.name} for ${l.ttl}s` };
+		}
+		case "release": {
+			const name = target();
+			await s.keeper.release(name);
+			const wasCurrent = s.current === name;
+			if (wasCurrent) s.clear();
+			return { text: `released ${name}; the host resets it to its clean image${wasCurrent ? "\nno current VM" : ""}` };
+		}
+		case "list":
+			return { text: core.formatLeases(s.keeper.list(), s.current) };
+		default:
+			throw new Error(`unknown action ${a.action}`);
 	}
 }

@@ -118,6 +118,7 @@ Every integration exposes the same tools:
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | List, create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
+| `vm_lease` | Lease a VM from the shared pool; renewed while the session runs, released when it ends |
 
 Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
 

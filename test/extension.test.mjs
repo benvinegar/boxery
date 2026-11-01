@@ -65,4 +65,12 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		assert.deepEqual(entries.at(-1), { type: "boxery-current", data: { vm: null } });
 		await assert.rejects(tools.get("vm_click").execute("2", { x: 1, y: 1 }, undefined, undefined, {}), /no current VM/i);
 	});
+
+	it("vm_lease runs on the extension's lease keeper", async () => {
+		const { tools } = await load();
+		const lease = tools.get("vm_lease");
+		assert.deepEqual((await lease.execute("1", { action: "list" }, undefined, undefined, {})).content, [{ type: "text", text: "this session holds no leases" }]);
+		await assert.rejects(lease.execute("2", { action: "release", name: "pool-1" }, undefined, undefined, {}), /holds no lease on pool-1/);
+		await assert.rejects(lease.execute("3", { action: "renew" }, undefined, undefined, {}), /invalid VM name/);
+	});
 });
