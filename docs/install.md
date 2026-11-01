@@ -23,7 +23,7 @@ They can be the same machine.
 - KVM (`/dev/kvm` readable)
 - libvirt on `qemu:///system`, with your user in the `libvirt` group
 - `virt-install`, `qemu-img`, `cloud-localds` (from `cloud-image-utils`)
-- `socat`, `jq`, `nc`, `openssl`
+- `socat`, `jq`, `nc`
 - Node ≥ 22.13 (the lease store uses `node:sqlite`)
 - systemd user services. Turn on linger so the proxy and reaper keep running after you log out:
 

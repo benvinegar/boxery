@@ -166,12 +166,14 @@ it("remove refuses leased VMs unless forced", () => {
 
 it("concurrent claims from separate processes never share a VM", async () => {
 	const run = promisify(execFile);
-	const cli = path.resolve(import.meta.dirname, "../host/boxery-leases.mjs");
+	const mod = new URL("../host/boxery-leases.mjs", import.meta.url).href;
+	const claim = `const L = await import(${JSON.stringify(mod)}); const [f, h, t, k] = process.argv.slice(1);
+		process.stdout.write(JSON.stringify(L.claim(L.open(f), h, t, k)));`;
 	for (const n of ["p4", "p5", "p6", "p7", "p8"]) L.add(db, n); // 8 total
 	const env = { ...process.env, BOXERY_NOW: String(T0), BOXERY_BOOT_ID: "boot-1" };
 	const results = await Promise.all(
 		Array.from({ length: 12 }, (_, i) =>
-			run(process.execPath, ["--disable-warning=ExperimentalWarning", cli, file, "claim", `h${i}`, "600", KEY], { env }).then((r) => JSON.parse(r.stdout)),
+			run(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", claim, file, `h${i}`, "600", KEY], { env }).then((r) => JSON.parse(r.stdout)),
 		),
 	);
 	const got = results.filter(Boolean).map((r) => r.name);

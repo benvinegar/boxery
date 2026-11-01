@@ -107,15 +107,13 @@ need_host() { [ -n "$HOST" ] || die "not configured; run: boxery setup user@host
 is_local() { [ "$HOST" = local ]; }
 # shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
 local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}" ;; *) printf '%s\n' "$HOST_BIN" ;; esac; }
-# Remote command line with every argument shell-quoted: ssh joins argv with spaces and the remote
-# shell re-parses it, so unquoted args (snapshot names, flags) would be executed on the host.
-quote_args() { out=""; for a in "$@"; do out="$out $(printf %q "$a")"; done; printf '%s' "$out"; }
+# ssh joins argv with spaces and the remote shell re-parses it, so every argument is quoted
+# (unquoted snapshot names or flags would be executed on the host). stdin passes through.
 h() {
 	need_host
 	if is_local; then "$(local_host_bin)" "$@"
-	else check_target; ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(quote_args "$@")"; fi
+	else check_target; ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin) $(literal_args "$@")"; fi
 }
-h_stdin() { h "$@"; }  # stdin is passed through by both branches
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.
 drop_master() { [ -n "${1:-}" ] && ssh -F "$SSH_CONF" -O exit "$1.boxery" >/dev/null 2>&1 || true; }
@@ -191,7 +189,7 @@ cmd_setup() {
 		ssh -o LogLevel=ERROR -- "$HOST" "$(remote_bin) help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run boxery-host init?)"
 	fi
 	echo "==> registering $pub with host (applies to VMs created from now on)"
-	h_stdin add-key <"$pub"
+	h add-key <"$pub"
 	mkdir -p "$CONF_DIR"
 	{ printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'; } >"$CONF_FILE.tmp.$$"
 	mv "$CONF_FILE.tmp.$$" "$CONF_FILE"
@@ -759,7 +757,7 @@ cmd_acquire() { # [--ttl S] [--wait S] [--holder H] → prints "NAME LEASE_ID" (
 	mkdir -p "$LEASES_DIR"; chmod 700 "$LEASES_DIR"
 	tmpk="$LEASES_DIR/.new-$$"
 	ssh-keygen -q -t ed25519 -N "" -C "boxery-lease $holder" -f "$tmpk" || die "ssh-keygen failed"
-	out=$(h_stdin acquire --holder "$holder" --ttl "$ttl" --wait "$wait" <"$tmpk.pub") || { rc=$?; rm -f "$tmpk" "$tmpk.pub"; exit $rc; }
+	out=$(h acquire --holder "$holder" --ttl "$ttl" --wait "$wait" <"$tmpk.pub") || { rc=$?; rm -f "$tmpk" "$tmpk.pub"; exit $rc; }
 	set -- $out; name=$1; id=$2; exp=$3
 	valid_vm "$name" || { rm -f "$tmpk" "$tmpk.pub"; die "bad response from host: $out"; }
 	case $id in l-*) ;; *) rm -f "$tmpk" "$tmpk.pub"; die "bad response from host: $out" ;; esac

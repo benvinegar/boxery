@@ -26,6 +26,8 @@ need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 valid_name() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1' (use [a-z][a-z0-9-]*)"; }
 valid_snap() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid snapshot name '$1'"; }
 valid_num() { [[ $2 =~ ^[0-9]+$ ]] || die "$1 must be a number"; }
+rand_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }   # N random bytes → 2N hex digits
+NODE=(node --disable-warning=ExperimentalWarning)   # node:sqlite is still flagged experimental on Node 22
 # Images are immutable disk states, named VM@LABEL: snapshots (`snap demo s1` → demo@s1), the pool's
 # clean state (NAME@boxery-clean) and short-lived fork sources (SRC@fork-…). See host/backends/README.md.
 valid_image() { [[ $1 =~ ^[a-z][a-z0-9-]{0,30}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid image name '$1'"; }
@@ -53,12 +55,12 @@ load_backend() {
 ensure_tokens() { mkdir -p "$CONF"; chmod 700 "$CONF"; [[ -f $CONF/tokens.json ]] || echo '{}' >"$CONF/tokens.json"; chmod 600 "$CONF/tokens.json"; }
 
 # Node owns the short token read/modify/rename transaction; no mkdir lock survives a crash.
-operations() { BOXERY_BACKEND=$BACKEND node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" "$1" "$CONF" "${@:2}"; }
+operations() { BOXERY_BACKEND=$BACKEND "${NODE[@]}" "$ROOT/host/boxery-operations.mjs" "$1" "$CONF" "${@:2}"; }
 token_set() { operations token set "$1" "$2"; }
 token_del() { operations token del "$1"; }
 intent() { operations intent "$@"; }
 intent_done() { operations 'done' "$1"; }
-lifecycle() { BOXERY_CONF=$CONF BOXERY_BACKEND=$BACKEND node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-lifecycle.mjs" "$@"; }
+lifecycle() { BOXERY_CONF=$CONF BOXERY_BACKEND=$BACKEND "${NODE[@]}" "$ROOT/host/boxery-lifecycle.mjs" "$@"; }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
@@ -66,7 +68,7 @@ boxery_seed() { # NAME → path of a user-data file
 	local name=$1 tmp=$CONF/work/$BOXERY_OPERATION_ID/$1
 	mkdir -p "$tmp"; chmod 700 "$CONF/work" "$CONF/work/$BOXERY_OPERATION_ID" "$tmp"
 	local secret
-	secret=$(openssl rand -hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token (is openssl installed?)"
+	secret=$(rand_hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token"
 	token_set "$name" "$secret"
 	local cred="$name:$secret"
 	# The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token.
@@ -126,7 +128,7 @@ boxery_seed() { # NAME → path of a user-data file
 # installing a lease's ssh key in the VM, and resetting the VM to its clean image (NAME@boxery-clean).
 
 POOL_SNAP=boxery-clean
-leases() { node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-leases.mjs" "$CONF/leases.db" "$@"; }
+leases() { "${NODE[@]}" "$ROOT/host/boxery-leases.mjs" "$CONF/leases.db" "$@"; }
 is_pool() { # 0 = pool VM, 1 = not; dies on a lease-store error rather than guessing
 	local r; r=$(leases get "$1") || die "lease store error"
 	[[ $r != null ]]
@@ -428,8 +430,8 @@ start_reaper() {
 proxy_bind() { if declare -F backend_proxy_bind >/dev/null; then backend_proxy_bind; else echo 127.0.0.1; fi; }
 
 cmd_init() {
-	need jq; need node; need nc; need openssl; need ps
-	node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null || die "node $(node --version) lacks node:sqlite; need Node >= 22.13"
+	need jq; need node; need nc; need ps
+	"${NODE[@]}" -e 'require("node:sqlite")' 2>/dev/null || die "node $(node --version) lacks node:sqlite; need Node >= 22.13"
 	backend_check
 	ensure_tokens
 	touch "$CONF/authorized_keys"; chmod 600 "$CONF/authorized_keys"
@@ -709,7 +711,7 @@ cmd_fork() {
 		valid_name "$d"; backend_exists "$d" && die "$d already exists"
 		[[ $(printf '%s\n' "${dsts[@]}" | grep -cxF "$d") == 1 ]] || die "duplicate fork name $d"
 	done
-	local img; img="$src@fork-$(date +%Y%m%d%H%M%S)-$(openssl rand -hex 3)"
+	local img; img="$src@fork-$(date +%Y%m%d%H%M%S)-$(rand_hex 3)"
 	local cleanup; cleanup=$(intent fork-image "$img")
 	local t0=$SECONDS
 	capture_vm "$src" "$img"
@@ -763,11 +765,10 @@ __dispatch) c=$1; shift ;;
 __call) "$@"; exit ;;
 __backend) backend_bridge "$@"; exit ;;
 __recover) recover_operation; exit ;;
-new|fork|start|stop|resize|rm|delete|snap|snap-rm|revert|edge-set)
-	BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@" ;;
-pool)
-	if [[ ${1:-} == add || ${1:-} == rm ]]; then
-		BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@"
+# Mutating commands run under the lifecycle supervisor, which locks their VMs and re-enters as __dispatch.
+new|fork|start|stop|resize|rm|delete|snap|snap-rm|revert|edge-set|pool)
+	if [[ $c != pool || ${1:-} == add || ${1:-} == rm ]]; then
+		BOXERY_BACKEND=$BACKEND exec "${NODE[@]}" "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@"
 	fi ;;
 esac
 case $c in

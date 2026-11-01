@@ -17,7 +17,7 @@ const OPERATIONS = fileURLToPath(new URL("./boxery-operations.mjs", import.meta.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
 const nameOf = (name) => {
-	if (!/^[a-z][a-z0-9-]{0,30}$/.test(name ?? "")) throw new Error(`invalid name '${name ?? ""}' (use [a-z][a-z0-9-]*)`);
+	if (!leases.VALID_NAME.test(name ?? "")) throw new Error(`invalid name '${name ?? ""}' (use [a-z][a-z0-9-]*)`);
 	return name;
 };
 const leaseOf = (id) => {

@@ -7,45 +7,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { open } from "./boxery-leases.mjs";
+import { identity, machineBootId, open, PS_ENV, tx as transaction, VALID_NAME } from "./boxery-leases.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const NAME = /^[a-z][a-z0-9-]{0,30}$/;
-const assertName = (n) => { if (!NAME.test(n ?? "")) throw new Error(`invalid VM name: ${n}`); return n; };
-const PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
-// Unlike lease test clocks, process fencing must use the actual machine boot identity.
-const BOOT = (() => {
-	try { return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); }
-	catch (e) {
-		if (e.code !== "ENOENT") throw e;
-		const init = identity(1); // macOS launchd's start time, unaffected by wall-clock adjustments
-		if (!init) throw new Error("cannot determine host boot identity");
-		return init;
-	}
-})();
-
-// Linux exposes precise kernel start ticks; macOS uses ps lstart in a fixed locale/timezone.
-// Zombies no longer execute side effects. Inspection errors other than "not found" fail closed.
-export function identity(pid) {
-	if (process.platform === "linux") {
-		try {
-			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-			const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-			if (["Z", "X"].includes(fields[0])) return null;
-			if (!/^\d+$/.test(fields[19] ?? "")) throw new Error("malformed process start time");
-			return `linux:${fields[19]}`;
-		} catch (e) {
-			if (["ENOENT", "ESRCH"].includes(e.code)) return null;
-			throw e;
-		}
-	}
-	const r = spawnSync("ps", ["-p", String(pid), "-o", "stat=", "-o", "lstart="], { encoding: "utf8", env: PS_ENV });
-	if (r.error || (r.status !== 0 && r.status !== 1) || (r.status === 1 && r.stderr?.trim())) throw new Error(`cannot inspect process ${pid}`);
-	const s = r.stdout?.trim();
-	if (r.status !== 0 || !s || s.startsWith("Z")) return null;
-	return s.replace(/^\S+\s+/, "");
-}
+const assertName = (n) => { if (!VALID_NAME.test(n ?? "")) throw new Error(`invalid VM name: ${n}`); return n; };
+// Unlike lease test clocks (BOXERY_BOOT_ID), process fencing must use the actual machine boot identity.
+const BOOT = machineBootId();
+export { identity };
 const alive = (r) => r.boot === BOOT && identity(r.owner) === r.owner_start;
 
 export function resources(command, args) {
@@ -66,11 +35,6 @@ export function resources(command, args) {
 	return [...new Set(names)].sort();
 }
 
-function transaction(db, fn) {
-	db.exec("BEGIN IMMEDIATE");
-	try { const r = fn(); db.exec("COMMIT"); return r; }
-	catch (e) { db.exec("ROLLBACK"); throw e; }
-}
 const row = (db, id) => db.prepare("SELECT * FROM operations WHERE id=?").get(id);
 const actions = (db, id) => db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id).map((r) => ({ ...r, data: JSON.parse(r.data) }));
 

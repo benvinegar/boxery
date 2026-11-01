@@ -164,8 +164,8 @@ STUB2
 chmod +x "$tmp/bin/sshjoin"
 rm -f "$tmp/pwned"
 ( export BOXERY_HOST=fakehost; ssh() { "$tmp/bin/sshjoin" "$@"; }; export -f ssh
-  . /dev/stdin <<<"$(sed -n '/^quote_args()/p' "$A")"
-  cmdline="echo$(quote_args snap w2 "x; touch $tmp/pwned #")"
+  . /dev/stdin <<<"$(sed -n '/^literal()/p; /^literal_args()/p' "$A")"
+  cmdline="echo $(literal_args snap w2 "x; touch $tmp/pwned #")"
   sh -c "$cmdline" >/dev/null )
 [ ! -e "$tmp/pwned" ] && ok "remote transport quotes every argument" || bad "INJECTION via remote transport"
 "$A" rm w2 >/dev/null 2>&1 || true
