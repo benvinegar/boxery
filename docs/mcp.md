@@ -70,6 +70,20 @@ The server speaks MCP `2024-11-05` through `2025-11-25` and sends newer fields o
 | Progress | all, when the request has `_meta.progressToken` | `notifications/progress` while a call runs: output lines from `vm_bash`, controller lines from `vm_manage` `new`/`fork`/`snap`/`revert`/`rm`, a "creating" line when `use` creates a VM, and an elapsed-time line every 5 s for quiet calls. At most one line per second. Over HTTP the response becomes an SSE stream when the client accepts `text/event-stream`; otherwise it stays JSON without progress. |
 | Structured output | `2025-06-18`+ | `vm_jobs` and `vm_info` declare an `outputSchema` and return `structuredContent` next to the same text as before. Tools also get a top-level `title`. |
 | Server description | `2025-11-25`+ | `serverInfo.description` and `websiteUrl`. |
+| Live desktop view | [MCP Apps](https://modelcontextprotocol.io/extensions/apps) clients | `vm_view` (see below). |
+
+## Live desktop view
+
+In clients that support [MCP Apps](https://modelcontextprotocol.io/extensions/apps) (the `io.modelcontextprotocol/ui` extension), the server adds `vm_view`. Ask the agent to show you a VM, and its desktop appears inside the chat:
+
+- It refreshes about twice a second while it is on screen, and pauses when you scroll away, switch windows, or leave it alone for 10 minutes.
+- **Take control** sends your clicks, scrolling and keys to the VM. Cmd/Ctrl+V types your local clipboard. On a Mac, Cmd shortcuts arrive as Ctrl.
+- **Release control** tells the agent the desktop changed, so it takes a fresh screenshot before acting.
+- **Fullscreen** appears when the client supports it.
+
+The page is the `ui://boxery/desktop` resource ([`mcp/desktop-view.html`](../mcp/desktop-view.html)). It makes no network requests of its own. Each frame is a call to the app-only `vm_view_frame` tool, a JPEG about an eighth the size of a `vm_screenshot` PNG. Input goes through `vm_click`, `vm_type`, `vm_key` and `vm_scroll`, the same tools and coordinates the agent uses. So it works the same over stdio and HTTP, for local and remote hosts, and the client's usual approval rules apply to your input as well.
+
+Clients that don't advertise MCP Apps don't see `vm_view`, and their tool list is unchanged. Start the server with `--ui` to offer it anyway, for a client that renders apps without advertising support. Outside a chat, `boxery desktop NAME` opens the full noVNC desktop in a browser.
 
 ## Background jobs
 
@@ -142,6 +156,7 @@ commit outcome**, not rollback: reread before retrying.
 | `--allow-user LOGIN` | Also require this `Tailscale-User-Login` header (set by `tailscale serve`). Loopback binds only. Can be repeated. |
 | `--allow-origin ORIGIN` | Accept requests with this `Origin`. Foreign origins are rejected by default. |
 | `--no-auth` | Skip the bearer token. **Local testing only.** |
+| `--ui` | Offer `vm_view` even to clients that don't advertise MCP Apps support |
 
 ## Testing
 

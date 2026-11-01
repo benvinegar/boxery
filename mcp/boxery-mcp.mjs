@@ -6,13 +6,14 @@
 //   boxery-mcp --http 127.0.0.1:8765 [--host NAME] [--vm NAME]   Streamable HTTP at /mcp
 //        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth),
 //              optional --allow-user a@b.c (checks Tailscale-User-Login from `tailscale serve`)
+//   --ui   offer vm_view (live desktop view) even to clients that don't advertise MCP Apps support
 //
 // "local" (vm_copy) and grant sources are the machine this server runs on.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
-import { INFO_ACTIONS, infoAction, leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
+import { INFO_ACTIONS, infoAction, leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS, VM_PARAM } from "../core/boxery-tools.mjs";
 
 const VERSION = (() => {
 	try {
@@ -36,7 +37,9 @@ const opt = (name) => {
 };
 const has = (name) => argv.includes(name);
 if (has("-h") || has("--help")) {
-	process.stdout.write(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
+	const lines = readFileSync(new URL(import.meta.url)).toString().split("\n");
+	const end = lines.findIndex((l, i) => i > 0 && !l.startsWith("//"));
+	process.stdout.write(lines.slice(1, end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
 	process.exit(0);
 }
 if (has("--host") && opt("--host") == null) throw new Error("--host needs a registered host name");
@@ -119,8 +122,52 @@ const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t
 	noVm: t.noVm,
 	run: t.run,
 }));
+
+// Live desktop view (MCP Apps, extension io.modelcontextprotocol/ui). vm_view renders ui://boxery/desktop
+// inline: a page that polls the app-only vm_view_frame and sends the user's input through vm_click,
+// vm_type, vm_key and vm_scroll. Listed only to clients that advertise the extension (or with --ui),
+// so text-only clients see no change. MCP-only: pi has no UI to render it.
+const UI_EXT = "io.modelcontextprotocol/ui";
+const UI_MIME = "text/html;profile=mcp-app";
+const VIEW_URI = "ui://boxery/desktop";
+const VIEW_UI = { prefersBorder: true };
+const VIEW_RESOURCE = { uri: VIEW_URI, name: "desktop", title: "VM desktop", description: "Live view of a boxery VM's desktop", mimeType: UI_MIME, _meta: { ui: VIEW_UI } };
+const viewHtml = () => readFileSync(new URL("./desktop-view.html", import.meta.url), "utf8");
+// _meta.ui is current; the flat "ui/resourceUri" key is for hosts built before it.
+const uiMeta = (visibility) => ({ ui: { resourceUri: VIEW_URI, visibility }, "ui/resourceUri": VIEW_URI });
+const VIEW_TOOLS = [
+	{
+		name: "vm_view",
+		title: "VM live view",
+		description:
+			"Show the user a live view of a VM's desktop in the chat, which they can watch and, if they choose, control with mouse and keyboard. " +
+			"Use it when the user wants to see or take over the desktop. To look at the screen yourself, use vm_screenshot.",
+		inputSchema: withHost({ type: "object", properties: { vm: VM_PARAM }, required: [] }),
+		annotations: { title: "VM live view", readOnlyHint: true, openWorldHint: false },
+		_meta: uiMeta(["model", "app"]),
+		async run(vm, _a, { host }) {
+			const { size } = await core.screenshot(vm, 1280, { jpeg: true }); // fails early if the desktop is unreachable
+			return {
+				text: `Showing the user a live view of VM "${vm}" (${size.screenWidth}x${size.screenHeight}). Outside a chat client, \`boxery desktop ${vm}\` opens it in a browser.`,
+				structured: { vm, host: host.name, ...size },
+			};
+		},
+	},
+	{
+		name: "vm_view_frame",
+		title: "VM live view frame",
+		description: "One frame of the live view: a JPEG of the VM's desktop, sized like vm_screenshot so clicks use the same coordinates.",
+		inputSchema: withHost({ type: "object", properties: { vm: VM_PARAM }, required: [] }),
+		annotations: { title: "VM live view frame", readOnlyHint: true, openWorldHint: false },
+		_meta: uiMeta(["app"]),
+		async run(vm) {
+			const s = await core.screenshot(vm, 1280, { jpeg: true });
+			return { text: `${s.size.width}x${s.size.height}`, image: s.image, structured: s.size };
+		},
+	},
+];
 const sameHost = (a, b) => a?.name === b?.name && a?.dir === b?.dir;
-const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
+const TOOL_MAP = new Map([...TOOLS, ...VIEW_TOOLS].map((t) => [t.name, t]));
 
 // ---------------------------------------------------------------- MCP / JSON-RPC
 
@@ -140,9 +187,9 @@ function newSession() {
 	return session;
 }
 
-/** tools/list for this session: title/outputSchema only for clients on 2025-06-18 or later. */
+/** tools/list for this session: title/outputSchema only for clients on 2025-06-18 or later; vm_view only for MCP Apps clients. */
 const listTools = (session) =>
-	TOOLS.map(({ run: _r, noVm: _n, title, outputSchema, ...t }) =>
+	[...TOOLS, ...(session.ui ? VIEW_TOOLS : [])].map(({ run: _r, noVm: _n, title, outputSchema, ...t }) =>
 		since(session, "2025-06-18") ? { ...t, title, ...(outputSchema ? { outputSchema } : {}) } : t);
 
 /**
@@ -233,12 +280,13 @@ async function handle(session, msg, notify) {
 			case "initialize": {
 				const want = params?.protocolVersion;
 				session.protocolVersion = PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0];
+				session.ui = has("--ui") || !!params?.capabilities?.extensions?.[UI_EXT]?.mimeTypes?.includes(UI_MIME);
 				const serverInfo = { name: "boxery", title: "boxery VMs", version: VERSION };
 				if (since(session, "2025-11-25"))
 					Object.assign(serverInfo, { description: "Self-hosted Ubuntu desktop VMs for coding agents: shell, files, computer use and Chrome.", websiteUrl: "https://github.com/benvinegar/boxery" });
 				return reply({
 					protocolVersion: session.protocolVersion,
-					capabilities: { tools: { listChanged: false } },
+					capabilities: { tools: { listChanged: false }, ...(session.ui ? { resources: {} } : {}) },
 					serverInfo,
 					instructions: instructions(session),
 				});
@@ -252,6 +300,13 @@ async function handle(session, msg, notify) {
 				return reply({});
 			case "tools/list":
 				return reply({ tools: listTools(session) });
+			case "resources/list":
+				return reply({ resources: session.ui ? [VIEW_RESOURCE] : [] });
+			case "resources/templates/list":
+				return reply({ resourceTemplates: [] });
+			case "resources/read":
+				if (params?.uri !== VIEW_URI) return fail(-32002, `resource not found: ${params?.uri}`);
+				return reply({ contents: [{ uri: VIEW_URI, mimeType: UI_MIME, text: viewHtml(), _meta: { ui: VIEW_UI } }] });
 			case "tools/call": {
 				const ac = new AbortController();
 				if (isRequest) session.inflight.set(id, ac);

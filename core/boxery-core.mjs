@@ -521,17 +521,24 @@ async function desktopOk(vm, script, opts) {
 const screenScale = new Map(); // screenshot px → screen px, per host+VM
 const screenKey = (vm) => `${currentHost().dir}\0${vm}`;
 
-export async function screenshot(vm, maxWidth = 1280) {
-	// geometry on stderr, PNG on stdout (downscaled for model image limits; clicks scale back)
-	const r = await desktopRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' png:-`, { timeoutMs: 30_000 });
+/**
+ * Screenshot of the VM's desktop, downscaled to maxWidth (model image limits; clicks scale back).
+ * jpeg is for the live view (frames many times smaller); `size` gives shot and screen dimensions.
+ */
+export async function screenshot(vm, maxWidth = 1280, { jpeg = false } = {}) {
+	// geometry on stderr, image on stdout
+	const out = jpeg ? "-quality 70 jpeg:-" : "png:-";
+	const r = await desktopRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' ${out}`, { timeoutMs: 30_000 });
 	if (r.code !== 0) throw new Error(r.stderr.trim() || "screenshot failed");
 	const [sw, sh] = r.stderr.trim().split(/\s+/).map(Number);
 	const shotW = Math.min(sw, maxWidth);
 	const scale = sw / shotW;
+	const shotH = Math.round(sh / scale);
 	screenScale.set(screenKey(vm), scale);
 	return {
-		text: `Screen of VM "${vm}": ${sw}x${sh}, shown at ${shotW}x${Math.round(sh / scale)}. Use coordinates in this screenshot's pixels.`,
-		image: { data: r.stdout.toString("base64"), mimeType: "image/png" },
+		text: `Screen of VM "${vm}": ${sw}x${sh}, shown at ${shotW}x${shotH}. Use coordinates in this screenshot's pixels.`,
+		image: { data: r.stdout.toString("base64"), mimeType: jpeg ? "image/jpeg" : "image/png" },
+		size: { width: shotW, height: shotH, screenWidth: sw, screenHeight: sh },
 	};
 }
 

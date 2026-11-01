@@ -24,6 +24,7 @@
     "host/",
     "image/",
     "mcp/boxery-mcp.mjs",
+    "mcp/desktop-view.html",
     "proxy/",
     "docs/*.md",
     "ARCHITECTURE.md"
