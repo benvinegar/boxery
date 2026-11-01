@@ -559,9 +559,17 @@ export async function ensureVm(name, notify = () => {}) {
 }
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
-export async function manage({ action, name, snapshot }) {
+export async function manage({ action, name, snapshot, to }) {
 	const need = () => assertName(name);
 	switch (action) {
+		case "fork": {
+			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
+			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
+			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
+			return boxeryCli(["fork", need(), ...dsts], 900_000);
+		}
+		case "snaps":
+			return boxeryCli(["snaps", need()], 60_000);
 		case "list":
 			return formatVms(await listVms());
 		case "new":
@@ -593,5 +601,6 @@ export function guidance(current, { localToolsNote } = {}) {
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_manage {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage lists/creates/removes/snapshots VMs; every vm_* tool takes an optional \`vm\`.`,
+		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }

@@ -62,7 +62,7 @@ printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/tmux"
 rm -f "$tmp/bin/tmux"
 [ "$("$A" leases --json)" = '[]' ] && ok "leases --json with none → []" || bad "leases --json empty"
 [ "$("$A" grants nogrants --json)" = '[]' ] && ok "grants --json with none → []" || bad "grants --json empty"
-"$A" snap w1 s1 >/dev/null 2>&1; [ "$("$A" snaps w1 --json | jq -c .)" = '[{"name":"s1"}]' ] && ok "snaps --json via controller" || bad "snaps --json: $("$A" snaps w1 --json 2>&1)"
+"$A" snap w1 s1 >/dev/null 2>&1; [ "$("$A" snaps w1 --json | jq -c 'map({name, legacy})')" = '[{"name":"s1","legacy":false}]' ] && ok "snaps --json via controller" || bad "snaps --json: $("$A" snaps w1 --json 2>&1)"
 "$A" rm w1 >/dev/null 2>&1 && [[ ! -f $BOXERY_HOME/grants/w1 ]] && ! grep -q '^Host w1.boxery' "$BOXERY_HOME/ssh_config" && ok "rm clears grants + ForwardAgent" || bad "rm cleanup"
 
 # --- edge (http:) grants: secret goes to the host proxy's route file, never into the VM
@@ -121,6 +121,18 @@ if "$A" acquire >/dev/null 2>&1; then bad "second acquire on a 1-VM pool succeed
 ! grep -q "boxery-lease" "$tmp/vms/lp1/home/.ssh/authorized_keys" && ok "VM no longer accepts the old lease key" || bad "old lease key still authorized"
 "$A" acquire >/dev/null 2>&1 && ok "VM can be acquired again after release" || bad "re-acquire"
 else echo "  - node:sqlite unavailable; skipping lease checks"; fi
+
+# --- fork from the controller: forks are pets with their own grants (none, unless --grants)
+"$A" new fk >/dev/null 2>&1
+"$A" grant fk ssh-agent env:FROM_CMD --cmd 'echo computed' >/dev/null 2>&1
+echo fork-me >"$tmp/vms/fk/home/project/f.txt"
+"$A" fork fk fk1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk1/home/project/f.txt" && ok "fork via controller" || bad "fork"
+[ ! -f "$BOXERY_HOME/grants/fk1" ] && ! grep -q '^Host fk1.boxery' "$BOXERY_HOME/ssh_config" && ok "fork does not inherit grants by default" || bad "grants leaked into fork"
+"$A" fork fk fk2 --grants >/dev/null 2>&1 && grep -q '^Host fk2.boxery' "$BOXERY_HOME/ssh_config" && grep -q '^env	FROM_CMD' "$BOXERY_HOME/grants/fk2" && ok "fork --grants copies the grant list" || bad "fork --grants"
+if "$A" fork fk 'x;id' >/dev/null 2>&1; then bad "invalid fork name accepted"; else ok "invalid fork name rejected"; fi
+"$A" snap fk s1 >/dev/null 2>&1; "$A" new fk3 --from fk@s1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk3/home/project/f.txt" && ok "new --from via controller" || bad "new --from"
+if "$A" new fk4 --from 'fk;id' >/dev/null 2>&1; then bad "bad --from accepted"; else ok "bad --from rejected"; fi
+for n in fk fk1 fk2 fk3; do "$A" rm "$n" >/dev/null 2>&1 || true; done
 
 # --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9)
 "$A" new w4 >/dev/null 2>&1

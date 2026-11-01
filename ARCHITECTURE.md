@@ -50,13 +50,25 @@ Non-goals (for now): macOS/Windows guests, GPU passthrough, multi-host clusterin
 
 | Component | Where | What |
 |---|---|---|
-| `controller/boxery` | laptop | bash 3.2 CLI: `setup`, `new/ls/rm/start/stop`, `snap/snaps/revert`, `ssh/run/attach/prompt/sessions`, `desktop/forward`, `proxy-log`. Writes `~/.boxery/ssh_config` (`*.boxery` → `ProxyCommand ssh host boxery-host connect %h %p`, ControlMaster). |
-| `host/boxery-host` | host | libvirt wrapper: `init`, `build-base`, `add-key`, VM lifecycle, snapshots, `connect` (nc to VM:22). Per-VM cloud-init seed (keys, token, agent configs). |
+| `controller/boxery` | laptop | bash 3.2 CLI: `setup`, `new/ls/rm/start/stop`, `fork`, `snap/snaps/revert/snap-rm/images`, `ssh/run/attach/prompt/sessions`, `desktop/forward`, `proxy-log`. Writes `~/.boxery/ssh_config` (`*.boxery` → `ProxyCommand ssh host boxery-host connect %h %p`, ControlMaster). |
+| `host/boxery-host` | host | backend-agnostic VM manager: `init`, `build-base`, `add-key`, VM lifecycle, **images** (snapshots, forks, pool clean state), leases, `connect` (nc to VM:22). Per-VM cloud-init seed (keys, token, agent configs, per-instance identity reset). |
 | `image/base-user-data.yaml` | host | Golden image: XFCE, TigerVNC, noVNC, Firefox (deb), Node 22, pi, opencode, tmux, socat, qemu-guest-agent. |
 | `proxy/boxery-proxy.mjs` | host | LLM proxy on 127.0.0.1:8088, also exposed on vsock:8088. Routes `/chatgpt` (Codex OAuth from host `~/.pi/agent/auth.json`, auto-refresh), `/openai`, `/anthropic`, `/ollama`. Per-VM bearer token. Refuses WebSocket, so clients use SSE. |
 | `e2e.sh` | laptop | 10 checks: create, services, proxy, isolation, pi, opencode, background task, desktop tunnel, snapshot/revert, rm. ~34 s. |
 
-Measured: new VM ~13 s, snapshot ~2 s, revert ~6 s (including ssh wait and clock step).
+Measured (libvirt): new VM ~13 s; snapshot (capture) ~1 s on a running VM; revert ~9 s; fork of a running VM into 2 ~17 s, into 3 with a 3 GiB working set ~23 s; lease reset ~9 s.
+
+#### Images: snapshots, forks and resets are one primitive
+
+Every backend implements four operations (`host/backends/README.md`): **capture** a VM's disk into an immutable image `VM@LABEL` (while it runs), **list** and **remove** images, boot a **new** VM from an image, and **reimage** a VM from an image (keeping its identity). On top of that:
+
+```
+snap NAME L      = capture NAME → NAME@L                 revert NAME L  = reimage NAME ← NAME@L
+fork SRC A B…    = capture SRC → SRC@fork-… → new A, B… from it (parallel) → drop the image
+pool add NAME    = capture NAME → NAME@boxery-clean      lease reset    = reimage NAME ← NAME@boxery-clean
+```
+
+Images are disk-only (no RAM: no captured secrets, processes restart) and independent: libvirt pulls image data into each new overlay (`blockpull --base`), so every disk is one overlay deep on the base, however many generations of forks; images can be deleted in any order. A VM from an image gets a fresh identity: new MAC/CID/seed from the backend, and in the guest a per-instance `bootcmd` that wipes `authorized_keys` and machine-id before sshd starts (a fork of a leased VM never accepts the lease key), DHCP keyed by MAC, and new hostname, token and agent config. This replaced libvirt internal snapshots (which paused the guest, could capture RAM with secrets, and didn't exist on Lima vz) and maps directly onto platforms like exe.dev (`cp`) or ZFS/reflink. Pre-image internal snapshots stay usable as "legacy" snapshots.
 
 | `core/boxery-core.mjs` | laptop/host | Shared, dependency-free implementation: ssh transport (`sshRun`, `execRemote` with remote process-group kill), path mapping, file/shell tools, `vm_copy`, computer use, browser (CDP), lifecycle helpers, model guidance text. |
 | `mcp/boxery-mcp.mjs` | laptop (stdio) or host (HTTP) | **MCP server (v0.5):** the same 12 `vm_*` tools for any MCP client. stdio (newline-delimited JSON-RPC, concurrent requests, cancellation) or Streamable HTTP at `/mcp` (POST JSON responses, `Mcp-Session-Id` sessions with their own current VM, bearer token required, optional Tailscale user allowlist via `Tailscale-User-Login`, Origin check). Exposed through `tailscale serve`, never funnel. |
@@ -84,7 +96,7 @@ lease = { vm, profile, holder: "<laptop-host>/<pi-session-id>", lease_id: <rando
 - `boxery acquire --profile P [--holder H] [--ttl 30m] [--wait 2m]` → `{vm, lease_id}`.
   Runs under `flock ~/.config/boxery/leases.lock`: pick the oldest FREE VM in P's pool, otherwise clone a new one if under `pool.max`, otherwise wait or fail.
 - `boxery renew LEASE_ID` (heartbeat from the extension, about every ttl/3). An expired lease cannot be renewed. TTL is bounded (default 30m, max 8h). Deadlines use the host's monotonic clock and boot ID; after a host reboot every lease is treated as expired (conservative fencing).
-- `boxery release LEASE_ID [--keep]`: default **reset** (revert to the profile's `clean` snapshot, back to FREE). `--keep` parks the VM, still dirty, under the holder's name so they can re-acquire it by name later.
+- `boxery release LEASE_ID [--keep]`: default **reset** (reimage from the VM's `clean` image, back to FREE). `--keep` parks the VM, still dirty, under the holder's name so they can re-acquire it by name later.
 - **Reaper** (systemd timer, about 1 min): expired lease → reset → FREE. Laptop sleep or a pi crash never strands a VM.
 - **Guard, enforced at the host gateway, not by the client.** Laptops' keys get a **restricted** `authorized_keys` entry on the host (`command="boxery-host gateway",restrict,port-forwarding`), so a laptop can't bypass boxery-host. The gateway checks the lease on every `connect`/`run`/`snap`/`revert`/`rm`. Admin access uses a separate, unrestricted key.
 - **Fencing on reassignment**: before a VM is reset or handed to a new holder, the host (a) rotates the VM's `agent` authorized_keys to a fresh **per-lease ssh keypair** (sent to the holder at acquire time), (b) kills guest sshd sessions (`loginctl terminate-user agent`), and (c) closes the host-side `connect` processes for that VM. Old ControlMasters and tunnels then die and cannot reconnect.
@@ -189,7 +201,7 @@ Design decision (v0.3): v0.2 *replaced* the built-in tools so they ran in the VM
 
 0. **Hardening of v0**: proxy allowlist + limits; isolated network + nwfilter; restricted host gateway key; versioned base images.
 1. **State + leases**: SQLite state, generations, reconciler, reaper, per-lease ssh keys + fencing, bounded TTLs.
-2. **Profiles**: `plain` (cold reset), then `modem`; memory snapshots only after a profile passes restore tests.
+2. **Profiles**: `plain` (cold reset), then `modem`; memory snapshots only after a profile passes restore tests. Templates are images (`new --from`), so a profile's template = an image captured after `build.sh`.
 3. **Secrets push** (tmpfs) + `env push`; builder VM for build-time tokens.
 4. **pi extension**: fail-closed routing, detach/reset/keep semantics.
 5. **Tests**: concurrent acquire, expiry under laptop sleep, crash mid-acquire, cross-VM and guest→host isolation, secret-retention checks after reset, test from a real Mac.

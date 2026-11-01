@@ -114,16 +114,42 @@ backend_build_base() {
 backend_has_base() { virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1; }
 backend_exists() { exists "$1"; }
 
-backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
-	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 d; d=$(dom "$1")
+# Disks: every VM disk and every image is a qcow2 overlay directly on $BASE_VOL (chain depth 1).
+#   VM disk:  $PREFIX$NAME.qcow2        image:  $PREFIX$IMAGE.qcow2 (IMAGE = vm@label, so '@' marks images)
+# capture = shallow live block copy of a VM's overlay into a new overlay on the base (the VM keeps
+# running; filesystems are frozen through the guest agent for the final sync). A VM made from an image
+# starts on an overlay backed by that image and pulls the image's data into its own overlay
+# (blockpull --base), so it never depends on the image afterwards and images can be deleted any time.
+vol() { echo "$PREFIX$1.qcow2"; }
+vol_path() { echo "$POOL_DIR/$(vol "$1")"; }
+vol_bytes() { virsh vol-info --pool "$POOL" "$(vol "$1")" --bytes | awk '/Capacity/{print $2}'; }
+new_overlay() { # VOLNAME BYTES BACKING_VOL
+	virsh vol-create-as "$POOL" "$1" "$2" --format qcow2 --backing-vol "$3" --backing-vol-format qcow2 >/dev/null
+}
+# Pull everything above the base into the VM's own overlay. Needs the domain running.
+pull_to_base() { # NAME
+	virsh blockpull "$(dom "$1")" vda --base "$POOL_DIR/$BASE_VOL" --wait >/dev/null || die "blockpull failed for $1"
+}
+legacy_snaps() { virsh snapshot-list "$(dom "$1")" --name 2>/dev/null | grep -v '^$' || true; }
+
+backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
+	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d; d=$(dom "$1")
 	local tmp; tmp=$(mktemp -d)
 	printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$name" "$(date +%s)" "$name" >"$tmp/meta-data"
-	cloud-localds "$tmp/seed.iso" "$userdata" "$tmp/meta-data"
+	# DHCP client id = MAC, not the machine-id DUID: a VM made from an image starts with its source's
+	# machine-id and would otherwise get the source's IP lease.
+	printf 'version: 2\nethernets:\n  primary:\n    match:\n      name: "en*"\n    dhcp4: true\n    dhcp-identifier: mac\n' >"$tmp/network-config"
+	cloud-localds --network-config="$tmp/network-config" "$tmp/seed.iso" "$userdata" "$tmp/meta-data"
 	upload_vol "$tmp/seed.iso" "$d-seed.iso" raw
 	rm -rf "$tmp"
-	log "creating $name (${cpus} vCPU, ${mem} MiB, ${disk} GiB overlay on $BASE_VOL)"
-	virsh vol-create-as "$POOL" "$d.qcow2" "${disk}G" --format qcow2 \
-		--backing-vol "$BASE_VOL" --backing-vol-format qcow2 >/dev/null
+	local bytes=$((disk * 1024 * 1024 * 1024)) backing=$BASE_VOL
+	if [[ -n $from ]]; then
+		virsh vol-info --pool "$POOL" "$(vol "$from")" >/dev/null 2>&1 || die "no such image: $from"
+		local ib; ib=$(vol_bytes "$from"); if ((ib > bytes)); then bytes=$ib; fi
+		backing=$(vol "$from")
+	fi
+	log "creating $name (${cpus} vCPU, ${mem} MiB, $((bytes / 1073741824)) GiB overlay on ${from:-$BASE_VOL})"
+	new_overlay "$d.qcow2" "$bytes" "$backing"
 	virt-install --name "$d" --memory "$mem" --vcpus "$cpus" --osinfo ubuntu24.04 \
 		--disk "vol=$POOL/$d.qcow2,bus=virtio" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
 		--network "network=$NET,model=virtio" \
@@ -133,6 +159,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE
 		--metadata "description=boxery $name" \
 		--import --noautoconsole >/dev/null
 	virsh autostart "$d" >/dev/null 2>&1 || true
+	[[ -z $from ]] || pull_to_base "$name"
 	wait_ip "$name" >/dev/null
 }
 
@@ -159,16 +186,66 @@ backend_rm() {
 	local d; d=$(dom "$1")
 	exists "$1" || die "no such vm: $1"
 	virsh destroy "$d" >/dev/null 2>&1 || true
-	virsh snapshot-list "$d" --name 2>/dev/null | while read -r s; do if [[ -n $s ]]; then virsh snapshot-delete "$d" "$s" >/dev/null; fi; done
+	legacy_snaps "$1" | while read -r s; do virsh snapshot-delete "$d" "$s" >/dev/null; done
 	virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null
 	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null 2>&1 || true
 	virsh vol-delete --pool "$POOL" "$d-seed.iso" >/dev/null 2>&1 || true
 }
 
-backend_snap() { # NAME SNAP
-	timeout 600 virsh snapshot-create-as "$(dom "$1")" "$2" --atomic >/dev/null || { virsh resume "$(dom "$1")" >/dev/null 2>&1; die "snapshot failed"; }
+# ---------------------------------------------------------------- images
+backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
+	local name=$1 img=$2 d st started=0 frozen=0 rc=0; d=$(dom "$1")
+	exists "$name" || die "no such vm: $name"
+	st=$(virsh domstate "$d" | head -1)
+	new_overlay "$(vol "$img")" "$(vol_bytes "$name")" "$BASE_VOL" || die "could not create $img"
+	# blockcopy needs a running domain; boot a stopped one paused (the guest never runs).
+	if [[ $st != running && $st != paused ]]; then
+		virsh start "$d" --paused >/dev/null || { virsh vol-delete --pool "$POOL" "$(vol "$img")" >/dev/null; die "could not start $name paused to capture it"; }
+		started=1
+	fi
+	virsh blockcopy "$d" vda "$(vol_path "$img")" --shallow --reuse-external --transient-job --wait >/dev/null || rc=$?
+	if ((rc == 0)); then
+		# Cancelling a mirror that is in sync completes it without pivoting: the copy is a point-in-time
+		# image. Freeze guest filesystems around that moment so it's also filesystem-consistent.
+		if ((!started)) && virsh domfsfreeze "$d" >/dev/null 2>&1; then frozen=1; fi
+		virsh blockjob "$d" vda --abort >/dev/null || rc=$?
+		if ((frozen)); then virsh domfsthaw "$d" >/dev/null || log "warning: could not thaw $name's filesystems"; fi
+	fi
+	if ((started)); then virsh destroy "$d" >/dev/null 2>&1 || true; fi
+	if ((rc != 0)); then virsh vol-delete --pool "$POOL" "$(vol "$img")" >/dev/null 2>&1 || true; die "block copy of $name failed"; fi
+	if ((!started && !frozen)); then log "warning: no guest agent on $name; $img is crash-consistent, not frozen"; fi
 }
-backend_snap_rm() { virsh snapshot-delete "$(dom "$1")" "$2" >/dev/null; }
-backend_snaps() { virsh snapshot-list "$(dom "$1")"; }
-backend_snap_names() { virsh snapshot-list "$(dom "$1")" --name | sed '/^$/d'; }
-backend_revert() { virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null; }
+
+backend_images() { # → IMAGE<TAB>CREATED<TAB>SIZE
+	virsh pool-refresh "$POOL" >/dev/null 2>&1 || true
+	virsh vol-list "$POOL" 2>/dev/null | awk -v p="$PREFIX" 'NR > 2 && index($1, p) == 1 && $1 ~ /@.*\.qcow2$/ {print $1}' | while read -r v; do
+		local i=${v#"$PREFIX"}; i=${i%.qcow2}
+		local x; x=$(virsh vol-dumpxml --pool "$POOL" "$v")
+		local m; m=$(sed -n 's:.*<mtime>\([0-9]*\)\..*</mtime>.*:\1:p' <<<"$x" | head -1)
+		local a; a=$(sed -n "s:.*<allocation unit='bytes'>\([0-9]*\)</allocation>.*:\1:p" <<<"$x" | head -1)
+		printf '%s\t%s\t%sMiB\n' "$i" "$(date -d "@$m" +%Y-%m-%dT%H:%M:%S 2>/dev/null)" "$((a / 1048576))"
+	done
+}
+backend_image_rm() { virsh vol-delete --pool "$POOL" "$(vol "$1")" >/dev/null || die "could not remove image $1"; }
+
+backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends running)
+	local name=$1 img=$2 d; d=$(dom "$1")
+	exists "$name" || die "no such vm: $name"
+	virsh vol-info --pool "$POOL" "$(vol "$img")" >/dev/null 2>&1 || die "no such image: $img"
+	local legacy; legacy=$(legacy_snaps "$name" | tr '\n' ' ')
+	[[ -z $legacy ]] || die "$name has snapshots from an older boxery ($legacy); revert to or delete them first (boxery-host snap-rm $name SNAP)"
+	local bytes ib; bytes=$(vol_bytes "$name"); ib=$(vol_bytes "$img"); if ((ib > bytes)); then bytes=$ib; fi
+	virsh destroy "$d" >/dev/null 2>&1 || true
+	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null || die "could not remove $name's disk"
+	new_overlay "$d.qcow2" "$bytes" "$(vol "$img")" || die "could not create $name's disk from $img"
+	virsh start "$d" >/dev/null || die "could not start $name"
+	pull_to_base "$name"
+}
+
+# VMs from before images used libvirt internal snapshots. Still listed, revertable and deletable.
+backend_legacy_snaps() { legacy_snaps "$1"; }
+backend_legacy_revert() { # NAME SNAP → 1 if there is no such internal snapshot
+	legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1
+	virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null || die "revert failed"
+}
+backend_legacy_snap_rm() { legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1; virsh snapshot-delete "$(dom "$1")" "$2" >/dev/null; }
