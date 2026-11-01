@@ -3,7 +3,10 @@ import { copyTool, withHost } from "../../core/boxery-core.mjs";
 const [from, to, settings = "{}"] = process.argv.slice(2);
 const options = JSON.parse(settings);
 const ac = new AbortController();
-process.on("message", (message) => { if (message === "abort") ac.abort(); });
+process.on("message", (message) => {
+	if (message === "abort") ac.abort();
+	if (message === "inspect" && process.connected) process.send({ handles: process._getActiveHandles().map((h) => ({ type: h.constructor.name, pid: h.pid, exitCode: h.exitCode, signalCode: h.signalCode, destroyed: h.destroyed, readable: h.readable, writable: h.writable })) });
+});
 process.once("disconnect", () => ac.abort());
 if (options.preabort) ac.abort();
 let peakBuffers = process.memoryUsage().arrayBuffers;

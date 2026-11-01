@@ -5,7 +5,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test as nodeTest } from "node:test";
+const test = (name, fn) => nodeTest(name, { timeout: 45_000 }, fn);
 import { q } from "../core/shell.mjs";
 
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures");
@@ -30,11 +31,21 @@ function worker(from, to, extra = {}, settings = {}) {
 		env: { ...env, ...extra }, cwd: dir, stdio: ["ignore", "pipe", "pipe", "ipc"],
 	});
 	children.push(child);
-	let out = "", err = "";
+	let out = "", err = "", inspection;
+	child.on("message", (message) => { inspection = message; });
+	const deadline = setTimeout(() => { if (child.connected) child.send("inspect"); }, 25_000);
+	const hardDeadline = setTimeout(() => {
+		const pids = [...new Set([child.pid, ...logs().flatMap((r) => [r.pid, r.pgid]).filter(Boolean)])];
+		let processes = "";
+		try { processes = execFileSync("ps", ["-p", pids.join(","), "-o", "pid=,ppid=,pgid=,stat=,args="], { encoding: "utf8" }); } catch {}
+		err += `\nTimed out. Handles: ${JSON.stringify(inspection)}\n${processes}\nEvents: ${JSON.stringify(logs())}`;
+		child.kill("SIGKILL");
+	}, 30_000);
 	child.stdout.on("data", (d) => { out += d; }); child.stderr.on("data", (d) => { err += d; });
 	child.result = new Promise((resolve, reject) => {
 		child.on("error", reject);
 		child.on("close", () => {
+			clearTimeout(deadline); clearTimeout(hardDeadline);
 			try { resolve(JSON.parse(out)); }
 			catch { reject(new Error(`copy worker produced no result: ${err} ${out}`)); }
 		});
@@ -90,6 +101,7 @@ beforeEach(() => {
 	for (const [bin, script] of [["ssh", "copy-ssh.mjs"], ["tar", "copy-tar.mjs"]]) {
 		writeFileSync(path.join(dir, "bin", bin), `#!/usr/bin/env bash\nexec ${q(process.execPath)} ${q(path.join(FIXTURES, script))} "$@"\n`, { mode: 0o755 });
 	}
+	if (process.env.COPY_TEST_SH) writeFileSync(path.join(dir, "bin", "sh"), `#!/usr/bin/env bash\nexec ${q(process.env.COPY_TEST_SH)} "$@"\n`, { mode: 0o755 });
 	// macOS has no setsid; emulate a new group with the same PID, as in existing MCP tests.
 	writeFileSync(path.join(dir, "bin", "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n", { mode: 0o755 });
 	env = { ...process.env, PATH: `${path.join(dir, "bin")}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), COPY_ROOT: dir, COPY_LOG: path.join(dir, "calls"), REAL_TAR: process.env.COPY_TEST_TAR ?? execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim() };
