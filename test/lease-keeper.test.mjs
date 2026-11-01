@@ -4,15 +4,16 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { registerHost } from "./fixtures/register-host.mjs";
 
 const dir = mkdtempSync(path.join(tmpdir(), "boxery-lease-"));
 const calls = path.join(dir, "calls");
 const failRenew = path.join(dir, "renew-fails");
-mkdirSync(path.join(dir, "home"));
+registerHost(path.join(dir, "home"));
 writeFileSync(
 	path.join(dir, "boxery"),
 	`#!/usr/bin/env bash
-[ "$1" != --host ] || shift 2
+[ "$1" != --host ] || shift 4 # --host NAME --profile-dir DIR
 echo "$*" >> ${calls}
 case "$1" in
 acquire) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;

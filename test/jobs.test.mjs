@@ -39,12 +39,13 @@ before(() => {
 	home = path.join(dir, "home");
 	mkdirSync(bin);
 	mkdirSync(path.join(home, "host-registry"), { recursive: true });
+	writeFileSync(path.join(home, "default-host"), "home\n");
 	for (const name of ["home", "alpha", "beta"]) {
 		const profile = name === "home" ? home : path.join(home, "profiles", name);
 		mkdirSync(profile, { recursive: true });
 		writeFileSync(path.join(profile, "config"), "HOST='local'\n");
 		writeFileSync(path.join(profile, "ssh_config"), "# test\n");
-		if (name !== "home") writeFileSync(path.join(home, "host-registry", name), `${profile}\n`);
+		writeFileSync(path.join(home, "host-registry", name), `${profile}\n`);
 		mkdirSync(path.join(vmhome(name), "project", "dir with space"), { recursive: true });
 	}
 	const stub = (name, content) => {
@@ -89,7 +90,7 @@ wait $s
 	stub("tmux", fakeTmux()); // shared fake: test/fake-tmux.mjs
 	// macOS has no setsid: emulate it with perl (new session, then exec).
 	if (spawnSync("sh", ["-c", "command -v setsid"]).status !== 0) stub("setsid", "#!/bin/bash\nexec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die' -- \"$@\"\n");
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: home, BOXERY_HOST: "", BOXERY_VM: "", HOME: path.join(dir, "local-home") };
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: home, BOXERY_VM: "", HOME: path.join(dir, "local-home") };
 });
 
 after(async () => {

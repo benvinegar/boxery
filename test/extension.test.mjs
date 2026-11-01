@@ -6,13 +6,15 @@ import * as nodeModule from "node:module"; // namespace import: Node < 22.15 has
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { registerHost } from "./fixtures/register-host.mjs";
 
 const canLoad = !!process.features.typescript && typeof nodeModule.registerHooks === "function"; // Node >= 22.18
 process.env.BOXERY_HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
+registerHost(process.env.BOXERY_HOME);
 // A stub controller: no grants yet; every call is recorded.
 const CALLS = path.join(process.env.BOXERY_HOME, "calls");
 process.env.BOXERY_BIN = path.join(process.env.BOXERY_HOME, "boxery");
-writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\n[ "$1" != --host ] || shift 2\necho "$*" >> ${JSON.stringify(CALLS)}\ncase "$*" in *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
+writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\nwhile [ "$1" = --host ] || [ "$1" = --profile-dir ]; do shift 2; done\necho "$*" >> ${JSON.stringify(CALLS)}\ncase "$*" in *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
 chmodSync(process.env.BOXERY_BIN, 0o755);
 
 // Stand-in for @earendil-works/pi-coding-agent: tool engines with their own parameter schemas.
@@ -80,17 +82,17 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		assert.match(ok.content[0].text, /^The user approved: demo now has ssh-agent/);
 		assert.equal(readFileSync(CALLS, "utf8").trim().split("\n").at(-1), "grant demo ssh-agent");
 		assert.equal(asked[0].title, "boxery: grant VM access?");
-		assert.match(asked[0].message, /^Give VM "demo" access to:/);
+		assert.match(asked[0].message, /^Give VM "demo" on host "test" access to:/);
 		const no = await grant.execute("2", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, ui(false));
 		assert.match(no.content[0].text, /^The user declined/);
-		await assert.rejects(grant.execute("3", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, { hasUI: false, ui: {} }), /can't show the user an approval prompt[\s\S]*boxery grant demo ssh-agent/);
+		await assert.rejects(grant.execute("3", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, { hasUI: false, ui: {} }), /can't show the user an approval prompt[\s\S]*boxery --host test grant demo ssh-agent/);
 	});
 
 	it("vm_lease runs on the extension's lease keeper", async () => {
 		const { tools } = await load();
 		const lease = tools.get("vm_lease");
 		assert.deepEqual((await lease.execute("1", { action: "list" }, undefined, undefined, {})).content, [{ type: "text", text: "this session holds no leases" }]);
-		await assert.rejects(lease.execute("2", { action: "release", name: "pool-1" }, undefined, undefined, {}), /holds no lease on pool-1/);
+		await assert.rejects(lease.execute("2", { action: "release", vm: "pool-1" }, undefined, undefined, {}), /holds no lease on pool-1/);
 		await assert.rejects(lease.execute("3", { action: "renew" }, undefined, undefined, {}), /invalid VM name/);
 	});
 });

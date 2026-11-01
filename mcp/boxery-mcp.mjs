@@ -51,33 +51,39 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // ---------------------------------------------------------------- tools
 
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
-// vm_manage gains hosts/host (vm_info gains hosts) because the session's host is MCP state.
+// vm_manage gains host (vm_info gains hosts) because the session's host is MCP state.
 // vm_manage/vm_lease act on the session's current VM and leases.
-const HOST_ACTIONS = ["hosts", "host", "host_add", "host_rm"];
-const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
+const HOST_ACTIONS = ["host", "host_add", "host_rm"];
+const hostProp = {
+	host: {
+		type: "string",
+		description: "Registered host name (see vm_info {action:\"hosts\"} for where each runs); default: this session's host. " +
+			"Names registered for the same profile directory (hosts shows same_as) are the same host.",
+	},
+};
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
 	...t,
 	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, ...HOST_ACTIONS].join(" | "))} ` +
-		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. " +
+		"`host` selects a session host via host:NAME and clears the current VM (vm_info hosts lists them). " +
 		"`host_add` registers a new host: name (its alias), dest (`local` = the machine this server runs on, or an ssh destination such as user@box) and, " +
 		"to create a separate profile there for another VM platform, backend (libvirt | lima | cloud-hypervisor | exe | boat; it gets its own state, proxy port and services), " +
 		"or profile to use one that already exists there; buildBase:true then runs build-base on it. " +
-		"It uses the user's default ssh key and never changes the CLI default; select it afterwards with action:'host'. " +
+		"It uses the user's default ssh key and becomes the CLI default only if there is none; select it afterwards with action:'host'. " +
 		"`host_rm` forgets registered host `name` (only the registration: its VMs, profile data and grants stay; the CLI default can't be removed). Credentials and grants remain user-controlled.",
 	parameters: {
 		...t.parameters,
 		properties: {
 			...t.parameters.properties,
 			action: { type: "string", enum: [...MANAGE_ACTIONS, ...HOST_ACTIONS] },
+			name: { type: "string", description: "host_add/host_rm: the host's alias (a host, not a VM; VMs are `vm`)" },
 			dest: { type: "string", description: "host_add: local, or an ssh destination (user@host or an ssh-config alias)" },
 			backend: { type: "string", description: "host_add: create a new profile on dest for this backend (libvirt | lima | cloud-hypervisor | exe | boat)" },
 			profile: { type: "string", description: "host_add: use this existing profile on dest (default: with backend, the host name)" },
 			buildBase: { type: "boolean", description: "host_add: then build the desktop base image (~3 min)" },
 		},
 	},
-	async run(_vm, a, { session, host, current, progress }) {
-		if (a.action === "hosts") return hostsResult(host);
+	async run(_vm, a, { session, host, progress }) {
 		if (a.action === "host_add") {
 			if (Object.hasOwn(a, "host")) throw new Error("host_add takes the new host's alias as name, not host");
 			const out = await core.addHost(a, { progress });
@@ -92,7 +98,7 @@ const manageMcp = (t) => ({
 			return { text: session.host.name === a.name ? `${out}\nthis session still uses ${a.name} until you select another host` : out };
 		}
 		if (a.action === "host") {
-			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
+			if (a.host == null) throw new Error("host selection requires host:NAME");
 			session.host = host;
 			session.current = null;
 			session.currentHost = null;
@@ -100,9 +106,7 @@ const manageMcp = (t) => ({
 		}
 		const adopt = (name) => { session.current = name; session.host = session.currentHost = host; };
 		return manageAction(a, {
-			current,
 			keeper: session.keeper,
-			listNote: ` (host: ${host.name})`,
 			progress,
 			async use(name) {
 				await core.ensureVm(name, progress);
@@ -117,18 +121,40 @@ const manageMcp = (t) => ({
 });
 const infoMcp = (t) => ({
 	...t,
-	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts.`,
+	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts: where each runs (local or its ssh destination), its backend, and which names share a profile (same host).`,
 	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...INFO_ACTIONS, "hosts"] } } },
-	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: { type: "array", items: { type: "object" } } } },
+	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: HOSTS_SCHEMA } },
 	async run(_vm, a, { host, current }) {
 		if (a.action === "hosts") return hostsResult(host);
 		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})`, hostName: host.name });
 		return a.action === "list" ? { ...r, structured: { ...r.structured, host: host.name } } : r;
 	},
 });
+const HOSTS_SCHEMA = {
+	type: "array",
+	description: "Registered hosts, by name. Read from local profile files only; no host is contacted.",
+	items: {
+		type: "object",
+		properties: {
+			name: { type: "string", description: "Host name for the host parameter" },
+			destination: { type: ["string", "null"], description: "Where its VM host runs: \"local\" (the machine running this MCP server's controller) or the ssh destination (user@host or ssh-config alias); null if the profile has no destination set or it can't be read without executing the config" },
+			backend: { type: ["string", "null"], description: "VM backend (lima, libvirt, cloud-hypervisor, exe, boat, …) as recorded by `boxery setup` or `boxery --host NAME backend`; null if never recorded" },
+			current: { type: "boolean", description: "This session's host (used when host is omitted)" },
+			default: { type: "boolean", description: "The controller's default (default-host); new sessions start here unless started with --host" },
+			same_as: { type: "array", items: { type: "string" }, description: "Other names whose profile is the same directory, i.e. the same host and VMs" },
+			dir: { type: "string", description: "Profile directory (config, ssh_config, grants)" },
+		},
+		required: ["name", "destination", "backend", "current", "default", "same_as", "dir"],
+	},
+};
 function hostsResult(host) {
-	const hosts = core.registeredHosts().map((h) => ({ name: h.name, dir: h.dir, current: h.name === host.name }));
-	return { text: hosts.map((h) => `${h.name}${h.current ? " *" : ""}\t${h.dir}`).join("\n"), structured: { hosts } };
+	const hosts = core.describeHosts().map(({ name, destination, backend, default: def, same_as, dir }) =>
+		({ name, destination, backend, current: name === host.name, default: def, same_as, dir }));
+	const row = (h) => [`${h.name}${h.current ? " *" : ""}`, h.destination ?? "-", h.backend ?? "-",
+		[h.default && "default", h.same_as.length && `same host as ${h.same_as.join(", ")}`].filter(Boolean).join("; ") || "-", h.dir].join("\t");
+	const text = ["NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE", ...hosts.map(row),
+		"(* = this session's host; destination local = the machine running this server; backend - = not recorded, run boxery --host NAME backend)"].join("\n");
+	return { text, structured: { hosts } };
 }
 const leaseMcp = (t) => ({
 	...t,
@@ -318,7 +344,7 @@ async function callTool(session, params, signal, progress, send) {
 		let vm = null;
 		if (!tool.noVm) {
 			vm = args.vm || current;
-			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', name:…} first.");
+			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', vm:…} first.");
 			core.assertName(vm);
 		}
 		const { vm: _drop, ...rest } = args;

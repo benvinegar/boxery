@@ -5,7 +5,7 @@
 set -eu
 
 # Registry: host-registry/NAME contains one absolute profile directory; default-host contains NAME.
-# "legacy" is reserved for the root profile (and explicitly bypasses a named default).
+# Every host is a registered NAME; BOXERY_HOME itself is only the registry root.
 ROOT_DIR="${BOXERY_HOME:-$HOME/.boxery}"
 REGISTRY="$ROOT_DIR/host-registry"
 TAB=$(printf '\t')
@@ -27,8 +27,8 @@ json_array() { # element per line on stdin → JSON array
 }
 has_flag() { f=$1; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
 
-valid_alias() { valid_vm "${1:-}" && [ "$1" != legacy ]; }
-need_alias() { valid_alias "${1:-}" || die "invalid host name: ${1:-} (legacy is reserved)"; }
+valid_alias() { valid_vm "${1:-}"; }
+need_alias() { valid_alias "${1:-}" || die "invalid host name: ${1:-}"; }
 # Only an absent path means "no selection"; symlinks (even dangling ones) are metadata.
 metadata_present() { [ -e "$1" ] || [ -L "$1" ]; }
 # Registry files are regular, readable data files, never shell snippets or symlinks.
@@ -40,15 +40,15 @@ one_line() {
 	cmp -s "$1" <(printf '%s\n' "$line") || die "invalid registry file: $1 (noncanonical bytes)"
 	printf '%s\n' "$line"
 }
+# The default host's NAME, or nothing when none is selected.
 default_host() {
-	local name=legacy
-	if metadata_present "$ROOT_DIR/default-host"; then name=$(one_line "$ROOT_DIR/default-host"); fi
+	metadata_present "$ROOT_DIR/default-host" || return 0
+	local name; name=$(one_line "$ROOT_DIR/default-host")
 	profile_dir "$name" >/dev/null
 	printf '%s\n' "$name"
 }
 plain_path() { case $1 in *"$NL"*|*"$TAB"*|*$(printf '\r')*) die "paths cannot contain line breaks or tabs" ;; esac; }
 profile_dir() {
-	if [ "$1" = legacy ]; then printf '%s\n' "$ROOT_DIR"; return; fi
 	need_alias "$1"
 	metadata_present "$REGISTRY/$1" || die "unknown host: $1"
 	dir=$(one_line "$REGISTRY/$1")
@@ -57,18 +57,24 @@ profile_dir() {
 	[ -f "$dir/config" ] && [ -f "$dir/ssh_config" ] || die "incomplete profile: $1 ($dir)"
 	printf '%s\n' "$dir"
 }
+# select_profile NAME [DIR]: DIR (MCP/pi pass the directory they resolved) skips the registry lookup.
 select_profile() {
 	selected=${1:-}
 	if [ -z "$selected" ]; then selected=$(default_host); fi
-	CONF_DIR=$(profile_dir "$selected")
-	CONF_FILE="$CONF_DIR/config"; SSH_CONF="$CONF_DIR/ssh_config"; GRANTS_DIR="$CONF_DIR/grants"; LEASES_DIR="$CONF_DIR/leases"
-	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
+	[ -n "$selected" ] || die "no host configured; run: boxery setup user@host|local (or boxery host use NAME)"
+	if [ -n "${2:-}" ]; then
+		CONF_DIR=$2
+		case $CONF_DIR in /*) ;; *) die "invalid profile directory: $CONF_DIR" ;; esac
+		plain_path "$CONF_DIR"
+	else CONF_DIR=$(profile_dir "$selected"); fi
+	set_profile_paths "$CONF_DIR"
 	# Configs are trusted, user-owned shell files. Never source registry pointers as shell code.
 	# shellcheck source=/dev/null
 	[ ! -f "$CONF_FILE" ] || . "$CONF_FILE"
-	if [ "$selected" = legacy ]; then
-		HOST="${BOXERY_HOST:-$HOST}"; HOST_BIN="${BOXERY_HOST_BIN:-$HOST_BIN}"
-	fi
+}
+set_profile_paths() {
+	CONF_DIR=$1; CONF_FILE="$1/config"; SSH_CONF="$1/ssh_config"; GRANTS_DIR="$1/grants"; LEASES_DIR="$1/leases"
+	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
 }
 # Literal shell serialization (unlike printf %q, never allows a leading ~ to expand on source).
 literal() { local s=$1; s=${s//\'/\'\\\'\'}; printf "'%s'" "$s"; }
@@ -100,7 +106,7 @@ valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" 
 valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
 need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
 valid_image() { case "${1:-}" in *@*) valid_vm "${1%%@*}" && valid_snap "${1#*@}" ;; *) return 1 ;; esac; }
-need_host() { [ -n "$HOST" ] || die "not configured; run: boxery setup user@host"; }
+need_host() { [ -n "$HOST" ] || die "host $selected is not configured; run: boxery setup user@host|local --name $selected"; }
 # HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
 is_local() { [ "$HOST" = local ]; }
 # shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
@@ -169,10 +175,36 @@ write_ssh_config() {
 	} >"$SSH_CONF"
 }
 
+# setup DEST [--name NAME] ...: (re)configure host NAME, registering it first if it is new.
+# NAME defaults to "local" or DEST's host part (you@hornet.example → hornet).
+setup_name() {
+	local d=$1
+	if [ "$d" = local ]; then echo local; return; fi
+	d=${d##*@}; d=${d%%.*}; d=$(printf '%s' "$d" | tr 'A-Z_' 'a-z-')
+	valid_alias "$d" || die "cannot derive a host name from $1; pass --name NAME"
+	printf '%s\n' "$d"
+}
+cmd_setup_named() {
+	local usage="usage: boxery setup user@host|local [--name NAME] [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH] [--profile P] [--backend B]"
+	[ $# -ge 1 ] || die "$usage"
+	local name=""; local -a args=()
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--name) [ $# -ge 2 ] || die "--name needs a value"; name=$2; shift 2 ;;
+		--key | --host-bin | --profile | --backend) [ $# -ge 2 ] || die "$1 needs a value"; args+=("$1" "$2"); shift 2 ;;
+		*) args+=("$1"); shift ;;
+		esac
+	done
+	[ ${#args[@]} -gt 0 ] || die "$usage"
+	[ -n "$name" ] || name=$(setup_name "${args[0]}") || exit 1
+	need_alias "$name"
+	if metadata_present "$REGISTRY/$name"; then select_profile "$name"; SETUP_PROFILE=$name cmd_setup "${args[@]}"
+	else cmd_host add "$name" "${args[@]}"; fi
+}
 # --profile P: use profile P on the host (boxery-host --profile P). --backend B: create it first
 # (boxery-host --profile P init --backend B: its own state, proxy port and services; re-running is safe).
 cmd_setup() {
-	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH] [--profile P [--backend B]]"
+	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--name NAME] [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH] [--profile P [--backend B]]"
 	HOST=$1; shift
 	pub="" backend=""
 	while [ $# -gt 0 ]; do
@@ -216,8 +248,11 @@ cmd_setup() {
 	} >"$CONF_FILE.tmp.$$"
 	mv "$CONF_FILE.tmp.$$" "$CONF_FILE"
 	write_ssh_config
-	if [ "$CONF_DIR" != "$ROOT_DIR" ] || [ "${selected:-legacy}" != legacy ]; then
-		echo "==> named profile: use boxery --host NAME ssh VM (do not globally Include multiple profiles' *.boxery aliases)"
+	b=$(record_backend); [ -z "$b" ] || echo "==> backend: $b"
+	# Only the default host gets the global Include: several profiles' *.boxery aliases would be ambiguous.
+	local def; def=$(default_host)
+	if [ -n "$def" ] && [ "$def" != "$selected" ]; then
+		echo "==> not the default host: use boxery --host $selected ssh VM (do not globally Include multiple profiles' *.boxery aliases)"
 	elif [[ $SSH_CONF == *%* ]]; then
 		# Older OpenSSH treats Include's % literally; newer clients expand percent tokens.
 		# No single escaping is portable across both. -F already handles this path literally.
@@ -230,45 +265,99 @@ cmd_setup() {
 		fi
 	fi
 	if [ -n "$backend" ]; then
-		hint="boxery build-base"; [ "${selected:-legacy}" = legacy ] || hint="boxery --host $selected build-base"
+		hint="boxery build-base"; [ "$selected" = "$(default_host)" ] || hint="boxery --host $selected build-base"
 		echo "==> done. Headless VMs work now; desktop VMs need the base image once (~3 min): $hint"
 	else echo "==> done. Try: boxery new demo"; fi
 }
 
+# The host's VM backend, recorded in the profile's `backend` file (one line of data, never sourced) so
+# host listings need no round-trip. Best effort: a host that predates `boxery-host backend`, or fails,
+# leaves no record rather than a stale one. Prints the backend, or nothing.
+record_backend() {
+	local b
+	b=$(h backend 2>/dev/null </dev/null) || b=""
+	if valid_vm "$b"; then printf '%s\n' "$b" >"$CONF_DIR/backend.tmp.$$" && mv "$CONF_DIR/backend.tmp.$$" "$CONF_DIR/backend"
+	else rm -f "$CONF_DIR/backend"; b=""; fi
+	printf '%s\n' "$b"
+}
+cmd_backend() {
+	[ $# -eq 0 ] || die "usage: boxery backend"
+	b=$(record_backend)
+	[ -n "$b" ] || die "could not read the host's backend (does it predate 'boxery-host backend'? see: boxery version)"
+	printf '%s\n' "$b"
+}
+# Where a profile's VM host runs, as the controller resolves it: its config is sourced (trusted, in a
+# subshell). Prints local, an ssh destination, or nothing.
+profile_dest() { # DIR
+	(
+		HOST=""
+		if [ -f "$1/config" ]; then . "$1/config" >/dev/null 2>&1 </dev/null || exit 0; fi
+		if valid_dest "$HOST"; then printf '%s\n' "$HOST"; fi
+	) || true
+}
+profile_backend() { # DIR → recorded backend, or nothing
+	local b
+	[ -f "$1/backend" ] || return 0
+	b=$(cat -- "$1/backend" 2>/dev/null) || b=""
+	if valid_vm "$b"; then printf '%s\n' "$b"; fi # one line
+}
+# NAME, DEFAULT, CONFIG_DIR, then where it runs: DESTINATION (local or ssh destination), BACKEND (as
+# recorded) and SAME_AS (other names registered for the same profile directory).
+# Field names match vm_info {action:"hosts"}; nothing contacts a host.
+host_ls() { # [--json]
+	local json=false def rows alias dir c dest backend same
+	case ${1:-} in '') ;; --json) json=true; shift ;; esac
+	[ $# -eq 0 ] || die "usage: boxery host ls [--json]"
+	def=$(default_host)
+	# NAME<TAB>DIR<TAB>CANONICAL_DIR per line (profile paths cannot contain tabs or newlines).
+	rows=""
+	for f in "$REGISTRY"/*; do alias=${f##*/}; valid_alias "$alias" || continue
+		dir=$(profile_dir "$alias"); c=$(cd "$dir" 2>/dev/null && pwd -P) || c=$dir
+		rows="$rows$alias$TAB$dir$TAB$c$NL"
+	done
+	"$json" || printf 'NAME\tDEFAULT\tCONFIG_DIR\tDESTINATION\tBACKEND\tSAME_AS\n'
+	while IFS="$TAB" read -r alias dir c; do
+		[ -n "$alias" ] || continue
+		dest=$(profile_dest "$dir"); backend=$(profile_backend "$dir")
+		same=$(printf '%s' "$rows" | N=$alias D=$c awk -F "$TAB" '$1 != ENVIRON["N"] && $3 == ENVIRON["D"] { print $1 }')
+		if "$json"; then
+			printf '{"name":%s,"dir":%s,"default":%s,"destination":%s,"backend":%s,"same_as":%s}\n' "$(json_text "$alias")" "$(json_text "$dir")" \
+				"$([ "$def" = "$alias" ] && printf true || printf false)" "$(json_str_or_null "$dest")" "$(json_str_or_null "$backend")" \
+				"[$(printf '%s' "$same" | awk 'NF { printf "%s\"%s\"", (n++ ? "," : ""), $0 }')]"
+		else
+			printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$alias" "$([ "$def" != "$alias" ] || printf '*')" "$dir" "${dest:--}" "${backend:--}" \
+				"$(printf '%s' "$same" | awk 'NF { printf "%s%s", (n++ ? "," : ""), $0 } END { if (!n) printf "-" }')"
+		fi
+	done <<<"$rows" | if "$json"; then json_array; else cat; fi
+}
+
 # Host mutations share a lock; registration/default files are published with atomic rename.
+set_default() { printf '%s\n' "$1" >"$ROOT_DIR/default-host.tmp.$$"; mv "$ROOT_DIR/default-host.tmp.$$" "$ROOT_DIR/default-host"; }
 cmd_host() {
 	action=${1:-ls}; [ $# -eq 0 ] || shift
 	case $action in
-	ls) [ $# -eq 0 ] || die "usage: boxery host ls"
-		def=$(default_host)
-		printf 'NAME\tDEFAULT\tCONFIG_DIR\n'
-		printf 'legacy\t%s\t%s\n' "$([ "$def" != legacy ] || printf '*')" "$ROOT_DIR"
-		for f in "$REGISTRY"/*; do alias=${f##*/}; valid_alias "$alias" || continue
-			dir=$(profile_dir "$alias")
-			printf '%s\t%s\t%s\n' "$alias" "$([ "$def" != "$alias" ] || printf '*')" "$dir"
-		done; return ;;
+	ls) host_ls "$@"; return ;;
 	show) [ $# -eq 1 ] || die "usage: boxery host show NAME"; profile_dir "$1"; return ;;
 	add|use|rm) ;;
 	*) die "usage: boxery host add|ls|show|use|rm" ;;
 	esac
 	[ $# -ge 1 ] || die "host $action needs a name"
 	alias=$1; shift
-	if [ "$action" != use ] || [ "$alias" != legacy ]; then need_alias "$alias"; fi
+	need_alias "$alias"
 	mkdir -p "$REGISTRY"
 	mkdir "$REGISTRY/.lock" 2>/dev/null || die "host registry is locked; retry"
 	cleanup_profile=""
 	trap '[ -z "$cleanup_profile" ] || rm -rf "$cleanup_profile"; rmdir "$REGISTRY/.lock"' EXIT
 	case $action in
-	use) [ $# -eq 0 ] || die "usage: boxery host use NAME|legacy"
+	use) [ $# -eq 0 ] || die "usage: boxery host use NAME"
 		profile_dir "$alias" >/dev/null
-		# Do not overwrite/remove malformed metadata, or let mv move a file INTO a directory.
+		# Do not overwrite malformed metadata, or let mv move a file INTO a directory.
 		def=$(default_host)
-		if [ "$alias" = legacy ]; then rm -f "$ROOT_DIR/default-host"
-		else printf '%s\n' "$alias" >"$ROOT_DIR/default-host.tmp.$$"; mv "$ROOT_DIR/default-host.tmp.$$" "$ROOT_DIR/default-host"; fi ;;
+		set_default "$alias" ;;
 	rm) [ $# -eq 0 ] || die "usage: boxery host rm NAME"
 		[ -f "$REGISTRY/$alias" ] || die "unknown host: $alias"
 		def=$(default_host)
-		[ "$def" != "$alias" ] || die "cannot forget selected default; first run host use OTHER or host use legacy"
+		[ "$def" != "$alias" ] || die "cannot forget the default host; first run boxery host use OTHER"
 		rm "$REGISTRY/$alias"
 		echo "forgot $alias; profile data, VMs and grants were NOT deleted or revoked" ;;
 	add) ! metadata_present "$REGISTRY/$alias" || die "host already registered: $alias"
@@ -281,14 +370,15 @@ cmd_host() {
 			dir="$ROOT_DIR/profiles/$alias"
 			! metadata_present "$dir" || die "profile data already exists: $dir (import it explicitly)"
 			mkdir -p "$dir"; cleanup_profile=$dir
-			CONF_DIR=$dir; CONF_FILE="$dir/config"; SSH_CONF="$dir/ssh_config"; GRANTS_DIR="$dir/grants"; LEASES_DIR="$dir/leases"
-			HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
-			selected=$alias SETUP_PROFILE=$alias cmd_setup "$@"
+			selected=$alias; set_profile_paths "$dir"
+			SETUP_PROFILE=$alias cmd_setup "$@"
 		fi
 		plain_path "$dir"
 		printf '%s\n' "$dir" >"$REGISTRY/.tmp.$$"; mv "$REGISTRY/.tmp.$$" "$REGISTRY/$alias"
 		cleanup_profile=""
-		echo "registered $alias ($dir); select with: boxery host use $alias" ;;
+		# The first host becomes the default: there is no implicit host to fall back to.
+		if [ -z "$(default_host)" ]; then set_default "$alias"; echo "registered $alias ($dir); it is the default host"
+		else echo "registered $alias ($dir); select with: boxery host use $alias"; fi ;;
 	esac
 }
 
@@ -986,8 +1076,8 @@ cmd_ls() { # [--json]
 	out=$(h ls) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
-		if [ "$n" = NAME ]; then printf '%-85s %s\n' "$line" GRANTS
-		else printf '%-85s %s\n' "$line" "$(grants_summary "$n")"; fi
+		if [ "$n" = NAME ]; then printf '%-90s %s\n' "$line" GRANTS
+		else printf '%-90s %s\n' "$line" "$(grants_summary "$n")"; fi
 	done
 }
 
@@ -1037,7 +1127,7 @@ controller_version() { # → VERSION<TAB>DESCRIBE (DESCRIBE empty outside a git 
 	local root v d=""
 	root=$(controller_root)
 	v=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$root/package.json" 2>/dev/null | head -1)
-	if [ -e "$root/.git" ] && command -v git >/dev/null 2>&1; then d=$(git -C "$root" describe --tags --always 2>/dev/null) || d=""; fi
+	if [ -e "$root/.git" ] && command -v git >/dev/null 2>&1; then d=$(git -C "$root" describe --tags --always --dirty 2>/dev/null) || d=""; fi
 	printf '%s\t%s\n' "${v:-unknown}" "$d"
 }
 # The host's `version --json` → VERSION<TAB>DESCRIBE<TAB>INSTALL. Fails on hosts that predate the command.
@@ -1074,7 +1164,7 @@ skew_note() {
 	[ -n "$behind" ] || return 0
 	printf 'host %s is older than this controller (%s); upgrade it: %s\n' "${4:-$3}" "${2:-$1}" "$(upgrade_hint)"
 }
-upgrade_hint() { if [ "${selected:-legacy}" = legacy ]; then echo "boxery upgrade-host"; else echo "boxery --host $selected upgrade-host"; fi; }
+upgrade_hint() { if [ "$selected" = "$(default_host 2>/dev/null)" ]; then echo "boxery upgrade-host"; else echo "boxery --host $selected upgrade-host"; fi; }
 
 cmd_version() { # [--json]
 	local cv cd hv="" hd="" hi="" note="" line
@@ -1087,14 +1177,14 @@ cmd_version() { # [--json]
 	fi
 	if [ "${1:-}" = --json ]; then
 		printf '{"controller":{"version":%s,"describe":%s},"host":%s,"behind":%s}\n' "$(json_text "$cv")" "$(json_str_or_null "$cd")" \
-			"$(if [ -n "$hv" ]; then printf '{"name":%s,"version":%s,"describe":%s,"install":%s}' "$(json_text "${selected:-legacy}")" "$(json_text "$hv")" "$(json_str_or_null "$hd")" "$(json_text "$hi")"; else printf null; fi)" \
+			"$(if [ -n "$hv" ]; then printf '{"name":%s,"version":%s,"describe":%s,"install":%s}' "$(json_text "$selected")" "$(json_text "$hv")" "$(json_str_or_null "$hd")" "$(json_text "$hi")"; else printf null; fi)" \
 			"$(if [ -n "$note" ]; then printf true; else printf false; fi)"
 		return
 	fi
 	[ -z "${1:-}" ] || die "usage: boxery version [--json]"
 	printf 'controller  %s%s\n' "$cv" "${cd:+ ($cd)}"
-	if [ -n "$hv" ]; then printf 'host        %s%s  %s install  [%s]\n' "$hv" "${hd:+ ($hd)}" "$hi" "${selected:-legacy}"
-	elif [ -n "$HOST" ]; then printf 'host        unknown  [%s]\n' "${selected:-legacy}"; fi
+	if [ -n "$hv" ]; then printf 'host        %s%s  %s install  [%s]\n' "$hv" "${hd:+ ($hd)}" "$hi" "$selected"
+	elif [ -n "$HOST" ]; then printf 'host        unknown  [%s]\n' "$selected"; fi
 	if [ -n "$note" ]; then warn "$note"; fi
 	return 0
 }
@@ -1137,14 +1227,16 @@ usage() {
 	cat <<-'EOF'
 		boxery — remote desktop VMs for coding agents
 
-		--host NAME COMMAND             route a command to a registered host (or legacy)
+		setup user@host|local [--name NAME] [--key K.pub] [--host-bin PATH] [--profile P [--backend B]]
+		                                configure a VM host (local = this machine) + register your ssh key;
+		                                  NAME defaults to local / the host part of user@host
+		--host NAME COMMAND             route a command to a host other than the default
 		host add NAME DEST [--key K.pub] [--host-bin PATH] [--backend B] [--profile P]
 		                                --backend B: create a new profile on DEST for backend B (own state,
 		                                  free proxy port, own services); --profile P: use an existing one
 		host add NAME --config-dir DIR   import existing config/ssh_config without setup
-		host ls | show NAME | use NAME|legacy | rm NAME
-		setup user@host|local [--key K.pub] [--host-bin PATH] [--profile P [--backend B]]
-		                                configure the VM host (local = this machine) + register your ssh key
+		host ls [--json] | show NAME | use NAME | rm NAME
+		                                ls: where each host runs (local or ssh destination) and its backend
 		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
 		                                --headless: no desktop (shell + agents only); needs no build-base
 		build-base                      build the host's desktop base image (one-time, ~3 min)
@@ -1194,6 +1286,7 @@ usage() {
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
 		version [--json]                controller and host versions; warns when the host is behind
+		backend                         the host's VM backend (recorded for host ls / vm_info hosts)
 		upgrade-host [--check] [--ref REF] [--wait S]
 		                                update boxery on the host and restart its services (waits for
 		                                in-flight VM operations; rolls back if checks fail)
@@ -1217,18 +1310,23 @@ run_examples() {
 # Canonical root pointers work even when BOXERY_HOME was relative.
 plain_path "$ROOT_DIR"
 case $ROOT_DIR in /*) ;; *) ROOT_DIR="$PWD/$ROOT_DIR"; REGISTRY="$ROOT_DIR/host-registry" ;; esac
-explicit=""
+explicit="" pinned=""
 if [ "${1:-}" = --host ]; then
 	[ $# -ge 3 ] || die "usage: boxery --host NAME COMMAND"
 	explicit=$2; [ -n "$explicit" ] || die "invalid host name"; shift 2
+	# Internal (MCP/pi): --profile-dir binds the directory they resolved, not a registry entry that could change.
+	if [ "${1:-}" = --profile-dir ]; then [ $# -ge 3 ] || die "usage: boxery --host NAME --profile-dir DIR COMMAND"; pinned=$2; shift 2; fi
 fi
 cmd=${1:-help}; [ $# -gt 0 ] && shift
+if [ "$cmd" = help ] || [ "$cmd" = -h ] || [ "$cmd" = --help ]; then usage; exit; fi
 if [ "$cmd" = host ]; then [ -z "$explicit" ] || die "--host does not apply to host management"; cmd_host "$@"; exit; fi
+if [ "$cmd" = setup ]; then [ -z "$explicit" ] || die "setup takes --name NAME, not --host"; cmd_setup_named "$@"; exit; fi
 # Internal (tests): __skew CTL_VERSION CTL_DESCRIBE HOST_VERSION HOST_DESCRIBE [HOST_NAME]
-if [ "$cmd" = __skew ]; then selected=${5:-legacy}; skew_note "$1" "$2" "$3" "$4"; exit; fi
-select_profile "$explicit"
+if [ "$cmd" = __skew ]; then selected=${5:-}; skew_note "$1" "$2" "$3" "$4"; exit; fi
+# Before setup there is no host to select; version still reports the controller.
+if [ "$cmd" = version ] && [ -z "$explicit" ] && [ -z "$(default_host)" ]; then selected="" HOST=""; cmd_version "$@"; exit; fi
+select_profile "$explicit" "$pinned"
 case $cmd in
-setup) cmd_setup "$@" ;;
 rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")" "$(edge_marker "${1:-x}")"; write_ssh_config ;;
 stop) need_host; drop_master "${1:-}"; h stop "$@"; drop_master "${1:-}" ;;
 start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if has_pushed_grants "${1:-x}"; then grants_apply "$1" || true; fi ;;
@@ -1242,13 +1340,14 @@ snap) need_host
 new) need_host; cmd_new "$@" ;;
 fork) need_host; cmd_fork "$@" ;;
 snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
-images) need_host; h images ;;
+images) need_host; h images "$@" ;;
 build-base) need_host; [ $# -eq 0 ] || die "usage: boxery build-base"; h build-base ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
 version) cmd_version "$@" ;;
+backend) need_host; cmd_backend "$@" ;;
 upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 cp) cmd_cp "$@" ;;
@@ -1271,6 +1370,5 @@ grants) cmd_grants "$@" ;;
 agent-forward) cmd_agent_forward "$@" ;;
 sessions) need_host; cmd_sessions "$@" ;;
 prompt) need_host; cmd_prompt "$@" ;;
-help | -h | --help) usage ;;
 *) usage; exit 1 ;;
 esac

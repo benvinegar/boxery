@@ -1,6 +1,6 @@
 // boxery core: VM transport and tool implementations shared by the pi extension and the MCP server.
-// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using ~/.boxery/ssh_config
-// (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
+// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using the selected host profile's
+// ssh_config (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -13,7 +13,6 @@ import { streamCopy } from "./copy-stream.mjs";
 export { q } from "./shell.mjs";
 
 export const BOXERY_HOME = path.resolve(process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery"));
-export const SSH_CONF = path.join(BOXERY_HOME, "ssh_config");
 // A context is resolved once at a call boundary, then inherited by all nested async work.
 const hostContext = new AsyncLocalStorage();
 const resolvedHosts = new WeakSet();
@@ -42,40 +41,98 @@ function registryLine(file, optional = false) {
 }
 export function resolveHost(host) {
 	if (host && typeof host === "object" && resolvedHosts.has(host)) return host;
-	let name = host;
-	if (name == null) {
-		const file = path.join(BOXERY_HOME, "default-host");
-		name = registryLine(file, true) ?? "legacy";
-	}
+	const name = host ?? defaultHost();
+	if (name == null) throw new Error("no boxery host configured; run: boxery setup user@host|local");
 	assertHost(name);
-	let dir = BOXERY_HOME;
-	if (name !== "legacy") {
-		const file = path.join(BOXERY_HOME, "host-registry", name);
-		dir = registryLine(file, true);
-		if (dir == null) throw new Error(`unknown host: ${name}`);
-		if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
-		if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
-	}
+	const dir = registryLine(path.join(BOXERY_HOME, "host-registry", name), true);
+	if (dir == null) throw new Error(`unknown host: ${name}`);
+	if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
+	if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
 	const resolved = Object.freeze({ name, dir, sshConf: path.join(dir, "ssh_config") });
 	resolvedHosts.add(resolved);
 	return resolved;
 }
+/** The default host's name (BOXERY_HOME/default-host), or null when none is selected. */
+export const defaultHost = () => registryLine(path.join(BOXERY_HOME, "default-host"), true);
 export const currentHost = () => hostContext.getStore() ?? (implicitHost ??= resolveHost());
 export const withHost = (host, fn) => hostContext.run(resolveHost(host), fn);
 export function registeredHosts() {
 	const registry = path.join(BOXERY_HOME, "host-registry");
-	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
-	return [resolveHost("legacy"), ...names.map(resolveHost)];
+	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n)).sort() : [];
+	return names.map(resolveHost);
 }
 const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
+// A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
+function readProfileFile(file, max = 64 * 1024) {
+	let fd;
+	try {
+		fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+		const st = fstatSync(fd);
+		return st.isFile() && st.size <= max ? readFileSync(fd, "utf8") : null;
+	} catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+// One shell word as `boxery setup` writes it (literal(): '…' with '\'' for quotes), or a plain word.
+// Anything needing expansion ($, `, globs…) is unknown: profile configs are never executed here.
+function shellWord(s) {
+	let out = "";
+	for (let i = 0; i < s.length;) {
+		const c = s[i];
+		if (c === "'") {
+			const j = s.indexOf("'", i + 1);
+			if (j < 0) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === '"') {
+			const j = s.indexOf('"', i + 1);
+			if (j < 0 || /[$`\\]/.test(s.slice(i + 1, j))) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === "\\" && i + 1 < s.length) { out += s[i + 1]; i += 2; }
+		else if (c === " " || c === "\t") return /^[ \t]*(#.*)?$/.test(s.slice(i)) ? out : null;
+		else if (/[A-Za-z0-9_.@:%+\-/~,=]/.test(c)) { out += c; i++; }
+		else return null;
+	}
+	return out;
+}
+/** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
+export function hostDestination(host) {
+	const h = resolveHost(host);
+	const text = readProfileFile(path.join(h.dir, "config")) ?? "";
+	const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
+	const dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
+	return dest && VALID_DEST.test(dest) ? dest : null;
+}
+/** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. */
+export function hostBackend(host) {
+	const text = readProfileFile(path.join(resolveHost(host).dir, "backend"), 64);
+	const name = text?.replace(/\n$/, "");
+	return name && VALID_HOST.test(name) ? name : null; // one line, like the controller's valid_vm
+}
+/**
+ * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
+ * profile files (never sources them, never contacts a host). same_as names the other entries registered for
+ * this profile directory: they are the same host.
+ */
+export function describeHosts() {
+	let def = null;
+	try { def = resolveHost().name; } catch {}
+	const real = (d) => { try { return realpathSync(d); } catch { return path.resolve(d); } };
+	const hosts = registeredHosts().map((h) => ({ host: h, real: real(h.dir) }));
+	return hosts.map(({ host: h, real: r }) => ({
+		name: h.name,
+		dir: h.dir,
+		default: h.name === def,
+		destination: hostDestination(h),
+		backend: hostBackend(h),
+		same_as: hosts.filter((o) => o.real === r && o.host.name !== h.name).map((o) => o.host.name),
+	}));
+}
 /**
  * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
  * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
- * --config-dir, which name local files (an imported config is shell code). Never changes the default.
+ * --config-dir, which name local files (an imported config is shell code). Becomes the default only
+ * when there is none.
  */
 export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	assertHost(name);
-	if (name === "legacy") throw new Error("legacy is reserved");
 	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
 	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
 	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
@@ -84,28 +141,22 @@ export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 /** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
 export function removeHost(name) {
 	assertHost(name);
-	if (name === "legacy") throw new Error("legacy is reserved");
 	return registryCli(["host", "rm", name], 60_000);
 }
 // Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
 function registryCli(args, timeout, { progress } = {}) {
 	return new Promise((resolve, reject) => {
-		const env = { ...process.env, BOXERY_HOME };
-		delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN;
-		const child = execFile(BOXERY, args, { env, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		const child = execFile(BOXERY, args, { env: { ...process.env, BOXERY_HOME }, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
 		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
 	});
 }
-/** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
 export function controllerCommand(args) {
 	const host = currentHost();
-	const env = { ...process.env, BOXERY_HOME: host.dir };
-	if (host.name !== "legacy") { delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN; }
 	// Bind the resolved directory, not a registry entry that could change during this call.
-	return { args: ["--host", "legacy", ...args], env };
+	return { args: ["--host", host.name, "--profile-dir", host.dir, ...args], env: process.env };
 }
 export const REMOTE_HOME = "/home/agent";
 export const PROJECT = `${REMOTE_HOME}/project`;
@@ -737,7 +788,8 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 	});
 }
 
-/** VMs on the host: [{name, state, addr, disk, tunnel, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
+/** VMs on the host: [{name, state, ssh_addr, disk_size, disk_used, tunnel, lease, shape, cpus, mem, desktop, grants}]
+ *  (fields: docs/cli.md). ssh_addr is "HOST:PORT" as the host reaches the VM; disk_size and disk_used are GiB. */
 export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
@@ -746,12 +798,17 @@ export const listShapes = () => boxeryJson(["shapes"]);
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
 
+/** Every image on the host (snapshots, addressed VM@SNAP): [{image, created, size}] (docs/cli.md). */
+export const listImages = () => boxeryJson(["images"]);
+
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
 export const versions = () => boxeryJson(["version"]);
 
 export function formatVersions({ controller, host, behind }) {
 	const v = (x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
-	const upgrade = host?.name && host.name !== "legacy" ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
+	let def = null;
+	try { def = defaultHost(); } catch {}
+	const upgrade = host?.name && host.name !== def ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
 	const lines = [`controller: ${v(controller)}`, host ? `host ${host.name}: ${v(host)} (${host.install} install)` : "host: unknown (it predates boxery-host version)"];
 	if (behind) lines.push(`The host is older than the controller. Tell the user; they can upgrade it with: ${host ? upgrade : "a manual update (git pull or npm update -g boxery-vm, then boxery-host init) on the host"}`);
 	return lines.join("\n");
@@ -760,6 +817,11 @@ export function formatVersions({ controller, host, behind }) {
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
 	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
+}
+
+export function formatImages(images) {
+	if (!images.length) return "no images (snapshots) on the host";
+	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}`).join("\n");
 }
 
 export function assertShape(s) {
@@ -775,14 +837,19 @@ export function formatShapes({ default: def, shapes }) {
 
 const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
-// A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
-const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.addr ?? "-"));
+// The VM's ssh endpoint from the host (HOST:PORT). A running VM whose tunnel isn't up (exe.dev) shows why
+// instead. `addr`: hosts from before ssh_addr.
+const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? v.addr ?? "-"));
+// USED/SIZE in GiB ("0.5/40GiB"), or only the size when the backend can't tell what's used.
+const fmtDisk = (v) => (v.disk_size == null && v.disk_used == null ? "-"
+	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
 
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
 	const kind = (v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
-	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.shape ?? "-", kind(v), v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const lease = (v) => v.lease?.state?.toLowerCase() ?? "-"; // hosts from before lowercase lease states
+	const rows = [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), fmtDisk(v), v.shape ?? "-", kind(v), lease(v), (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
@@ -806,7 +873,7 @@ export function formatGrants(name, grants) {
 // dialog), which the agent cannot answer. Only what `boxery grant` could add without a --cmd is
 // requestable: a command run on the user's machine is theirs to write.
 
-const shellWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
+const quoteWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
 /** Is real path `p` inside `dir`? `dir` is resolved too (macOS: /var → /private/var). */
 const underDir = (p, dir) => {
 	try {
@@ -868,7 +935,7 @@ const tildePath = (p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync
 
 /** What the user is agreeing to, in their terms. The agent's reason comes last and is labelled as such. */
 function grantPrompt(vm, host, g, reason) {
-	const where = host === "legacy" ? `VM "${vm}"` : `VM "${vm}" on host "${host}"`;
+	const where = `VM "${vm}" on host "${host}"`;
 	const what = {
 		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
 		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
@@ -884,7 +951,7 @@ function grantPrompt(vm, host, g, reason) {
 
 function grantCommand(verb, vm, host, g) {
 	const spec = verb === "revoke" && g.kind === "file" ? `file:${g.local}` : g.spec;
-	return ["boxery", ...(host === "legacy" ? [] : ["--host", host]), verb, vm, spec, ...(verb === "grant" && g.readonly ? ["--readonly"] : [])].map(shellWord).join(" ");
+	return ["boxery", "--host", host, verb, vm, spec, ...(verb === "grant" && g.readonly ? ["--readonly"] : [])].map(quoteWord).join(" ");
 }
 
 /**
@@ -946,9 +1013,16 @@ export async function ensureVm(name, notify = () => {}) {
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
 
+/** The VM a vm_manage action `a` acts on: `a.vm`, which it must name. */
+export function needVm(a) {
+	if (a.vm == null || a.vm === "") throw new Error(`${a.action} needs \`vm\`, the VM to act on`);
+	return assertName(a.vm);
+}
+
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
-export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk, headless }, opts = {}) {
-	const need = () => assertName(name);
+export async function manage(a, opts = {}) {
+	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
+	const need = () => needVm(a);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
 			if (v == null) return [];
@@ -963,14 +1037,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
 			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
-		case "snaps":
-			return boxeryCli(["snaps", need()], 60_000);
-		case "list":
-			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
-		case "shapes":
-			return formatShapes(await listShapes());
+			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":
@@ -987,12 +1055,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
 		case "snap-rm":
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
-		case "images":
-			return boxeryCli(["images"], 60_000);
 		case "build-base":
 			return boxeryCli(["build-base"], 1_800_000, opts);
-		case "grants":
-			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
@@ -1013,7 +1077,7 @@ export function guidance(current, { localToolsNote } = {}) {
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. " +
 			"If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant, which asks the user. Never copy credentials into the VM with vm_copy or vm_write: they would land on its disk and in its snapshots.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
-		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }
 

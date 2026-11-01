@@ -145,11 +145,30 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	if [[ -n $from && $from != stock ]]; then ssh -F "$sshcfg" "lima-$i" 'sudo rm -f /etc/machine-id /var/lib/dbus/machine-id && sudo systemd-machine-id-setup >/dev/null' || true; fi
 }
 
-backend_list() {
+# Bytes the instance's disk files take on the host (blocks allocated, not their sparse size): `disk`
+# (Lima 2), or `basedisk` + `diffdisk` (older Lima). Empty if it has none.
+lima_disk_used() { # DIR
+	local f u k=0 any=""
+	for f in "$1/disk" "$1/basedisk" "$1/diffdisk"; do
+		[[ -f $f ]] || continue
+		u=$(du -k "$f" 2>/dev/null | awk '{ print $1 }') || u=""
+		[[ $u =~ ^[0-9]+$ ]] || return 0   # unreadable: unknown, not a smaller number
+		any=1 k=$((k + u))
+	done
+	[[ -z $any ]] || echo $((k * 1024))
+}
+backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES
+	local n st port disk dir
+	# Lima keeps sshLocalPort while an instance is stopped: only a running VM has an ssh endpoint.
 	limactl list --format json 2>/dev/null | jq -r --arg p "$LIMA_PREFIX" --arg b "$LIMA_BASE" '
 		select(.name | startswith($p)) | select(.name != $b) | select(.name | ltrimstr($p) | test("^[a-z][a-z0-9-]*$")) |
 		[(.name | ltrimstr($p)), (.status | ascii_downcase | if . == "running" then "running" elif . == "stopped" then "shut off" else . end),
-		 (if .sshLocalPort and .sshLocalPort > 0 then "127.0.0.1:\(.sshLocalPort)" else "" end), (.disk / 1073741824 | floor | tostring) + "GiB"] | @tsv'
+		 (if .status == "Running" and (.sshLocalPort // 0) > 0 then .sshLocalPort else 0 end), (.disk // 0), .dir] | @tsv' |
+		while IFS=$'\t' read -r n st port disk dir; do
+			[[ $port != 0 ]] || port=""
+			[[ $disk != 0 ]] || disk=""
+			printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$st" "${port:+127.0.0.1:$port}" "$disk" "$(lima_disk_used "$dir")"
+		done
 }
 
 backend_ssh_endpoint() {

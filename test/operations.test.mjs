@@ -183,6 +183,7 @@ it("crashed forks keep completed children but clean unfinished children and thei
 	assert.equal(existsSync(path.join(vms, "b")), false);
 	assert.equal(token("b"), undefined);
 	assert.doesNotMatch(await ok(["images"]), /@fork-/);
+	assert.ok(JSON.parse(await ok(["images", "--json"])).every((i) => typeof i.image === "string" && !i.image.includes("@fork-")));
 	cleanJournal();
 });
 

@@ -16,12 +16,11 @@ boxery host add hornet you@hornet
 boxery host add exe local --backend exe     # a second backend on that machine: own profile, proxy port, services
 boxery host add exe2 local --profile exe    # an existing profile on that machine
 boxery host add existing --config-dir "$HOME/.boxery-other"
-boxery host ls
+boxery host ls [--json]                     # where each runs (local / ssh destination), backend, same-profile names
 boxery host show hornet
 boxery host use laptop
 boxery --host hornet ls
 boxery --host hornet acquire                # pool lease on that host
-boxery host use legacy                      # original root profile
 boxery host rm hornet                       # forget only; preserves VMs and profile data
 ```
 
@@ -30,7 +29,7 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 ### Lifecycle
 
 ```bash
-boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
+boxery setup you@my-host                     # or: setup local   [--name NAME] [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
 boxery build-base                            # the host's desktop base image (one time, ~3 min)
@@ -122,7 +121,7 @@ boxery desktop demo                          # XFCE desktop in your browser (noV
 boxery forward demo 3000                     # localhost:3000 → the VM's dev server   [LOCAL_PORT]
 ```
 
-Editors: once the `Include ~/.boxery/ssh_config` line is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
+Editors: once the `Include` line `setup` prints is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
 
 ### Grants
 
@@ -151,6 +150,7 @@ See [Shared pool & leases](pool.md).
 ```bash
 boxery proxy-log [N]                         # which VM called which LLM provider
 boxery version [--json]                      # controller + host versions; warns when the host is behind
+boxery backend                               # the host's VM backend; recorded for host ls / vm_info hosts
 boxery upgrade-host [--check] [--ref REF]    # update boxery on the host (see Install → Upgrading)
 ```
 
@@ -171,7 +171,7 @@ new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
-snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
+snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
 proxy-log [N]
 
@@ -203,8 +203,8 @@ VMs on the host, plus the grants this machine has given each one.
 
 ```json
 [
-{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"grants":[{"kind":"ssh-agent"}]},
-{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"shape":"large","cpus":8,"mem":16384,"desktop":false,"grants":[]}
+{"name":"demo","state":"running","ssh_addr":"192.168.122.50:22","disk_size":40,"disk_used":2.1,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"grants":[{"kind":"ssh-agent"}]},
+{"name":"pool-1","state":"running","ssh_addr":"192.168.122.51:22","disk_size":80,"disk_used":1.8,"tunnel":null,"lease":{"state":"leased","holder":"ben@mac","expires_at":1793462400},"shape":"large","cpus":8,"mem":16384,"desktop":false,"grants":[]}
 ]
 ```
 
@@ -212,13 +212,14 @@ VMs on the host, plus the grants this machine has given each one.
 |---|---|---|
 | `name` | string | VM name |
 | `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima; `paused` on exe.dev; `starting`/`stopping` on boat.dev) |
-| `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
-| `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
-| `tunnel` | string \| null | exe.dev only: the host's ssh tunnel to the VM, which carries its ssh endpoint and LLM proxy: `up`, `connecting` (retrying; is the host online?) or `down` (`boxery-host start NAME`). `null` on other backends. A running VM shows `addr: null` while its tunnel isn't `up` |
-| `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}` (see `pool ls`) |
-| `shape` | string \| null | shape the VM was created with, `custom` if size flags overrode it, `null` for VMs created before shapes |
-| `cpus` | number \| null | vCPUs the VM was created with (`null` if unknown) |
-| `mem` | number \| null | memory in MiB the VM was created with (`null` if unknown) |
+| `ssh_addr` | string \| null | the VM's ssh endpoint as the host reaches it, always `HOST:PORT` (`192.168.122.50:22` on libvirt and cloud-hypervisor, `127.0.0.1:PORT` on Lima and the tunnelled backends). `null` while the VM isn't running (or its tunnel isn't `up`). Agents don't connect to it directly; `boxery` reaches VMs through the host |
+| `disk_size` | number \| null | the disk's configured size in GiB (what `--disk` set, or the size it was grown to) |
+| `disk_used` | number \| null | GiB the VM's own disk takes on the host (allocated blocks, two decimals; a shared base image is not counted). `null` where the backend can't know (exe.dev, boat.dev) |
+| `tunnel` | string \| null | exe.dev and boat.dev only: the host's ssh tunnel to the VM, which carries its ssh endpoint and LLM proxy: `up`, `connecting` (retrying; is the host online?) or `down` (`boxery-host start NAME`). `null` on other backends. A running VM shows `ssh_addr: null` while its tunnel isn't `up` |
+| `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}`, `state` lowercase as in `pool ls` |
+| `shape` | string \| null | shape the VM was created with; `custom` if size flags or `resize` changed it, or if it has no recorded shape (made before shapes: its size is read from the backend once and recorded); `null` only if the size can't be read |
+| `cpus` | number \| null | vCPUs (`null` if unknown) |
+| `mem` | number \| null | memory in MiB (`null` if unknown) |
 | `desktop` | boolean | `false` for headless VMs (`new --headless`, or made from a headless VM's image); `true` otherwise, including VMs created before headless VMs existed |
 | `grants` | array | this machine's grants for the VM, same objects as `grants --json` |
 
@@ -309,6 +310,27 @@ Background jobs in the VM (started by `run --bg` or `vm_jobs`), oldest first.
 
 `wait NAME JOB --json` prints one such object plus `timed_out` (boolean), whenever the VM answered (the exit status is as without `--json`). `kill NAME JOB --json` prints one object. `jobs NAME --prune --json` prints the removed IDs.
 
+#### `boxery host ls --json`
+
+Registered hosts, by name. Read from local profile files only: no host is contacted. The same fields as MCP `vm_info {action:"hosts"}` (which adds `current`).
+
+```json
+[
+{"name":"hornet","dir":"/home/you/.boxery/profiles/hornet","default":false,"destination":"you@hornet","backend":"libvirt","same_as":[]},
+{"name":"laptop","dir":"/home/you/.boxery/profiles/local","default":false,"destination":"local","backend":"lima","same_as":["local"]},
+{"name":"local","dir":"/home/you/.boxery/profiles/local","default":true,"destination":"local","backend":"lima","same_as":["laptop"]}
+]
+```
+
+| Field | Type | |
+|---|---|---|
+| `name` | string | host name for `--host` |
+| `dir` | string | profile directory (`config`, `ssh_config`, grants, leases) |
+| `default` | boolean | selected by `host use` (`default-host`; the first host registered starts as the default) |
+| `destination` | string \| null | where its VM host runs: `local` (this machine) or the ssh destination (`user@host` or an ssh-config alias). `null` when not set up |
+| `backend` | string \| null | `lima`, `libvirt`, `cloud-hypervisor`, `exe`, `boat`, … as recorded by `setup` or `boxery backend`; `null` if never recorded (an older profile: run `boxery --host NAME backend`; or a host that predates `boxery-host backend`) |
+| `same_as` | string[] | other names whose profile is the same directory: the same host and VMs (e.g. a second name imported with `--config-dir` for an existing profile) |
+
 #### `boxery snaps NAME --json`
 
 Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `size` is `null` when the backend does not report it.
@@ -323,11 +345,15 @@ Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `size` i
 
 #### `boxery-host ls --json`
 
-Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `tunnel`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines and the lease store.
+Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `ssh_addr`, `disk_size`, `disk_used`, `tunnel`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines, the recorded VM sizes and the lease store.
 
 #### `boxery-host snaps NAME --json`
 
 `[{"name", "created", "size"}]`, from the backend's `backend_images`.
+
+#### `boxery-host images --json`
+
+`[{"image", "created", "size"}]`: every image on the host (`VM@SNAP`), from the backend's `backend_images`; empty fields are `null`.
 
 #### `boxery-host pool ls --json`
 
@@ -335,17 +361,17 @@ Every pool VM and its lease state.
 
 ```json
 [
-{"name":"pool-1","state":"LEASED","holder":"ben@mac","acquired_at":1793460600,"expires_at":1793462400,"expires_in":1800},
-{"name":"pool-2","state":"FREE","holder":null,"acquired_at":null,"expires_at":null,"expires_in":null}
+{"name":"pool-1","state":"leased","holder":"ben@mac","acquired_at":1793460600,"expires_at":1793462400,"expires_in":1800},
+{"name":"pool-2","state":"free","holder":null,"acquired_at":null,"expires_at":null,"expires_in":null}
 ]
 ```
 
 | Field | Type | |
 |---|---|---|
-| `state` | string | `FREE`, `ACQUIRING`, `LEASED`, `RESETTING`, `BROKEN` |
+| `state` | string | `free`, `acquiring`, `leased`, `resetting`, `broken` |
 | `holder` | string \| null | who holds it |
 | `acquired_at`, `expires_at` | number \| null | lease start / expiry |
-| `expires_in` | number \| null | seconds left (only while `LEASED`; may be negative until the reaper runs) |
+| `expires_in` | number \| null | seconds left (only while `leased`; may be negative until the reaper runs) |
 
 Run it on the host, or from the controller as `boxery pool ls --json`.
 
@@ -353,10 +379,11 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 
 | Where | What |
 |---|---|
-| `~/.boxery/config` | Controller: host, host binary path, identity |
-| `~/.boxery/ssh_config` | Generated. `*.boxery` hosts via `ProxyCommand`. |
-| `~/.boxery/grants/NAME` | Grant names and paths (never values) |
-| `~/.boxery/leases/` | Your leases and their per-lease ssh keys |
+| `~/.boxery/host-registry/HOST`, `~/.boxery/default-host` | Registered hosts and the default one ([Named hosts](hosts.md)) |
+| `~/.boxery/profiles/HOST/config` | Controller: host, host binary path, identity |
+| `~/.boxery/profiles/HOST/ssh_config` | Generated. `*.boxery` hosts via `ProxyCommand`. |
+| `~/.boxery/profiles/HOST/grants/NAME` | Grant names and paths (never values) |
+| `~/.boxery/profiles/HOST/leases/` | Your leases and their per-lease ssh keys |
 | `~/.config/boxery/host.env` (host) | Backend and overrides (`BOXERY_BACKEND`, `BOXERY_LIMA_VMTYPE`, …) |
 | `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys |
 | `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens |

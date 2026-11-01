@@ -363,7 +363,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	remote_tunnel_start "$name"
 }
 
-backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK<TAB>TUNNEL
+backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES<TAB>TUNNEL
 	[[ -n $BOAT_PREFIX ]] || return 0
 	local j n st id addr disk tun
 	j=$(boat_sandboxes) || exit 1
@@ -372,11 +372,13 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK<TAB>TUNNEL
 			[[ $n =~ ^[a-z][a-z0-9-]*$ ]] || continue
 			[[ ! -f $(boat_dir "$n")/id || $(boat_id "$n") == "$id" ]] || continue   # a reimage's leftover sandbox
 			addr="" disk="" tun=""
-			[[ ! -f $(boat_dir "$n")/size ]] || disk="$(awk '{print $3}' "$(boat_dir "$n")/size")GiB"
+			# the boat type's disk (boat doesn't report usage): DISK_USED stays unknown
+			disk=$(awk '{ print $3 }' "$(boat_dir "$n")/size" 2>/dev/null) || disk=""
+			if [[ $disk =~ ^[0-9]+$ ]]; then disk=$((disk * 1073741824)); else disk=""; fi
 			[[ ! -f $(boat_dir "$n")/slot ]] || tun=$(remote_tunnel_state "$n")
 			case $st in ready | idle | running) st=running ;; archived) st="shut off" ;; archiving) st=stopping ;; init | provision* | cloning) st=starting ;; esac
 			if [[ $st == running && $tun == up ]]; then addr="127.0.0.1:$(remote_port "$n")"; fi
-			printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$st" "$addr" "$disk" "$tun"
+			printf '%s\t%s\t%s\t%s\t\t%s\n' "$n" "$st" "$addr" "$disk" "$tun"
 		done
 }
 

@@ -18,7 +18,7 @@ stub cloud-hypervisor 'echo "cloud-hypervisor $*" >>"$CALLS"'
 stub ch-remote 'echo "ch-remote $*" >>"$CALLS"
 [[ $3 == info ]] && echo '"'"'{"state":"'"'"'"${CH_STATE:-Running}"'"'"'"}'"'"'
 exit 0'
-stub qemu-img 'echo "qemu-img $*" >>"$CALLS"; [[ $1 == create ]] && touch "${@: -2:1}"; exit 0'
+stub qemu-img 'echo "qemu-img $*" >>"$CALLS"; [[ $1 == create ]] && touch "${@: -2:1}"; [[ $1 == info ]] && echo "{\"virtual-size\": 10737418240, \"actual-size\": 999}"; exit 0'
 stub cloud-localds 'echo "cloud-localds $*" >>"$CALLS"; cp "$2" "$3.network-config"; cp "$4" "$3.user-data"; touch "$3"'
 stub ip 'echo "ip $*" >>"$CALLS"; [[ "$1 $2" == "link show" ]] && exit 1; exit 0'
 stub sysctl 'echo "sysctl $*" >>"$CALLS"'
@@ -70,13 +70,14 @@ grep -q 'ip saddr 10.77.0.0/16 oifname != "bxch\*" masquerade' "$R" && ok "inter
 # --- slots
 "$H" new v2 >/dev/null 2>&1; [[ $(cat "$V/v2/slot") == 2 ]] && ok "second VM gets slot 2" || bad "slot v2"
 [[ $(grep -c '^nft -f -' "$CALLS") == 2 ]] && ok "rules reloaded on every VM start" || bad "nft loads: $(grep -c '^nft -f -' "$CALLS")"
-"$H" ls --json | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == "10.77.1.2"' >/dev/null && ok "ls --json: running + guest IP" || bad "ls: $("$H" ls --json)"
+"$H" ls --json | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .ssh_addr == "10.77.1.2:22" and .disk_size == 10 and .disk_used == 0' >/dev/null && ok "ls --json: running, guest IP:22, disk size (qcow2 virtual size) and use (its blocks; empty here)" || bad "ls: $("$H" ls --json)"
+called "qemu-img info -U --output=json $V/v1/disk.qcow2" && ok "ls reads the size without the running VMM's lock" || bad "qemu-img info: $(grep 'qemu-img info' "$CALLS")"
 [[ $("$H" ip v1) == 10.77.1.2 ]] && ok "ip" || bad ip
 
 # --- stop / start
 "$H" stop v1 >/dev/null 2>&1 && called "ch-remote --api-socket $V/v1/api.sock power-button" && ok "stop presses the power button" || bad stop
 systemctl --user stop boxery-ch-v1.service   # the guest powered off
-"$H" ls --json | jq -e 'map(select(.name == "v1"))[0] | .state == "shut off" and .addr == null' >/dev/null && ok "stopped VM: shut off, no addr" || bad "ls stopped"
+"$H" ls --json | jq -e 'map(select(.name == "v1"))[0] | .state == "shut off" and .ssh_addr == null' >/dev/null && ok "stopped VM: shut off, no addr" || bad "ls stopped"
 expect_fail "ip of stopped VM fails" "$H" ip v1
 
 # --- images: snapshots (disk only)

@@ -159,7 +159,7 @@ done
 "$H" new v2 --disk 60 >/dev/null 2>&1
 called "exe.dev cp bxtest-base $(V v2) --copy-tags=false --cpu=2 --memory=4GB --disk=60GB" && [[ $(cat "$E/v2/slot") == 2 ]] && ok "bigger disk is passed; second VM gets slot 2" || bad "v2: $(grep 'exe.dev cp' "$CALLS")"
 j=$(lsj)
-jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == "127.0.0.1:22401" and .disk == "20GiB"' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
+jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .ssh_addr == "127.0.0.1:22401" and .disk_size == 20 and .disk_used == null' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
 jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists boxery VMs only (not the base, images or the account's other VMs)" || bad "ls names: $j"
 [[ $("$H" ip v1) == 127.0.0.1 ]] && ok "ip" || bad ip
 
@@ -190,7 +190,7 @@ expect "stop" "$H" stop v1
 called "exe.dev pause $(V v1)" && grep -F 'sudo rm -rf /run/user/*/boxery; sync' "$S/$(V v1)/edge.log" >/dev/null && ok "stop drops pushed grants and syncs, then pauses" || bad "stop: $(cat "$CALLS")"
 grep -F 'ssh -a -x -o ForwardAgent=no' "$CALLS" >/dev/null && ok "edge ssh never forwards the host's agent" || bad "agent forwarding not disabled"
 [[ ! -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "stop stops the tunnel" || bad "tunnel still up"
-lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "paused" and .addr == null' >/dev/null && ok "paused VM: no addr" || bad "ls stopped: $(lsj)"
+lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "paused" and .ssh_addr == null' >/dev/null && ok "paused VM: no addr" || bad "ls stopped: $(lsj)"
 expect_fail "ip of a stopped VM fails" "$H" ip v1
 : >"$CALLS"
 expect "start" "$H" start v1
@@ -209,7 +209,7 @@ expect "resize back to 4 GB" "$H" resize v1 --mem 4096
 UV=boxery-exe-bxtest-v-v1.service
 jq -e 'map(select(.name == "v1"))[0].tunnel == "up"' <<<"$(lsj)" >/dev/null && ok "ls --json: tunnel up" || bad "tunnel: $(lsj)"
 rm -f "$UNITS/$UV"   # enabled, between restarts: ssh can't reach exe.dev
-lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == null and .tunnel == "connecting"' >/dev/null && ok "ls --json: reconnecting tunnel, no addr" || bad "ls: $(lsj)"
+lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .ssh_addr == null and .tunnel == "connecting"' >/dev/null && ok "ls --json: reconnecting tunnel, no addr" || bad "ls: $(lsj)"
 "$H" ls | grep -E '^v1 +running +tunnel connecting ' >/dev/null && ok "ls shows the tunnel state in place of the address" || bad "ls: $("$H" ls)"
 "$H" ls | awk 'NR == 1 { d = index($0, "DISK") } $1 == "v1" { f = (substr($0, d - 1, 1) == " " && substr($0, d, 1) != " ") } END { exit !f }' && ok "ls: tunnel connecting fits ADDR (DISK stays aligned)" || bad "ls alignment: $("$H" ls)"
 e=$("$H" connect v1 2>&1) && bad "connect through a reconnecting tunnel succeeded" ||

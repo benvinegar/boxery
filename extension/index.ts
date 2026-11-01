@@ -8,7 +8,8 @@
  *   vm_jobs                                                 background command jobs (start / list / logs / wait / kill)
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               list / new / fork / rm / start / stop / resize / snap / snaps / snap-rm / revert / images / use / grants / shapes / build-base
+ *   vm_manage                                               new / fork / rm / start / stop / resize / snap / snap-rm / revert / use / none / build-base
+ *   vm_info                                                 read-only list / shapes / grants / snaps / images / version
  *   vm_lease                                                acquire / renew / release / list pool leases
  *   vm_grant                                                ask the user (confirm dialog) to grant the VM access
  *
@@ -209,7 +210,6 @@ export default function (pi: ExtensionAPI) {
 	const confirmGrant = core.oneAtATime(async ({ ctx, message }: any) => ((await ctx.ui.confirm("boxery: grant VM access?", message)) ? "accept" : "decline"));
 	const grantApprover = (ctx: any) => (ctx?.hasUI && ctx.ui?.confirm ? (message: string) => confirmGrant({ ctx, message }) : undefined);
 	const manageSession = (ctx: any) => ({
-		current: current?.name ?? null,
 		use: (name: string) => useVm(name, ctx),
 		adopt: (name: string) => setCurrent({ name, ephemeral: false }, ctx),
 		clear: () => setCurrent(null, ctx),

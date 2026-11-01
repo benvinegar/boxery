@@ -14,6 +14,7 @@ export class BackendError extends Error {
 	}
 }
 
+const byteCount = (field) => (/^\d+$/.test(field) ? Number(field) : null);
 const tsv = (text) => text.split("\n").filter((l) => l.length > 0).map((l) => l.split("\t"));
 const endpoint = (text) => {
 	const ep = text.trim();
@@ -60,9 +61,11 @@ export function createBackend(env = process.env) {
 			functions ??= (await meta("__functions")).split("\n").filter(Boolean);
 			return functions.includes(fn);
 		},
-		/** [{name, state, addr, disk, tunnel}]; empty fields are "" (tunnel: only backends that reach VMs
-		 *  through one, see backend_list). Fails if the inventory is unavailable. */
-		list: async (options) => tsv(await meta("backend_list", [], options)).map(([name, state = "", addr = "", disk = "", tunnel = ""]) => ({ name, state, addr, disk, tunnel })),
+		/** [{name, state, ssh, diskBytes, diskUsedBytes, tunnel}]: ssh is "HOST:PORT"; empty string fields
+		 *  are "" and unknown sizes null (tunnel: only backends that reach VMs through one, see
+		 *  backend_list). Fails if the inventory is unavailable. */
+		list: async (options) => tsv(await meta("backend_list", [], options)).map(([name, state = "", ssh = "", disk = "", used = "", tunnel = ""]) =>
+			({ name, state, ssh, diskBytes: byteCount(disk), diskUsedBytes: byteCount(used), tunnel })),
 		/** [{image, created, size}] */
 		images: async (options) => tsv(await meta("backend_images", [], options)).map(([image, created = "", size = ""]) => ({ image, created, size })),
 		imageExists: async (image, options) => (await meta("backend_images", [], options)).split("\n").some((l) => l.split("\t")[0] === image),

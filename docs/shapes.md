@@ -22,7 +22,7 @@ boxery fork big tiny --shape small        # …unless you pass --shape or size f
 boxery ls                        # SHAPE column
 ```
 
-Agents see them too. `vm_manage {action:"shapes"}` lists them, and `vm_manage {action:"new", shape:"large"}` (or `fork` with `shape`) picks one, through both the [pi extension](pi-extension.md) and the [MCP server](mcp.md). `cpus`, `mem` (MiB) and `disk` (GiB) override a shape's values, and `vm_manage {action:"resize", name, cpus, mem, disk}` resizes an existing VM like `boxery resize`.
+Agents see them too. `vm_info {action:"shapes"}` lists them, and `vm_manage {action:"new", shape:"large"}` (or `fork` with `shape`) picks one, through both the [pi extension](pi-extension.md) and the [MCP server](mcp.md). `cpus`, `mem` (MiB) and `disk` (GiB) override a shape's values, and `vm_manage {action:"resize", name, cpus, mem, disk}` resizes an existing VM like `boxery resize`.
 
 ## Define your own
 
@@ -53,4 +53,4 @@ The file is read on every command, so changes apply right away to VMs created af
 - **Disk only grows.** A VM from an image (`--from`, or a fork) never gets a smaller disk than the image it starts from.
 - **Lima** takes memory in whole GiB, so `mem` is rounded down there (use multiples of 1024).
 - **Resize.** `boxery resize NAME --cpus/--mem/--disk` changes a VM's size after creation. The VM is then listed as `custom`, and its forks copy the new size.
-- **Recorded size.** The host records each VM's size in `~/.config/boxery/vm-shapes/NAME.json`, so `ls` can show it and forks can copy it. VMs created before shapes existed show `-`; their forks copy the size the backend reports (or get the default shape on backends that can't report it).
+- **Recorded size.** The host records each VM's size in `~/.config/boxery/vm-shapes/NAME.json`, so `ls` can show it and forks can copy it. A VM without a record (created before shapes existed) gets one the first time `ls` lists it: its size as the backend reports it, listed as `custom`. Until then, its forks copy the size the backend reports (or get the default shape on backends that can't report it).

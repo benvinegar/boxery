@@ -1,31 +1,37 @@
 # Named controller hosts
 
-One controller/MCP server can reach several explicitly registered VM hosts. This adds routing, not a fleet scheduler or migration system. The existing [pool lease commands](pool.md) operate within the selected host profile. VM identity is **(host, VM name)**; `demo` on two hosts denotes two different machines.
+Every VM host the controller knows is a registered NAME. `boxery setup` registers one (see [Install](install.md)); the first host becomes the default. One controller/MCP server can reach several hosts. This adds routing, not a fleet scheduler or migration system. The existing [pool lease commands](pool.md) operate within the selected host profile. VM identity is **(host, VM name)**; `demo` on two hosts denotes two different machines.
 
 ## CLI
 
 ```bash
-# Provision a new controller profile; registers your public key for future new VMs.
+# setup registers (or reconfigures) a host named after its destination: local, or hornet here.
+boxery setup local
+boxery setup you@hornet --host-bin '~/.local/bin/boxery-host'
+boxery setup you@10.0.0.5 --name lab  # --name when the destination doesn't make a name
+
+# host add does the same without reconfiguring an existing host.
 boxery host add laptop local --key ~/.ssh/id_ed25519.pub
 boxery host add hornet you@hornet --host-bin '~/.local/bin/boxery-host'
 # A second VM platform on a host that already runs one (here: exe.dev beside Lima on this Mac).
 boxery host add exe local --backend exe
 boxery --host exe build-base         # desktop base image, once (~3 min); headless VMs don't need it
 
-boxery host ls                       # name, default marker, config directory
+boxery host ls                       # name, default marker, config directory, destination, backend, same-profile names
 boxery host show hornet              # prints its config directory (not credentials)
 boxery host use hornet               # atomic default selection
 boxery --host laptop ls              # explicit selection overrides the default
 boxery --host hornet new demo
 boxery --host hornet desktop demo
 boxery --host hornet grant demo ssh-agent
-boxery host use legacy               # reset to the original root profile
 boxery host rm hornet                # forget registration only
 ```
 
-Names use `[a-z][a-z0-9-]{0,30}`. `legacy` is reserved for the original root profile. Unknown/invalid explicit names fail closed. `--host NAME` must precede the command. Registration commands operate on the registry, not the selected host, and cannot be combined with `--host`.
+Names use `[a-z][a-z0-9-]{0,30}`. Unknown/invalid explicit names fail closed, and with no `--host` and no default host nothing is routed anywhere. `--host NAME` must precede the command. Registration commands operate on the registry, not the selected host, and cannot be combined with `--host`.
 
-`host add NAME DEST [--key PUBKEY] [--host-bin PATH] [--backend B | --profile P]` never overwrites a registration or existing managed profile directory. DEST is `local` or an SSH destination/SSH-config alias (option-like destinations and shell syntax are rejected). HOST_BIN is **one executable path**, not a command expression. Quote `~/...` to leave it for the remote host; on `local`, it refers to the controller's home. Spaces and apostrophes are supported. Paths used in generated configuration cannot contain newlines, carriage returns or tabs. Setup checks the executable and registers the public key before publishing the profile. Failed checks do not select or register a partial profile. A remote key registration that has already succeeded cannot be rolled back if a subsequent local write fails.
+`host add NAME DEST [--key PUBKEY] [--host-bin PATH] [--backend B | --profile P]` never overwrites a registration or existing managed profile directory. DEST is `local` or an SSH destination/SSH-config alias (option-like destinations and shell syntax are rejected). HOST_BIN is **one executable path**, not a command expression. Quote `~/...` to leave it for the remote host; on `local`, it refers to the controller's home. Spaces and apostrophes are supported. Paths used in generated configuration cannot contain newlines, carriage returns or tabs. Setup checks the executable and registers the public key before publishing the profile. Failed checks do not select or register a partial profile. A remote key registration that has already succeeded cannot be rolled back if a subsequent local write fails. The first host registered becomes the default; later ones don't change it.
+
+`setup DEST [--name NAME] [--key PUBKEY] [--host-bin PATH] [--backend B | --profile P]` is `host add` with a derived name: `local`, or DEST's host part (`you@hornet.example.com` → `hornet`). If NAME is already registered, setup reconfigures that host in place (new key, executable or destination) instead. It does not take `--host`.
 
 ### Several backends on one machine
 
@@ -48,13 +54,28 @@ boxery host add hornet-boat you@hornet --profile boat
 
 On the host, `boxery-host profiles` lists every profile (backend, port, service, directory) and `boxery-host --profile NAME COMMAND` runs a command in one. `boxery-host upgrade` re-runs init for all of them.
 
+## Where each host runs
+
+`boxery host ls` (and `--json`, and MCP `vm_info {action:"hosts"}`) says where each registered host runs, read from local profile files without contacting any host:
+
+```text
+NAME	DEFAULT	CONFIG_DIR	DESTINATION	BACKEND	SAME_AS
+exe		/home/you/.boxery/profiles/exe	local	exe	-
+hornet		/home/you/.boxery/profiles/hornet	you@hornet	libvirt	-
+local	*	/home/you/.boxery/profiles/local	local	lima	-
+```
+
+* **DESTINATION** is the profile's `HOST`: `local` means the VM host is the machine running the controller (or the MCP server); otherwise it is the ssh destination or ssh-config alias. The CLI sources the trusted profile config to find it; MCP never executes it and parses only plain assignments (as `setup` writes them), so a computed value shows as unknown (`-` / `null`).
+* **BACKEND** lives on the VM host (`host.env`), so it is not read live. `setup` and `host add` record it in the profile's `backend` file (one line of data); `boxery [--host NAME] backend` asks the host and refreshes the record. Profiles set up earlier, or hosts that predate `boxery-host backend`, show `-` / `null` until then.
+* **SAME_AS** lists the other names registered for the same profile directory, for example after `host add laptop --config-dir ~/.boxery/profiles/local`: `local` and `laptop` are one host with the same VMs, not two.
+
 ## Importing two existing profiles
 
 Import does **not** run setup, contact either host, copy credentials, regenerate SSH configuration or move grants:
 
 ```bash
-# Original local controller and a separately configured remote controller:
-boxery host add laptop --config-dir "$HOME/.boxery"
+# Two existing profile directories:
+boxery host add laptop --config-dir "$HOME/.boxery-laptop"
 boxery host add hornet --config-dir "$HOME/.boxery-hornet"
 boxery host use laptop
 boxery --host laptop ls
@@ -62,26 +83,26 @@ boxery --host hornet ls
 boxery-mcp --host laptop --vm demo
 ```
 
-Both `config` and `ssh_config` must already exist. Import records the canonical absolute directory. Each distinct host must have its own config directory, SSH control paths and grant store. Importing the same directory under two aliases does not create isolation or change the imported SSH config. Legacy setup prints an SSH-config-quoted/escaped `Include` recommendation; named setup instead recommends explicit host routing. Avoid including multiple profiles' `*.boxery` sections in your global SSH config: duplicate VM aliases are ambiguous there. Prefer `boxery --host NAME ssh demo`, or `ssh -F "$(boxery host show NAME)/ssh_config" demo.boxery`. Legacy setup quotes its optional global Include recommendation; for paths containing `%`, it recommends `-F` instead because OpenSSH versions differ on percent expansion in Include.
+Both `config` and `ssh_config` must already exist. Import records the canonical absolute directory. Each distinct host must have its own config directory, SSH control paths and grant store. Importing the same directory under two aliases does not create isolation or change the imported SSH config. Setting up the default host prints an SSH-config-quoted/escaped `Include` recommendation; other hosts get explicit host routing instead. Avoid including multiple profiles' `*.boxery` sections in your global SSH config: duplicate VM aliases are ambiguous there. Prefer `boxery --host NAME ssh demo`, or `ssh -F "$(boxery host show NAME)/ssh_config" demo.boxery`. For paths containing `%`, setup recommends `-F` instead of an Include because OpenSSH versions differ on percent expansion in Include.
 
 ## Layout and precedence
 
-`BOXERY_HOME` is the registry root (default `~/.boxery`), not an implicit host name:
+`BOXERY_HOME` is the registry root (default `~/.boxery`), not a host:
 
 ```text
 $BOXERY_HOME/
-  config, ssh_config, grants/, leases/  # original legacy profile, unchanged
   host-registry/NAME                # exactly one absolute profile directory + newline
-  default-host                      # exactly one registered NAME + newline; absent = legacy
-  profiles/NAME/                    # profiles provisioned by host add NAME DEST
+  default-host                      # exactly one registered NAME + newline; absent = no host selected
+  profiles/NAME/                    # profiles provisioned by setup / host add NAME DEST
     config, ssh_config, grants/, leases/
 ```
 
-Registry metadata must be readable regular files, not symlinks (including dangling symlinks), with exactly one NUL-free newline-terminated line. Only an absent `default-host` means legacy fallback; malformed or unreadable metadata is an error in both CLI and core. `host use` refuses to replace/reset malformed selection metadata rather than removing unexpected data. Registry files contain data, never shell code. Profile `config` files remain trusted user-owned shell files. Do not import untrusted directories. Registry mutations use a short-lived `host-registry/.lock` directory; default changes use atomic rename (reset uses unlink). After a killed writer, remove a stale `.lock` only after verifying no registry writer is running. Long profile paths can exceed OpenSSH's platform-specific Unix control-socket path limit; use a shorter BOXERY_HOME when needed.
+A profile directory can be anywhere, including `BOXERY_HOME` itself (an imported pre-registry setup); only the registry decides which hosts exist.
 
-* CLI: leading `--host NAME` > `default-host` > legacy root. `--host legacy` explicitly bypasses a named default. `setup` configures the selected profile; `host add` never changes the default.
-* Legacy root continues to honor `BOXERY_HOST` / `BOXERY_HOST_BIN` overrides. Named profiles ignore those ambient overrides; new managed profiles start with their own HOST_BIN default. Use `--host-bin` when provisioning them.
-* MCP: explicit tool `host` > session host, initially startup `--host` > registry default > legacy. No new ambient BOXERY_HOST alias selector is introduced. `--vm` > existing `BOXERY_VM` sets the startup VM, bound to that initial host.
+Registry metadata must be readable regular files, not symlinks (including dangling symlinks), with exactly one NUL-free newline-terminated line. An absent `default-host` means no host is selected; malformed or unreadable metadata is an error in both CLI and core. `host use` refuses to replace/reset malformed selection metadata rather than removing unexpected data. Registry files contain data, never shell code. Profile `config` files remain trusted user-owned shell files. Do not import untrusted directories. Registry mutations use a short-lived `host-registry/.lock` directory; default changes use atomic rename. After a killed writer, remove a stale `.lock` only after verifying no registry writer is running. Long profile paths can exceed OpenSSH's platform-specific Unix control-socket path limit; use a shorter BOXERY_HOME when needed.
+
+* CLI: leading `--host NAME` > `default-host`; otherwise the command fails. `host add` sets the default only when there is none. The destination and host executable come only from the profile's `config` (no `BOXERY_HOST` / `BOXERY_HOST_BIN` overrides); use `--host-bin` when provisioning.
+* MCP: explicit tool `host` > session host, initially startup `--host` > registry default; with neither, startup fails. No new ambient BOXERY_HOST alias selector is introduced. `--vm` > existing `BOXERY_VM` sets the startup VM, bound to that initial host.
 * Existing pi extension tool/flag APIs are unchanged. Its implicit host is pinned on first transport use for the process; desktop tunnels and core transport use the same profile. Restart pi to adopt a changed CLI default. Saved VM entries include host identity; entries from another host are not automatically adopted.
 
 MCP snapshots the resolved profile directory for each call, including nested operations and abort/timeout cleanup. HTTP sessions have independent host+VM state. Changing the CLI default does not retarget existing MCP sessions. Forgetting/replacing a registration does not revoke already-resolved sessions: restart those clients when retiring a host. Explicit names are always looked up afresh and unknown names fail.
@@ -94,7 +115,7 @@ Every `vm_*` tool accepts optional `host`. For example:
 {"host":"hornet","vm":"demo","command":"hostname"}
 ```
 
-`vm_manage` adds read-only `{"action":"hosts"}` (also on `vm_info`), session selection `{"action":"host","host":"hornet"}` and registration `{"action":"host_add","name":"exe","dest":"local","backend":"exe"}` and `{"action":"host_rm","name":"exe"}` (see below). Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `host_add` runs `boxery host add NAME DEST` with optional `backend` or `profile`, and `buildBase:true` then runs `build-base` on the new host. It uses your default ssh key and host executable: there is no `key`, `host-bin` or `config-dir` (those name files on the server's machine, and an imported config is shell code). It doesn't select the new host; follow it with `{"action":"host","host":"exe"}`. `host_rm` is `boxery host rm NAME`: it forgets the registration only and refuses the CLI default (see [removal safety](#removal-safety-and-leases)); sessions already using that host keep it until they select another. `{"action":"build-base"}` builds the call's host's desktop base image, like `boxery build-base`; the backends refuse while VMs or snapshots depend on the current base. `vm_manage` cannot change the persistent CLI default, upgrade a host, add credentials or grant access. `vm_grant` can *ask* the user for a grant on any host; they approve it in a prompt ([Agents can ask](grants.md#agents-can-ask)).
+`vm_info {"action":"hosts"}` lists the hosts with the same fields as `boxery host ls --json` plus `current` (this session's host; text output marks it `*`), see [Where each host runs](#where-each-host-runs). `vm_manage` adds session selection `{"action":"host","host":"hornet"}` and registration `{"action":"host_add","name":"exe","dest":"local","backend":"exe"}` and `{"action":"host_rm","name":"exe"}` (see below). Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `host_add` runs `boxery host add NAME DEST` with optional `backend` or `profile`, and `buildBase:true` then runs `build-base` on the new host. It uses your default ssh key and host executable: there is no `key`, `host-bin` or `config-dir` (those name files on the server's machine, and an imported config is shell code). It becomes the CLI default only when there is none, and doesn't select the new host for the session; follow it with `{"action":"host","host":"exe"}`. `host_rm` is `boxery host rm NAME`: it forgets the registration only and refuses the CLI default (see [removal safety](#removal-safety-and-leases)); sessions already using that host keep it until they select another. `{"action":"build-base"}` builds the call's host's desktop base image, like `boxery build-base`; the backends refuse while VMs or snapshots depend on the current base. `vm_manage` cannot change the persistent CLI default, upgrade a host, add credentials or grant access. `vm_grant` can *ask* the user for a grant on any host; they approve it in a prompt ([Agents can ask](grants.md#agents-can-ask)).
 
 Selection mutations complete in completion order; concurrent ordinary tool calls keep the host+VM snapshot they started with. Screenshot scaling is keyed by profile directory and VM name.
 
@@ -118,7 +139,7 @@ Copies are streaming tar transfers through the server, not direct host-to-host c
 
 ## Removal safety and leases
 
-`host rm NAME` refuses the selected persistent default: first select another host or `host use legacy`. It removes **only** the registration pointer. Profile files, grants, SSH connections, host authorization and remote VMs remain. To revoke access, do so explicitly before forgetting the registration; to destroy a VM, use `boxery --host NAME rm VM`. Forgotten managed data must be explicitly imported to reuse it, not silently overwritten by another provisioning operation.
+`host rm NAME` refuses the default host: first select another with `host use`. It removes **only** the registration pointer. Profile files, grants, SSH connections, host authorization and remote VMs remain. To revoke access, do so explicitly before forgetting the registration; to destroy a VM, use `boxery --host NAME rm VM`. Forgotten managed data must be explicitly imported to reuse it, not silently overwritten by another provisioning operation.
 
 The CLI's existing pool commands are host-scoped: `boxery --host hornet acquire`, `renew`, `release` and `leases` use that profile's lease records and throwaway SSH keys. HTTP-grant records and edge-route markers are also profile-local. The pi extension's `--vm pool` uses its pinned host and retains automatic renewal/release. `vm_lease` (pi and MCP) holds each lease against the host it was acquired from, and renews and releases it there.
 

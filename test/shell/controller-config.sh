@@ -5,8 +5,10 @@ CLI="$(cd "$(dirname "$0")/../.." && pwd)/controller/boxery"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export BOXERY_HOME="$tmp/config" HOME="$tmp/home"
-export BOXERY_HOST=test-host
-mkdir -p "$BOXERY_HOME" "$HOME/.ssh" "$tmp/bin"
+P="$tmp/profile"
+mkdir -p "$BOXERY_HOME" "$HOME/.ssh" "$tmp/bin" "$P"
+printf "HOST='test-host'\n" >"$P/config"; : >"$P/ssh_config"
+bash "$(cd "$(dirname "$0")/../.." && pwd)/controller/boxery" host add test-host --config-dir "$P" >/dev/null
 printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/ssh"
 chmod +x "$tmp/bin/ssh"
 printf 'test public key\n' > "$tmp/key.pub"
@@ -16,7 +18,7 @@ export PATH="$tmp/bin:$PATH"
 bash "$CLI" agent-forward demo on >/dev/null
 # Use the real ssh -G to resolve config (the fake ssh on PATH only stubs setup's network calls).
 SSH=$REAL_SSH
-get_forward() { "$SSH" -F "$BOXERY_HOME/ssh_config" -G "$1.boxery" 2>/dev/null | grep '^forwardagent '; }
+get_forward() { "$SSH" -F "$P/ssh_config" -G "$1.boxery" 2>/dev/null | grep '^forwardagent '; }
 [ "$(get_forward demo)" = 'forwardagent yes' ]
 [ "$(get_forward other)" = 'forwardagent no' ]
 bash "$CLI" setup test-host --key "$tmp/key.pub" >/dev/null

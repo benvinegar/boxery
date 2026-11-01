@@ -31,10 +31,11 @@ before(() => {
 	}
 	writeFileSync(path.join(dir, "home", "default-host"), "alpha\n");
 	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash
-[ "$1" != --host ] || shift 2
-tag="PROFILE:$(basename "$BOXERY_HOME") OVERRIDES:\${BOXERY_HOST-}:\${BOXERY_HOST_BIN-}"
+pdir=""
+if [ "$1" = --host ]; then shift 2; [ "$1" != --profile-dir ] || { pdir=$2; shift 2; }; fi
+tag="PROFILE:$(basename "\${pdir:-$BOXERY_HOME}")"
 case "$*" in
-"ls --json") printf '[{"name":"fakevm","state":"running","addr":"%s"}]\\n' "$tag" ;;
+"ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$tag" ;;
 "grants "*" --json") printf '[{"kind":"file","local":"%s","remote":"fixture"}]\\n' "$tag" ;;
 *) printf '%s\\nCOMMAND:%s\\n' "$tag" "$*" ;;
 esac
@@ -58,7 +59,7 @@ cd "$vmroot" && HOST_TAG=$host HOME="$vmroot" exec bash -c "$cmd"
 `);
 	writeFileSync(path.join(bin, "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n");
 	for (const f of ["boxery", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery"), BOXERY_HOST: "must-not-leak", BOXERY_HOST_BIN: "/must/not/leak" };
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery") };
 });
 after(() => {
 	for (const c of clients) c.close();
@@ -91,7 +92,7 @@ function client(args = [], overrides = {}) {
 }
 
 // Run core in its own process, rather than mutate global process.env for profile selection.
-test("core registry, default/legacy resolution, trusted contexts and per-call subprocess env", () => {
+test("core registry, default resolution, trusted contexts and per-call subprocess args", () => {
 	const script = `
 import assert from 'node:assert/strict';
 import {writeFileSync} from 'node:fs';
@@ -102,11 +103,11 @@ try {
  writeFileSync(c.BOXERY_HOME + '/default-host', 'beta\\n');
  assert.equal(c.resolveHost().name, 'beta');
  assert.equal(c.currentHost().name, 'alpha', 'implicit pi transport default stays pinned');
- assert.equal(c.controllerCommand(['desktop','fakevm']).env.BOXERY_HOME, c.resolveHost('alpha').dir);
+ assert.deepEqual(c.controllerCommand(['desktop','fakevm']).args, ['--host', 'alpha', '--profile-dir', c.resolveHost('alpha').dir, 'desktop', 'fakevm']);
 } finally {writeFileSync(c.BOXERY_HOME + '/default-host', 'alpha\\n');}
 
-assert.equal(c.resolveHost('legacy').dir, c.BOXERY_HOME);
-assert.deepEqual(c.registeredHosts().map(h => h.name), ['legacy','alpha','beta']);
+assert.throws(() => c.resolveHost('legacy'), /unknown host/, 'legacy is not a built-in host');
+assert.deepEqual(c.registeredHosts().map(h => h.name), ['alpha','beta']);
 for (const bad of ['', '../alpha', '-oX', 'a/b', { name:'alpha', dir:'/tmp/arbitrary' }]) assert.throws(() => c.resolveHost(bad), /invalid host/);
 assert.throws(() => c.resolveHost('unknown'), /unknown host/);
 assert.throws(() => c.parseLoc('unknown/fakevm:/x', 'fakevm'), /unknown host/);
@@ -117,14 +118,12 @@ const before = {...process.env};
 const [a,b] = await Promise.all(['alpha','beta'].map(h => c.withHost(h, async () => {
  await c.sleep(h === 'alpha' ? 20 : 1);
  const cmd = c.controllerCommand(['ls']);
- assert.equal(cmd.env.BOXERY_HOME, c.resolveHost(h).dir);
- assert.equal(cmd.env.BOXERY_HOST, undefined);
- assert.equal(cmd.env.BOXERY_HOST_BIN, undefined);
+ assert.deepEqual(cmd.args.slice(0, 4), ['--host', h, '--profile-dir', c.resolveHost(h).dir]);
  const [ssh, listed] = await Promise.all([
   c.sshOk('fakevm', 'printf %s "$HOST_TAG"'),
   c.listVms()
  ]);
- assert.equal(listed[0].addr, 'PROFILE:' + h + ' OVERRIDES::', 'JSON subprocess stays host-scoped');
+ assert.equal(listed[0].ssh_addr, 'PROFILE:' + h, 'JSON subprocess stays host-scoped');
  return ssh.toString();
 })));
 assert.deepEqual([a,b], ['alpha','beta']);
@@ -143,18 +142,18 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 	assert.match(text(await c.tool("vm_bash", { host: "beta", vm: "fakevm", command: 'echo "$HOST_TAG"' })), /^beta\n/);
 	for (const host of ["unknown", "../alpha", "", null, "alpha\n", { name: "beta", dir: profile("beta") }])
 		assert.equal((await c.tool("vm_bash", { host, vm: "fakevm", command: "true" })).isError, true);
-	assert.match(text(await c.tool("vm_manage", { action: "hosts" })), /alpha \*/);
-	assert.equal((await c.tool("vm_manage", { action: "add", name: "untrusted" })).isError, true);
+	assert.match(text(await c.tool("vm_info", { action: "hosts" })), /alpha \*/);
+	assert.equal((await c.tool("vm_manage", { action: "add", vm: "untrusted" })).isError, true);
 	assert.equal((await c.tool("vm_manage", { action: "host", host: "beta" })).isError, false);
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true, "host switch must clear VM");
-	assert.equal((await c.tool("vm_manage", { action: "use", host: "beta", name: "fakevm" })).isError, false);
+	assert.equal((await c.tool("vm_manage", { action: "use", host: "beta", vm: "fakevm" })).isError, false);
 	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
-	assert.match(text(await c.tool("vm_manage", { action: "grants", name: "fakevm" })), /PROFILE:beta OVERRIDES::/);
-	await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+	assert.match(text(await c.tool("vm_info", { action: "grants", vm: "fakevm" })), /PROFILE:beta/);
+	await c.tool("vm_manage", { action: "rm", host: "alpha", vm: "fakevm" });
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, false, "other-host rm must not clear selected pair");
-	await c.tool("vm_manage", { action: "rm", host: "beta", name: "fakevm" });
+	await c.tool("vm_manage", { action: "rm", host: "beta", vm: "fakevm" });
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true);
-	await c.tool("vm_manage", { action: "new", host: "alpha", name: "fakevm", use: true });
+	await c.tool("vm_manage", { action: "new", host: "alpha", vm: "fakevm", use: true });
 	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/);
 	const other = client(["--host", "beta", "--vm", "fakevm"]);
 	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
@@ -163,20 +162,20 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 test("vm_manage host_add/host_rm run against the registry root with only validated arguments; build-base on the call's host", async () => {
 	const c = client(["--host", "beta"]);
 	const out = text(await c.tool("vm_manage", { action: "host_add", name: "gamma", dest: "local", backend: "exe" }));
-	assert.match(out, /PROFILE:home OVERRIDES::\nCOMMAND:host add gamma local --backend exe\n/, "registry root, not the session's profile");
+	assert.match(out, /PROFILE:home\nCOMMAND:host add gamma local --backend exe\n/, "registry root, not the session's profile");
 	assert.match(out, /action:"host", host:"gamma"/);
 	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "delta", dest: "me@box", profile: "exe" })), /COMMAND:host add delta me@box --profile exe\n/);
 	// Registers, then builds on the new host's profile (here an existing fixture so the stub can resolve it).
-	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "alpha", dest: "local", backend: "lima", buildBase: true })), /PROFILE:alpha OVERRIDES::\nCOMMAND:build-base/);
-	for (const bad of [{ name: "legacy", dest: "local" }, { name: "Bad", dest: "local" }, { name: "gamma", dest: "-oProxyCommand=x" }, { name: "gamma", dest: "a b" },
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "alpha", dest: "local", backend: "lima", buildBase: true })), /PROFILE:alpha\nCOMMAND:build-base/);
+	for (const bad of [{ name: "Bad", dest: "local" }, { name: "gamma", dest: "-oProxyCommand=x" }, { name: "gamma", dest: "a b" },
 		{ name: "gamma", dest: "local", backend: "../x" }, { name: "gamma", dest: "local", profile: "-x" }, { name: "gamma" }, { name: "gamma", dest: "local", host: "beta" }])
 		assert.equal((await c.tool("vm_manage", { action: "host_add", ...bad })).isError, true, JSON.stringify(bad));
-	assert.match(text(await c.tool("vm_manage", { action: "list" })), /host: beta/, "session host unchanged");
+	assert.match(text(await c.tool("vm_info", { action: "list" })), /host: beta/, "session host unchanged");
 	// build-base on the call's host; host_rm forgets a registration against the registry root.
-	assert.match(text(await c.tool("vm_manage", { action: "build-base", host: "alpha" })), /PROFILE:alpha OVERRIDES::\nCOMMAND:build-base$/);
-	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "gamma" })), /^PROFILE:home OVERRIDES::\nCOMMAND:host rm gamma$/);
+	assert.match(text(await c.tool("vm_manage", { action: "build-base", host: "alpha" })), /PROFILE:alpha\nCOMMAND:build-base$/);
+	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "gamma" })), /^PROFILE:home\nCOMMAND:host rm gamma$/);
 	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "beta" })), /COMMAND:host rm beta\nthis session still uses beta/);
-	for (const bad of [{ name: "legacy" }, { name: "../x" }, {}, { name: "gamma", host: "beta" }])
+	for (const bad of [{ name: "../x" }, {}, { name: "gamma", host: "beta" }])
 		assert.equal((await c.tool("vm_manage", { action: "host_rm", ...bad })).isError, true, JSON.stringify(bad));
 });
 
@@ -191,7 +190,7 @@ test("startup host failures, BOXERY_VM and alias replacement cannot inherit a di
 	try {
 		writeFileSync(pointer, `${profile("beta")}\n`);
 		assert.equal((await c.tool("vm_bash", { host: "alpha", command: "true" })).isError, true);
-		await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+		await c.tool("vm_manage", { action: "rm", host: "alpha", vm: "fakevm" });
 		assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/, "resolved sessions retain their original profile");
 	} finally { writeFileSync(pointer, `${profile("alpha")}\n`); }
 });
@@ -274,7 +273,7 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 	try {
 		for (const startup of [
 			{ args: [], host: "alpha", vm: null, changedDefault: "beta" },
-			{ args: ["--host", "beta", "--vm", "fakevm"], host: "beta", vm: "fakevm", changedDefault: "legacy" },
+			{ args: ["--host", "beta", "--vm", "fakevm"], host: "beta", vm: "fakevm", changedDefault: "alpha" },
 		]) {
 			writeFileSync(defaultFile, "alpha\n");
 			const port = 20000 + Math.floor(Math.random() * 20000);
@@ -296,8 +295,8 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 			};
 			const tool = async (sid, name, args) => (await (await post("tools/call", { name, arguments: args }, sid)).json()).result;
 			const assertStartup = async (sid) => {
-				const listed = text(await tool(sid, "vm_manage", { action: "list" }));
-				assert.match(listed, new RegExp(`PROFILE:${startup.host} OVERRIDES::`));
+				const listed = text(await tool(sid, "vm_info", { action: "list" }));
+				assert.match(listed, new RegExp(`PROFILE:${startup.host}`));
 				assert.ok(listed.includes(`current: ${startup.vm ?? "(none)"} (host: ${startup.host})`));
 				const implicit = await tool(sid, "vm_bash", { command: 'echo "$HOST_TAG"' });
 				if (startup.vm) assert.match(text(implicit), new RegExp(`^${startup.host}\\n`));
@@ -312,7 +311,7 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 			writeFileSync(defaultFile, `${startup.changedDefault}\n`);
 			const third = await initialize(); // New sessions also inherit this server's startup snapshot.
 			await Promise.all([first, second, third].map(assertStartup));
-			await Promise.all([[first, "alpha"], [second, "beta"]].map(([sid, host]) => tool(sid, "vm_manage", { action: "use", host, name: "fakevm" })));
+			await Promise.all([[first, "alpha"], [second, "beta"]].map(([sid, host]) => tool(sid, "vm_manage", { action: "use", host, vm: "fakevm" })));
 			const out = await Promise.all([first, second].map((sid) => tool(sid, "vm_bash", { command: 'sleep 0.1; echo "$HOST_TAG"' })));
 			assert.match(text(out[0]), /^alpha\n/); assert.match(text(out[1]), /^beta\n/);
 			await tool(first, "vm_manage", { action: "host", host: "beta" });
@@ -324,4 +323,43 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 			await stopped;
 		}
 	} finally { writeFileSync(defaultFile, "alpha\n"); }
+});
+
+test("vm_info hosts says where each host runs, its recorded backend, and which names are the same profile", async () => {
+	const home = path.join(dir, "home");
+	try {
+		// As `boxery setup` writes it; the last assignment wins, as when the controller sources it.
+		writeFileSync(path.join(profile("alpha"), "config"), "HOST='old@box'\nHOST_BIN='~/.local/bin/boxery-host'\nexport HOST=you@alpha-box # moved\n");
+		writeFileSync(path.join(profile("alpha"), "backend"), "libvirt\n");
+		writeFileSync(path.join(profile("beta"), "config"), 'HOST="$(whoami)@box"\n'); // needs execution: unknown, never run
+		writeFileSync(path.join(profile("beta"), "backend"), "not a backend\n");
+		writeFileSync(path.join(home, "config"), "HOST='local'\n");
+		writeFileSync(path.join(home, "ssh_config"), "# fake SSH config\n");
+		writeFileSync(path.join(home, "backend"), "lima\n");
+		writeFileSync(path.join(home, "host-registry", "root"), `${home}\n`);
+		writeFileSync(path.join(home, "host-registry", "root2"), `${home}\n`); // a second name for the same directory
+		const c = client(["--host", "alpha"]);
+		await c.call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		const r = await c.tool("vm_info", { action: "hosts" });
+		assert.equal(r.isError, false, text(r));
+		const byName = Object.fromEntries(r.structuredContent.hosts.map((h) => [h.name, h]));
+		assert.deepEqual(r.structuredContent.hosts.map((h) => h.name), ["alpha", "beta", "root", "root2"]);
+		assert.deepEqual(byName.alpha, { name: "alpha", destination: "you@alpha-box", backend: "libvirt", current: true, default: true, same_as: [], dir: profile("alpha") });
+		assert.deepEqual(byName.beta, { name: "beta", destination: null, backend: null, current: false, default: false, same_as: [], dir: profile("beta") });
+		assert.deepEqual(byName.root, { name: "root", destination: "local", backend: "lima", current: false, default: false, same_as: ["root2"], dir: home });
+		assert.deepEqual(byName.root2.same_as, ["root"]);
+		const lines = text(r).split("\n");
+		assert.equal(lines[0], "NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE");
+		assert.equal(lines[1], `alpha *\tyou@alpha-box\tlibvirt\tdefault\t${profile("alpha")}`);
+		assert.equal(lines[3], `root\tlocal\tlima\tsame host as root2\t${home}`);
+		const info = (await c.call("tools/list")).result.tools.find((t) => t.name === "vm_info");
+		assert.deepEqual(Object.keys(info.outputSchema.properties.hosts.items.properties).sort(), Object.keys(byName.alpha).sort());
+		assert.match(info.inputSchema.properties.host.description, /same profile directory.*same host/);
+	} finally {
+		for (const h of ["alpha", "beta"]) {
+			writeFileSync(path.join(profile(h), "config"), "# fake controller config\n");
+			rmSync(path.join(profile(h), "backend"), { force: true });
+		}
+		for (const f of ["config", "ssh_config", "backend", "host-registry/root", "host-registry/root2"]) rmSync(path.join(home, f), { force: true });
+	}
 });

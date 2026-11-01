@@ -33,7 +33,8 @@ An agent can't grant itself anything, but it can ask. When work in a VM fails fo
 ```text
 Give VM "demo" on host "hornet" access to:
 
-file: /Users/you/Library/Preferences/pnpm/auth.ini → /home/agent/.config/pnpm/auth.ini
+file: ~/Library/Preferences/pnpm/auth.ini
+  → in the VM: ~/.config/pnpm/auth.ini
 Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it.
 
 Revoke any time: boxery --host hornet revoke demo file:/Users/you/Library/Preferences/pnpm/auth.ini
@@ -47,6 +48,7 @@ If you allow it, the tool runs `boxery grant` for you, which applies the grant t
 - **Agents can request `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg` or boxery's own config directories. An `env:VAR` request needs `VAR` set where boxery runs.
 - One prompt at a time per session. Something already granted is reported without a prompt.
 - The agent's reason is shown last and labelled as the agent's. Judge the request by the lines above it.
+- Claude Code shows the first three lines and folds the rest; expand it to read the warning and the reason.
 
 This is the way to get credentials into a VM on another [host](hosts.md). Grants belong to a host profile, so a VM on `hornet` starts with none of your local VMs' grants. Agents are told never to copy credentials in with `vm_copy` or `vm_write`, because a copy lands on the VM's disk and in its snapshots.
 
@@ -62,7 +64,7 @@ This is the way to get credentials into a VM on another [host](hosts.md). Grants
   - Revoking takes effect on the next request. `rm` and pool lease resets clear the routes.
   - Not covered yet: the `gh` CLI only talks to `https://` hosts. Use `gh api http://…` or `curl` against `$BOXERY_EDGE`, or an `env:GH_TOKEN` grant.
 - **ssh-agent** turns on `ForwardAgent yes` for that VM only. Your private keys never leave your machine, but while you're connected, processes in the VM can ask your agent to sign. Background jobs (`boxery run --bg`, `vm_jobs`) outlive the connection, so they run without the agent; use an `http:`/`github` grant for git in jobs.
-- **env / file**: the local store (`~/.boxery/grants/NAME`) holds **names and paths only**. Values are read when grants are applied, then pushed over ssh into `/run/user/<uid>/boxery` in the VM. That's tmpfs, so values never touch the VM's disk and disappear on reboot.
+- **env / file**: the local store (`~/.boxery/profiles/HOST/grants/NAME`) holds **names and paths only**. Values are read when grants are applied, then pushed over ssh into `/run/user/<uid>/boxery` in the VM. That's tmpfs, so values never touch the VM's disk and disappear on reboot.
   - Login and interactive shells source the env vars, and so does `vm_bash`.
   - Files are symlinked into place and added to `.git/info/exclude`.
 - **Reconciled on every apply.** Grants are re-applied on `grant`, `revoke`, `new`, `start`, `revert`, `attach`, `ssh`, and when pi selects the VM. Each apply makes the VM match the current grants exactly, so revoked values are deleted.
