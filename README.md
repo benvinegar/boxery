@@ -1,21 +1,22 @@
 <h1 align="center">boxery</h1>
 
 <p align="center">
-  <strong>More computers for your agents.</strong><br>
-  Self-hosted Ubuntu desktop VMs that the coding agents on your laptop can drive: shell, files, a real browser, and the whole desktop.
+  <strong>Self-serve VMs for any coding agent, on any host.</strong><br>
+  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux VMs on your Mac, your own server, or the cloud. A control plane you run keeps your credentials, grants and leases.
 </p>
 
 <p align="center">
   <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Platforms" src="https://img.shields.io/badge/host-Linux%20(KVM)%20%7C%20macOS%20(Lima)-555">
+  <img alt="Backends" src="https://img.shields.io/badge/backends-Lima%20%7C%20libvirt%20%7C%20exe.dev%20(experimental)-555">
 </p>
 
 <p align="center">
   <a href="docs/install.md">Install</a> ·
-  <a href="docs/pi-extension.md">pi extension</a> ·
   <a href="docs/mcp.md">MCP server</a> ·
+  <a href="docs/pi-extension.md">pi extension</a> ·
   <a href="docs/cli.md">CLI</a> ·
+  <a href="host/backends/README.md">Backends</a> ·
   <a href="docs/README.md">All docs</a>
 </p>
 
@@ -25,45 +26,72 @@
 
 ---
 
-Your agent runs on your laptop, with your model login and your extensions. boxery gives it **`vm_*` tools** that act on full Linux desktop VMs on a machine you own. It can install things, run dev servers, click through UIs and use Chrome, all away from your laptop. You can also run agents *inside* the VMs, where they keep working while your laptop sleeps.
+Your agent keeps running where it already runs, with your model login and your setup. boxery gives it **`vm_*` tools** that act on full Ubuntu desktop VMs: shell, files, a real Chrome, and the whole desktop. It can install things, run dev servers, click through UIs and fork itself into parallel attempts, all away from your laptop.
 
-Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at any box with KVM, or at your Mac.
+It works with every MCP-capable coding agent, including **Claude Code**, **Codex**, Cursor and opencode, and has a native [pi](https://pi.dev) extension. You can also run agents *inside* the VMs, where they keep working while your laptop sleeps.
+
+## Where the VMs run
+
+Pick a backend per host. Agents see the same tools on all of them, and one MCP server can [route across several hosts](docs/hosts.md) at once.
+
+| Where | Backend | Status |
+|---|---|---|
+| Your Mac | [Lima](docs/install.md#macos-host-lima) | Stable |
+| A Linux box with KVM, local or remote | [libvirt](docs/install.md#linux-host-libvirtkvm) | Stable, fastest |
+| A Linux box with KVM, without libvirt | [Cloud Hypervisor](docs/install.md#linux-host-cloud-hypervisor-experimental) | Experimental |
+| The cloud, no hardware needed | [exe.dev](docs/install.md#exedev-experimental) | Experimental |
+
+More cloud backends are coming. The [backend contract](host/backends/README.md) is a single bash file, so adding a new provider is a self-contained job.
 
 ## Why boxery
 
-- **Fast, disposable desktops.** A new Ubuntu 24.04 + XFCE VM in about 13 s, built from a golden image. Snapshots take about a second, without pausing the VM. Tasks that need no GUI can use `boxery new NAME --headless`: no desktop, and no image build needed. [Headless VMs →](docs/cli.md#lifecycle)
-- **Fork a running VM.** Copy a VM, mid-task, into several independent VMs in 15–25 s, so an agent can try three fixes in parallel and keep the one that works. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
-- **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
-- **Works with your agent.** A native [pi](https://pi.dev) extension, plus an MCP server for Claude Code, Cursor, opencode and other MCP clients.
-- **Credentials stay home.** VMs never see your LLM keys. Each VM gets a revocable token, and a host-side proxy swaps in the real credential.
+- **Same tools on every backend.** Move from your Mac to a KVM server to exe.dev without changing prompts, tools or workflow.
+- **One MCP server, many hosts.** Keep quick work on your Mac, heavy work on a KVM box, and burst to the cloud, all from one server. [Named hosts →](docs/hosts.md)
+- **Credentials stay on the control plane, even with cloud VMs.** VMs never see your LLM keys. Each VM gets a revocable token, and a proxy on the host swaps in the real credential.
 - **Grant access deliberately.** Each VM gets only what you grant it: specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, specific env vars or files. Grants are off by default.
+- **Fork a running VM.** Copy a VM mid-task into several independent VMs so an agent can try three fixes in parallel and keep the one that works. Snapshots and forks are built on one image primitive that every backend implements. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
+- **Fast, disposable desktops.** On libvirt, a new Ubuntu 24.04 + XFCE VM takes about 13 s, a snapshot about 1 s without pausing the VM, and a fork into several VMs 15–25 s. Tasks that need no GUI can use `boxery new NAME --headless`: no desktop, and no image build needed. [Headless VMs →](docs/cli.md#lifecycle)
+- **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
 - **Share a pool safely.** Several agents can lease VMs from a shared pool with exclusive, expiring leases. A VM is wiped back to a clean image when its lease ends.
-- **Several hosts, one MCP server.** Route tools to named hosts with separate SSH configs, grants and lease keys. [Named hosts →](docs/hosts.md)
-- **No daemon on your laptop.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
+- **A lightweight controller.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
 
 ## Quick start
 
-On a **Linux host** with KVM and libvirt ([full requirements](docs/install.md#linux-host-libvirtkvm)):
+**1. Set up a host.** Choose one ([full install guide](docs/install.md)):
 
 ```bash
+# Your Mac (Lima)
+brew install lima jq node
 npm install -g boxery-vm
-boxery-host init                 # storage pool, LLM proxy, lease reaper, ~/.local/bin symlinks
-boxery-host build-base           # golden desktop image (~3 min, one time; skip it if you only want --headless VMs)
+boxery-host init --backend lima && boxery-host build-base
+boxery setup local
 ```
-
-On **your laptop**:
 
 ```bash
-npm install -g boxery-vm            # the boxery CLI + boxery-mcp
-boxery setup you@my-host         # checks ssh, registers your key
-
-pi install npm:boxery-vm            # the pi extension
-pi --vm demo                     # pi with a VM named "demo" (created if missing)
+# A Linux box with KVM and libvirt; run these on the box
+npm install -g boxery-vm
+boxery-host init && boxery-host build-base
+# then on your laptop:
+npm install -g boxery-vm && boxery setup you@my-host
 ```
 
-Then ask: *"Clone my repo in the VM, start the dev server, and screenshot the homepage in Chrome."*
+```bash
+# exe.dev (experimental); the control plane runs on your Mac or any Linux box
+npm install -g boxery-vm
+boxery-host init --backend exe && boxery-host build-base
+boxery setup local
+```
 
-> **Only have a Mac?** Run the host on the Mac itself with Lima: `boxery-host init --backend lima` and `boxery setup local`. See [Install → macOS](docs/install.md#macos-host-lima).
+`build-base` builds the golden desktop image once (about 3 min). Skip it if you only want headless VMs (`boxery new NAME --headless`).
+
+**2. Connect your agent.**
+
+```bash
+npx add-mcp boxery-vm      # Claude Code, Codex, Cursor, VS Code, opencode, Zed, …
+pi install npm:boxery-vm   # or the native pi extension
+```
+
+Then ask: *"Clone my repo in a VM, start the dev server, and screenshot the homepage in Chrome."*
 
 ## Use it from
 
@@ -71,7 +99,20 @@ Then ask: *"Clone my repo in the VM, start the dev server, and screenshot the ho
 <tr>
 <td width="33%" valign="top">
 
-**pi** (built in)
+**Claude Code, Codex, Cursor, …**
+
+```bash
+npx add-mcp boxery-vm
+```
+
+Any MCP client works.
+
+[MCP server →](docs/mcp.md)
+
+</td>
+<td width="33%" valign="top">
+
+**pi** (native extension)
 
 ```bash
 pi --vm demo
@@ -80,17 +121,6 @@ pi --vm pool   # lease one
 ```
 
 [pi extension →](docs/pi-extension.md)
-
-</td>
-<td width="33%" valign="top">
-
-**Claude Code, Cursor, …**
-
-```bash
-npx add-mcp boxery-vm
-```
-
-[MCP server →](docs/mcp.md)
 
 </td>
 <td width="33%" valign="top">
@@ -114,6 +144,7 @@ Every integration exposes the same tools:
 | Tool | What it does |
 |---|---|
 | `vm_bash` `vm_read` `vm_write` `vm_edit` | Shell and files in the VM, with the same semantics as pi's built-ins |
+| `vm_jobs` | Long-running commands in the background: start, list, read logs, wait. Jobs survive disconnects |
 | `vm_copy` | Copy between your machine and VMs, or from one VM to another |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
@@ -126,39 +157,37 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
 ## How it works
 
 ```
-  your laptop                        VM host  (Linux + KVM, or a Mac with Lima)
- ┌───────────────────┐     ssh      ┌──────────────────────────────────────────────┐
- │ pi / Claude Code  │─────────────►│ boxery-host ──► VM  Ubuntu 24.04 + XFCE      │
- │   vm_* tools      │  (tailscale) │                  ├ Chrome, Firefox, noVNC    │
- │ boxery CLI        │              │                  ├ pi + opencode in tmux     │
- │ browser ◄─────────┼─── noVNC ────┤                  └ LLM calls ─vsock─┐        │
- └───────────────────┘              │                                     ▼        │
-                                    │ boxery-proxy: per-VM token → real creds ──►  │
-                                    │               OpenAI · Anthropic · ollama    │
-                                    └──────────────────────────────────────────────┘
+ your laptop                     control plane (boxery-host)           VMs: Ubuntu 24.04 + XFCE
+┌─────────────────────┐   ssh   ┌─────────────────────────────┐       ┌─────────────────────────┐
+│ Claude Code · Codex │────────►│ VM lifecycle, images, forks │──────►│ Lima      on your Mac   │
+│ Cursor · pi · …     │         │ leases · grants             │──────►│ libvirt   on a KVM box  │
+│   └ vm_* tools      │         │ boxery-proxy: per-VM token  │──────►│ exe.dev   in the cloud  │
+│ boxery CLI          │         │   → real LLM credentials    │       │ …more coming            │
+│ browser ◄── noVNC ──┼─────────┤                             │       └─────────────────────────┘
+└─────────────────────┘         └─────────────────────────────┘
 ```
 
-Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so `ssh demo.boxery`, VS Code Remote-SSH and Zed work too. More detail: [credential proxy](docs/security.md#credential-proxy) · [architecture](ARCHITECTURE.md) · [backends](host/backends/README.md).
+The control plane runs on any Linux box or Mac, including your laptop. It owns everything that has to stay trusted, such as credentials, grants and leases. A backend only creates, copies and deletes VMs. Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so `ssh demo.boxery`, VS Code Remote-SSH and Zed work too. More detail: [credential proxy](docs/security.md#credential-proxy) · [architecture](ARCHITECTURE.md) · [backends](host/backends/README.md).
 
 ## Documentation
 
 | | |
 |---|---|
-| [Install](docs/install.md) | Linux host, macOS host, laptop setup, LLM providers |
-| [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
+| [Install](docs/install.md) | Hosts on every backend, laptop setup, LLM providers |
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
+| [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
+| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, and the backend contract |
 | [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
-| [Backends](host/backends/README.md) | libvirt, Lima, and the backend contract |
 | [Architecture](ARCHITECTURE.md) | Design, roadmap, and failure modes |
 | [Migrating from agentvm](docs/migrating-from-agentvm.md) | Upgrading an install from before the rename |
 
 ## Status
 
-boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap-re-ordered-after-review) lists what's next: profiles, network isolation, per-VM budgets.
+boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap-re-ordered-after-review) lists what's next: profiles, network isolation, per-VM budgets.
 
 ## Contributing
 
