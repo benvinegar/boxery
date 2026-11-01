@@ -46,7 +46,7 @@ Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at an
 On a **Linux host** with KVM and libvirt ([full requirements](docs/install.md#linux-host-libvirtkvm)):
 
 ```bash
-npm install -g boxery
+npm install -g boxery-vm
 boxery-host init                 # storage pool, LLM proxy, lease reaper, ~/.local/bin symlinks
 boxery-host build-base           # golden desktop image (~3 min, one time)
 ```
@@ -54,10 +54,10 @@ boxery-host build-base           # golden desktop image (~3 min, one time)
 On **your laptop**:
 
 ```bash
-npm install -g boxery            # the boxery CLI + boxery-mcp
+npm install -g boxery-vm            # the boxery CLI + boxery-mcp
 boxery setup you@my-host         # checks ssh, registers your key
 
-pi install npm:boxery            # the pi extension
+pi install npm:boxery-vm            # the pi extension
 pi --vm demo                     # pi with a VM named "demo" (created if missing)
 ```
 
@@ -88,7 +88,7 @@ pi --vm pool   # lease one
 
 ```bash
 claude mcp add boxery -- \
-  npx -y -p boxery boxery-mcp --vm demo
+  npx -y -p boxery-vm boxery-mcp --vm demo
 ```
 
 [MCP server →](docs/mcp.md)

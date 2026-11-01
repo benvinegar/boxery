@@ -9,7 +9,7 @@ pi's built-in `bash`/`read`/`write`/`edit` are **left alone** and keep working o
 ## Install
 
 ```bash
-pi install npm:boxery            # or, for one session: pi -e npm:boxery
+pi install npm:boxery-vm            # or, for one session: pi -e npm:boxery-vm
 pi install ~/boxery              # from a git checkout
 ```
 

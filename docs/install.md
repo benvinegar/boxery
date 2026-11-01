@@ -33,12 +33,12 @@ sudo loginctl enable-linger "$USER"
 **Install**
 
 ```bash
-npm install -g boxery            # or: git clone https://github.com/benvinegar/boxery.git && use ./host/boxery-host
+npm install -g boxery-vm            # or: git clone https://github.com/benvinegar/boxery.git && use ./host/boxery-host
 boxery-host init                 # storage pool, proxy + vsock + reaper user services, ~/.local/bin symlinks
 boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Node 22, pi, opencode (~3 min)
 ```
 
-`init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path, so after `npm update -g boxery` (or switching Node versions with nvm/fnm) re-run `boxery-host init`.
+`init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path, so after `npm update -g boxery-vm` (or switching Node versions with nvm/fnm) re-run `boxery-host init`.
 
 ## macOS host (Lima)
 
@@ -46,7 +46,7 @@ No Linux box? Run the host on your Mac and point the controller at `local`. The 
 
 ```bash
 brew install lima jq node
-npm install -g boxery
+npm install -g boxery-vm
 boxery-host init --backend lima
 boxery-host build-base
 boxery setup local
@@ -64,7 +64,7 @@ Backend details: [host/backends/README.md](../host/backends/README.md).
 Needs only bash (3.2 is fine), ssh and a browser.
 
 ```bash
-npm install -g boxery            # or: git clone + ln -s ~/boxery/controller/boxery onto your PATH
+npm install -g boxery-vm            # or: git clone + ln -s ~/boxery/controller/boxery onto your PATH
 boxery setup you@my-host                                    # or: boxery setup local
 ```
 

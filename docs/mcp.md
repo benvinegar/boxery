@@ -17,10 +17,10 @@ The server runs locally and reaches VMs over the same ssh path as the CLI.
 
 ```bash
 # Claude Code
-claude mcp add boxery -- npx -y -p boxery boxery-mcp --vm demo
+claude mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
 
 # pi (or just use the extension)
-pi mcp add boxery -- npx -y -p boxery boxery-mcp --vm demo
+pi mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
 ```
 
 Cursor and other clients that use a JSON config:
@@ -30,7 +30,7 @@ Cursor and other clients that use a JSON config:
   "mcpServers": {
     "boxery": {
       "command": "npx",
-      "args": ["-y", "-p", "boxery", "boxery-mcp", "--vm", "demo"]
+      "args": ["-y", "-p", "boxery-vm", "boxery-mcp", "--vm", "demo"]
     }
   }
 }
