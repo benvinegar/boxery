@@ -386,5 +386,5 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 | `~/.boxery/leases/` | Your leases and their per-lease ssh keys |
 | `~/.config/boxery/host.env` (host) | Backend and overrides (`BOXERY_BACKEND`, `BOXERY_LIMA_VMTYPE`, …) |
 | `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys |
-| `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens |
+| `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens (per lease on pool VMs) |
 | `~/.config/boxery/leases.db` (host) | Lease state (SQLite) |

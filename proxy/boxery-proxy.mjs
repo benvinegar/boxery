@@ -47,7 +47,8 @@ function b64urlJson(s) {
 	return JSON.parse(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
 }
 
-/** "name:secret" → VM name if it matches tokens.json, else null. */
+/** "name:secret" → {vm, lease, tag} if it matches tokens.json, else null. A tokens.json entry is the
+ * pet's "secret", or {secret, lease} for a pool VM: that token lives exactly as long as the lease. */
 function vmForCred(cred) {
 	if (typeof cred !== "string") return null;
 	const i = cred.indexOf(":");
@@ -55,10 +56,14 @@ function vmForCred(cred) {
 	const name = cred.slice(0, i);
 	const secret = cred.slice(i + 1);
 	const tokens = readTokens();
-	return Object.hasOwn(tokens, name) && secret && tokens[name] === secret ? name : null;
+	const entry = Object.hasOwn(tokens, name) ? tokens[name] : undefined;
+	const want = typeof entry === "string" ? entry : entry?.secret;
+	if (!secret || typeof want !== "string" || want !== secret) return null;
+	const lease = typeof entry?.lease === "string" ? entry.lease : null;
+	return { vm: name, lease, tag: lease ? `${name}/${lease}` : name }; // tag: who, in the log
 }
 
-/** Returns the VM name for a valid token, else null. */
+/** Returns {vm, lease, tag} for a valid token, else null. */
 function authenticate(req) {
 	let raw = req.headers["x-api-key"] ?? "";
 	const authz = req.headers.authorization ?? "";
@@ -188,8 +193,8 @@ async function handle(req, res) {
 		res.writeHead(404).end("unknown route\n");
 		return;
 	}
-	const vm = authenticate(req);
-	if (!vm) {
+	const who = authenticate(req);
+	if (!who) {
 		res.writeHead(401, { "content-type": "application/json" }).end('{"error":"invalid boxery token"}\n');
 		log("401", req.method, url.pathname);
 		return;
@@ -197,9 +202,10 @@ async function handle(req, res) {
 	const subpath = "/" + rest.join("/");
 	if (!allowed(routeName, req.method, subpath)) {
 		res.writeHead(403, { "content-type": "application/json" }).end(`{"error":"not an allowed inference endpoint: ${req.method} /${routeName}${subpath.replace(/["\\]/g, "")}"}\n`);
-		log(vm, "403", req.method, routeName, subpath);
+		log(who.tag, "403", req.method, routeName, subpath);
 		return;
 	}
+	const { vm } = who;
 	const len = Number(req.headers["content-length"] ?? 0);
 	if (len > LIMITS.maxBody) {
 		res.writeHead(413).end("request body too large\n");
@@ -250,11 +256,11 @@ async function handle(req, res) {
 		if (up.body) await pipeline(Readable.fromWeb(up.body), res);
 		else res.end();
 		done = true;
-		log(vm, req.method, routeName, subpath, up.status, `${Date.now() - started}ms`);
+		log(who.tag, req.method, routeName, subpath, up.status, `${Date.now() - started}ms`);
 	} catch (e) {
 		const msg = ac.signal.aborted ? String(ac.signal.reason?.message ?? "aborted") : e.message;
 		// Clients often close a stream once they have the final event; that's not an error.
-		log(vm, msg === "client disconnected" ? "closed-by-client" : "ERROR", req.method, routeName, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
+		log(who.tag, msg === "client disconnected" ? "closed-by-client" : "ERROR", req.method, routeName, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
 		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
 		if (!res.writableEnded) res.end(JSON.stringify({ error: msg }) + "\n");
 	} finally {
@@ -273,9 +279,11 @@ const EDGE_MAX_BODY = Number(process.env.BOXERY_PROXY_EDGE_MAX_BODY ?? 1024 * 10
 export const EDGE_HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
 const EDGE_STRIP = new Set(["authorization", "proxy-authorization", "cookie", "x-api-key"]);
 
-function edgeRoutes(vm) {
+/** VM's routes, if they were set for this token's lease (a pool VM's routes carry the lease id). */
+function edgeRoutes(vm, lease) {
 	try {
 		const j = JSON.parse(fs.readFileSync(path.join(EDGE_DIR, `${vm}.json`), "utf8"));
+		if ((j?.lease ?? null) !== lease) return {};
 		return j && typeof j.hosts === "object" ? j.hosts : {};
 	} catch {
 		return {};
@@ -290,14 +298,15 @@ export function edgeReadAllowed(method, p, search) {
 
 async function handleEdge(req, res, url, rest, started) {
 	const [rawTok, host, ...tail] = rest;
-	const vm = vmForCred(decodeURIComponent(rawTok ?? ""));
+	const who = vmForCred(decodeURIComponent(rawTok ?? ""));
+	const { vm, lease } = who ?? {};
 	const fail = (code, msg) => {
 		res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ error: msg }) + "\n");
-		log(vm ?? "-", "EDGE", code, req.method, host && EDGE_HOST_RE.test(host) ? host : "?", msg);
+		log(who?.tag ?? "-", "EDGE", code, req.method, host && EDGE_HOST_RE.test(host) ? host : "?", msg);
 	};
-	if (!vm) return fail(401, "invalid boxery token");
+	if (!who) return fail(401, "invalid boxery token");
 	if (!host || !EDGE_HOST_RE.test(host)) return fail(400, "bad host");
-	const route = edgeRoutes(vm)[host];
+	const route = edgeRoutes(vm, lease)[host];
 	if (!route || typeof route !== "object") return fail(403, `${host} is not granted to this VM (boxery grant ${vm} http:${host})`);
 	const subpath = "/" + tail.join("/");
 	if (route.readonly && !edgeReadAllowed(req.method, subpath, url.search)) return fail(403, `read-only grant: ${req.method} not allowed`);
@@ -348,7 +357,7 @@ async function handleEdge(req, res, url, rest, started) {
 		if (loc) {
 			try {
 				const L = new URL(loc, `https://${host}${subpath}`);
-				const routes = edgeRoutes(vm);
+				const routes = edgeRoutes(vm, lease);
 				if (L.protocol === "https:" && !L.port && Object.hasOwn(routes, L.hostname))
 					outHeaders.location = `http://${req.headers.host ?? "127.0.0.1:8088"}/edge/${rawTok}/${L.hostname}${L.pathname}${L.search}`;
 			} catch {}
@@ -357,10 +366,10 @@ async function handleEdge(req, res, url, rest, started) {
 		if (up.body && req.method !== "HEAD") await pipeline(Readable.fromWeb(up.body), res);
 		else res.end();
 		done = true;
-		log(vm, "EDGE", req.method, host, subpath, up.status, `${Date.now() - started}ms`);
+		log(who.tag, "EDGE", req.method, host, subpath, up.status, `${Date.now() - started}ms`);
 	} catch (e) {
 		const msg = ac.signal.aborted ? String(ac.signal.reason?.message ?? "aborted") : e.message;
-		log(vm, msg === "client disconnected" ? "closed-by-client" : "ERROR", "EDGE", req.method, host, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
+		log(who.tag, msg === "client disconnected" ? "closed-by-client" : "ERROR", "EDGE", req.method, host, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
 		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
 		if (!res.writableEnded) res.end(JSON.stringify({ error: msg }) + "\n");
 	} finally {

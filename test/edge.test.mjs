@@ -87,6 +87,40 @@ test("auth: bad, missing and other VMs' tokens", async () => {
 	assert.equal(seen, null);
 });
 
+test("a pool VM's token and routes are bound to one lease", async () => {
+	const L1 = `l-${"1".repeat(32)}`, L2 = `l-${"2".repeat(32)}`;
+	const tokens = (pool) => writeFileSync(path.join(conf, "tokens.json"), JSON.stringify({ demo: "s3cret", other: "x9", pool }));
+	const lease = (l) => writeFileSync(path.join(conf, "edge", "pool.json"), JSON.stringify({ hosts: { "api.example.com": { headers: { Authorization: "Bearer NEXT" } } }, lease: l }));
+	try {
+		tokens({ secret: "s2", lease: L2 }); lease(L2);
+		assert.equal((await edge("/api.example.com/v1", { token: "pool%3As2" })).status, 200);
+		assert.equal(seen.headers.authorization, "Bearer NEXT");
+		for (let i = 0; i < 50 && !logs.includes(`pool/${L2} EDGE`); i++) await new Promise((r) => setTimeout(r, 20));
+		assert.match(logs, new RegExp(`pool/${L2} EDGE`), "the log names the lease");
+		// The previous lease's token stopped working when its lease ended.
+		assert.equal((await edge("/api.example.com/v1", { token: "pool%3As1" })).status, 401);
+		assert.equal(seen, null);
+		// Routes stamped for another lease (or none) are not this token's grants.
+		for (const l of [L1, undefined]) {
+			lease(l);
+			assert.equal((await edge("/api.example.com/v1", { token: "pool%3As2" })).status, 403);
+			assert.equal(seen, null);
+		}
+		// A pet's token never matches a lease's routes.
+		setRoutes("demo", { "api.example.com": { headers: { Authorization: "Bearer REAL" } } });
+		writeFileSync(path.join(conf, "edge", "demo.json"), JSON.stringify({ hosts: { "api.example.com": { headers: { Authorization: "Bearer REAL" } } }, lease: L1 }));
+		assert.equal((await edge("/api.example.com/v1")).status, 403);
+		for (const bad of [{ lease: L2 }, { secret: 7, lease: L2 }, null, 5]) {
+			tokens(bad);
+			assert.equal((await edge("/api.example.com/v1", { token: "pool%3As2" })).status, 401, JSON.stringify(bad));
+		}
+	} finally {
+		tokens(undefined);
+		rmSync(path.join(conf, "edge", "pool.json"), { force: true });
+		rmSync(path.join(conf, "edge", "demo.json"), { force: true });
+	}
+});
+
 test("only granted, well-formed hosts", async () => {
 	setRoutes("demo", { "api.example.com": { headers: { Authorization: "Bearer REAL" } } });
 	for (const h of ["evil.example.com", "api.example.com.evil.net", "127.0.0.1", "localhost", "api.example.com:8443", "API.EXAMPLE.COM", "%2e%2e", "a..b.com"]) {

@@ -92,10 +92,10 @@ In HTTP mode "local" means the machine running MCP: `vm_copy local:…` and gran
 |---|---|---|
 | `~/.boxery/` (controller) | `config`, `ssh_config`, `host-registry/`, `profiles/NAME/`, `grants/` (names and paths only, never values), `leases/` (lease records + per-lease ssh keys), ControlMaster sockets | Per host profile; `legacy` is the original root profile |
 | `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases | SQLite, short `BEGIN IMMEDIATE` transactions |
-| | `tokens.json` (VM → proxy secret), `edge/NAME.json` (HTTP grant headers), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
+| | `tokens.json` (VM → proxy secret; a leased pool VM's carries its lease id), `edge/NAME.json` (HTTP grant headers, stamped with the lease on a pool VM), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
 | | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `vm-kind/`, `work/OP/` (seeds, removed after the operation) | |
 | Hypervisor | VMs, images (`VM@LABEL`), seeds | Owned by the backend |
-| Guest | `~/.boxery/token`, agent configs, `/run/user/UID/boxery/` (pushed grants, tmpfs) | Token rotates on every new VM; grants are gone on reset or reboot |
+| Guest | `~/.boxery/token`, agent configs, `/run/user/UID/boxery/` (pushed grants, tmpfs) | Token rotates on every new VM and every lease; grants are gone on reset or reboot |
 
 ## Images: snapshots, forks and resets are one primitive
 
@@ -131,6 +131,7 @@ FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / 
 - **Claims** are SQLite transactions with a per-VM **generation** and a pool **epoch** (bumped when a VM leaves and rejoins the pool), so reaper, renew, release and reset races resolve to one winner, and a stale callback can't act on a newer lease.
 - **TTL** from 60 s to 8 h (default 30 min). An expired lease can't be renewed. Deadlines are tied to the host's boot ID: after a reboot every lease is void and reset.
 - **Keys.** Each lease gets a fresh ssh keypair. A pool VM's `authorized_keys` holds only the host key and the current holder's key. Release or expiry reimages the VM from `@boxery-clean`, which drops the key and anything the holder installed, and existing agent ssh sessions are ended.
+- **Proxy tokens.** A pool VM has no valid proxy token while it is free. Acquire writes a new one into the guest (token file and agent configs) before the holder's key goes in, and binds it to the lease id in `tokens.json`. Reset revokes it first, before clearing grants or reimaging, so a token the holder copied stops working when the lease ends. Edge routes on a pool VM are stamped with the lease id; the proxy honours them only with that lease's token, and `edge-set --lease` refuses a holder whose lease has moved on.
 - **Holders** are caller-chosen labels. The pi extension and MCP keep their leases with `LeaseKeeper`: renewed at a third of the TTL while the session is in use, released when the session ends (pi: whenever the lease stops being the current VM; MCP: stdin closes, HTTP `DELETE`, or a signal). An abandoned HTTP session stops renewing, and the reaper resets the VM.
 - **Pets vs pool.** VMs made with `new` are pets and the reaper never touches them. `pool add` turns a pet into a pool VM; `pool rm` turns it back.
 
@@ -140,8 +141,8 @@ FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / 
 
 | Kind | Where it lives | How it gets there |
 |---|---|---|
-| LLM credentials | control plane only | `boxery-proxy`. A VM holds a per-VM token, minted at creation and revoked on `rm` |
-| HTTP API tokens (GitHub, npm, …) | control plane, `edge/NAME.json` | `boxery grant NAME http:HOST --cmd …` / `github`. Values are resolved on the controller, pushed to the host, and injected per request at `/edge/`. The guest reaches them via git `insteadOf` and npm registry config. Cleared on `rm` and lease reset |
+| LLM credentials | control plane only | `boxery-proxy`. A pet holds a per-VM token, minted at creation and revoked on `rm`; a pool VM holds one per lease |
+| HTTP API tokens (GitHub, npm, …) | control plane, `edge/NAME.json` | `boxery grant NAME http:HOST --cmd …` / `github`. Values are resolved on the controller, pushed to the host, and injected per request at `/edge/`. The guest reaches them via git `insteadOf` and npm registry config. On a pool VM, bound to the lease. Cleared on `rm` and lease reset |
 | `env:` / `file:` grants | VM tmpfs (`/run/user/UID/boxery`, files `0400`) | Pushed by the controller over ssh and reconciled on grant/revoke, new, start, revert, attach, ssh, and when pi selects the VM |
 | ssh agent | the laptop | Per-VM `ForwardAgent` while connected |
 
@@ -149,7 +150,7 @@ Agents can list grants but never create them ([grants.md](docs/grants.md)).
 
 **Honest exposure statement.** "tmpfs only" limits *accidental* persistence; it isn't a guarantee. An agent in a VM has root and can read, copy, log or send out any pushed value, and app logs, Docker layers, shell history and agent transcripts (`boxery prompt` logs) can capture values. Mitigations: guests run without swap, with `kernel.core_pattern=|/bin/false`; pushed files are `0400`; resets destroy the disk. The real control is **what** you grant: dev-scoped, rotatable credentials, and `http:` grants (whose values never enter the VM) wherever possible. Production secrets never go to VMs.
 
-Per-VM proxy tokens are an acknowledged exception. They live in the VM's seed, disk and images, and are scoped to the proxy. A new token is minted for every new VM, forks included, and revoked on `rm`. A lease reset doesn't rotate a pool VM's token yet ([#78](https://github.com/benvinegar/boxery/issues/78)).
+Per-VM proxy tokens are an acknowledged exception. They live in the VM's seed, disk and images, and are scoped to the proxy. A new token is minted for every new VM, forks included, and revoked on `rm`. A pool VM's token is minted per lease and revoked when the lease ends, so the clean image and any copy a holder made carry only dead tokens. A pet's token still lasts as long as the VM.
 
 ## Network
 
@@ -184,7 +185,7 @@ Nothing in boxery's own state limits that: lock transactions are short, the prox
 
 ## Roadmap
 
-1. **Hardening** of what exists: Lima loopback exposure ([#67](https://github.com/benvinegar/boxery/issues/67)), confining HTTP-MCP `local:` copies ([#68](https://github.com/benvinegar/boxery/issues/68)), libvirt guest isolation ([#69](https://github.com/benvinegar/boxery/issues/69)), pinned VM host keys ([#70](https://github.com/benvinegar/boxery/issues/70)), proxy header and token hardening ([#73](https://github.com/benvinegar/boxery/issues/73)), token rotation on lease reset ([#78](https://github.com/benvinegar/boxery/issues/78)), HTTP MCP bounds and argument validation ([#21](https://github.com/benvinegar/boxery/issues/21), [#72](https://github.com/benvinegar/boxery/issues/72)), scoped MCP tokens ([#3](https://github.com/benvinegar/boxery/issues/3)), default-deny egress ([#4](https://github.com/benvinegar/boxery/issues/4)), per-VM proxy budgets.
+1. **Hardening** of what exists: Lima loopback exposure ([#67](https://github.com/benvinegar/boxery/issues/67)), confining HTTP-MCP `local:` copies ([#68](https://github.com/benvinegar/boxery/issues/68)), libvirt guest isolation ([#69](https://github.com/benvinegar/boxery/issues/69)), pinned VM host keys ([#70](https://github.com/benvinegar/boxery/issues/70)), proxy header and token hardening ([#73](https://github.com/benvinegar/boxery/issues/73)), HTTP MCP bounds and argument validation ([#21](https://github.com/benvinegar/boxery/issues/21), [#72](https://github.com/benvinegar/boxery/issues/72)), scoped MCP tokens ([#3](https://github.com/benvinegar/boxery/issues/3)), default-deny egress ([#4](https://github.com/benvinegar/boxery/issues/4)), per-VM proxy budgets.
 2. **Lease enforcement:** the restricted host gateway and authenticated holders ([#71](https://github.com/benvinegar/boxery/issues/71)). First decide the pool's shape ([#75](https://github.com/benvinegar/boxery/issues/75)).
 3. **Profiles** (app-agnostic setup on top of images), `--keep`, detach/resume semantics for pi, versioned templates, builder VMs for build-time tokens: [plan](docs/plans/2026-11-01-profiles-and-lease-extensions.md).
 4. **Simplification:** move the controller into Node ([#74](https://github.com/benvinegar/boxery/issues/74)), align the Node requirement ([#77](https://github.com/benvinegar/boxery/issues/77)).

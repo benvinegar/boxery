@@ -49,6 +49,7 @@ boxery leases                    # what you hold
 - **Exclusive.** A pool VM accepts only the host's key and the current lease's key. Each lease gets a fresh ssh keypair, stored in `~/.boxery/leases/`.
 - **Expiring.** TTLs run from 1 minute to 8 hours (default 30 min). The pi extension renews at a third of the TTL. A reaper on the host (systemd timer or launchd agent, every minute) resets expired leases. A sleeping laptop or a crashed agent never strands a VM.
 - **Fenced.** Release or expiry resets the VM to its clean image, which also removes the lease key. Forking a leased VM doesn't carry the lease key over. A holder whose lease is gone is locked out, even with a connection that was already open.
+- **A proxy token per lease.** Each lease gets its own LLM proxy token, and its `http:` grants are bound to that lease. When the lease ends, the token stops working, so a copy taken from inside the VM can't spend through the proxy or use the next holder's grants.
 - **Reboot-safe.** Leases are tied to the host's boot ID. After a host reboot, every lease is void and gets reset.
 - **Crash-safe.** State lives in SQLite (`~/.config/boxery/leases.db`) as a small state machine with generation fencing. A failed acquire or reset never leaves a VM half-assigned. Such VMs are marked `broken` instead, and `pool ls` shows them.
 
