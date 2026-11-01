@@ -46,7 +46,7 @@ function worker(from, to, extra = {}, settings = {}) {
 		child.on("error", reject);
 		child.on("close", () => {
 			clearTimeout(deadline); clearTimeout(hardDeadline);
-			try { resolve(JSON.parse(out)); }
+			try { resolve({ ...JSON.parse(out), ...(inspection ? { inspection, debug: err } : {}) }); }
 			catch { reject(new Error(`copy worker produced no result: ${err} ${out}`)); }
 		});
 	});
@@ -236,7 +236,7 @@ for (const [from, to, sourceEndpoint] of [
 		child.send("abort");
 		const result = await child.result;
 		assert.equal(result.ok, false);
-		assert.equal(result.name, "AbortError");
+		assert.equal(result.name, "AbortError", JSON.stringify(result));
 		assert.ok(logs().some((r) => r.kind === "term" && r.endpoint === sourceEndpoint), "exercise TERM-ignoring source and KILL escalation");
 		noStages(); await noTarJobs();
 	});
@@ -249,7 +249,8 @@ test("copy cleanup remains pinned after profile/default changes during a transfe
 	writeFileSync(path.join(dir, "home", "host-registry", "beta"), `${profile("gamma")}\n`);
 	writeFileSync(path.join(dir, "home", "default-host"), "gamma\n");
 	child.send("abort");
-	assert.equal((await child.result).name, "AbortError");
+	const result = await child.result;
+	assert.equal(result.name, "AbortError", JSON.stringify(result));
 	const cleanupHosts = logs().filter((r) => r.kind === "ssh" && r.script.includes(".cleanup")).map((r) => r.endpoint);
 	assert.deepEqual(cleanupHosts.sort(), ["alpha/vm", "beta/vm"]);
 	noStages(); await noTarJobs();
