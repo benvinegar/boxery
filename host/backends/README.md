@@ -42,7 +42,7 @@ Rules every backend must follow:
 - **Disk only.** Images never include RAM. Processes restart; runtime secrets that grants push to tmpfs are never captured.
 - **Independent.** VMs made from an image, and images of those VMs, never depend on the source VM or image staying around. (libvirt pulls image data into the new overlay; Lima clones are full or copy-on-write copies.) This is what keeps fork-of-a-fork-of-a-fork cheap and lets snapshots be deleted in any order.
 - **Cheap.** Captures and VMs from images should cost about as much disk as the data they change, not a full disk copy, where the platform allows it.
-- **No locking needed.** boxery-host holds a per-VM lock around capture/reimage/rm. Backends don't need their own.
+- **No locking needed.** boxery-host holds lifecycle resource locks through the complete workflow, including capture/reimage/rm, image readers, guest readiness and key installation. Backends don't need their own. See [lifecycle coordination](../../docs/lifecycle.md).
 
 ## Identity: what a VM made from an image must get
 
@@ -58,6 +58,20 @@ The backend's job is the hypervisor side:
 - a new MAC address, vsock CID, UUID and seed. Never reuse the source's
 - a network identity that doesn't depend on the guest's machine-id. libvirt passes a network-config with `dhcp-identifier: mac`, so a fork never gets its source's DHCP lease
 - if the backend can't deliver a cloud-init seed (Lima), apply USERDATA itself and regenerate the machine-id
+
+## Crash recovery contract
+
+The supervisor journals intent before side effects and stops an abandoned worker group before replay. Every backend also implements these **idempotent** helpers, including artifacts not visible in its ordinary inventory:
+
+| Function | Contract |
+|---|---|
+| `backend_cleanup_new NAME` | Remove an incomplete VM and its partial disks/seed/staging instances, even if no domain/instance was fully registered. Does not remove unrelated images |
+| `backend_cleanup_image IMAGE` | Remove a complete or partial image, including a clone killed before its image metadata was published; succeed if already absent |
+| `backend_recover_capture NAME IMAGE ORIGINAL_STATE` | Cancel outstanding capture jobs, thaw/restore capture-related source state as needed, then remove the incomplete image. Never remove the source VM |
+
+`backend_reimage` must be retryable after an interruption between destructive steps. libvirt tolerates a missing old disk; Lima resumes a staged replacement after the original instance was deleted. Return errors if cleanup cannot complete so the supervisor retains the journal/locks for retry. Inventory commands must distinguish a healthy empty result from an unavailable backend. Do not hide an inventory failure as an empty host.
+
+These hooks complement process-group shutdown: submitted hypervisor jobs can survive the CLI that launched them. Real-hypervisor fault testing is still required in addition to fake-backend tests.
 
 ## Implementations
 
