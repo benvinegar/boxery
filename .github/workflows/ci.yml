@@ -43,7 +43,17 @@ jobs:
             apk add -q --no-cache openssh-client jq coreutils openssl nodejs perl git procps-ng >/dev/null
             cp -r /src /w && cd /w && bash test/shell/run.sh'
 
-  macos:
+  # The macOS suites run as separate jobs so they overlap; together they were the slowest job by far.
+  macos-shell:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22 }
+      - run: /bin/bash --version | head -1
+      - run: BASH_UNDER_TEST=/bin/bash /bin/bash test/shell/run.sh
+
+  macos-node:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -51,6 +61,5 @@ jobs:
         with: { node-version: 22 }
       # The fake-VM MCP jobs tests execute tmux locally; macOS runners omit it.
       - run: brew install tmux
-      - run: /bin/bash --version | head -1
-      - run: BASH_UNDER_TEST=/bin/bash /bin/bash test/shell/run.sh
+        env: { HOMEBREW_NO_AUTO_UPDATE: 1, HOMEBREW_NO_INSTALL_CLEANUP: 1, HOMEBREW_NO_ANALYTICS: 1 }
       - run: npm test
