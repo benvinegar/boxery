@@ -168,7 +168,7 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
-    <img src="docs/how-it-works-light.svg" alt="Coding agents and the boxery CLI on your laptop reach the control plane over ssh. There, boxery-host creates, forks and removes VMs on Lima, libvirt or exe.dev, and boxery-proxy swaps a VM's own token for your real LLM credential, so keys never enter a VM" width="680">
+    <img src="docs/how-it-works-light.svg" alt="Coding agents on your laptop use their own model login and drive VMs over ssh through the control plane. There, boxery-host creates, forks and removes VMs on Lima, libvirt or exe.dev, and boxery-proxy holds your real credentials for LLMs, GitHub, npm or any HTTPS API. A VM only sees its own token, reaches only the APIs you grant it, and the proxy adds the real key on the way out" width="680">
   </picture>
 </p>
 
