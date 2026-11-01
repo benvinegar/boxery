@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { identity, machineBootId, open, PS_ENV, tx as transaction, VALID_NAME } from "./boxery-leases.mjs";
+import { backup, identity, machineBootId, open, PS_ENV, restore as restoreStore, tx as transaction, VALID_NAME } from "./boxery-leases.mjs";
 import { SETTINGS } from "./config.mjs";
 
 const HOST = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
@@ -159,12 +159,18 @@ async function acquire(db, wanted, command, env, conf, reconcile = false) {
  * waits (until `deadline`, ms since epoch) for the operations already in flight to finish, recovering
  * any that were abandoned. Returns null on timeout, having withdrawn the lock. If the holder dies,
  * the next operation reclaims the lock as abandoned (it has no intents to replay).
+ * While held, `snapshot(file)` copies the store and `restore(file)` puts that copy back (on rollback).
  */
 export async function holdExclusive(conf, deadline) {
 	conf = path.resolve(conf);
 	const db = open(path.join(conf, "leases.db"));
-	const owner = process.pid, ownerStart = identity(owner);
+	const owner = process.pid, ownerStart = identity(owner), createdAt = Date.now();
 	let id = null;
+	const publish = () => {
+		db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES(?,?,?,?,?,?,?,?)")
+			.run(id, "upgrade", JSON.stringify([ALL]), JSON.stringify({ BOXERY_CONF: conf }), owner, ownerStart, BOOT, createdAt);
+		db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES(?,?)").run(ALL, id);
+	};
 	try {
 		for (;;) {
 			const result = transaction(db, () => {
@@ -178,9 +184,7 @@ export async function holdExclusive(conf, deadline) {
 				if (id == null) {
 					if (others.some((r) => JSON.parse(r.resources).includes(ALL))) return {}; // another upgrade
 					id = randomUUID();
-					db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES(?,?,?,?,?,?,?,?)")
-						.run(id, "upgrade", JSON.stringify([ALL]), JSON.stringify({ BOXERY_CONF: conf }), owner, ownerStart, BOOT, Date.now());
-					db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES(?,?)").run(ALL, id);
+					publish();
 					return {};
 				}
 				return { drained: others.length === 0 };
@@ -188,7 +192,16 @@ export async function holdExclusive(conf, deadline) {
 			if (result.recovery) { await recover(db, result.recovery, conf); continue; }
 			if (result.drained) {
 				const held = id;
-				return { release() { finish(db, held, conf); db.close(); } };
+				return {
+					release() { finish(db, held, conf); db.close(); },
+					/** Copy the store to FILE. The copy leaves out this hold: restored by hand, it is an idle host. */
+					snapshot: (file) => backup(db, file, (copy) => {
+						copy.prepare("DELETE FROM operation_locks WHERE operation_id=?").run(held);
+						copy.prepare("DELETE FROM operations WHERE id=?").run(held);
+					}),
+					/** Put the store back as FILE has it, still held by this process. */
+					restore: (file) => restoreStore(db, file, publish),
+				};
 			}
 			if (Date.now() > deadline) { if (id) finish(db, id, conf); db.close(); return null; }
 			await sleep(50);

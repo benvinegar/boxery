@@ -11,8 +11,9 @@
 //   FREE ──claim──▶ ACQUIRING ──commit──▶ LEASED ──release / expiry / host reboot──▶ RESETTING ──finish──▶ FREE
 //                       └──────────── failed key install / stale ─────────────────────▶ RESETTING ──finish──▶ BROKEN
 //
-// Also the host's shared store primitives: the SQLite schema (leases + operation journal, see
-// boxery-operations.mjs), BEGIN IMMEDIATE transactions, VM names and boot/process identity.
+// Also the host's shared store primitives: the SQLite schema and its version (leases + operation
+// journal, see boxery-operations.mjs), BEGIN IMMEDIATE transactions, the copy an upgrade takes and
+// restores, VM names and boot/process identity.
 //
 // CLI (used by host/boxery-host; prints JSON). Lease transitions themselves run in-process
 // (boxery-lifecycle.mjs); the shell only inspects and edits pool membership:
@@ -21,7 +22,7 @@
 // Env (tests): BOXERY_NOW (epoch seconds), BOXERY_BOOT_ID.
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 export const TTL_MIN = 60;
@@ -85,33 +86,105 @@ function retryBusy(fn) {
 	}
 }
 
+// The store's schema version (PRAGMA user_version; 0 = a store from before it was recorded). Every
+// schema change bumps it and adds a step to migrate(). Code refuses a store newer than it understands
+// instead of misreading it, e.g. after an upgrade that migrated it was rolled back without its copy.
+export const SCHEMA_VERSION = 1;
+const SCHEMA_V1 = `
+	CREATE TABLE IF NOT EXISTS vms (
+		name TEXT PRIMARY KEY,
+		state TEXT NOT NULL CHECK (state IN ('FREE','ACQUIRING','LEASED','RESETTING','BROKEN')),
+		gen INTEGER NOT NULL DEFAULT 0,
+		lease_id TEXT UNIQUE,
+		holder TEXT, pubkey TEXT,
+		acquired_at INTEGER, expires_at INTEGER, boot_id TEXT,
+		updated_at INTEGER NOT NULL, epoch TEXT
+	);
+	CREATE TABLE IF NOT EXISTS operations (
+		id TEXT PRIMARY KEY, command TEXT NOT NULL, resources TEXT NOT NULL, env TEXT NOT NULL,
+		owner INTEGER NOT NULL, owner_start TEXT NOT NULL, boot TEXT NOT NULL,
+		child INTEGER, child_start TEXT, created_at INTEGER NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS operation_locks (resource TEXT PRIMARY KEY, operation_id TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS operation_intents (
+		seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+		operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
+	);`;
+
+export const schemaVersion = (db, schema = "main") => db.prepare(`PRAGMA ${schema}.user_version`).get().user_version;
+function checkVersion(file, v) {
+	if (v <= SCHEMA_VERSION) return;
+	throw new Error(`${file} has schema version ${v}, newer than this boxery understands (${SCHEMA_VERSION}): a newer release wrote it. `
+		+ "Upgrade boxery, or restore the copy taken before the upgrade (see Upgrading in docs/install.md)");
+}
+function migrate(db, file) {
+	const v = schemaVersion(db); // again, under the write lock: another opener may have migrated it
+	checkVersion(file, v);
+	if (v < 1) db.exec(SCHEMA_V1); // a new store, or one from before versioning (same tables)
+	if (v !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+}
+
 export function open(file) {
 	// timeout = SQLite busy timeout, applied at open: concurrent openers wait for locks (including the
-	// one-time switch to WAL and CREATE TABLE) instead of failing with "database is locked".
+	// one-time switch to WAL and the migration) instead of failing with "database is locked".
 	const db = new DatabaseSync(file, { timeout: 15000 });
-	db.exec("PRAGMA busy_timeout = 15000");
-	retryBusy(() => db.exec("PRAGMA journal_mode = WAL"));
-	retryBusy(() => db.exec(`
-		CREATE TABLE IF NOT EXISTS vms (
-			name TEXT PRIMARY KEY,
-			state TEXT NOT NULL CHECK (state IN ('FREE','ACQUIRING','LEASED','RESETTING','BROKEN')),
-			gen INTEGER NOT NULL DEFAULT 0,
-			lease_id TEXT UNIQUE,
-			holder TEXT, pubkey TEXT,
-			acquired_at INTEGER, expires_at INTEGER, boot_id TEXT,
-			updated_at INTEGER NOT NULL, epoch TEXT
-		);
-		CREATE TABLE IF NOT EXISTS operations (
-			id TEXT PRIMARY KEY, command TEXT NOT NULL, resources TEXT NOT NULL, env TEXT NOT NULL,
-			owner INTEGER NOT NULL, owner_start TEXT NOT NULL, boot TEXT NOT NULL,
-			child INTEGER, child_start TEXT, created_at INTEGER NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS operation_locks (resource TEXT PRIMARY KEY, operation_id TEXT NOT NULL);
-		CREATE TABLE IF NOT EXISTS operation_intents (
-			seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-			operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
-		);`));
+	try {
+		db.exec("PRAGMA busy_timeout = 15000");
+		retryBusy(() => db.exec("PRAGMA journal_mode = WAL"));
+		const v = schemaVersion(db);
+		checkVersion(file, v);
+		if (v !== SCHEMA_VERSION) retryBusy(() => tx(db, () => migrate(db, file)));
+	} catch (e) {
+		db.close();
+		throw e;
+	}
 	return db;
+}
+
+const quote = (name) => `"${name.replace(/"/g, '""')}"`;
+/** A consistent copy of DB at FILE (VACUUM INTO a temp file, then rename), mode 0600.
+ * `edit(copy)` may change the copy before it replaces FILE. */
+export function backup(db, file, edit = () => {}) {
+	const tmp = `${file}.tmp`;
+	rmSync(tmp, { force: true });
+	db.prepare("VACUUM INTO ?").run(tmp);
+	chmodSync(tmp, 0o600);
+	const copy = new DatabaseSync(tmp);
+	try { edit(copy); } finally { copy.close(); }
+	renameSync(tmp, file);
+}
+
+/** Replace DB's schema, rows and version with those of the copy at FILE (from backup()), in one
+ * transaction on this connection. Other processes keep their connections and see the copy's contents;
+ * swapping the file under them would leave them writing to a deleted one. Every pool row's generation
+ * moves past any it had, so a claim made after the copy is fenced rather than issued twice.
+ * `then()` runs in the same transaction. */
+export function restore(db, file, then = () => {}) {
+	let bump;
+	try { bump = 1 + Number(db.prepare("SELECT max(gen) g FROM vms").get().g ?? 0); }
+	catch { bump = 1e9; } // the newer schema renamed what we'd read
+	db.prepare("ATTACH DATABASE ? AS pre").run(file);
+	try {
+		tx(db, () => {
+			const objects = (schema) => db.prepare(`SELECT type, name, sql FROM ${schema}.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'`).all();
+			// Dropping a table drops its indexes and triggers.
+			for (const o of objects("main")) if (o.type === "table" || o.type === "view") db.exec(`DROP ${o.type} IF EXISTS main.${quote(o.name)}`);
+			const copy = objects("pre");
+			for (const t of copy.filter((o) => o.type === "table")) {
+				db.exec(t.sql); // unqualified CREATE: into main
+				db.exec(`INSERT INTO main.${quote(t.name)} SELECT * FROM pre.${quote(t.name)}`);
+			}
+			for (const o of copy.filter((o) => o.type !== "table")) db.exec(o.sql);
+			if (db.prepare("SELECT 1 FROM pre.sqlite_master WHERE name='sqlite_sequence'").get()) {
+				db.exec("DELETE FROM main.sqlite_sequence; INSERT INTO main.sqlite_sequence SELECT * FROM pre.sqlite_sequence");
+			}
+			db.prepare("UPDATE vms SET gen = gen + ?").run(bump);
+			db.exec(`PRAGMA main.user_version = ${schemaVersion(db, "pre")}`);
+			then();
+		});
+	} finally {
+		db.exec("DETACH DATABASE pre");
+	}
 }
 
 export function tx(db, fn) {

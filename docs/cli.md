@@ -165,6 +165,7 @@ profiles [--json]               every profile on this host: name, backend, proxy
 version [--json]                this install's version, commit and kind (git | npm)
 upgrade [--check] [--ref REF] [--wait S] [--reinit]
                                 update this install, re-run init for each profile using it, check, roll back on failure
+                                (code and each profile's state, from $BOXERY_CONF/pre-upgrade/, kept after success)
 build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
 new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]

@@ -121,3 +121,27 @@ sqlite("a dead upgrader's lock is reclaimed by the next operation", async () => 
 		held.release();
 	} finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+sqlite("the pre-upgrade copy leaves out the upgrade's own lock; restoring it keeps the lock held", async () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "boxery-upgrade-copy-"));
+	const db = L.open(path.join(dir, "leases.db"));
+	const locks = (d) => d.prepare("SELECT resource FROM operation_locks").all().map((r) => r.resource);
+	try {
+		L.add(db, "p1");
+		const held = await O.holdExclusive(dir, Date.now() + 2000);
+		const copy = path.join(dir, "copy.db");
+		held.snapshot(copy);
+		const c = L.open(copy);
+		assert.deepEqual([locks(c), c.prepare("SELECT count(*) n FROM operations").get().n], [[], 0], "restored by hand, the copy is an idle host");
+		c.close();
+		db.exec(`CREATE TABLE extras (x); PRAGMA user_version = ${L.SCHEMA_VERSION + 1}`); // the new code migrates
+		L.remove(db, "p1");
+		held.restore(copy);
+		assert.equal(L.schemaVersion(db), L.SCHEMA_VERSION);
+		assert.equal(L.get(db, "p1").state, "FREE");
+		assert.deepEqual(locks(db), ["*"], "still held until released");
+		assert.equal(await O.holdExclusive(dir, Date.now() + 200), null, "so nothing else gets in");
+		held.release();
+		assert.deepEqual(locks(db), []);
+	} finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});

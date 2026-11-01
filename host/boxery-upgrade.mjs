@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // `boxery-host version` and `boxery-host upgrade`. Upgrade updates this install (a git checkout or a
 // global npm install of boxery-vm), then re-runs `init` for every profile whose services run it, while
-// holding each profile's host-wide operation lock. A failed init or health check rolls the code back.
+// holding each profile's host-wide operation lock. A failed init or health check rolls the code back,
+// and each profile's lease store and state files with it (from the copy taken before applying).
 // This file is loaded into memory before the code on disk changes; it imports the operations module
 // (node:sqlite) only when it needs the lock, so `version` works on any Node.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -200,6 +201,41 @@ function npmSource({ ref }, current) {
 	};
 }
 
+// ---------------------------------------------------------------- the pre-upgrade copy
+
+// Each profile's state as it was before the code changed, taken under the host-wide lock, so no
+// operation is running. A rollback restores it before init runs the old code again, since the new code
+// may have migrated it. After a successful upgrade it stays (until the next one) for recovery by hand.
+// Besides init, only locked operations write these files, so restoring them loses nothing.
+export const PRE_UPGRADE = "pre-upgrade";
+const STATE_FILES = ["tokens.json", "edge", "vm-shapes", "vm-kind"];
+const copy = (from, to) => cpSync(from, to, { recursive: true, preserveTimestamps: true });
+
+function saveState(conf, hold) {
+	const dir = path.join(conf, PRE_UPGRADE), tmp = `${dir}.tmp`;
+	rmSync(tmp, { recursive: true, force: true });
+	mkdirSync(tmp, { mode: 0o700 });
+	hold.snapshot(path.join(tmp, "leases.db"));
+	for (const f of STATE_FILES) if (existsSync(path.join(conf, f))) copy(path.join(conf, f), path.join(tmp, f));
+	rmSync(dir, { recursive: true, force: true });
+	renameSync(tmp, dir);
+	log(`${conf}: saved the lease store and state files in ${dir}`);
+}
+
+function restoreState(conf, hold) {
+	const dir = path.join(conf, PRE_UPGRADE);
+	hold.restore(path.join(dir, "leases.db")); // in place, through SQLite: see boxery-leases.mjs restore()
+	for (const f of STATE_FILES) {
+		const live = path.join(conf, f), saved = path.join(dir, f), tmp = `${live}.pre-upgrade.tmp`;
+		rmSync(tmp, { recursive: true, force: true });
+		if (!existsSync(saved)) { rmSync(live, { recursive: true, force: true }); continue; }
+		copy(saved, tmp);
+		if (statSync(saved).isDirectory()) rmSync(live, { recursive: true, force: true });
+		renameSync(tmp, live); // a file is replaced atomically
+	}
+	log(`${conf}: restored the lease store and state files from ${dir}`);
+}
+
 // ---------------------------------------------------------------- init + verification
 
 function init(conf, services, node) {
@@ -216,6 +252,9 @@ async function verify(conf, node) {
 	let vms = null;
 	try { vms = JSON.parse(out ?? ""); } catch {}
 	if (!Array.isArray(vms)) fail(`boxery-host ls (as the reaper runs it) failed for ${conf}`);
+	// ls carries on without the lease store; the new code must be able to open (and so migrate) it.
+	try { if (!Array.isArray(JSON.parse(sh(HOST, ["pool", "ls", "--json"], { env })))) throw new Error("not a list"); }
+	catch (e) { fail(`the lease store of ${conf} can't be read: ${e.message}`); }
 	if (!services.proxy) return;
 	const port = readHostEnv(conf).BOXERY_PROXY_PORT ?? "8088";
 	for (let i = 0; i < 40; i++) {
@@ -277,7 +316,10 @@ async function upgrade(argv) {
 		}
 		let applied = false;
 		try {
-			if (!plan.upToDate) { source.apply(plan); applied = true; }
+			if (!plan.upToDate) {
+				confs.forEach((conf, i) => saveState(conf, held[i]));
+				source.apply(plan); applied = true;
+			}
 			for (const conf of confs) init(conf, profiles.get(conf), nodes.get(conf));
 			for (const conf of confs) await verify(conf, nodes.get(conf));
 		} catch (e) {
@@ -286,12 +328,14 @@ async function upgrade(argv) {
 			log(`rolling back to ${plan.fromLabel}`);
 			try {
 				source.rollback(plan);
+				confs.forEach((conf, i) => restoreState(conf, held[i])); // after the code: nothing new migrates it again
 				for (const conf of confs) init(conf, profiles.get(conf), nodes.get(conf));
 			} catch (r) {
-				fail(`ROLLBACK FAILED (${r.message}). ${ROOT} needs repair by hand: restore ${plan.fromLabel}, then run boxery-host init for ${confs.join(", ")}`);
+				fail(`ROLLBACK FAILED (${r.message}). ${ROOT} needs repair by hand: restore ${plan.fromLabel} and each profile's ${PRE_UPGRADE}/ copy (see Upgrading in docs/install.md), then run boxery-host init for ${confs.join(", ")}`);
 			}
 			fail(`upgrade to ${plan.toLabel} failed and was rolled back to ${plan.fromLabel}: ${e.message}`);
 		}
+		if (applied) for (const conf of confs) log(`${conf}: kept the state from before the upgrade in ${path.join(conf, PRE_UPGRADE)}`);
 	} finally {
 		for (const h of held.reverse()) h.release();
 	}
