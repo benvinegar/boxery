@@ -18,9 +18,10 @@ const which = (cmd) => (process.env.PATH ?? "").split(":").some((d) => {
 	try { accessSync(path.join(d || ".", cmd), constants.X_OK); return true; } catch { return false; }
 });
 const need = (cmd) => { if (!which(cmd)) fail(`missing dependency: ${cmd}`); };
-function run(cmd, args, { quiet = false, check = true } = {}) {
+// quiet: discard stdout; silent: discard stderr too
+function run(cmd, args, { quiet = false, silent = false, check = true } = {}) {
 	return new Promise((resolve, reject) => {
-		spawn(cmd, args, { stdio: ["ignore", quiet ? "ignore" : 2, 2] }).on("error", reject).on("close", (code) => {
+		spawn(cmd, args, { stdio: ["ignore", quiet || silent ? "ignore" : 2, silent ? "ignore" : 2] }).on("error", reject).on("close", (code) => {
 			if (code !== 0 && check) reject(new Error(`${cmd} ${args.join(" ")} failed`)); else resolve(code);
 		});
 	});
@@ -114,7 +115,7 @@ async function startServices(rt, { reaper }) {
 		mkdirSync(path.join(homedir(), "Library/Logs"), { recursive: true });
 		const uid = process.getuid();
 		for (const unit of [rt.proxyUnit, ...(reaper ? [rt.reaperUnit] : [])]) {
-			await run("launchctl", ["bootout", `gui/${uid}/dev.${unit}`], { quiet: true, check: false });
+			await run("launchctl", ["bootout", `gui/${uid}/dev.${unit}`], { silent: true, check: false }); // not loaded yet is fine
 			await run("launchctl", ["bootstrap", `gui/${uid}`, path.join(homedir(), "Library/LaunchAgents", `dev.${unit}.plist`)]);
 		}
 	} else {
