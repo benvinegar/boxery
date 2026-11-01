@@ -76,8 +76,8 @@ function publicKey() {
 	});
 }
 
-async function main() {
-	const [command, ...args] = process.argv.slice(2);
+/** acquire | renew | release | reap | reconcile, and the private held-lock entry points. */
+export async function runLifecycle(command, args) {
 	const config = loadConfig();
 	const { conf } = config;
 	const db = leases.open(path.join(conf, "leases.db"));
@@ -148,5 +148,5 @@ async function main() {
 	} finally { db.close(); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === SELF) {
-	main().catch((e) => { console.error(`boxery-host: ${e.message}`); process.exitCode = e.exitCode ?? 1; });
+	runLifecycle(process.argv[2], process.argv.slice(3)).catch((e) => { console.error(`boxery-host: ${e.message}`); process.exitCode = e.exitCode ?? 1; });
 }

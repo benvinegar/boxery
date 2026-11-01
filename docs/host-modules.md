@@ -2,14 +2,17 @@
 
 ← [Docs](README.md)
 
-The host is being extracted incrementally into Node, not rewritten wholesale. The first cohesive workflow is lease acquisition, installation, renewal, release, reset and reaping. VM/image creation, pool membership, generic recovery dispatch and service setup still use the existing shell dispatcher.
+The host is being extracted incrementally into Node, not rewritten wholesale ([plan](plans/2026-11-01-host-orchestration-in-node.md)). Lease workflows, listings and the lease commands run in Node. VM/image creation, pool membership, generic recovery dispatch and service setup still run in the legacy shell dispatcher, which `host/boxery-host` routes them to.
 
 ## Ownership
 
 | Module | Owns | Does not own |
 |---|---|---|
 | `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles and grants | Host lease decisions or hypervisor mechanics |
-| `host/boxery-host` | Host configuration, initialization, VM/image commands, recovery dispatch, backend loading and guest SSH effects | Lease acquire/reset/reaper ordering |
+| `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, legacy commands to `boxery-host-legacy.sh`, everything else to Node | Any command logic |
+| `host/boxery-host.mjs` | CLI for listings (`ls`, `shapes`, `snaps`, `images`, `pool ls`, `ip`), `proxy-log` and the lease commands; output formats | Lease policy, hypervisor commands |
+| `host/boxery-host-legacy.sh` | Initialization, VM/image mutations, pool membership, recovery dispatch (until they move to Node) | Lease acquire/reset/reaper ordering |
+| `host/shapes.mjs` | Shape merging/validation and per-VM size records | Choosing a size for a command |
 | `host/boxery-lifecycle.mjs` | Lease CLI parsing/output, direct SQLite/journal/backend bindings and held-lock validation | Lease policy or hypervisor commands |
 | `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
 | `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
