@@ -165,18 +165,36 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
 
 ## How it works
 
-```
- your laptop                     control plane (boxery-host)           VMs: Ubuntu 24.04 + XFCE
-┌─────────────────────┐   ssh   ┌─────────────────────────────┐       ┌─────────────────────────┐
-│ Claude Code · Codex │────────►│ VM lifecycle, images, forks │──────►│ Lima      on your Mac   │
-│ Cursor · pi · …     │         │ leases · grants             │──────►│ libvirt   on a KVM box  │
-│   └ vm_* tools      │         │ boxery-proxy: per-VM token  │──────►│ exe.dev   in the cloud  │
-│ boxery CLI          │         │   → real LLM credentials    │       │ …more coming            │
-│ browser ◄── noVNC ──┼─────────┤                             │       └─────────────────────────┘
-└─────────────────────┘         └─────────────────────────────┘
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/how-it-works-dark.svg">
+    <img src="docs/how-it-works-light.svg" alt="Coding agents and the boxery CLI on your laptop reach the control plane over ssh. There, boxery-host creates, forks and removes VMs on Lima, libvirt or exe.dev, and boxery-proxy swaps a VM's own token for your real LLM credential, so keys never enter a VM" width="680">
+  </picture>
+</p>
 
 The control plane runs on any Linux box or Mac, including your laptop. It owns everything that has to stay trusted, such as credentials, grants and leases. A backend only creates, copies and deletes VMs. Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so `ssh demo.boxery`, VS Code Remote-SSH and Zed work too. More detail: [credential proxy](docs/security.md#credential-proxy) · [architecture](ARCHITECTURE.md) · [backends](host/backends/README.md).
+
+### Forks
+
+Capturing a running VM takes about a second on libvirt and doesn't pause it (Lima stops it briefly). New VMs boot from that disk image in parallel, each with its own identity, so an agent can try several fixes at once and keep the one that works. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/fork-dark.svg">
+    <img src="docs/fork-light.svg" alt="A running VM, demo, is captured in about a second into a disk-only image. Three VMs boot from it in parallel; the agent keeps the one whose fix worked and removes the others. Each copy gets its own ssh keys, proxy token, hostname and machine-id" width="680">
+  </picture>
+</p>
+
+### Shared pool
+
+Several agents can share a pool of prepared VMs. A lease is exclusive and expires, and when it ends the VM goes back to its clean image. [Shared pool & leases →](docs/pool.md)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/pool-dark.svg">
+    <img src="docs/pool-light.svg" alt="A pool VM cycles from free, to leased by one holder with its own ssh key, to reset from its clean image in about 9 seconds, and back to free. If a laptop sleeps or an agent crashes, the lease expires and the host's reaper resets the VM" width="680">
+  </picture>
+</p>
 
 ## Documentation
 
