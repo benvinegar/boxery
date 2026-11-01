@@ -352,6 +352,8 @@ cmd_attach() { # NAME [pi|opencode|shell] [session]
 
 cmd_desktop() { # NAME [--no-open]
 	name=$1; noopen=${2:-}
+	[ "$(vm_ssh "$name.boxery" 'test -e /etc/boxery/headless && echo headless' 2>/dev/null)" != headless ] ||
+		die "$name is headless (boxery new --headless): it has no desktop"
 	port=$(free_port 16080)
 	url="http://127.0.0.1:$port/vnc.html?autoconnect=1&resize=remote&reconnect=1"
 	echo "==> desktop for $name at $url  (Ctrl-C to close the tunnel)"
@@ -707,13 +709,14 @@ migrate_legacy_agent_forward() { # ~/.boxery/agent-forward/NAME markers → gran
 	[ -n "$HOST" ] && write_ssh_config || true
 }
 
-cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--grant SPEC]... [--agent-forward]
+cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless] [--grant SPEC]... [--agent-forward]
 	name=""; pass=""; specs=""; from=""
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--from) valid_image "${2:-}" || die "invalid image name: ${2:-} (use VM@SNAP)"; from=$2; shift 2 ;;
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
+		--headless) pass="$pass --headless"; shift ;;
 		--shape) [ $# -ge 2 ] || die "--shape needs a value"; valid_vm "$2" || die "invalid shape name: $2"; pass="$pass --shape $2"; shift 2 ;;
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
 			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
@@ -852,8 +855,8 @@ cmd_ls() { # [--json]
 	out=$(h ls) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
-		if [ "$n" = NAME ]; then printf '%-73s %s\n' "$line" GRANTS
-		else printf '%-73s %s\n' "$line" "$(grants_summary "$n")"; fi
+		if [ "$n" = NAME ]; then printf '%-83s %s\n' "$line" GRANTS
+		else printf '%-83s %s\n' "$line" "$(grants_summary "$n")"; fi
 	done
 }
 
@@ -910,7 +913,8 @@ usage() {
 		host ls | show NAME | use NAME|legacy | rm NAME
 		setup user@host|local [--key K.pub] [--host-bin PATH]
 		                                configure the VM host (local = this machine) + register your ssh key
-		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
+		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
+		                                --headless: no desktop (shell + agents only); needs no build-base
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
 		ls [--json]                     list VMs (with their shape and grants)
 		rm NAME                         destroy VM (revokes its LLM token)

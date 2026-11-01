@@ -17,6 +17,9 @@
 # - Images (snapshots, forks, pool resets; disk only, see README): $CH_DIR/images/IMAGE.qcow2, each a copy
 #   of a VM's overlay (so it depends only on the base). Capture of a running VM: guest `sync`, pause (v54
 #   drains and flushes qcow2 metadata), reflink copy, resume. New-from-image and reimage copy the image.
+# - Headless VMs (SOURCE "stock") are overlays on stock.qcow2, a copy of the plain cloud image, instead of
+#   the built base; cloud-init applies the plumbing + devtools layers at first boot. An overlay names its
+#   backing file in its qcow2 header, so images and copies of either kind need nothing else.
 #
 # Privileges: TAP devices and nftables need root. Commands that need it run through $BOXERY_CH_SUDO
 # (default "sudo -n", so passwordless sudo; set it to "" when running as root). The cloud-hypervisor
@@ -29,6 +32,7 @@ CH_DNS=${BOXERY_CH_DNS:-1.1.1.1 9.9.9.9}       # guests can't reach private reso
 CH_FIRMWARE=${BOXERY_CH_FIRMWARE:-$CH_DIR/firmware}
 CH_TAP=bxch                                    # TAP name prefix (≤ 15 chars total)
 CH_BASE=$CH_DIR/base.qcow2
+CH_STOCK=$CH_DIR/stock.qcow2   # the plain cloud image headless VMs boot (no build-base)
 ch_arch() { case $(uname -m) in aarch64 | arm64) echo arm64 ;; *) echo amd64 ;; esac; }
 CH_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-$(ch_arch).img
 CH_IMG=${CACHE:-$HOME/.cache/boxery}/noble-$(ch_arch).img   # the libvirt backend caches amd64 as noble.img
@@ -198,19 +202,38 @@ backend_proxy_services() {
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 
-backend_build_base() {
-	mkdir -p "$CACHE" "$CH_DIR/vms" "$CH_DIR/images"   # before counting: find on a missing dir + pipefail = silent exit
-	local deps; deps=$( { find "$CH_DIR/vms" -mindepth 1 -maxdepth 1 -type d; find "$CH_DIR/images" -name '*.qcow2'; } | wc -l | tr -d ' ')
-	[[ ! -f $CH_BASE ]] || ((deps == 0)) || die "$deps VM(s)/image(s) depend on $CH_BASE; remove them first"
+ch_cloud_image() { # download the Ubuntu cloud image once
+	mkdir -p "$CACHE"
 	if [[ ! -f $CH_IMG ]]; then
 		log "downloading Ubuntu 24.04 cloud image"
-		curl -fL --progress-bar -o "$CH_IMG.part" "$CH_IMG_URL" && mv "$CH_IMG.part" "$CH_IMG"
+		curl -fL --progress-bar -o "$CH_IMG.part.$$" "$CH_IMG_URL" && mv "$CH_IMG.part.$$" "$CH_IMG" ||
+			{ rm -f "$CH_IMG.part.$$"; die "downloading $CH_IMG_URL failed"; }
 	fi
+}
+# stock.qcow2, made on the first headless `new`; concurrent `new`s wait for one copy.
+ch_stock_ensure() {
+	mkdir -p "$CH_DIR"
+	(
+		flock 9
+		[[ ! -f $CH_STOCK ]] || exit 0
+		ch_cloud_image
+		cp "$CH_IMG" "$CH_STOCK.part" && mv "$CH_STOCK.part" "$CH_STOCK" || { rm -f "$CH_STOCK.part"; die "copying the stock image failed"; }
+	) 9>"$CH_DIR/.stock.lock" || exit 1
+}
+ch_backing() { qemu-img info --output=json "$1" 2>/dev/null | jq -r '."backing-filename" // empty' 2>/dev/null || true; }   # FILE → its backing file
+
+backend_build_base() {
+	mkdir -p "$CACHE" "$CH_DIR/vms" "$CH_DIR/images"   # before counting: find on a missing dir + pipefail = silent exit
+	# Desktop VMs and their images are overlays on $CH_BASE; headless ones (on $CH_STOCK) don't count.
+	local deps=0 f
+	while IFS= read -r f; do [[ $(ch_backing "$f") != "$CH_BASE" ]] || deps=$((deps + 1)); done < <(find "$CH_DIR/vms" -mindepth 2 -maxdepth 2 -name disk.qcow2; find "$CH_DIR/images" -name '*.qcow2')
+	[[ ! -f $CH_BASE ]] || ((deps == 0)) || die "$deps VM(s)/image(s) depend on $CH_BASE; remove them first"
+	ch_cloud_image
 	local b=$CH_DIR/build part=$CH_DIR/base.qcow2.part
 	rm -rf "$b"; mkdir -p "$b"
 	cp "$CH_IMG" "$part"
 	qemu-img resize -q "$part" 20G
-	ch_seed "$b/seed.iso" "$ROOT/image/base-user-data.yaml" "boxery-base-$(date +%s)" boxery-base 0
+	ch_seed "$b/seed.iso" "$BASE_USERDATA" "boxery-base-$(date +%s)" boxery-base 0
 	ch_net_up 0
 	log "booting builder VM (installs XFCE, VNC, node, pi, opencode; ~5-10 min)"
 	# Same arguments as a VM; its "disk.qcow2" is the base being built.
@@ -240,18 +263,19 @@ backend_build_base() {
 backend_has_base() { [[ -f $CH_BASE ]]; }
 backend_exists() { [[ -d $(ch_dir "$1") ]]; }
 
-backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
-	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d slot; d=$(ch_dir "$1")
-	[[ -z $from || -f $(ch_image "$from") ]] || die "no such image: $from"
+backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
+	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d slot root=$CH_BASE; d=$(ch_dir "$1")
+	if [[ $from == stock ]]; then ch_stock_ensure; root=$CH_STOCK from=""
+	else [[ -z $from || -f $(ch_image "$from") ]] || die "no such image: $from"; fi
 	mkdir -p "$CH_DIR/vms"
 	mkdir "$d" || die "$name already exists"
 	slot=$(ch_alloc_slot "$name")   # new slot → new TAP, MAC and IP; the seed has a new instance-id
-	log "creating $name (${cpus} vCPU, ${mem} MiB, ${disk} GiB overlay on ${from:-$CH_BASE}, $CH_NET.$slot.2)"
+	log "creating $name (${cpus} vCPU, ${mem} MiB, ${disk} GiB overlay on ${from:-$root}, $CH_NET.$slot.2)"
 	if [[ -n $from ]]; then
 		ch_copy "$(ch_image "$from")" "$d/disk.qcow2" || die "copying $from failed"
 		qemu-img resize -q "$d/disk.qcow2" "${disk}G" 2>/dev/null || true   # grow only; a bigger image keeps its size
 	else
-		qemu-img create -q -f qcow2 -F qcow2 -b "$CH_BASE" "$d/disk.qcow2" "${disk}G" || die "qemu-img create failed"
+		qemu-img create -q -f qcow2 -F qcow2 -b "$root" "$d/disk.qcow2" "${disk}G" || die "qemu-img create failed"
 	fi
 	ch_seed "$d/seed.iso" "$userdata" "$name-$(date +%s)" "$name" "$slot"
 	ln -sfn "$CH_DIR/proxy.sock" "$d/vsock.sock_$PROXY_PORT"

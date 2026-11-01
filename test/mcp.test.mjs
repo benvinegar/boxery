@@ -2,7 +2,7 @@
 // (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -35,6 +35,7 @@ before(() => {
 host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.boxery) host=$1; shift ;; *) shift ;; esac; done
 [ "$host" = "fakevm.boxery" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
+cmd=\${cmd//\\/etc\\/boxery/${vmroot}/etc/boxery}
 # vm_edit carries the guest path as JSON on stdin, rather than in shell source.
 if [[ "$cmd" == *"flock -w 60"* ]]; then
  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);r.path=r.path.replace("/home/agent",process.argv[1]);process.stdout.write(JSON.stringify(r))})' "${vmroot}" | HOME="${vmroot}" PATH="${bin}:$PATH" bash -c "$cmd"
@@ -260,7 +261,7 @@ describe("stdio", () => {
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
 		const list = (await c.tool("vm_manage", { action: "list" })).content[0].text;
 		assert.match(list, /current: fakevm/);
-		assert.match(list, /^fakevm +running +10\.0\.0\.2 +standard +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
+		assert.match(list, /^fakevm +running +10\.0\.0\.2 +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_manage", { action: "grants", name: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
@@ -309,6 +310,22 @@ describe("stdio", () => {
 		assert.match(await out({ action: "new", name: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
 		assert.match(await out({ action: "fork", name: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
 		for (const from of ["fakevm", "fakevm@s1@x", "x;y@s1", "fakevm@-s"]) await err({ action: "new", name: "x", from }, /invalid image/);
+	});
+
+	test("vm_manage new headless:true passes --headless; desktop tools refuse a headless VM", async () => {
+		assert.match((await c.tool("vm_manage", { action: "new", name: "hl", headless: true })).content[0].text, /stub boxery new hl --headless$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", name: "dt", headless: false })).content[0].text, /stub boxery new dt$/m);
+		mkdirSync(path.join(env.VMROOT, "etc/boxery"), { recursive: true });
+		writeFileSync(path.join(env.VMROOT, "etc/boxery/headless"), "no desktop\n");
+		try {
+			for (const [tool, args] of [["vm_screenshot", {}], ["vm_click", { x: 1, y: 1 }], ["vm_type", { text: "x" }], ["vm_key", { keys: "Return" }], ["vm_scroll", { x: 1, y: 1, direction: "down" }], ["vm_browser", { code: "return 1" }]]) {
+				const r = await c.tool(tool, { vm: "fakevm", ...args });
+				assert.equal(r.isError, true, tool);
+				assert.match(r.content[0].text, /is headless .*no desktop/, tool);
+			}
+		} finally {
+			rmSync(path.join(env.VMROOT, "etc"), { recursive: true });
+		}
 	});
 });
 
