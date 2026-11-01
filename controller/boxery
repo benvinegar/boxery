@@ -299,7 +299,14 @@ cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
 	done
 	[ $# -gt 0 ] || die "$usage"
 	if "$bg"; then
-		job_call "$name" start "$cwd" "$@"
+		if has_pushed_grants "$name"; then grants_apply "$name" --quiet || true; fi
+		# argv as NUL-terminated words, base64: survives ssh's re-parsing with no quoting at all.
+		local argv cwdb id
+		argv=$(for a in "$@"; do printf '%s\0' "$a"; done | base64 | tr -d '\n')
+		cwdb=-; [ -z "$cwd" ] || cwdb=$(printf '%s' "$cwd" | base64 | tr -d '\n')
+		id=$(jobs_vm "$name" start "$argv" "$cwdb" "$(base64 <"$(jobs_runner)" | tr -d '\n')" --text) || return
+		echo "$id"
+		echo "boxery: started $id on $name   logs: boxery logs $name $id -f   wait: boxery wait $name $id" >&2
 		run_literal_note "$name" "$@"
 		return
 	fi
@@ -316,25 +323,133 @@ cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
 	return "$rc"
 }
 
-# Ship the shared guest protocol; resolve npm's bin symlink before finding its sibling.
-job_call() { # NAME ACTION [ARGS...]
-	local name=$1 script=${BASH_SOURCE[0]} dir; shift
-	need_vm "$name"
-	while [ -L "$script" ]; do
-		dir=$(cd -P "$(dirname "$script")" && pwd)
-		script=$(readlink "$script")
-		case $script in /*) ;; *) script=$dir/$script ;; esac
-	done
-	dir=$(cd -P "$(dirname "$script")" && pwd)
-	vm_ssh -T "$name.boxery" "bash -s -- $(literal_args "$@")" <"$dir/jobs.sh"
+# ---------------------------------------------------------------- background jobs
+# The logic runs in the VM: core/boxery-jobs.ts is piped over ssh on every call and run by the VM's
+# Node (type stripping), so a VM never runs an old copy. See that file for the protocol and layout.
+JOBS_TS=""
+jobs_ts() { # path of core/boxery-jobs.ts next to this script (through npm's bin symlink)
+	if [ -z "$JOBS_TS" ]; then
+		local script=${BASH_SOURCE[0]} dir
+		while [ -L "$script" ]; do
+			dir=$(CDPATH='' cd -P "$(dirname "$script")" && pwd)
+			script=$(readlink "$script")
+			case $script in /*) ;; *) script=$dir/$script ;; esac
+		done
+		JOBS_TS="${BOXERY_JOBS_TS:-$(CDPATH='' cd -P "$(dirname "$script")/.." && pwd)/core/boxery-jobs.ts}"
+	fi
+	[ -f "$JOBS_TS" ] || die "jobs need core/boxery-jobs.ts next to the controller ($JOBS_TS); run boxery from its checkout or package"
+	printf '%s\n' "$JOBS_TS"
+}
+jobs_runner() { local r; r="$(dirname "$(jobs_ts)")/boxery-job-runner.sh"; [ -f "$r" ] || die "missing $r"; printf '%s\n' "$r"; }
+# Probe for type stripping instead of matching versions (it arrived in 22.18 and 23.6, not 23.0).
+# The remote command is fixed except for args, which are validated (ids, numbers) or base64.
+JOBS_NODE='T="--experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript"
+node $T -e "" >/dev/null 2>&1 || { echo "boxery jobs: need Node >= 22.18 in the VM (found: $(node -v 2>/dev/null || echo none))" >&2; exit 1; }
+BOXERY_CALLER=$PPID exec node $T -'
+jobs_vm() { # [--own-connection] NAME ACTION ARGS... → runs the helper in the VM; its exit status is passed through
+	local own="" n f
+	if [ "$1" = --own-connection ]; then own=1; shift; fi
+	n=$1; shift; need_vm "$n"; f=$(jobs_ts) || exit 1
+	# A long-lived call gets its own ssh connection: if this client dies, the VM side sees it at once.
+	if [ -n "$own" ]; then vm_ssh -T -o ControlMaster=no -o ControlPath=none "$n.boxery" "$JOBS_NODE $*" <"$f"
+	else vm_ssh -T "$n.boxery" "$JOBS_NODE $*" <"$f"; fi
+}
+valid_job() { case ${1:-} in job-?*) ;; *) return 1 ;; esac; case $1 in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 40 ]; }
+need_job() { valid_job "${1:-}" || die "invalid job id: ${1:-} (see: boxery jobs NAME)"; }
+num() { # FLAG VALUE [MIN] → VALUE as a plain number (no leading zeros: bash reads 08 as bad octal)
+	case ${2:-} in '' | *[!0-9]*) die "$1 must be a whole number" ;; esac
+	local v; v=$(printf '%s' "$2" | sed 's/^0*//'); v=${v:-0}
+	[ ${#v} -le 9 ] || die "$1 is too large"; [ "$v" -ge "${3:-0}" ] || die "$1 must be at least ${3:-0}"
+	echo "$v"
+}
+duration() { # FLAG VALUE (N, Ns, Nm, Nh, Nd) → seconds
+	local u=1 v=${2:-}
+	case $v in *d) u=86400; v=${v%d} ;; *h) u=3600; v=${v%h} ;; *m) u=60; v=${v%m} ;; *s) v=${v%s} ;; esac
+	v=$(num "$1" "$v") || exit 1; echo $((v * u))
+}
+json_field() { # JSON KEY → the value of a top-level string/number field in the helper's JSON (no jq)
+	# Inside JSON strings quotes are escaped, so "KEY": only matches the real key.
+	printf '%s\n' "$1" | sed -n "s/.*\"$2\":\"\{0,1\}\([^\",}]*\).*/\1/p" | head -1
 }
 
-cmd_jobs() { need_vm "${1:-}"; local name=$1; shift; job_call "$name" list "$@"; }
-cmd_job() { # ACTION NAME JOB [OPTIONS...]
-	local action=$1; shift
-	[ $# -ge 2 ] || die "usage: boxery $action NAME JOB [OPTIONS...]"
-	local name=$1; shift
-	job_call "$name" "$action" "$@"
+cmd_jobs() { # NAME [--json] | NAME --prune [--older-than DURATION] [--json]
+	need_vm "${1:-}"; local n=$1 json="" prune="" older=0; shift
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--json) json=1; shift ;;
+		--prune) prune=1; shift ;;
+		--older-than) older=$(duration --older-than "${2:-}") || exit 1; shift 2 ;;
+		*) die "usage: boxery jobs NAME [--json] | jobs NAME --prune [--older-than 7d] [--json]" ;;
+		esac
+	done
+	if [ -n "$prune" ]; then if [ -n "$json" ]; then jobs_vm "$n" prune --older-than "$older"; else jobs_vm "$n" prune --older-than "$older" --text; fi; return; fi
+	[ "$older" = 0 ] || die "--older-than goes with --prune"
+	if [ -n "$json" ]; then jobs_vm "$n" list; else jobs_vm "$n" list --text; fi
+}
+
+cmd_logs() { # NAME JOB [-f] [--lines N] [--bytes N] [--strip-ansi]
+	need_vm "${1:-}"; need_job "${2:-}"; local n=$1 j=$2 a="" own="" v; shift 2
+	while [ $# -gt 0 ]; do
+		case $1 in
+		-f | --follow) a="$a --follow"; own=--own-connection; shift ;;
+		-n | --lines | --tail) v=$(num --lines "${2:-}") || exit 1; a="$a --lines $v"; shift 2 ;;
+		--bytes) v=$(num --bytes "${2:-}" 1) || exit 1; a="$a --bytes $v"; shift 2 ;;
+		--strip-ansi) a="$a --strip-ansi"; shift ;;
+		*) die "usage: boxery logs NAME JOB [-f] [--lines N] [--bytes N] [--strip-ansi]" ;;
+		esac
+	done
+	case $a in *--lines*) ;; *) a="$a --lines 200" ;; esac
+	jobs_vm $own "$n" logs "$j" $a
+}
+
+# Exits with the job's exit code, 124 if --timeout passed, 125 if the job is lost. Those (and the
+# helper's own errors: 1 no node, 2 usage, 3 unknown job) can't be told apart from a job that exits
+# with the same code; --json prints the job (state, exit_code, timed_out) whenever the VM answered.
+cmd_wait() { # NAME JOB [--timeout S] [--json]
+	need_vm "${1:-}"; need_job "${2:-}"; local n=$1 j=$2 deadline="" json="" drops=0 reached="" t limit rc out code; shift 2
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--timeout) t=$(num --timeout "${2:-}") || exit 1; deadline=$(($(date +%s) + t)); shift 2 ;;
+		--json) json=1; shift ;;
+		*) die "usage: boxery wait NAME JOB [--timeout S] [--json]" ;;
+		esac
+	done
+	while :; do
+		limit=-1
+		if [ -n "$deadline" ]; then limit=$((deadline - $(date +%s))); [ $limit -ge 0 ] || limit=0; fi
+		# --exit0: the helper exits 0 whenever it answers, so ssh's own 255 can't be confused with a job's.
+		rc=0; out=$(jobs_vm "$n" wait "$j" --timeout "$limit" --exit0) || rc=$?
+		[ -z "$out" ] || reached=1
+		out=$(printf '%s\n' "$out" | sed '/^$/d')   # newlines the helper sends while waiting (heartbeat)
+		if [ $rc != 0 ] || [ -z "$out" ]; then
+			[ $rc = 255 ] || exit "$rc"
+			# Unreachable from the start: say so now (the job may not exist). A connection that drops while
+			# waiting doesn't affect the job (tmux in the VM): reconnect and keep waiting, within --timeout.
+			[ -n "$reached" ] || die "cannot reach $n"
+			if [ -n "$deadline" ] && [ "$(date +%s)" -ge "$deadline" ]; then warn "cannot reach $n; --timeout passed (the job may still be running)"; exit 124; fi
+			drops=$((drops + 1)); [ $drops -le 60 ] || die "cannot reach $n; giving up (the job may still be running: boxery jobs $n)"
+			warn "lost the connection to $n; reconnecting (the job keeps running)"; drop_master "$n"; sleep 5; continue
+		fi
+		[ -z "$json" ] || printf '%s\n' "$out"
+		case $(json_field "$out" state) in
+		exited) code=$(json_field "$out" exit_code); [ -n "$json" ] || echo "boxery: $j exited $code" >&2; exit "$code" ;;
+		running) [ -n "$json" ] || warn "$j is still running"; exit 124 ;;
+		lost) [ -n "$json" ] || warn "$j was lost: it stopped without recording an exit code (the VM restarted, or it was killed outside boxery)"; exit 125 ;;
+		*) die "unexpected reply from $n: $out" ;;
+		esac
+	done
+}
+
+cmd_kill() { # NAME JOB [--grace S] [--json]
+	need_vm "${1:-}"; need_job "${2:-}"; local n=$1 j=$2 a=--text g; shift 2
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--grace) g=$(num --grace "${2:-}") || exit 1; a="$a --grace $g"; shift 2 ;;
+		--json) a=${a#--text}; shift ;;
+		*) die "usage: boxery kill NAME JOB [--grace S] [--json]" ;;
+		esac
+	done
+	jobs_vm "$n" kill "$j" $a
 }
 
 cmd_attach() { # NAME [pi|opencode|shell] [session]
@@ -1018,10 +1133,15 @@ usage() {
 		run [--bg] NAME [--cwd DIR] CMD [ARG...]
 		                                run a command with exactly these args (like docker exec), in
 		                                  ~/project; a relative --cwd is under ~/project
-		jobs NAME [--json]             list detached command jobs (state, start time, exit code)
+		                                --bg: run it as a background job (prints the job id)
+		jobs NAME [--json]              list background jobs (state, exit code, start time, command)
+		jobs NAME --prune [--older-than 7d]   delete finished jobs and their logs
 		logs NAME JOB [-f] [--strip-ansi] [--lines N] [--bytes N]
-		                                tail a job's output; -f follows until it finishes
-		wait NAME JOB [--timeout SEC]  wait and return the command's exit code (timeout: 124)
+		                                tail a job's output (last 200 lines); -f follows until it ends
+		wait NAME JOB [--timeout S] [--json]
+		                                wait; exits with the job's exit code (124 timed out, 125 lost)
+		kill NAME JOB [--grace S] [--json]
+		                                stop a job: SIGTERM, then SIGKILL after S seconds (default 5)
 		attach NAME [pi|opencode|shell] [session]
 		                                attach to a persistent tmux session running the agent
 		prompt NAME "task"              start a headless pi task in the background
@@ -1044,7 +1164,7 @@ usage() {
 		                                update boxery on the host and restart its services (waits for
 		                                in-flight VM operations; rolls back if checks fail)
 
-		--json on ls, snaps, sessions, leases, grants, jobs prints JSON (fields: docs/cli.md)
+		--json on ls, snaps, sessions, leases, grants, jobs, wait, kill prints JSON (fields: docs/cli.md)
 
 	EOF
 	run_examples
@@ -1099,7 +1219,9 @@ upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; cmd_run "$@" ;;
 jobs) need_host; cmd_jobs "$@" ;;
-logs | wait) need_host; cmd_job "$cmd" "$@" ;;
+logs) need_host; cmd_logs "$@" ;;
+wait) need_host; cmd_wait "$@" ;;
+kill) need_host; cmd_kill "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
 desktop) need_host; cmd_desktop "$@" ;;
 forward) need_host; cmd_forward "$@" ;;

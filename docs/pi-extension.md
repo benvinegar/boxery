@@ -35,8 +35,8 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 | Tool | |
 |---|---|
 | `vm_bash`, `vm_read`, `vm_write`, `vm_edit` | Shell and files in the VM. Same engines as the built-ins, with the same truncation, edit semantics and image handling. Relative paths resolve to `/home/agent/project`. |
-| `vm_jobs` | Detached command jobs for long-running work: `start` · `list` · `logs` · `wait`. Jobs run in tmux and survive disconnects; see [background jobs](mcp.md#background-jobs). |
 | `vm_copy` | Streaming [file transfers](copy.md) between `local:path`, `NAME:path`, or a bare path (= current VM). Works VM to VM too. |
+| `vm_jobs` | Background jobs (`start` · `list` · `logs` · `wait` · `kill`) for long commands like test suites. Same as `boxery run --bg` ([CLI](cli.md#background-command-jobs)); details in [MCP](mcp.md#background-jobs). |
 | `vm_screenshot` | Screenshot of the XFCE desktop, downscaled to 1280 px (clicks are scaled back) |
 | `vm_click`, `vm_type`, `vm_key`, `vm_scroll` | Computer use via xdotool on `:1` |
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
@@ -64,4 +64,4 @@ Every tool takes an optional `vm` argument (default: the current VM), so one age
 - **Watch the agent work:** `/vm desktop` opens noVNC in your browser. `vm_browser` drives the same Chrome you see.
 - **Checkpoints:** ask the agent to `vm_manage snap` before something risky, then `revert` if it goes wrong. A snapshot takes about a second.
 - **Try things in parallel:** `vm_manage {action:"fork", name:"demo", to:["try-a","try-b","try-c"]}` copies the VM, mid-task, into three independent VMs. The agent works on each with `vm`, keeps the winner and removes the rest. The system prompt suggests this.
-- **Long jobs:** to keep a task running after your laptop sleeps, start an in-VM agent with `boxery prompt NAME "…"` ([CLI](cli.md)).
+- **Long jobs:** to keep a task running after your laptop sleeps, start an in-VM agent with `boxery prompt NAME "…"`, or a plain command with `boxery run --bg NAME …` ([CLI](cli.md#background-command-jobs)). The agent can do the same with `vm_jobs`.
