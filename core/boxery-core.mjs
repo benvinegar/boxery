@@ -746,6 +746,7 @@ export function guidance(current, { localToolsNote } = {}) {
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
+		"Resource pressure looks like flakiness: if a process is `Killed` / exits 137, or tests time out or run far slower than expected, check `free -m`, `grep oom_kill /proc/vmstat` (OOM kills since boot), `dmesg | grep -i oom`, and `nproc` vs `uptime` load before calling it flaky. If the VM is undersized, tell the user; vm_manage {action:'resize'} can grow it, but restarts the VM (ask first).",
 		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }
