@@ -172,14 +172,14 @@ grep -x 'ListenAddress 127.0.0.1' "$X" >/dev/null && grep -F 'boxery-exe-boot.se
 "$H" rm hx >/dev/null 2>&1
 
 # --- size / resize
-[[ $("$H" __call backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$H" __call backend_size v1 2>&1)"
+[[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$ROOT/host/backend.sh" backend_size v1 2>&1)"
 : >"$CALLS"
 expect "resize a running VM" "$H" resize v1 --cpus 1 --disk 30
 called "exe.dev resize $(V v1) --cpu=1 --disk=30GB" && called "exe.dev restart $(V v1)" && ok "resize: exe.dev resize, then a restart to apply it" || bad "resize: $(cat "$CALLS")"
 [[ $(cat "$E/v1/size") == "1 4096 30" && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "new size recorded; tunnel back up" || bad "after resize: $(cat "$E/v1/size")"
 expect_fail "disks don't shrink" "$H" resize v1 --disk 25
 expect "resize back to 2 vCPU" "$H" resize v1 --cpus 2
-[[ $("$H" __call backend_size v1 2>/dev/null) == "2 4096 30" ]] && ok "backend_size follows resizes" || bad "size: $(cat "$E/v1/size")"
+[[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "2 4096 30" ]] && ok "backend_size follows resizes" || bad "size: $(cat "$E/v1/size")"
 
 # --- stop / start
 : >"$CALLS"
