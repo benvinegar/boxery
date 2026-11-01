@@ -4,8 +4,9 @@
 #
 # - VMs are Lima instances named boxery-NAME (plain mode: no mounts, no port forwards, no guest agent),
 #   cloned from a built template instance (boxery-base) so each new VM boots a ready desktop image.
-# - Guests reach the host's LLM proxy at Lima's user-network gateway (192.168.5.2), which maps to the
-#   host's loopback, so the proxy stays bound to 127.0.0.1.
+# - Guests reach the host's LLM proxy at Lima's user-network gateway (192.168.5.2), which Lima maps to the
+#   host's loopback, so the proxy stays bound to 127.0.0.1. That mapping would hand guests every loopback
+#   service on the host (#67), so on macOS lima_start confines each instance's host agent: see below.
 # - ssh endpoint is 127.0.0.1:<lima ssh port>; `boxery-host connect` pipes to it.
 # - vmType: qemu on Linux; vz on macOS by default.
 # - Images (snapshots, fork sources, pool clean state) are stopped Lima instances named
@@ -20,6 +21,9 @@ LIMA_BASE=${LIMA_PREFIX}base
 LIMA_GATEWAY=${BOXERY_LIMA_GATEWAY:-192.168.5.2}
 LIMA_VMTYPE=${BOXERY_LIMA_VMTYPE:-$([[ $(uname) == Darwin ]] && echo vz || echo qemu)}
 LIMA_ARCH=${BOXERY_LIMA_ARCH:-default}
+# Start instances under the loopback-confining Seatbelt profile (lima_start). On by default on macOS, the
+# only place sandbox-exec exists; BOXERY_LIMA_CONFINE=0 turns it off (tests, troubleshooting).
+LIMA_CONFINE=${BOXERY_LIMA_CONFINE:-$([[ $(uname) == Darwin ]] && echo 1 || echo 0)}
 export BOXERY_LIMA_PREFIX=$LIMA_PREFIX BOXERY_LIMA_GATEWAY=$LIMA_GATEWAY BOXERY_LIMA_VMTYPE=$LIMA_VMTYPE BOXERY_LIMA_ARCH=$LIMA_ARCH
 linst() { echo "$LIMA_PREFIX$1"; }
 lima_json() { limactl list --format json 2>/dev/null | jq -c "select(.name == \"$1\")"; }
@@ -32,7 +36,34 @@ lima_stop() { [[ $(lima_status "$1") == Stopped ]] || limactl stop "$1" >/dev/nu
 
 backend_check() {
 	need limactl; need jq; need ssh
+	if [[ $LIMA_CONFINE == 1 ]]; then need sandbox-exec; fi
 	if [[ $(uname) != Darwin && $LIMA_VMTYPE == qemu ]]; then [[ -r /dev/kvm ]] || log "warning: /dev/kvm not accessible; Lima will use slow TCG emulation"; fi
+}
+
+# Loopback confinement (#67). A guest's user-mode network (gvisor-tap-vsock on vz, slirp on qemu) runs in
+# Lima's host agent (or the qemu it spawns), and Lima NATs the gateway 192.168.5.2 to the host's
+# 127.0.0.1, so whatever the guest dials there the host agent dials on the host's loopback. On macOS every
+# instance is started under sandbox-exec with a Seatbelt profile that the host agent and its children
+# inherit: no outbound connections to the host's loopback (any 127/8 address, TCP and UDP) except the LLM
+# proxy and the instance's own ssh port, which the host agent itself uses (it leads to the guest's own
+# sshd). The host's kernel enforces it, so root in the guest can't lift it; other destinations (the
+# internet) are unaffected. The ssh port is chosen here and pinned with --ssh-port so the profile can name
+# it. By default qemu guests send DNS to the host agent's resolver on a random loopback port, so confined
+# qemu instances use slirp's own DNS forwarder (.3 on the user network, inside qemu) instead; vz answers
+# DNS inside gvisor.
+lima_free_port() { node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
+lima_profile() { # SSH_PORT → Seatbelt profile (later rules win)
+	printf '(version 1)\n(allow default)\n(deny network-outbound (remote ip "localhost:*"))\n'
+	printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$PROXY_PORT" "$1"
+}
+lima_start() { # INSTANCE TIMEOUT: start it (nothing to do if it runs), confined on macOS
+	local i=$1 port args=()
+	[[ $(lima_status "$i") != Running ]] || return 0
+	if [[ $LIMA_CONFINE != 1 ]]; then limactl start "$i" --timeout "$2"; return; fi
+	port=$(lima_free_port) && [[ $port =~ ^[0-9]+$ ]] || { echo "boxery-host: no free port for $i's ssh" >&2; return 1; }
+	args=(--ssh-port "$port")
+	[[ $(lima_json "$i" | jq -r .vmType) == vz ]] || args+=(--dns "${LIMA_GATEWAY%.*}.3")   # also turns hostResolver off
+	sandbox-exec -p "$(lima_profile "$port")" limactl start "$i" --tty=false "${args[@]}" --timeout "$2"
 }
 
 backend_init() { :; }
@@ -73,7 +104,7 @@ backend_build_base() {
 	lima_template base 8 8192 20 >"$tmp/base.yaml"
 	log "creating Lima builder instance ($LIMA_VMTYPE, $(uname -m))"
 	limactl create --name "$LIMA_BASE" --tty=false "$tmp/base.yaml" >/dev/null 2>"$tmp/create.log" || { cat "$tmp/create.log" >&2; die "limactl create failed"; }
-	limactl start "$LIMA_BASE" --timeout 20m >/dev/null 2>"$tmp/start.log" || { tail -20 "$tmp/start.log" >&2; die "limactl start failed"; }
+	lima_start "$LIMA_BASE" 20m >/dev/null 2>"$tmp/start.log" || { tail -20 "$tmp/start.log" >&2; die "limactl start failed"; }
 	log "installing the desktop image (XFCE, VNC, Chromium/Chrome, node, pi, opencode; ~5-10 min)"
 	# Reuse the libvirt build script: extract boxery-build.sh + write_files from the cloud-config and run them.
 	lima_apply_cloudconfig "$BASE_USERDATA" build || die "base build failed (see output above)"
@@ -125,7 +156,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 			die "limactl clone failed"
 		rm -f "$(lima_dir "$i")/boxery-image"
 	fi
-	limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "limactl start $i failed"
+	lima_start "$i" 10m >/dev/null 2>&1 || die "limactl start $i failed"
 	# Per-VM identity: replay the generated cloud-config (files + runcmd) as root over Lima's ssh.
 	lima_apply_cloudconfig "$userdata" vm "$name" || die "applying per-VM config failed"
 	# The stock image: what the cloud-config's first runcmd step does on seeded backends. boxery-host
@@ -187,7 +218,7 @@ backend_wait_endpoint() {
 	die "timed out waiting for $1"
 }
 
-backend_start() { limactl start "$(linst "$1")" --timeout 10m >/dev/null 2>&1 || die "limactl start failed"; }
+backend_start() { lima_start "$(linst "$1")" 10m >/dev/null 2>&1 || die "limactl start failed"; }
 backend_stop() { limactl stop "$(linst "$1")" >/dev/null 2>&1 || die "limactl stop failed"; }
 backend_size() { lima_json "$(linst "$1")" | jq -r '"\(.cpus) \(.memory / 1048576 | floor) \(.disk / 1073741824 | floor)"'; }
 # limactl edit only changes a stopped instance, so a running VM is stopped and started again.
@@ -199,7 +230,7 @@ backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
 	[[ $was == Stopped ]] || log "stopping $1 to resize it"
 	lima_stop "$i"
 	out=$(limactl edit --tty=false "$i" "${args[@]}" 2>&1) || rc=$?
-	if [[ $was == Running ]]; then limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "resized $1, but could not start it again"; fi
+	if [[ $was == Running ]]; then lima_start "$i" 10m >/dev/null 2>&1 || die "resized $1, but could not start it again"; fi
 	((rc == 0)) || die "limactl edit failed: $(printf '%s' "$out" | tail -1)"
 }
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; limactl delete --force "$(linst "$1")" >/dev/null 2>&1; }
@@ -229,7 +260,7 @@ backend_capture() { # NAME IMAGE
 	lima_stop "$i"
 	local rc=0; limactl clone --tty=false "$i" "$im" >/dev/null 2>&1 || rc=$?
 	if ((rc == 0)); then printf '%s\n%s\n' "$2" "$(date +%Y-%m-%dT%H:%M:%S)" >"$(lima_dir "$im")/boxery-image"; fi
-	if [[ $was == Running ]]; then limactl start "$i" --timeout 10m >/dev/null 2>&1 || log "warning: could not restart $1"; fi
+	if [[ $was == Running ]]; then lima_start "$i" 10m >/dev/null 2>&1 || log "warning: could not restart $1"; fi
 	((rc == 0)) || { limactl delete --force "$im" >/dev/null 2>&1 || true; die "limactl clone failed"; }
 }
 
@@ -249,7 +280,7 @@ backend_reimage() { # NAME IMAGE: replace the instance with a clone of the image
 	if [[ -z $j ]] && lima_exists_inst "$tmp"; then
 		# Recovery after the old instance was deleted but before its replacement was renamed.
 		limactl rename --tty=false "$tmp" "$i" >/dev/null 2>&1 || die "could not recover $1.new"
-		limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "could not start recovered $1"
+		lima_start "$i" 10m >/dev/null 2>&1 || die "could not start recovered $1"
 		return
 	fi
 	[[ -n $j ]] || die "no such vm: $1"
@@ -260,5 +291,5 @@ backend_reimage() { # NAME IMAGE: replace the instance with a clone of the image
 	rm -f "$(lima_dir "$tmp")/boxery-image"
 	limactl delete --force "$i" >/dev/null 2>&1 || die "could not remove the old $1"
 	limactl rename --tty=false "$tmp" "$i" >/dev/null 2>&1 || die "limactl rename failed (the new disk is instance $tmp)"
-	limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "limactl start failed"
+	lima_start "$i" 10m >/dev/null 2>&1 || die "limactl start failed"
 }
