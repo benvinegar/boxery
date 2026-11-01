@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-`mcp/boxery-mcp.mjs` exposes the same 12 `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 18 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
+`mcp/boxery-mcp.mjs` exposes the same 12 `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
 
 There are two ways to run it:
 
@@ -13,27 +13,33 @@ There are two ways to run it:
 
 ## A. stdio on your laptop
 
-The server runs locally and reaches VMs over the same ssh path as the CLI.
+The server runs locally and reaches VMs over the same ssh path as the CLI. Let the controller register it:
 
 ```bash
-# Claude Code
-claude mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
-
-# pi (or just use the extension)
-pi mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
+boxery mcp install claude --vm demo     # Claude Code (user scope)
+boxery mcp install cursor --vm demo     # writes ~/.cursor/mcp.json (keeps your other servers)
+boxery mcp install pi --vm demo         # or just use the pi extension
+boxery mcp install json --vm demo       # print a config snippet for any other client
 ```
 
-Cursor and other clients that use a JSON config:
+`install` uses absolute paths to `node` and `boxery-mcp.mjs`. MCP clients don't run arguments through a shell, so `~` isn't expanded, and GUI apps often don't see your shell's `PATH` or nvm. Before registering, `install` starts the server and checks `initialize` + `tools/list`. Run `boxery mcp check` to check it again at any time.
 
-```json
-{
-  "mcpServers": {
-    "boxery": {
-      "command": "npx",
-      "args": ["-y", "-p", "boxery-vm", "boxery-mcp", "--vm", "demo"]
-    }
-  }
-}
+| Flag | |
+|---|---|
+| `--vm NAME` | Default VM for tools that don't pass `vm`. Omit it to let the agent pick with `vm_manage`. |
+| `--scope` | `user` (default) or `project` for every client; Claude Code also has `local`. |
+| `--name NAME` | Server name in the client (default `boxery`). |
+| `--no-check` | Skip the startup check. |
+| `boxery --host NAME mcp install …` | Pin the server to a [named host](hosts.md). Without it, the server follows `boxery host use`. |
+
+A non-default `BOXERY_HOME` is passed to the server in its `env`. Re-run `install` after moving the checkout, upgrading with npm, or switching Node versions: the absolute paths change.
+
+**Tools appear in the next session.** Claude Code only loads MCP servers at startup, so start a new session after installing; `claude mcp get boxery` should show *Connected*. In pi, run `/reload`.
+
+Without the controller (any client, via npx):
+
+```bash
+claude mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
 ```
 
 ### Multiple hosts, one server

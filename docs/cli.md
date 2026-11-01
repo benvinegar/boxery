@@ -101,6 +101,15 @@ See [Shared pool & leases](pool.md).
 boxery proxy-log [N]                         # which VM called which LLM provider
 ```
 
+### MCP clients
+
+```bash
+boxery mcp install claude|cursor|pi|json [--vm NAME] [--scope user|project|local] [--name N] [--no-check]
+boxery mcp check [--vm NAME]                 # start the MCP server, run initialize + tools/list
+```
+
+Registers the [MCP server](mcp.md) with absolute paths after checking that it starts. `json` prints a snippet on stdout (status goes to stderr).
+
 ## `boxery-host` (the VM host)
 
 ```

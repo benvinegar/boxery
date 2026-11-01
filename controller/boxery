@@ -826,6 +826,120 @@ cmd_prompt() { # NAME "prompt" — fire-and-forget pi task in a detached tmux wi
 	echo "started $id on $name — watch: boxery attach $name pi $id   log: boxery run $name cat project/.boxery/$id.log"
 }
 
+# ---------------------------------------------------------------- mcp: register boxery-mcp with MCP clients
+# Clients don't run args through a shell (no ~, no PATH guarantees for GUI apps): every path is absolute.
+resolve_link() { local p=$1 t; while [ -L "$p" ]; do t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; printf '%s\n' "$p"; }  # macOS has no readlink -f
+mcp_server_path() {
+	local self d
+	self=$(resolve_link "$0")
+	d=$(cd "$(dirname "$self")/.." && pwd) || die "cannot resolve boxery's install directory"
+	[ -f "$d/mcp/boxery-mcp.mjs" ] || die "boxery-mcp.mjs not found next to the controller ($d/mcp)"
+	printf '%s\n' "$d/mcp/boxery-mcp.mjs"
+}
+# Starts the server like a client would: initialize + tools/list over stdio. Prints the tool count.
+mcp_check() { # NODE SERVER ARGS...
+	"$1" -e '
+		const { spawn } = require("node:child_process");
+		const [node, server, ...args] = process.argv.slice(1);
+		const p = spawn(node, [server, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+		let out = "", err = "";
+		const fail = (m) => { process.stderr.write(m + (err ? "\n" + err.trim() : "") + "\n"); p.kill(); process.exit(1); };
+		const timer = setTimeout(() => fail("no response within 10 s"), 10000);
+		p.stderr.on("data", (d) => (err += d));
+		p.on("exit", (c) => fail(`server exited (${c})`));
+		p.stdout.on("data", (d) => {
+			out += d;
+			for (const line of out.split("\n").slice(0, -1)) {
+				const m = JSON.parse(line);
+				if (m.id === 2) {
+					clearTimeout(timer); p.removeAllListeners("exit"); p.kill();
+					if (!m.result?.tools?.length) fail("tools/list returned no tools");
+					console.log(m.result.tools.length); process.exit(0);
+				}
+			}
+		});
+		const send = (o) => p.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...o }) + "\n");
+		send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "boxery-mcp-check", version: "0" } } });
+		send({ method: "notifications/initialized" });
+		send({ id: 2, method: "tools/list" });
+	' "$@"
+}
+# Merge one server entry into a JSON mcpServers file (Cursor and friends), keeping everything else.
+mcp_write_json() { # NODE FILE NAME ENV_JSON COMMAND ARGS...
+	"$1" -e '
+		const fs = require("node:fs"), path = require("node:path");
+		const [file, name, env, command, ...args] = process.argv.slice(1);
+		let cfg = {};
+		if (fs.existsSync(file)) { try { cfg = JSON.parse(fs.readFileSync(file, "utf8") || "{}"); } catch (e) { console.error(`${file}: not valid JSON (${e.message}); not touching it`); process.exit(1); } }
+		cfg.mcpServers ??= {};
+		cfg.mcpServers[name] = { command, args, ...(env !== "{}" ? { env: JSON.parse(env) } : {}) };
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(`${file}.tmp`, JSON.stringify(cfg, null, 2) + "\n");
+		fs.renameSync(`${file}.tmp`, file);
+	' "${@:2}"
+}
+cmd_mcp() {
+	local sub=${1:-help} client="" vm="" name=boxery scope="" check=1 node server n
+	[ $# -eq 0 ] || shift
+	case $sub in
+	install) [ $# -ge 1 ] || die "usage: boxery mcp install claude|cursor|pi|json [--vm NAME] [--name NAME] [--scope SCOPE] [--no-check]"; client=$1; shift ;;
+	check) ;;
+	help | -h | --help) usage | grep -A2 '^mcp install'; return ;;
+	*) die "unknown mcp command: $sub (install | check)" ;;
+	esac
+	while [ $# -gt 0 ]; do case $1 in
+		--vm) [ $# -ge 2 ] || die "--vm needs a value"; need_vm "$2"; vm=$2; shift 2 ;;
+		--name) [ $# -ge 2 ] || die "--name needs a value"; case $2 in ''|*[!A-Za-z0-9_-]*) die "invalid server name: $2" ;; esac; name=$2; shift 2 ;;
+		--scope) [ $# -ge 2 ] || die "--scope needs a value"; scope=$2; shift 2 ;;
+		--no-check) check=0; shift ;;
+		*) die "unknown flag $1" ;;
+	esac; done
+	case $client in '' | claude | cursor | pi | json) ;; *) die "unknown client: $client (claude | cursor | pi | json)" ;; esac
+	# The real binary, not a version-manager shim: GUI clients don't load your shell's PATH.
+	node=$(node -p process.execPath 2>/dev/null) || die "node not found on PATH (boxery-mcp needs Node >= 20)"
+	server=$(mcp_server_path)
+	# Server args: pin the host only if one was chosen explicitly (otherwise it follows `boxery host use`).
+	set --
+	[ -z "$explicit" ] || set -- --host "$explicit"
+	[ -z "$vm" ] || set -- "$@" --vm "$vm"
+	# A non-default BOXERY_HOME must reach the server too; clients start it with their own environment.
+	local env_kv="" env_json="{}"
+	if [ "$ROOT_DIR" != "$HOME/.boxery" ]; then env_kv="BOXERY_HOME=$ROOT_DIR"; env_json=$(printf '{"BOXERY_HOME":%s}' "$(json_text "$ROOT_DIR")"); fi
+	[ -n "$HOST" ] || warn "not configured yet; run: boxery setup user@host (the server starts, but its tools will fail until then)"
+
+	if [ "$check" = 1 ] || [ "$sub" = check ]; then
+		echo "==> checking: $node $server${*:+ $*}" >&2
+		n=$(BOXERY_HOME=$ROOT_DIR mcp_check "$node" "$server" "$@") || die "boxery-mcp failed to start (see above)"
+		echo "==> ok: initialize + tools/list ($n tools)" >&2
+	fi
+	[ "$sub" = install ] || return 0
+
+	case $client in
+	claude)
+		command -v claude >/dev/null 2>&1 || die "claude not found on PATH; use: boxery mcp install json"
+		scope=${scope:-user}
+		claude mcp remove -s "$scope" "$name" >/dev/null 2>&1 || true  # make re-install idempotent
+		claude mcp add -s "$scope" ${env_kv:+-e "$env_kv"} "$name" -- "$node" "$server" "$@"
+		echo "==> added '$name' to Claude Code ($scope scope). Start a new session to get the vm_* tools; verify with: claude mcp get $name" ;;
+	pi)
+		command -v pi >/dev/null 2>&1 || die "pi not found on PATH; use: boxery mcp install json"
+		case ${scope:-user} in user) set -- "$name" ${env_kv:+--env "$env_kv"} -- "$node" "$server" "$@" ;; project | local) set -- -l "$name" ${env_kv:+--env "$env_kv"} -- "$node" "$server" "$@" ;; *) die "pi scopes: user | project" ;; esac
+		pi mcp add "$@"
+		echo "==> added '$name' to pi. Run /reload in a running session (or start a new one). The pi extension (pi install npm:boxery-vm) gives the same tools natively." ;;
+	cursor)
+		local file
+		case ${scope:-user} in user) file="$HOME/.cursor/mcp.json" ;; project | local) file="$PWD/.cursor/mcp.json" ;; *) die "cursor scopes: user | project" ;; esac
+		mcp_write_json "$node" "$file" "$name" "$env_json" "$node" "$server" "$@" || die "could not update $file"
+		echo "==> wrote '$name' to $file. Cursor picks it up in Settings → MCP (toggle it on if needed)." ;;
+	json)
+		local a args=""
+		for a in "$server" "$@"; do args="$args${args:+, }$(json_text "$a")"; done
+		printf '{\n  "mcpServers": {\n    %s: {\n      "command": %s,\n      "args": [%s]%s\n    }\n  }\n}\n' \
+			"$(json_text "$name")" "$(json_text "$node")" "$args" "$([ "$env_json" = '{}' ] || printf ',\n      "env": %s' "$env_json")" ;;
+	*) die "unknown client: $client (claude | cursor | pi | json)" ;;
+	esac
+}
+
 usage() {
 	cat <<-'EOF'
 		boxery — remote desktop VMs for coding agents
@@ -864,6 +978,9 @@ usage() {
 		grants NAME [apply | --json]    show grants / push them again
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
+		mcp install claude|cursor|pi|json [--vm NAME] [--scope user|project|local] [--name N] [--no-check]
+		                                register the MCP server with a client (absolute paths), then check it starts
+		mcp check [--vm NAME]           start the MCP server and list its tools
 
 		--json on ls, snaps, sessions, leases, grants prints JSON (fields: docs/cli.md)
 	EOF
@@ -914,6 +1031,7 @@ grants) cmd_grants "$@" ;;
 agent-forward) cmd_agent_forward "$@" ;;
 sessions) need_host; cmd_sessions "$@" ;;
 prompt) need_host; cmd_prompt "$@" ;;
+mcp) cmd_mcp "$@" ;;
 help | -h | --help) usage ;;
 *) usage; exit 1 ;;
 esac
