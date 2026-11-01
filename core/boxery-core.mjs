@@ -1,6 +1,6 @@
 // boxery core: VM transport and tool implementations shared by the pi extension and the MCP server.
-// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using ~/.boxery/ssh_config
-// (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
+// Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using the selected host profile's
+// ssh_config (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -13,7 +13,6 @@ import { streamCopy } from "./copy-stream.mjs";
 export { q } from "./shell.mjs";
 
 export const BOXERY_HOME = path.resolve(process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery"));
-export const SSH_CONF = path.join(BOXERY_HOME, "ssh_config");
 // A context is resolved once at a call boundary, then inherited by all nested async work.
 const hostContext = new AsyncLocalStorage();
 const resolvedHosts = new WeakSet();
@@ -42,30 +41,25 @@ function registryLine(file, optional = false) {
 }
 export function resolveHost(host) {
 	if (host && typeof host === "object" && resolvedHosts.has(host)) return host;
-	let name = host;
-	if (name == null) {
-		const file = path.join(BOXERY_HOME, "default-host");
-		name = registryLine(file, true) ?? "legacy";
-	}
+	const name = host ?? defaultHost();
+	if (name == null) throw new Error("no boxery host configured; run: boxery setup user@host|local");
 	assertHost(name);
-	let dir = BOXERY_HOME;
-	if (name !== "legacy") {
-		const file = path.join(BOXERY_HOME, "host-registry", name);
-		dir = registryLine(file, true);
-		if (dir == null) throw new Error(`unknown host: ${name}`);
-		if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
-		if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
-	}
+	const dir = registryLine(path.join(BOXERY_HOME, "host-registry", name), true);
+	if (dir == null) throw new Error(`unknown host: ${name}`);
+	if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
+	if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
 	const resolved = Object.freeze({ name, dir, sshConf: path.join(dir, "ssh_config") });
 	resolvedHosts.add(resolved);
 	return resolved;
 }
+/** The default host's name (BOXERY_HOME/default-host), or null when none is selected. */
+export const defaultHost = () => registryLine(path.join(BOXERY_HOME, "default-host"), true);
 export const currentHost = () => hostContext.getStore() ?? (implicitHost ??= resolveHost());
 export const withHost = (host, fn) => hostContext.run(resolveHost(host), fn);
 export function registeredHosts() {
 	const registry = path.join(BOXERY_HOME, "host-registry");
-	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
-	return [resolveHost("legacy"), ...names.map(resolveHost)];
+	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n)).sort() : [];
+	return names.map(resolveHost);
 }
 const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
 // A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
@@ -101,12 +95,9 @@ function shellWord(s) {
 /** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
 export function hostDestination(host) {
 	const h = resolveHost(host);
-	let dest = h.name === "legacy" ? process.env.BOXERY_HOST || null : null; // legacy honors BOXERY_HOST, like the controller
-	if (!dest) {
-		const text = readProfileFile(path.join(h.dir, "config")) ?? "";
-		const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
-		dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
-	}
+	const text = readProfileFile(path.join(h.dir, "config")) ?? "";
+	const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
+	const dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
 	return dest && VALID_DEST.test(dest) ? dest : null;
 }
 /** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. */
@@ -117,8 +108,8 @@ export function hostBackend(host) {
 }
 /**
  * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
- * profile files (never sources them, never contacts a host). same_as names the other entries sharing this
- * profile directory: `legacy` and an alias registered for ~/.boxery are the same host.
+ * profile files (never sources them, never contacts a host). same_as names the other entries registered for
+ * this profile directory: they are the same host.
  */
 export function describeHosts() {
 	let def = null;
@@ -137,11 +128,11 @@ export function describeHosts() {
 /**
  * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
  * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
- * --config-dir, which name local files (an imported config is shell code). Never changes the default.
+ * --config-dir, which name local files (an imported config is shell code). Becomes the default only
+ * when there is none.
  */
 export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	assertHost(name);
-	if (name === "legacy") throw new Error("legacy is reserved");
 	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
 	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
 	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
@@ -150,28 +141,22 @@ export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 /** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
 export function removeHost(name) {
 	assertHost(name);
-	if (name === "legacy") throw new Error("legacy is reserved");
 	return registryCli(["host", "rm", name], 60_000);
 }
 // Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
 function registryCli(args, timeout, { progress } = {}) {
 	return new Promise((resolve, reject) => {
-		const env = { ...process.env, BOXERY_HOME };
-		delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN;
-		const child = execFile(BOXERY, args, { env, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		const child = execFile(BOXERY, args, { env: { ...process.env, BOXERY_HOME }, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
 		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
 	});
 }
-/** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
 export function controllerCommand(args) {
 	const host = currentHost();
-	const env = { ...process.env, BOXERY_HOME: host.dir };
-	if (host.name !== "legacy") { delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN; }
 	// Bind the resolved directory, not a registry entry that could change during this call.
-	return { args: ["--host", "legacy", ...args], env };
+	return { args: ["--host", host.name, "--profile-dir", host.dir, ...args], env: process.env };
 }
 export const REMOTE_HOME = "/home/agent";
 export const PROJECT = `${REMOTE_HOME}/project`;
@@ -821,7 +806,9 @@ export const versions = () => boxeryJson(["version"]);
 
 export function formatVersions({ controller, host, behind }) {
 	const v = (x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
-	const upgrade = host?.name && host.name !== "legacy" ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
+	let def = null;
+	try { def = defaultHost(); } catch {}
+	const upgrade = host?.name && host.name !== def ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
 	const lines = [`controller: ${v(controller)}`, host ? `host ${host.name}: ${v(host)} (${host.install} install)` : "host: unknown (it predates boxery-host version)"];
 	if (behind) lines.push(`The host is older than the controller. Tell the user; they can upgrade it with: ${host ? upgrade : "a manual update (git pull or npm update -g boxery-vm, then boxery-host init) on the host"}`);
 	return lines.join("\n");

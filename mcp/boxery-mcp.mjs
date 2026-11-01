@@ -58,8 +58,7 @@ const hostProp = {
 	host: {
 		type: "string",
 		description: "Registered host name (see vm_info {action:\"hosts\"} for where each runs); default: this session's host. " +
-			"\"legacy\" is the unnamed root profile ($BOXERY_HOME, normally ~/.boxery), the controller's default when no default-host is set; " +
-			"an alias registered for that same directory (hosts shows same_as) is the same host.",
+			"Names registered for the same profile directory (hosts shows same_as) are the same host.",
 	},
 };
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
@@ -70,7 +69,7 @@ const manageMcp = (t) => ({
 		"`host_add` registers a new host: name (its alias), dest (`local` = the machine this server runs on, or an ssh destination such as user@box) and, " +
 		"to create a separate profile there for another VM platform, backend (libvirt | lima | cloud-hypervisor | exe | boat; it gets its own state, proxy port and services), " +
 		"or profile to use one that already exists there; buildBase:true then runs build-base on it. " +
-		"It uses the user's default ssh key and never changes the CLI default; select it afterwards with action:'host'. " +
+		"It uses the user's default ssh key and becomes the CLI default only if there is none; select it afterwards with action:'host'. " +
 		"`host_rm` forgets registered host `name` (only the registration: its VMs, profile data and grants stay; the CLI default can't be removed). Credentials and grants remain user-controlled.",
 	parameters: {
 		...t.parameters,
@@ -99,7 +98,7 @@ const manageMcp = (t) => ({
 			return { text: session.host.name === a.name ? `${out}\nthis session still uses ${a.name} until you select another host` : out };
 		}
 		if (a.action === "host") {
-			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
+			if (a.host == null) throw new Error("host selection requires host:NAME");
 			session.host = host;
 			session.current = null;
 			session.currentHost = null;
@@ -133,7 +132,7 @@ const infoMcp = (t) => ({
 });
 const HOSTS_SCHEMA = {
 	type: "array",
-	description: "Registered hosts, legacy first. Read from local profile files only; no host is contacted.",
+	description: "Registered hosts, by name. Read from local profile files only; no host is contacted.",
 	items: {
 		type: "object",
 		properties: {
@@ -141,7 +140,7 @@ const HOSTS_SCHEMA = {
 			destination: { type: ["string", "null"], description: "Where its VM host runs: \"local\" (the machine running this MCP server's controller) or the ssh destination (user@host or ssh-config alias); null if the profile has no destination set or it can't be read without executing the config" },
 			backend: { type: ["string", "null"], description: "VM backend (lima, libvirt, cloud-hypervisor, exe, boat, …) as recorded by `boxery setup` or `boxery --host NAME backend`; null if never recorded" },
 			current: { type: "boolean", description: "This session's host (used when host is omitted)" },
-			default: { type: "boolean", description: "The controller's default (default-host, else legacy); new sessions start here unless started with --host" },
+			default: { type: "boolean", description: "The controller's default (default-host); new sessions start here unless started with --host" },
 			same_as: { type: "array", items: { type: "string" }, description: "Other names whose profile is the same directory, i.e. the same host and VMs" },
 			dir: { type: "string", description: "Profile directory (config, ssh_config, grants)" },
 		},

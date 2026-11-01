@@ -28,7 +28,7 @@ function fixture() {
 		writeFileSync(path.join(d, "ssh_config"), "# fake\n");
 	}
 	writeFileSync(pointer, `${profile}\n`);
-	const env = { ...process.env, HOME: path.join(dir, "home"), BOXERY_HOME: home, BOXERY_BIN: CLI, BOXERY_HOST: "", BOXERY_HOST_BIN: "" };
+	const env = { ...process.env, HOME: path.join(dir, "home"), BOXERY_HOME: home, BOXERY_BIN: CLI };
 	const run = (bin, args) => {
 		const r = spawnSync(bin, args, { env, encoding: "utf8", timeout: 3000 });
 		assert.ifError(r.error); // A blocked read (e.g. FIFO) is not a successful rejection.
@@ -63,10 +63,12 @@ function rejected(f, file, operations) {
 test("CLI/core reject non-regular, symlink and unreadable defaults without routing or repairing them", () => {
 	const f = fixture();
 	try {
-		// A missing default remains the only automatic legacy fallback.
-		assert.equal(f.cli(["ls"]).status, 0);
-		assert.equal(f.core().status, 0);
-		rmSync(f.log);
+		// A missing default selects no host: nothing is routed anywhere.
+		const none = f.cli(["ls"]);
+		assert.notEqual(none.status, 0);
+		assert.match(none.stderr, /no host configured/);
+		assert.match(f.core().stderr, /no boxery host configured/);
+		assert.equal(existsSync(f.log), false);
 		const target = path.join(f.dir, "symlink-target");
 		writeFileSync(target, "alpha\n");
 		const cases = [
@@ -85,7 +87,6 @@ test("CLI/core reject non-regular, symlink and unreadable defaults without routi
 				[`${label}: host ls`, () => f.cli(["host", "ls"])],
 				[`${label}: host rm`, () => f.cli(["host", "rm", "alpha"])],
 				[`${label}: host use`, () => f.cli(["host", "use", "alpha"])],
-				[`${label}: legacy reset`, () => f.cli(["host", "use", "legacy"])],
 			]);
 			assert.equal(readFileSync(f.pointer, "utf8"), `${f.profile}\n`);
 			assert.equal(readFileSync(target, "utf8"), "alpha\n");

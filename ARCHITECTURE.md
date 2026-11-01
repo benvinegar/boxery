@@ -34,7 +34,7 @@ LAPTOP (or wherever the agent runs)
                                          │                      CDP browser, LeaseKeeper, host profiles
                                          ├─ ssh NAME.boxery (ControlMaster) ─────────────────────┐
                                          └─ runs controller/boxery (Bash 3.2) for lifecycle,     │
-                                            grants, leases; it writes ~/.boxery/ssh_config       │
+                                            grants, leases; it writes each host's ssh_config     │
                                                    │ ssh user@host  boxery-host …                │
 CONTROL PLANE (Linux or macOS; may be the laptop itself)   │                                     │
   host/boxery-host (Bash entry) ─┬─ connect NAME ──► host/backend.sh __connect ──► nc VM 22 ◄────┘
@@ -62,7 +62,7 @@ VM (Ubuntu 24.04; XFCE desktop unless --headless)
 | `core/boxery-jobs.ts`, `core/boxery-job-runner.sh` | piped into the VM per call | Background jobs (`run --bg`, `jobs`, `logs`, `wait`, `kill`; `vm_jobs`). The helper is erasable TypeScript run by the VM's Node (type stripping, ≥ 22.18), never installed, so a VM always runs the caller's version; it answers in JSON. The runner is plain bash, sent with each start: it runs the command in its own process group, independent of tmux, and records the real exit code. |
 | `mcp/boxery-mcp.mjs` | agent machine (stdio) or host (HTTP) | MCP server. stdio, or Streamable HTTP at `/mcp` (bearer token required, optional Tailscale user allowlist, Origin check; meant for `tailscale serve`, never funnel). Sessions keep their own host and VM. `vm_view` + `mcp/desktop-view.html` give MCP Apps clients a live desktop |
 | `extension/index.ts` | agent machine | pi extension: explicit `vm_*` tools next to pi's built-ins (which stay local), `--vm NAME/new/pool`, `/vm` commands, throwaway VMs and leases tied to the pi session |
-| `controller/boxery` | agent machine | Bash 3.2 CLI: `setup`, host profiles (`host add/use/…`), lifecycle, snapshots and forks, `ssh/run/attach/prompt/jobs`, `cp` (runs `vm_copy` through `controller/cp.mjs`), `desktop/forward`, grants, client-side lease files. Generates `~/.boxery/ssh_config`: `*.boxery` → `ProxyCommand ssh HOST boxery-host connect %h %p`, ControlMaster, per-lease identities, per-VM `ForwardAgent` |
+| `controller/boxery` | agent machine | Bash 3.2 CLI: `setup`, host profiles (`host add/use/…`), lifecycle, snapshots and forks, `ssh/run/attach/prompt/jobs`, `cp` (runs `vm_copy` through `controller/cp.mjs`), `desktop/forward`, grants, client-side lease files. Generates each host profile's `ssh_config`: `*.boxery` → `ProxyCommand ssh HOST boxery-host connect %h %p`, ControlMaster, per-lease identities, per-VM `ForwardAgent` |
 | `host/boxery-host` + `host/*.mjs` | control plane | Backend-agnostic VM manager. Bash entry point; `connect` stays in Bash so the ProxyCommand never pays Node startup; everything else is Node. Ownership per module: [host-modules.md](docs/host-modules.md) |
 | `host/backends/*.sh` | control plane | Hypervisor effects only, one allowlisted function per process, arguments as argv ([contract](host/backends/README.md)). libvirt and Lima are stable; Cloud Hypervisor and exe.dev are experimental |
 | `proxy/boxery-proxy.mjs` | control plane | Credential proxy: checks the per-VM token, applies per-route method/path allowlists, body/concurrency/time limits, injects the real credential, refuses WebSocket upgrades (clients use SSE) |
@@ -82,7 +82,7 @@ In HTTP mode "local" means the machine running MCP: `vm_copy local:…` and gran
 
 ## How a tool call flows
 
-- **File and shell tools** (`vm_bash`, `vm_read`, `vm_edit`, `vm_jobs`, computer use, `vm_browser`): core → `ssh -F ~/.boxery/ssh_config NAME.boxery 'bash -c …'`. The first connection runs the ProxyCommand (`ssh HOST boxery-host connect NAME` → `backend_ssh_endpoint` → `nc`); later calls reuse the ControlMaster. Node and the Bash controller aren't involved.
+- **File and shell tools** (`vm_bash`, `vm_read`, `vm_edit`, `vm_jobs`, computer use, `vm_browser`): core → `ssh -F PROFILE/ssh_config NAME.boxery 'bash -c …'`. The first connection runs the ProxyCommand (`ssh HOST boxery-host connect NAME` → `backend_ssh_endpoint` → `nc`); later calls reuse the ControlMaster. Node and the Bash controller aren't involved.
 - **Lifecycle** (`vm_manage`, `vm_info`, `vm_lease`): core → `controller/boxery …` → `ssh HOST boxery-host COMMAND …` → Node supervisor → worker → backend functions and guest ssh. Output is `--json` where the front ends parse it ([cli.md](docs/cli.md)).
 - **Inference from inside a VM**: pi/opencode → `127.0.0.1:8088` (socat) → vsock/TCP/tunnel → `boxery-proxy` → provider.
 
@@ -90,7 +90,7 @@ In HTTP mode "local" means the machine running MCP: `vm_copy local:…` and gran
 
 | Where | What | Notes |
 |---|---|---|
-| `~/.boxery/` (controller) | `config`, `ssh_config`, `host-registry/`, `profiles/NAME/`, `grants/` (names and paths only, never values), `leases/` (lease records + per-lease ssh keys), ControlMaster sockets | Per host profile; `legacy` is the original root profile |
+| `~/.boxery/` (controller) | `host-registry/`, `default-host`, and per host `profiles/NAME/`: `config`, `ssh_config`, `grants/` (names and paths only, never values), `leases/` (lease records + per-lease ssh keys), ControlMaster sockets | Per host profile; every host is registered by name |
 | `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases | SQLite, short `BEGIN IMMEDIATE` transactions |
 | | `tokens.json` (VM → proxy secret), `edge/NAME.json` (HTTP grant headers), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
 | | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `vm-kind/`, `work/OP/` (seeds, removed after the operation) | |

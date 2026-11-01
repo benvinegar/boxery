@@ -276,7 +276,7 @@ export const TOOLS = [
 
 /**
  * vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output;
- * ctx.hostName names the host (MCP routes named hosts through the controller as its legacy profile).
+ * ctx.hostName names the host in version output.
  */
 export async function infoAction(a, { current, listNote, hostName } = {}) {
 	const target = () => {
