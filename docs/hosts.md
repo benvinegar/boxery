@@ -98,7 +98,7 @@ VM-relative paths start at `/home/agent/project`; `~` means `/home/agent`. Local
 {"from":"hornet/demo:logs.txt","to":"local:./logs.txt"}
 ```
 
-Copies are buffered tar transfers through the server, not direct host-to-host transfers. Existing size/output limits and quoting apply; local macOS uploads omit AppleDouble metadata. This is not a large-file streaming or migration feature.
+Copies are streaming tar transfers through the server, not direct host-to-host connections. Each endpoint stays bound to its resolved SSH profile throughout the transfer and cleanup. Agent memory is bounded by stream buffers rather than archive size; local macOS uploads omit AppleDouble metadata. See [file transfers](copy.md) for staging, destination semantics and cancellation limits.
 
 ## Removal safety and leases
 

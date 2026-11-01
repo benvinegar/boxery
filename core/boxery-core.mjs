@@ -5,10 +5,12 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { q } from "./shell.mjs";
+import { streamCopy } from "./copy-stream.mjs";
+export { q } from "./shell.mjs";
 
 export const BOXERY_HOME = path.resolve(process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery"));
 export const SSH_CONF = path.join(BOXERY_HOME, "ssh_config");
@@ -91,7 +93,6 @@ export function controllerPath() {
 }
 export const BOXERY = controllerPath();
 
-export const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const newName = () => `pi-${randomBytes(3).toString("hex")}`;
 
@@ -468,47 +469,18 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 	const src = { host, ...parseLoc(from, current) };
 	const dst = { host, ...parseLoc(to, current) };
 	const localAbs = (s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
-	let tarball;
-	if (src.vm) {
-		tarball = await withHost(src.host, () => sshOk(src.vm, `s=${q(src.path)}; cd "$(dirname "$s")" && tar -cf - -- "$(basename "$s")"`, { signal }));
-	} else {
-		const abs = localAbs(src.path);
-		tarball = await new Promise((res, rej) =>
-			execFile("tar", ["-cf", "-", "-C", path.dirname(abs), "--", path.basename(abs)], {
-				encoding: "buffer",
-				maxBuffer: 1 << 30,
-				// BSD tar packages Mac extended attributes as ._* files, which Linux tar leaves behind.
-				// These can even look like corrupt Git pack indexes. Transfer contents, not Mac metadata.
-				env: { ...process.env, COPYFILE_DISABLE: "1" },
-			}, (e, out) => e ? rej(e) : res(out)),
-		);
-	}
-	const srcBase = path.posix.basename(src.vm ? src.path : localAbs(src.path));
-	if (dst.vm) {
-		await withHost(dst.host, () => sshOk(
-			dst.vm,
-			`set -e; d=${q(dst.path)}; t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; tar -xf - -C "$t"; if [ -d "$d" ]; then cp -a "$t"/. "$d"/; else mkdir -p "$(dirname "$d")"; mv "$t"/${q(srcBase)} "$d"; fi`,
-			{ input: tarball, signal },
-		));
-	} else {
-		const d = localAbs(dst.path);
-		const tmp = path.join(path.dirname(d), `.boxery-copy-${randomBytes(4).toString("hex")}`);
-		await mkdir(tmp, { recursive: true });
-		await new Promise((res, rej) => {
-			const c = spawn("tar", ["-xf", "-", "-C", tmp]);
-			c.on("error", rej);
-			c.stdin.on("error", () => {});
-			c.on("close", (code) => (code === 0 ? res() : rej(new Error(`tar exit ${code}`))));
-			c.stdin.end(tarball);
-		});
-		await new Promise((res, rej) =>
-			execFile("sh", ["-c", 'trap \'rm -rf "$1"\' EXIT; set -e; if [ -d "$2" ]; then cp -a "$1"/. "$2"/; else mv "$1"/"$3" "$2"; fi', "sh", tmp, d, srcBase], (e) =>
-				e ? rej(e) : res(),
-			),
-		);
-	}
+	// Resolve BOTH endpoints and SSH profiles before creating staging directories or starting work.
+	// The stream transport never consults ambient host/session state, including during cleanup.
+	const endpoint = (loc) => {
+		if (!loc.vm) return { path: localAbs(loc.path), label: "local" };
+		assertName(loc.vm);
+		if (!existsSync(loc.host.sshConf)) throw new Error(`boxery not set up (${loc.host.sshConf} missing); run: boxery setup user@host`);
+		return { path: loc.path, vm: loc.vm, sshConf: loc.host.sshConf, label: `${loc.host.name}/${loc.vm}` };
+	};
+	const source = endpoint(src), destination = endpoint(dst);
+	const bytes = await streamCopy(source, destination, { signal });
 	const fmt = (l) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${l.vm ? l.path : localAbs(l.path)}`;
-	return { text: `copied ${fmt(src)} → ${fmt(dst)} (${tarball.length} bytes tar)` };
+	return { text: `copied ${fmt(src)} → ${fmt(dst)} (${bytes} bytes tar)` };
 }
 
 // ---------------------------------------------------------------- computer use

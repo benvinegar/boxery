@@ -212,14 +212,16 @@ test("copy binds both hosts independently, supports local server paths and rejec
 });
 
 test("timeout cleanup stays on the snapshotted host after a concurrent session switch", async () => {
+	// Previous copy calls also use cleanup commands; inspect only this timed-out call's traffic.
+	const before = { alpha: calls("alpha").length, beta: calls("beta").length };
 	const c = client(["--host", "alpha", "--vm", "fakevm"]);
 	const pending = c.tool("vm_bash", { command: "sleep 30", timeout: 0.15 });
 	await delay(70);
 	await c.tool("vm_manage", { action: "host", host: "beta" });
 	assert.match(text(await pending), /timed out/);
 	await delay(150); // cleanup SSH starts asynchronously from the timer
-	assert.match(calls("alpha"), /kill -TERM/);
-	assert.doesNotMatch(calls("beta"), /kill -TERM/);
+	assert.match(calls("alpha").slice(before.alpha), /kill -TERM/);
+	assert.doesNotMatch(calls("beta").slice(before.beta), /kill -TERM/);
 });
 
 test("HTTP startup defaults, overrides and sessions stay pinned across registry default changes", async () => {

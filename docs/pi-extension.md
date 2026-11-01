@@ -36,7 +36,7 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 |---|---|
 | `vm_bash`, `vm_read`, `vm_write`, `vm_edit` | Shell and files in the VM. Same engines as the built-ins, with the same truncation, edit semantics and image handling. Relative paths resolve to `/home/agent/project`. |
 | `vm_jobs` | Detached command jobs for long-running work: `start` · `list` · `logs` · `wait`. Jobs run in tmux and survive disconnects; see [background jobs](mcp.md#background-jobs). |
-| `vm_copy` | Files and directories between `local:path`, `NAME:path`, or a bare path (= current VM). Works VM to VM too. |
+| `vm_copy` | Streaming [file transfers](copy.md) between `local:path`, `NAME:path`, or a bare path (= current VM). Works VM to VM too. |
 | `vm_screenshot` | Screenshot of the XFCE desktop, downscaled to 1280 px (clicks are scaled back) |
 | `vm_click`, `vm_type`, `vm_key`, `vm_scroll` | Computer use via xdotool on `:1` |
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
