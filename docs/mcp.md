@@ -101,6 +101,43 @@ Every call accepts optional `host` and `vm`, using the session selection by defa
 
 Leases belong to the MCP session that acquired them. The server renews each one at a third of its TTL while the session is in use, meaning a call is running or one ran within the TTL. They're released when the session ends: stdin closes (stdio), the client sends `DELETE` (HTTP), or the server gets SIGINT/SIGTERM/SIGHUP. An HTTP client that disappears without `DELETE` stops renewing, and the host's reaper resets the VM when the lease expires. A release or expiry resets the VM to its clean image, so anything not copied out is lost. If a renewal fails (the lease expired, or the host rebooted), the lease is dropped and stops being the current VM.
 
+## Atomic file edits
+
+`vm_edit` (standalone core/MCP, not pi's edit engine) snapshots a writable regular
+file, applies exact, non-overlapping matches locally, then checks the version and
+bytes again under a guest advisory lock before atomic same-directory replacement.
+Competing cooperating edits from one snapshot cannot silently overwrite each
+other: one succeeds and the others report a conflict. Reread before retrying.
+Python 3 is required in the guest (included in the Ubuntu image); files and edit
+results are limited to 16 MiB and each remote phase to about 60 seconds.
+
+Symlinks are followed and preserved. One advisory lock per guest user serializes
+all cooperating edits, even to different files, so case aliases also share a lock.
+Link retargeting, file replacement (even with identical bytes), deletion, and
+parent-directory replacement observed before commit cause conflicts. The lock is
+persistent at `/tmp/boxery-edit-UID/edit.lock` and must not be removed while editors
+may be running. It is **not** protection against arbitrary noncooperating writers:
+they can still race between the final check and rename.
+
+Replacement requires read/write permission on the file and write/search permission
+on its directory. Linux uses `O_PATH` to open the directory without requiring read
+permission (`O_SEARCH` where available elsewhere); the `O_RDONLY` fallback on
+platforms with neither also requires directory read permission. Basic
+mode (including executable bits), uid and gid are preserved or the edit fails;
+multiple hard links are rejected because replacement would break them. ACLs,
+extended attributes and other inode metadata are not preserved. A read-only
+file remains uneditable for an unprivileged user even if its directory is writable
+(root retains its normal permission bypass).
+
+Cancellation/timeout is checked before observation and commit; handled guest
+TERM/HUP/INT and staging failures remove temporary files. An interruption leaves
+the destination either original or a complete replacement, never a partial write.
+Stopping local SSH does not guarantee the guest has stopped. Cancellation or a
+lost/malformed SSH commit acknowledgement has an **unknown commit outcome**,
+especially near/after rename, not rollback: reread before retrying. Uncatchable
+guest death may leave a private staging file; no crash/power-loss durability is
+promised.
+
 ## Options
 
 | Flag | |

@@ -33,6 +33,10 @@ before(() => {
 host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.boxery) host=$1; shift ;; *) shift ;; esac; done
 [ "$host" = "fakevm.boxery" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
+# vm_edit carries the guest path as JSON on stdin, rather than in shell source.
+if [[ "$cmd" == *"exec python3 -c"* ]]; then
+ exec python3 -c 'import io,json,os,shlex,sys; r=json.load(sys.stdin); r["path"]=r["path"].replace("/home/agent",sys.argv[2],1); inner=shlex.split(shlex.split(sys.argv[1])[2]); scope={"__name__":"fixture"}; exec(compile(inner[3],"<remote helper>","exec"),scope); scope["LOCK_DIRECTORY"]=os.path.join(sys.argv[2],"locks"); sys.stdin=io.TextIOWrapper(io.BytesIO(json.dumps(r).encode())); sys.exit(scope["main"]())' "$cmd" "${vmroot}"
+fi
 cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,
 	);
