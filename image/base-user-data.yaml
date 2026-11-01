@@ -166,7 +166,8 @@ write_files:
       rm -f /var/lib/dbus/machine-id /etc/ssh/ssh_host_*
       touch /var/log/boxery-build.ok
 runcmd:
-  - [bash, -c, "/usr/local/sbin/boxery-build.sh 2>&1 | tee /var/log/boxery-build.log > /dev/ttyS0; if [ -f /var/log/boxery-build.ok ]; then echo BOXERY_BUILD_OK > /dev/ttyS0; else echo BOXERY_BUILD_FAILED > /dev/ttyS0; fi"]
+  # The host watches the serial port for the result: ttyS0 on x86, ttyAMA0 (PL011) on arm64 Cloud Hypervisor.
+  - [bash, -c, "T=/dev/ttyS0; [ -e /dev/ttyAMA0 ] && T=/dev/ttyAMA0; /usr/local/sbin/boxery-build.sh 2>&1 | tee /var/log/boxery-build.log > $T; if [ -f /var/log/boxery-build.ok ]; then echo BOXERY_BUILD_OK > $T; else echo BOXERY_BUILD_FAILED > $T; fi"]
 power_state:
   mode: poweroff
   delay: now

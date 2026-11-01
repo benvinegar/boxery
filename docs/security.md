@@ -39,7 +39,7 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
 
 ## Known limits
 
-- **Shared NAT network.** VMs share libvirt's `default` network. They can reach the internet and the host's sshd, but not the proxy port. For stricter isolation, give them a dedicated network with nwfilter rules (on the [roadmap](../ARCHITECTURE.md#roadmap-re-ordered-after-review)).
+- **Shared NAT network.** VMs share libvirt's `default` network. They can reach the internet and the host's sshd, but not the proxy port. For stricter isolation, give them a dedicated network with nwfilter rules (on the [roadmap](../ARCHITECTURE.md#roadmap-re-ordered-after-review)). The experimental [cloud-hypervisor backend](../host/backends/README.md#cloud-hypervisor-experimental) already isolates guests: one routed TAP per VM, and nftables drops guest→host, guest→guest and guest→private-range traffic.
 - **Proxy spend.** A guest with root can read its own token and spend through the proxy. That's the same blast radius as handing it an API key, except the token is revocable per VM and logged. Per-VM budgets are planned.
 - **Pushed grants are readable.** `env:`/`file:` values (and the ssh-agent while connected) can be used or read by whatever runs in the VM. Grant dev-scoped credentials only, and prefer `http:` grants, whose values stay on the host.
 - **One host.** No multi-host scheduling yet.
