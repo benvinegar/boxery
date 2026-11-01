@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-The host uses `host/boxery-operations.mjs` to supervise VM mutations. It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the CLI starts a supervisor for each operation, and the existing reaper performs recovery.
+The host uses `host/boxery-operations.mjs` to supervise VM mutations. Lease workflow policy lives in `host/lease-workflows.mjs`, with CLI/SQLite/backend bindings in `host/boxery-lifecycle.mjs`; see [host module boundaries](host-modules.md). It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the CLI starts a supervisor for each operation, and the existing reaper performs recovery.
 
 ## Lock boundary
 

@@ -58,6 +58,7 @@ token_set() { operations token set "$1" "$2"; }
 token_del() { operations token del "$1"; }
 intent() { operations intent "$@"; }
 intent_done() { operations 'done' "$1"; }
+lifecycle() { BOXERY_CONF=$CONF BOXERY_BACKEND=$BACKEND node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-lifecycle.mjs" "$@"; }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
@@ -189,29 +190,10 @@ lease_matches() { # NAME GEN EPOCH STATE: fail closed after taking the lifecycle
 	local r; r=$(leases get "$1") || die "lease store error"
 	jq -e --argjson gen "$2" --arg epoch "$3" --arg state "$4" '.gen == $gen and .epoch == $epoch and .state == $state' <<<"$r" >/dev/null
 }
-lease_reset() { with_vm_lock "$1" _lease_reset "$@"; }
-_lease_reset() { # NAME GEN EPOCH (lock held through finish, readiness and key installation)
-	local name=$1 gen=$2 epoch=$3 ok=0 ep h p action
-	lease_matches "$name" "$gen" "$epoch" RESETTING || { log "$name: stale reset skipped"; return 0; }
-	action=$(intent reset "$name" "$gen" "$epoch")
-	edge_clear "$name"   # the next holder must not inherit this holder's credential routes
-	# Every backend step runs in a subshell: backends `die` (exit) on failure, and a failed reset must
-	# still reach the BROKEN transition below instead of leaving the row stuck in RESETTING.
-	if ( restore_vm "$name" "$POOL_SNAP" ) 2>/dev/null; then
-		ep=$( backend_wait_endpoint "$name" ) && h=${ep% *} && p=${ep#* } &&
-			( BOXERY_SSH_WAIT_TRIES=${BOXERY_SSH_WAIT_TRIES:-45} wait_ssh "$h" "$p" ) 2>/dev/null &&
-			vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null 2>&1; true" &&
-			( lease_set_keys "$name" ) && ok=1
-	fi
-	if ((ok)); then
-		leases finish "$name" "$gen" FREE >/dev/null || die "$name: reset commit failed"
-		log "$name reset → FREE"
-	else
-		leases finish "$name" "$gen" BROKEN >/dev/null || die "$name: failed-reset commit failed"
-		log "$name reset FAILED → BROKEN (fix it, then: boxery-host pool rm $name && boxery-host pool add $name)"
-	fi
-	intent_done "$action"
-}
+# Compatibility callbacks for the supervisor and recovery dispatcher. Policy lives in Node;
+# these do not release the inherited operation lock or change the worker's process group.
+lease_reset() { lifecycle reset "$@"; }
+_lease_reset() { lifecycle reset-held "$@"; }
 
 cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 	local sub=${1:-ls}; shift || true
@@ -258,71 +240,30 @@ cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 	esac
 }
 
-cmd_acquire() { # --holder H [--ttl SECS] [--wait SECS]   (lease public key on stdin) → "NAME LEASE_ID EXPIRES_AT"
-	local holder="" ttl=1800 wait=0
-	while (($#)); do
-		case $1 in
-		--holder) holder=${2:-}; shift 2 ;;
-		--ttl) valid_num "$1" "${2:-}"; ttl=$2; shift 2 ;;
-		--wait) valid_num "$1" "${2:-}"; wait=$2; shift 2 ;;
-		*) die "unknown flag $1" ;;
-		esac
-	done
-	local pub; pub=$(head -n1)
-	local deadline=$(($(date +%s) + wait)) claim="" reaped=0
-	while :; do
-		claim=$(leases claim "$holder" "$ttl" "$pub") || die "acquire failed"
-		[[ $claim != null ]] && break
-		if ((!reaped)); then reaped=1; cmd_reap >/dev/null 2>&1 || true; continue; fi   # free expired leases first
-		(($(date +%s) < deadline)) || { echo "boxery-host: pool exhausted (no FREE VM)" >&2; exit 4; }
-		sleep 2
-	done
-	local name gen lease exp
-	name=$(jq -r .name <<<"$claim"); gen=$(jq -r .gen <<<"$claim"); lease=$(jq -r .lease_id <<<"$claim"); exp=$(jq -r .expires_at <<<"$claim")
-	with_vm_lock "$name" _lease_acquire "$name" "$gen" "$(jq -r .epoch <<<"$claim")" "$pub"
+cmd_acquire() { lifecycle acquire "$@"; }
+cmd_renew() { lifecycle renew "$@"; }
+cmd_release() { lifecycle release "$@"; }
+cmd_reap() { lifecycle reap; }
+_lease_acquire() { lifecycle install-held "$@"; }
+_lease_release() { lifecycle release-held "$@"; }
+_reap_candidate() { lifecycle reap-held "$@"; }
 
-	log "$name leased to $holder until $(date -d "@$exp" 2>/dev/null || date -r "$exp")"
-	echo "$name $lease $exp"
-}
-
-_lease_acquire() { # NAME GEN EPOCH PUBKEY
-	lease_matches "$1" "$2" "$3" ACQUIRING || die "lease on $1 changed while waiting for its lock"
-	local action; action=$(intent acquire "$1" "$2" "$3")
-	lease_set_keys "$1" "$4" || die "could not install the lease key on $1"
-	leases commit "$1" "$2" >/dev/null || die "lease on $1 was fenced"
-	intent_done "$action"
-}
-
-cmd_renew() { # LEASE_ID [--ttl SECS] → "NAME EXPIRES_AT"
-	local id=${1:-} ttl=1800; [[ ${2:-} == --ttl ]] && { valid_num --ttl "${3:-}"; ttl=$3; }
-	[[ $id =~ ^l-[0-9a-f]{32}$ ]] || die "invalid lease id"
-	leases renew "$id" "$ttl" | jq -r '"\(.name) \(.expires_at)"'
-}
-
-cmd_release() { # LEASE_ID
-	local id=${1:-}; [[ $id =~ ^l-[0-9a-f]{32}$ ]] || die "invalid lease id"
-	local r; r=$(leases find "$id") || exit 2
-	[[ $r != null ]] || die "unknown or inactive lease"
-	with_vm_lock "$(jq -r .name <<<"$r")" _lease_release "$id"
-}
-_lease_release() {
-	local r; r=$(leases begin-reset "$1") || return 2
-	_lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
-}
-_reap_candidate() { # NAME GEN EPOCH: deadline and generation are checked after locking
-	local rows r; rows=$(leases due "$@")
-	r=$(jq -c '.[0] // empty' <<<"$rows")
-	[[ -n $r ]] || return 0
-	log "reaping $1 ($(jq -r .reason <<<"$r"))"
-	_lease_reset "$1" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
-}
-cmd_reap() {
-	operations reconcile "$0"
-	local rows; rows=$(leases candidates) || return 1
-	jq -c '.[]' <<<"$rows" | while read -r r; do
-		with_vm_lock "$(jq -r .name <<<"$r")" _reap_candidate "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
-	done
-	_reconcile_drift
+# Private, allowlisted effect bridge for the Node runtime. Arguments remain argv, not eval.
+# No business decisions or DB transitions here: backend commands and guest SSH only.
+backend_bridge() {
+	local action=$1 ep; shift
+	case $action in
+	restore) valid_name "$1"; valid_snap "$2"; restore_vm "$@" ;;
+	lease-keys) valid_name "$1"; lease_set_keys "$@" ;;
+	wait-ready)
+		valid_name "$1"; ep=$(backend_wait_endpoint "$1")
+		wait_ssh "${ep% *}" "${ep#* }" ;;
+	guest)
+		valid_name "$1"; ep=$(backend_ssh_endpoint "$1")
+		vm_ssh_cmd "${ep% *}" "${ep#* }" "$2" ;;
+	drift) _reconcile_drift ;;
+	*) die "unknown backend bridge action: $action" ;;
+	esac
 }
 
 # Durable intent handlers run under the original operation's complete lock set. Only artifacts
@@ -780,6 +721,7 @@ c=${1:-help}; shift || true
 case $c in
 __dispatch) c=$1; shift ;;
 __call) "$@"; exit ;;
+__backend) backend_bridge "$@"; exit ;;
 __recover) recover_operation; exit ;;
 new|fork|start|stop|rm|delete|snap|snap-rm|revert|edge-set)
 	BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@" ;;
