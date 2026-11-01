@@ -1,6 +1,7 @@
 // boxery-host upgrade: service-file parsing, profile discovery, version comparison, and the host-wide
 // operation lock. The end-to-end flow (git origin, init, rollback) is test/shell/host-upgrade.sh.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -111,8 +112,9 @@ sqlite("a dead upgrader's lock is reclaimed by the next operation", async () => 
 	const dir = mkdtempSync(path.join(tmpdir(), "boxery-upgrade-dead-"));
 	const db = L.open(path.join(dir, "leases.db"));
 	try {
-		// PID 2**22+1 is never a live process; its row is abandoned.
-		db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES('up','upgrade','[\"*\"]','{}',4194305,'x',?,1)").run(L.machineBootId());
+		// The owner is a process that has exited (a real PID: macOS ps rejects out-of-range ones), so its row is abandoned.
+		const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+		db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES('up','upgrade','[\"*\"]','{}',?,'x',?,1)").run(dead, L.machineBootId());
 		db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES('*','up')").run();
 		const held = await O.holdExclusive(dir, Date.now() + 2000);
 		assert.ok(held, "reclaimed (no intents to replay)");
