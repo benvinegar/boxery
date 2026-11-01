@@ -77,7 +77,7 @@ No KVM at all: run the VMs on [exe.dev](https://exe.dev) and the host (proxy, le
 ssh exe.dev whoami
 npm install -g boxery-vm
 boxery-host init --backend exe       # BOXERY_EXE_KEY=~/.ssh/id_exe to use a dedicated key
-boxery-host build-base               # ~10 min on an exeuntu VM, then kept paused as the base
+boxery-host build-base               # ~3 min on an exeuntu VM, then kept paused as the base
 boxery setup local                   # or: boxery setup you@this-host
 ```
 

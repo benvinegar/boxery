@@ -4,7 +4,8 @@
 #
 # - VMs run on exe.dev, managed through its ssh API (`ssh exe.dev CMD --json`). The host only needs ssh
 #   and an exe.dev account whose key ssh offers first (or BOXERY_EXE_KEY). No KVM, so it runs on macOS too.
-# - exe.dev VM names: PREFIX + v-NAME (VMs), i-HASH (images), s-NAME (reimage staging), base, build.
+# - exe.dev VM names: PREFIX + vGEN-NAME (VMs; GEN is new for every disk, names are never reused),
+#   i-HASH (images), base, build.
 #   PREFIX (default "bx<6 hex>-", generated once into $EXE_DIR/prefix) keeps names unique on exe.dev and
 #   keeps us away from the account's other VMs.
 # - ssh: exe.dev's edge authenticates `ssh NAME.exe.xyz` with the account's keys and never consults the
@@ -21,7 +22,7 @@
 # - Images (snapshots, forks, pool resets; disk only, see README): an image is a paused exe.dev VM made
 #   with `cp`, its boxery name kept in the exe.dev comment ("boxery-image:IMAGE:DISK_GB"). A copy boots
 #   fresh from disk, even from a paused source, so RAM (and tmpfs grants) never travel. new --from =
-#   `cp IMAGE-VM NAME`; reimage = `cp` to a staging name, `rm` the VM, `rename` the copy.
+#   `cp IMAGE-VM VM`; reimage = `cp` the image to a new generation, then `rm` the old one.
 # - stop = clear pushed grants + `pause` (exe.dev has no stop); start = `resume`.
 
 EXE_DIR=${BOXERY_EXE_DIR:-$HOME/.local/share/boxery/exe}
@@ -58,13 +59,17 @@ exe_prefix_ensure() { # generate PREFIX once (init/build-base); concurrent calle
 	EXE_PREFIX=$(cat "$EXE_DIR/prefix") || die "cannot read $EXE_DIR/prefix"
 	export BOXERY_EXE_PREFIX=$EXE_PREFIX
 }
-exe_vm() { echo "${EXE_PREFIX}v-$1"; }
-exe_stage() { echo "${EXE_PREFIX}s-$1"; }
+# A VM's exe.dev name changes with every disk it gets (new, reimage): PREFIXv<6 hex>-NAME, the current one
+# in $EXE_DIR/vms/NAME/vm. exe.dev's edge keeps routing a deleted VM's name for minutes (ssh fails with
+# "VM not found", -R forwards are refused), so a VM name is never reused. The tunnel port stays.
+exe_vm() { cat "$(exe_dir "$1")/vm" 2>/dev/null || echo "${EXE_PREFIX}v-$1"; }   # (the fallback never exists)
+exe_vm_new() { echo "${EXE_PREFIX}v$(openssl rand -hex 3)-$1"; }
+exe_vms_of() { jq -r --arg re "^${EXE_PREFIX}v[0-9a-f]{6}-$1\$" '.vms[] | select(.vm_name | test($re)) | .vm_name' <<<"$2"; }   # NAME LS_JSON
 exe_base() { echo "${EXE_PREFIX}base"; }
 # Image names contain '@' and '.', which exe.dev names can't: use a hash; the name lives in the comment.
 exe_img() { local h; h=$(printf '%s' "$1" | { shasum 2>/dev/null || sha1sum; } | cut -c1-16); echo "${EXE_PREFIX}i-$h"; }
 exe_dir() { echo "$EXE_DIR/vms/$1"; }
-exe_unit() { echo "boxery-exe-$(exe_vm "$1")"; }   # systemd unit / launchd label (without suffix)
+exe_unit() { echo "boxery-exe-${EXE_PREFIX}v-$1"; }   # systemd unit / launchd label (without suffix)
 exe_port() { echo $((EXE_PORT_BASE + $(cat "$(exe_dir "$1")/slot"))); }
 
 exe_cmd() { "${EXE_SSH[@]}" exe.dev "$@" </dev/null; }   # </dev/null: never eat the caller's stdin
@@ -268,6 +273,29 @@ exe_build_post() {
 			WantedBy=multi-user.target
 		UNIT
 		systemctl enable boxery-agent-session.service
+		# Every boot: exe.dev grows the disk (cp/resize --disk) but not the filesystem, and its init resets
+		# the hostname and /etc/hosts to the exe.dev name. The identity step records boxery's name.
+		cat >/usr/local/sbin/boxery-exe-boot.sh <<-'SH'
+			#!/bin/sh
+			resize2fs "$(findmnt -no SOURCE /)" >/dev/null 2>&1 || true
+			[ -s /etc/boxery/hostname ] || exit 0
+			n=$(cat /etc/boxery/hostname)
+			hostname "$n"; echo "$n" >/etc/hostname
+			grep -q "[[:space:]]$n\$" /etc/hosts || echo "127.0.1.1 $n" >>/etc/hosts   # sudo resolves it
+		SH
+		chmod 755 /usr/local/sbin/boxery-exe-boot.sh
+		cat >/etc/systemd/system/boxery-exe-boot.service <<-'UNIT'
+			[Unit]
+			Description=boxery: grow / and restore the hostname (exe.dev resets both)
+			Before=ssh.service boxery-agent-session.service
+			[Service]
+			Type=oneshot
+			RemainAfterExit=yes
+			ExecStart=/usr/local/sbin/boxery-exe-boot.sh
+			[Install]
+			WantedBy=multi-user.target
+		UNIT
+		systemctl enable boxery-exe-boot.service
 		touch /var/log/boxery-exe.ok
 		sync   # the base is copied from its disk; nothing may stay in the page cache
 	EOF
@@ -296,6 +324,8 @@ backend_build_base() {
 		echo 'BOXERY_POST'
 		echo 'chmod 755 /usr/local/sbin/boxery-exe-post.sh'
 		echo 'rm -f /var/log/boxery-build.ok /var/log/boxery-exe.ok /var/log/boxery-build.done'
+		# exeuntu ships its own opencode, and a pi that links into exedev's home: npm won't overwrite them.
+		echo 'rm -f /usr/local/bin/opencode /usr/local/bin/pi'
 		# Detached: the build outlives an ssh connection dropped by the edge. Progress is polled below.
 		echo 'setsid nohup bash -c "export DEBIAN_FRONTEND=noninteractive; { apt-get update -qq && /usr/local/sbin/boxery-build.sh && /usr/local/sbin/boxery-exe-post.sh; } >/var/log/boxery-build.log 2>&1; touch /var/log/boxery-build.done" </dev/null >/dev/null 2>&1 &'
 	} >"$tmp/build.sh" || { rm -rf "$tmp"; die "could not prepare the build script"; }
@@ -312,11 +342,14 @@ backend_build_base() {
 		exe_edge "$stg" 'tail -40 /var/log/boxery-build.log' </dev/null >&2 || true
 		die "base build failed; the builder VM $stg is kept for debugging (ssh $stg.exe.xyz; log /var/log/boxery-build.log)"
 	fi
-	# VMs are independent full copies, so the old base can go even with VMs made from it.
+	# VMs are independent full copies, so the old base can go even with VMs made from it. exe.dev renames
+	# running VMs only. Sync through the edge before the rename: the edge may route a reused name to the
+	# old base for minutes. The base itself is only ever used through the API (cp, pause).
+	exe_sync "$stg" || die "could not sync $stg"
 	j=$(exe_ls) || exit 1
 	if exe_has "$base" "$j"; then exe_do rm "$base" >/dev/null || die "could not remove the old base $base"; fi
-	exe_do rename "$stg" "$base" >/dev/null || die "rename $stg → $base failed"
-	exe_pause "$base"
+	exe_do rename "$stg" "$base" >/dev/null || die "rename $stg → $base failed (the build is VM $stg)"
+	exe_do pause "$base" >/dev/null || log "warning: could not pause the base $base (it keeps using pool memory)"
 	log "base image ready: exe.dev VM $base"
 }
 
@@ -331,7 +364,7 @@ backend_exists() {
 	[[ -d $(exe_dir "$1") ]] && return 0
 	[[ -n $EXE_PREFIX ]] || return 1
 	local j; j=$(exe_ls) || exit 1
-	exe_has "$(exe_vm "$1")" "$j"
+	[[ -n $(exe_vms_of "$1" "$j") ]]
 }
 
 # Per-VM identity, as root over the edge: what cloud-init would do with boxery_seed's user-data. Keys
@@ -345,9 +378,10 @@ exe_identity_script() { # USERDATA NAME
 	awk '/^ssh_authorized_keys:/{f=1;next} f&&/^  - /{sub(/^  - /,""); gsub(/^"|"$/,""); print; next} f{f=0}' "$1"
 	echo 'BOXERY_KEYS'
 	echo 'chown agent:agent /home/agent/.ssh/authorized_keys; chmod 600 /home/agent/.ssh/authorized_keys'
-	echo 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null'
+	echo 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null 2>&1'
 	echo 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart ssh.service'
-	printf 'hostname %q 2>/dev/null || true; echo %q >/etc/hostname\n' "$2" "$2"
+	# Hostname (and /etc/hosts), now and at every boot: exe.dev resets them to its own name.
+	printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/hostname; /usr/local/sbin/boxery-exe-boot.sh\n' "$2"
 	echo 'rm -rf /run/user/*/boxery'
 	echo 'chown -R agent:agent /home/agent'
 	echo '[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service'
@@ -360,7 +394,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d vm src j srcdisk slot
 	[[ -n $EXE_PREFIX ]] || die "no exe.dev prefix; run: boxery-host init --backend exe"
 	[[ $name != *- ]] || die "exe.dev names can't end with '-': $name"
-	d=$(exe_dir "$name"); vm=$(exe_vm "$name")
+	d=$(exe_dir "$name"); vm=$(exe_vm_new "$name")
 	j=$(exe_ls) || exit 1
 	if [[ -n $from ]]; then
 		src=$(exe_img "$from"); exe_has "$src" "$j" || die "no such image: $from"
@@ -368,9 +402,10 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	else
 		src=$(exe_base); srcdisk=$EXE_BASE_DISK
 	fi
-	exe_has "$vm" "$j" && die "$name already exists on exe.dev ($vm)"
+	[[ -z $(exe_vms_of "$name" "$j") ]] || die "$name already exists on exe.dev ($(exe_vms_of "$name" "$j" | head -1))"
 	mkdir -p "$EXE_DIR/vms"
 	mkdir "$d" || die "$name already exists"
+	echo "$vm" >"$d/vm"
 	slot=$(exe_alloc_slot "$name")
 	# Disks only grow: ask for more than the source only.
 	[[ -n $srcdisk ]] || srcdisk=0
@@ -395,9 +430,10 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK
 	[[ -n $EXE_PREFIX ]] || return 0
 	local j n st addr disk
 	j=$(exe_ls) || exit 1
-	jq -r --arg p "${EXE_PREFIX}v-" '.vms[] | select(.vm_name | startswith($p)) | [(.vm_name | ltrimstr($p)), .status] | @tsv' <<<"$j" |
-		while IFS=$'\t' read -r n st; do
+	jq -r --arg re "^${EXE_PREFIX}v[0-9a-f]{6}-(?<n>.+)$" '.vms[] | (.vm_name | capture($re)) as $m | select($m) | [$m.n, .status, .vm_name] | @tsv' <<<"$j" |
+		while IFS=$'\t' read -r n st v; do
 			[[ $n =~ ^[a-z][a-z0-9-]*$ ]] || continue
+			[[ ! -f $(exe_dir "$n")/vm || $(exe_vm "$n") == "$v" ]] || continue   # a reimage's leftover disk
 			addr="" disk=""
 			[[ ! -f $(exe_dir "$n")/disk ]] || disk="$(cat "$(exe_dir "$n")/disk")GiB"
 			if [[ $st == running && -f $(exe_dir "$n")/slot ]] && exe_tunnel_active "$n"; then addr="127.0.0.1:$(exe_port "$n")"; fi
@@ -430,8 +466,14 @@ backend_start() {
 	j=$(exe_ls) || exit 1
 	st=$(exe_status "$vm" "$j")
 	[[ -n $st ]] || die "$1 is gone from exe.dev ($vm)"
-	# resume restores a paused VM, or cold-boots a stopped one.
-	[[ $st == running ]] || exe_do resume "$vm" >/dev/null || die "exe.dev resume $vm failed"
+	if [[ -f $(exe_dir "$1")/resized ]]; then
+		# Resized while paused: resume would bring back the old CPUs, memory and disk. Boot it fresh.
+		exe_do restart "$vm" >/dev/null || die "exe.dev restart $vm failed"
+		rm -f "$(exe_dir "$1")/resized"
+	elif [[ $st != running ]]; then
+		# resume restores a paused VM, or cold-boots a stopped one.
+		exe_do resume "$vm" >/dev/null || die "exe.dev resume $vm failed"
+	fi
 	exe_tunnel_write "$1" "$j"
 	exe_tunnel_start "$1"
 }
@@ -450,7 +492,8 @@ backend_size() { # → CPUS MEM_MIB DISK_GIB, as created/resized (exe.dev's ls d
 	cat "$(exe_dir "$1")/size"
 }
 # exe.dev resize, then a restart of a running VM so the guest sees the new CPUs, memory and disk
-# (exeuntu grows / at boot). A paused VM is left paused.
+# (boxery-growfs grows / at boot). A paused VM is left paused, and its next start restarts it: a resumed
+# VM keeps its old size.
 backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
 	local vm d c m k j st flags=""; vm=$(exe_vm "$1"); d=$(exe_dir "$1")
 	read -r c m k <"$d/size" || die "no recorded size for $1"
@@ -469,17 +512,19 @@ backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
 		exe_sync "$vm" || true
 		exe_do restart "$vm" >/dev/null || die "resized $1, but exe.dev restart failed"
 		exe_tunnel_start "$1"   # reconnect now rather than after the keepalive notices
+	else
+		touch "$d/resized"
 	fi
 }
 
-# Remove NAME's exe.dev VM(s), tunnel and local state, whatever exists. Idempotent.
+# Remove NAME's exe.dev VM(s) (every generation), tunnel and local state, whatever exists. Idempotent.
 exe_destroy() {
-	local j v
+	local j vms
 	j=$(exe_ls) || exit 1
 	exe_tunnel_remove "$1"
-	for v in "$(exe_vm "$1")" "$(exe_stage "$1")"; do
-		if exe_has "$v" "$j"; then exe_do rm "$v" >/dev/null || die "could not remove exe.dev VM $v"; fi
-	done
+	vms=$(exe_vms_of "$1" "$j")
+	# shellcheck disable=SC2086  # vms: names, one per line
+	[[ -z $vms ]] || exe_do rm $vms >/dev/null || die "could not remove exe.dev VM(s) $(echo $vms)"
 	rm -rf "$(exe_dir "$1")" || die "could not remove $(exe_dir "$1")"
 }
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; exe_destroy "$1"; }
@@ -503,7 +548,9 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 	exe_cp "$vm" "$img" $flags || die "copying $1 failed"
 	# The comment names the image; without it the copy isn't listed (cleanup_image still finds it).
 	exe_do comment "$img" "'boxery-image:$2:$disk'" >/dev/null || { exe_do rm "$img" >/dev/null 2>&1 || true; die "labelling image $2 failed"; }
-	exe_pause "$img"   # a paused image holds disk only, no pool CPU or memory
+	# A paused image holds disk only, no pool CPU or memory. No sync: the copy is booting from a synced
+	# disk, and the edge may route a reused image name (snap-rm, then snap) to its predecessor.
+	exe_do pause "$img" >/dev/null || log "warning: could not pause image $2 (it keeps using pool memory)"
 }
 
 backend_images() { # → IMAGE<TAB>CREATED<TAB>SIZE
@@ -519,29 +566,29 @@ backend_image_rm() {
 	exe_do rm "$img" >/dev/null || die "could not remove image $1"
 }
 
-backend_reimage() { # NAME IMAGE: same exe.dev name (endpoint) and tunnel slot; ends running
+# NAME IMAGE: the image's disk under a new exe.dev name (see exe_vm), same tunnel slot; ends running.
+# Idempotent: a retry makes a fresh copy and removes every other generation, the old VM and any copy
+# an interrupted run left behind.
+backend_reimage() {
 	backend_exists "$1" || die "no such vm: $1"
-	local vm stg img j disk srcdisk flags=""; vm=$(exe_vm "$1"); stg=$(exe_stage "$1"); img=$(exe_img "$2")
+	local d new img j v disk srcdisk flags; d=$(exe_dir "$1"); new=$(exe_vm_new "$1"); img=$(exe_img "$2")
 	j=$(exe_ls) || exit 1
 	exe_has "$img" "$j" || die "no such image: $2"
-	if ! exe_has "$vm" "$j"; then
-		# Recovery: interrupted after the old VM was removed, before its replacement was renamed.
-		exe_has "$stg" "$j" || die "$1 is gone from exe.dev ($vm)"
-	else
-		if exe_has "$stg" "$j"; then exe_do rm "$stg" >/dev/null || die "could not remove a stale $stg"; fi
-		disk=$(cat "$(exe_dir "$1")/disk" 2>/dev/null || echo 0); srcdisk=$(exe_disk_of_image "$img" "$j")
-		flags=$(exe_pool_flag)
-		# The image may come from before a resize: keep the VM's own CPU and memory.
-		local c m; if read -r c m _ <"$(exe_dir "$1")/size" 2>/dev/null; then flags="$flags $(exe_sizes "$c" "$m")"; fi
-		if ((disk > ${srcdisk:-0})); then flags="$flags --disk=${disk}GB"; fi
-		[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
-		# Copy first, swap after: a failed copy leaves the VM as it was.
-		# shellcheck disable=SC2086
-		exe_cp "$img" "$stg" $flags || die "copying $2 failed"
-		exe_tunnel_stop "$1"
-		exe_do rm "$vm" >/dev/null || die "could not remove the old $1 (the new disk is exe.dev VM $stg)"
-	fi
-	exe_do rename "$stg" "$vm" >/dev/null || die "exe.dev rename $stg → $vm failed (retry: boxery-host revert)"
+	disk=$(cat "$d/disk" 2>/dev/null || echo 0); srcdisk=$(exe_disk_of_image "$img" "$j")
+	flags=$(exe_pool_flag)
+	# The image may come from before a resize: keep the VM's own CPU and memory.
+	local c m; if read -r c m _ <"$d/size" 2>/dev/null; then flags="$flags $(exe_sizes "$c" "$m")"; fi
+	if ((disk > ${srcdisk:-0})); then flags="$flags --disk=${disk}GB"; fi
+	[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
+	# Copy first, switch after: a failed copy leaves the VM as it was.
+	# shellcheck disable=SC2086
+	exe_cp "$img" "$new" $flags || die "copying $2 failed"
+	exe_tunnel_stop "$1"
+	echo "$new" >"$d/vm.tmp" && mv "$d/vm.tmp" "$d/vm" || die "could not record $1's new exe.dev VM $new"
+	rm -f "$d/resized"   # the copy booted fresh at the VM's size
+	for v in $(exe_vms_of "$1" "$j"); do   # j predates the copy: all of these are old
+		exe_do rm "$v" >/dev/null || log "warning: could not remove $1's old disk (ssh exe.dev rm $v)"
+	done
 	j=$(exe_ls) || exit 1
 	exe_tunnel_write "$1" "$j"
 	exe_tunnel_start "$1"
