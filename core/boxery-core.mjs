@@ -744,3 +744,118 @@ export function guidance(current, { localToolsNote } = {}) {
 		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }
+
+// ---------------------------------------------------------------- pool leases
+
+export const LEASE_TTL = { min: 60, max: 28_800, default: 1800 };
+function assertSeconds(what, v, min, max) {
+	if (!Number.isSafeInteger(v) || v < min || v > max) throw new Error(`${what} must be a whole number of seconds, ${min}–${max}`);
+	return v;
+}
+
+/**
+ * The pool leases one front-end session holds. Each is renewed at a third of its TTL while
+ * alive(lease) says the session is still using it; otherwise it is left to expire on the host. A
+ * failed renewal means the lease is gone (expired, reaped, host rebooted) and the VM may already
+ * belong to someone else, so the lease is forgotten and onLost(lease, error) runs. Every lease
+ * remembers the host it came from; renew/release run against that host.
+ */
+export class LeaseKeeper {
+	constructor({ alive = () => true, onLost = () => {}, everyMs = (ttl) => Math.max(20, ttl / 3) * 1000 } = {}) {
+		this.leases = new Map(); // lease id → { name, id, ttl, host, expiresAt, timer }
+		this.alive = alive;
+		this.onLost = onLost;
+		this.everyMs = everyMs; // heartbeat interval for a TTL (tests shorten it)
+	}
+
+	/** The lease this session holds on VM `name` on `host` (default: the current host), if any. */
+	find(name, host = currentHost()) {
+		for (const l of this.leases.values()) if (l.name === name && l.host.name === host.name && l.host.dir === host.dir) return l;
+		return null;
+	}
+
+	list() {
+		return [...this.leases.values()];
+	}
+
+	async acquire({ ttl = LEASE_TTL.default, wait = 60 } = {}) {
+		assertSeconds("ttl", ttl, LEASE_TTL.min, LEASE_TTL.max);
+		assertSeconds("wait", wait, 0, 3600);
+		const host = currentHost();
+		// boxeryCli returns stdout+stderr; the machine-readable line is "NAME LEASE_ID".
+		const out = await boxeryCli(["acquire", "--ttl", String(ttl), "--wait", String(wait)], (wait + 300) * 1000);
+		const m = out.match(/^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32})$/m);
+		if (!m) {
+			const leaked = out.match(/l-[0-9a-f]{32}/)?.[0];
+			if (leaked) await boxeryCli(["release", leaked], 180_000).catch(() => {}); // never leak a lease
+			throw new Error(`unexpected acquire output: ${out.slice(0, 300)}`);
+		}
+		const lease = { name: m[1], id: m[2], ttl, host, expiresAt: Date.now() + ttl * 1000, timer: null };
+		this.leases.set(lease.id, lease);
+		this.#schedule(lease);
+		return lease;
+	}
+
+	#schedule(lease) {
+		clearInterval(lease.timer);
+		lease.timer = setInterval(() => void this.#heartbeat(lease), this.everyMs(lease.ttl));
+		lease.timer.unref?.();
+	}
+
+	async #heartbeat(lease) {
+		if (!this.leases.has(lease.id) || !this.alive(lease)) return;
+		try {
+			await withHost(lease.host, () => this.#renew(lease, lease.ttl));
+		} catch (e) {
+			if (this.#forget(lease)) this.onLost(lease, e);
+		}
+	}
+
+	async #renew(lease, ttl) {
+		const out = await boxeryCli(["renew", lease.id, "--ttl", String(ttl)], 60_000);
+		lease.ttl = ttl;
+		lease.expiresAt = Date.now() + ttl * 1000;
+		return out;
+	}
+
+	#forget(lease) {
+		clearInterval(lease.timer);
+		return this.leases.delete(lease.id);
+	}
+
+	/** Renew now (optionally with a new TTL, which later heartbeats keep). A failed renewal loses the lease. */
+	async renew(name, ttl) {
+		const lease = this.find(name);
+		if (!lease) throw new Error(`this session holds no lease on ${name}`);
+		if (ttl != null) assertSeconds("ttl", ttl, LEASE_TTL.min, LEASE_TTL.max);
+		try {
+			await this.#renew(lease, ttl ?? lease.ttl);
+		} catch (e) {
+			this.#forget(lease);
+			throw new Error(`lease on ${name} is gone (${e.message}); the VM may already be reset`);
+		}
+		this.#schedule(lease);
+		return lease;
+	}
+
+	/** Give the lease back; the host resets the VM to its clean image. */
+	async release(name) {
+		const lease = this.find(name);
+		if (!lease) throw new Error(`this session holds no lease on ${name}`);
+		this.#forget(lease);
+		return boxeryCli(["release", lease.id], 180_000);
+	}
+
+	/** Release every lease (session end). Never throws: a lease the host already dropped is just forgotten. */
+	async releaseAll() {
+		await Promise.all(this.list().map((l) => (this.#forget(l), withHost(l.host, () => boxeryCli(["release", l.id], 180_000)).catch(() => {}))));
+	}
+}
+
+export function formatLeases(leases, current) {
+	if (!leases.length) return "this session holds no leases";
+	const now = Date.now();
+	return leases
+		.map((l) => `${l.name}\t${l.id}\texpires in ${Math.max(0, Math.round((l.expiresAt - now) / 1000))}s (ttl ${l.ttl}s, renewed automatically)${l.name === current ? "\tcurrent" : ""}`)
+		.join("\n");
+}

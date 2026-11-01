@@ -119,6 +119,7 @@ Every integration exposes the same tools:
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
 | `vm_info` | Read-only: list VMs, shapes, grants and snapshots |
+| `vm_lease` | Lease a VM from the shared pool; renewed while the session runs, released when it ends |
 
 Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
 
