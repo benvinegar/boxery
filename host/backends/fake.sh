@@ -44,6 +44,16 @@ backend_ssh_endpoint() { backend_exists "$1" || die "no such vm: $1"; [[ $(cat "
 backend_wait_endpoint() { echo "127.0.0.1 $(fake_port "$1")"; }
 backend_start() { echo running >"$FAKE/$1/state"; }
 backend_stop() { echo "shut off" >"$FAKE/$1/state"; }
+backend_size() { cat "$FAKE/$1/size"; }
+# Like the real backends, a running VM is stopped for the change and left running; restarts are counted.
+backend_resize() { # NAME CPUS MEM DISK (empty = unchanged)
+	local c m d was; read -r c m d <"$FAKE/$1/size"; was=$(cat "$FAKE/$1/state")
+	echo "shut off" >"$FAKE/$1/state"
+	if [[ -z ${BOXERY_FAKE_FAIL_RESIZE:-} ]]; then echo "${2:-$c} ${3:-$m} ${4:-$d}" >"$FAKE/$1/size"; fi
+	echo "$was" >"$FAKE/$1/state"
+	[[ $was != running ]] || echo x >>"$FAKE/$1/restarts"
+	[[ -z ${BOXERY_FAKE_FAIL_RESIZE:-} ]] || die "fake backend: injected resize failure"
+}
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; rm -rf "${FAKE:?}/$1"; fake_checkpoint rm "$1"; }
 backend_cleanup_new() { rm -rf "${FAKE:?}/$1"; }
 backend_cleanup_image() { rm -rf "${FAKE:?}/.images/$1" "$FAKE/.images/$1.part" "$FAKE/.images/$1.created"; }

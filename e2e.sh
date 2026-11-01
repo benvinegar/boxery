@@ -140,6 +140,15 @@ else
 fi
 "$A" rm "${VM}a" >/dev/null 2>&1 || true; "$A" rm "${VM}b" >/dev/null 2>&1 || true
 
+echo "== resize (running VM: restart, new size inside the guest)"
+n=$("$A" run "$VM" nproc); m=$(("$n" + 1))
+if "$A" resize "$VM" --cpus "$m" >/dev/null; then
+	[[ $("$A" run "$VM" nproc) == "$m" ]] && ok "resize $n → $m vCPUs, visible in the guest" || bad "nproc after resize: $("$A" run "$VM" nproc)"
+	check "VM still has its files after resize" "$A" run "$VM" test -f answer.txt
+else
+	bad "resize"
+fi
+
 echo "== rm"
 "$A" rm "$VM" >/dev/null && ok "removed" || bad "rm"
 trap - EXIT

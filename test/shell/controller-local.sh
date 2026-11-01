@@ -52,6 +52,11 @@ grep -qx '/.env' "$tmp/vms/w1/home/project/.git/info/exclude" && ok "file grant 
 "$A" ls --json | jq -e '.[] | select(.name == "w1") | .state == "running" and (.grants | map(.kind) == ["ssh-agent", "env", "env", "file"])' >/dev/null && ok "ls --json merges local grants" || bad "ls --json: $("$A" ls --json)"
 "$A" revoke w1 env:MY_TOKEN "file:$tmp/dev.env" >/dev/null 2>&1
 if (unset MY_TOKEN; . "$envsh"; [[ -z ${MY_TOKEN:-} && $FROM_CMD == computed ]]) && [[ ! -e $link && ! -L $link ]]; then ok "revoke removes exactly the revoked items"; else bad "revoke: env=$(cat "$envsh") link=$(ls -la "$link" 2>&1)"; fi
+# resize restarts the VM, which empties its tmpfs: the controller must push the grants again
+rm -f "$envsh"
+"$A" resize w1 --cpus 2 --mem 4096 >/dev/null 2>&1 && [[ $(cut -d' ' -f1,2 "$tmp/vms/w1/size") == "2 4096" ]] && ok "resize via the controller" || bad "resize: $(cat "$tmp/vms/w1/size")"
+[[ -f $envsh ]] && (. "$envsh"; [[ $FROM_CMD == computed ]]) && ok "resize pushes the VM's grants again" || bad "grants not re-applied after resize"
+if "$A" resize 'bad;name' --cpus 2 >/dev/null 2>&1; then bad "resize accepted an invalid VM name"; else ok "resize rejects an invalid VM name"; fi
 if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted"; else ok "invalid env name rejected"; fi
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi

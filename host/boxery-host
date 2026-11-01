@@ -606,6 +606,44 @@ cleanup_vm_images() {
 		[[ -z $image ]] || backend_image_rm "$image" || return 1
 	done < <(printf '%s\n' "$images" | cut -f1 | grep "^$1@" || true)
 }
+
+vm_state() { backend_list | awk -F'\t' -v n="$1" '$1 == n { print $2 }'; }
+# Dispatched through boxery-operations.mjs like start/stop, which locks NAME (so NAME comes first).
+cmd_resize() { # NAME [--cpus N] [--mem MiB] [--disk GiB]
+	local usage="usage: resize NAME [--cpus N] [--mem MiB] [--disk GiB]" name=${1:-} cpus="" mem="" disk=""
+	[[ -n $name && $name != -* ]] || die "$usage"; shift
+	while (($#)); do
+		case $1 in
+		--cpus) valid_num "$1" "${2:-}"; cpus=$2; shift 2 ;;
+		--mem) valid_num "$1" "${2:-}"; mem=$2; shift 2 ;;
+		--disk) valid_num "$1" "${2:-}"; disk=$2; shift 2 ;;
+		*) die "$usage" ;;
+		esac
+	done
+	[[ -n $cpus$mem$disk ]] || die "$usage"
+	valid_name "$name"; backend_exists "$name" || die "no such vm: $name"
+	[[ -z $cpus ]] || ((cpus >= 1)) || die "--cpus must be at least 1"
+	[[ -z $mem ]] || ((mem >= 512)) || die "--mem must be at least 512 MiB"
+	declare -F backend_resize >/dev/null || die "the $BACKEND backend cannot resize VMs"
+	with_vm_lock "$name" resize_vm "$name" "$cpus" "$mem" "$disk"
+}
+# Like start/stop, the result is the hypervisor's state: an interrupted resize is not rolled back.
+resize_vm() { # NAME CPUS MEM DISK (empty = unchanged); holds the VM lock
+	local name=$1 cpus=$2 mem=$3 disk=$4 c m d was ep sz
+	sz=$(backend_size "$name") || die "cannot read the size of $name"; read -r c m d <<<"$sz"
+	[[ -z $disk ]] || ((disk >= d)) || die "$name: disk can only grow (it is ${d} GiB)"
+	[[ $cpus != "$c" ]] || cpus=""; [[ $mem != "$m" ]] || mem=""; [[ $disk != "$d" ]] || disk=""
+	if [[ -z $cpus$mem$disk ]]; then log "$name already has ${c} vCPU, ${m} MiB, ${d} GiB"; return 0; fi
+	was=$(vm_state "$name")
+	backend_resize "$name" "$cpus" "$mem" "$disk"
+	if [[ $was == running ]]; then
+		ep=$(backend_wait_endpoint "$name"); wait_ssh "${ep% *}" "${ep#* }"
+		if ! is_pool "$name"; then pet_set_keys "$name"; fi
+	fi
+	sz=$(backend_size "$name") || die "$name was resized, but its new size cannot be read"; read -r cpus mem disk <<<"$sz"
+	log "$name resized: ${c} vCPU, ${m} MiB, ${d} GiB → ${cpus} vCPU, ${mem} MiB, ${disk} GiB"
+}
+
 _rm() {
 	backend_rm "$1"
 	# Forks and image readers hold this source's lock until all copies are independent.
@@ -764,6 +802,8 @@ usage() {
 		  fork SRC DST... [--cpus N --mem MiB --disk GiB]
 		                            copy a VM (running or not) into new VMs with their own identity
 		  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+		  resize NAME [--cpus N] [--mem MiB] [--disk GiB]
+		                            change a VM's size; a running VM is restarted. Disk only grows
 		  snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images
 		  connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
 		  proxy-log [N]             recent LLM + edge proxy requests
@@ -781,7 +821,7 @@ case $c in
 __dispatch) c=$1; shift ;;
 __call) "$@"; exit ;;
 __recover) recover_operation; exit ;;
-new|fork|start|stop|rm|delete|snap|snap-rm|revert|edge-set)
+new|fork|start|stop|resize|rm|delete|snap|snap-rm|revert|edge-set)
 	BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@" ;;
 pool)
 	if [[ ${1:-} == add || ${1:-} == rm ]]; then
@@ -801,6 +841,7 @@ ip) cmd_ip "$@" ;;
 connect) cmd_connect "$@" ;;
 start) cmd_start "$@" ;;
 stop) cmd_stop "$@" ;;
+resize) cmd_resize "$@" ;;
 rm | delete) cmd_rm "$@" ;;
 snap) cmd_snap "$@" ;;
 snaps) cmd_snaps "$@" ;;

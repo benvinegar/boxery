@@ -884,6 +884,8 @@ usage() {
 		ls [--json]                     list VMs (with their grants)
 		rm NAME                         destroy VM (revokes its LLM token)
 		start|stop NAME
+		resize NAME [--cpus N] [--mem MiB] [--disk GiB]
+		                                change a VM's size (restarts it if running; disk only grows)
 		fork SRC DST... [--grants]      copy a VM (running or not) into new VMs, ~10 s; each gets its own
 		                                identity (--grants: give the forks SRC's grants too)
 		snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP | snap-rm NAME SNAP
@@ -944,6 +946,8 @@ setup) cmd_setup "$@" ;;
 rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")" "$(edge_marker "${1:-x}")"; write_ssh_config ;;
 stop) need_host; drop_master "${1:-}"; h stop "$@"; drop_master "${1:-}" ;;
 start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if has_pushed_grants "${1:-x}"; then grants_apply "$1" || true; fi ;;
+# a resize restarts a running VM: like start, the connection is stale afterwards and tmpfs grants are gone
+resize) need_host; need_vm "${1:-}"; drop_master "$1"; h resize "$@"; drop_master "$1"; if has_pushed_grants "$1"; then grants_apply "$1" --quiet || true; fi ;;
 # a revert restores the snapshot's tmpfs too: always reconcile to the current grants
 revert) need_host; valid_snap "${2:-}" || die "invalid snapshot name: ${2:-}"; drop_master "${1:-}"; h revert "$@"; drop_master "${1:-}"; grants_apply "$1" --quiet || true ;;
 snap) need_host
