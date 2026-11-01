@@ -4,7 +4,7 @@
 
 boxery has two halves:
 
-- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev (experimental).
+- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev or boat.dev (both experimental).
 - **The controller** is the `boxery` CLI on your laptop. It's bash + ssh, and it's what the pi extension and the MCP server call.
 
 They can be the same machine.
@@ -13,6 +13,7 @@ They can be the same machine.
 - [macOS host (Lima)](#macos-host-lima)
 - [Linux host (Cloud Hypervisor, experimental)](#linux-host-cloud-hypervisor-experimental)
 - [exe.dev (experimental)](#exedev-experimental)
+- [boat.dev (experimental)](#boatdev-experimental)
 - [Laptop / controller](#laptop--controller)
 - [LLM providers for in-VM agents](#llm-providers-for-in-vm-agents)
 - [Verify](#verify)
@@ -87,6 +88,19 @@ VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs);
 **Run the host on an always-on machine.** The VMs are in the cloud, but the host keeps one ssh tunnel per VM open to exe.dev, and that tunnel carries both the VM's ssh endpoint and the agents' only route to the LLM proxy. When the host sleeps or goes offline, every running agent loses its LLM in the middle of a task, and no controller can reach the VMs. The VMs keep running and the tunnels reconnect by themselves (within seconds) once the host is back. So put `boxery-host --backend exe` on a machine that stays up, such as a home server, a small Linux VPS or a desktop that doesn't sleep, and use your laptop as a controller only (`boxery setup you@that-host`). This keeps the security model: provider credentials stay on that machine and never enter a VM. On a Linux host, turn on linger (`sudo loginctl enable-linger "$USER"`, as above) so the tunnels, which are systemd user units, keep running when you're logged out. If you do run the host on a Mac, keep it awake while agents work (for example `caffeinate -s` on AC power).
 
 `boxery-host ls` shows a running VM whose tunnel isn't connected as `tunnel connecting` (it is retrying) or `tunnel down` (it isn't running; `boxery-host start NAME` brings it back) in place of its address. Commands that need the VM say the same thing rather than waiting for ssh to time out.
+
+## boat.dev (experimental)
+
+Also no KVM: run the VMs as [boat.dev](https://boat.dev) sandboxes (full Ubuntu VMs) and the host on any Linux box or Mac with ssh. You need a **paid** boat plan: images (the base, snapshots, forks, the pool's clean states) are boat saved snapshots, which the free trial refuses. (The trial also requires auto-stop: `BOXERY_BOAT_TTL=7200`.) Create an API key in the boat dashboard.
+
+```bash
+npm install -g boxery-vm
+BOAT_API_KEY=boat_… boxery-host init --backend boat   # saves the key in ~/.local/share/boxery/boat/api-key (0600)
+boxery-host build-base                                # a builder sandbox, saved as the base, then deleted
+boxery setup local                                    # or: boxery setup you@this-host
+```
+
+VM sizes are boat's four types: a VM gets the smallest that fits (`small` 2 vCPU/4 GB, `default` 4/8, `large` 8/16; `xlarge` with `BOXERY_BOAT_MAX_TYPE=xlarge` on the $100 plan). `stop` is a real stop, and boat keeps a stopped VM's disk for 14 days. Each VM is reached through an ssh tunnel the host keeps open, so the host must stay up. Saved snapshots beyond your plan's allowance cost $0.056 a day each. Layout and what's still unverified: [backends → boat](../host/backends/README.md#boat-experimental).
 
 Backend details: [host/backends/README.md](../host/backends/README.md).
 
