@@ -24,9 +24,10 @@ const endpoint = (text) => {
 
 // capture: collect stdout (metadata) and return it; otherwise the backend's stdout goes to our stderr,
 // so it can never corrupt this command's own output. quiet: discard the backend's stderr too.
-function run(env, fn, args, { capture = false, quiet = false } = {}) {
+// extraEnv: variables for this call only (e.g. BASE_USERDATA for backend_build_base).
+function run(env, fn, args, { capture = false, quiet = false, extraEnv } = {}) {
 	return new Promise((resolve, reject) => {
-		const child = spawn(SCRIPT, [fn, ...args.map(String)], { env, stdio: ["ignore", capture ? "pipe" : 2, quiet ? "ignore" : 2] });
+		const child = spawn(SCRIPT, [fn, ...args.map(String)], { env: extraEnv ? { ...env, ...extraEnv } : env, stdio: ["ignore", capture ? "pipe" : 2, quiet ? "ignore" : 2] });
 		const chunks = [];
 		let bytes = 0;
 		child.stdout?.on("data", (d) => {

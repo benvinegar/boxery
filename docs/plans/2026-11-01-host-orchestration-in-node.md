@@ -1,6 +1,19 @@
 # Plan: host orchestration in Node
 
-Status: draft, not started. Continues the extraction described in [host module boundaries](../host-modules.md).
+Status: implemented in five stacked PRs (phases 0–4). Continues the extraction described in [host module boundaries](../host-modules.md).
+
+Where the implementation differs from the draft below:
+
+- `host/boxery-host.mjs` is a Node version check (`node:sqlite`) in front of `host/cli.mjs`, so an old
+  Node gets a clear message instead of a module-load stack trace.
+- `init`, `build-base` and `add-key` live in `host/setup.mjs`, with the service file generation, rather
+  than a separate `services.mjs`; VM/image/pool commands are in `vms.mjs`, `images.mjs` and `pool.mjs`.
+- `host.env` now persists every backend setting an operation journals (`BOXERY_NET`, `LIBVIRT_DEFAULT_URI`,
+  `LIMA_HOME`, the `BOXERY_LIMA_*` options), not just the subset the Bash `init` wrote.
+- One intended output change: an invalid VM name for a mutating command reads
+  `boxery-host: invalid VM name: X` (it used to be prefixed `boxery-operations:`).
+- `jq` is no longer a host requirement for libvirt. Lima and Cloud Hypervisor still use it, and their
+  `backend_check` says so.
 
 ## Goal
 

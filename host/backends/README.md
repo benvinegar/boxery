@@ -1,6 +1,8 @@
 # boxery backends
 
-`host/boxery-host` is backend-agnostic. It generates each VM's identity (cloud-config with ssh keys, LLM proxy token, pi/opencode config), manages tokens, leases and locks, waits for ssh, and runs the LLM proxy. A backend is a bash file sourced by it that implements the functions below.
+`host/boxery-host` is backend-agnostic. It generates each VM's identity (cloud-config with ssh keys, LLM proxy token, pi/opencode config), manages tokens, leases and locks, waits for ssh, and runs the LLM proxy. A backend is a bash file that implements the functions below.
+
+The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh`, `vm_ssh_cmd`, and the variables `ROOT`, `CACHE`, `PROXY_PORT` and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
 
 ## VMs
 
