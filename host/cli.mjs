@@ -65,7 +65,7 @@ async function ls(rt, [arg]) {
 	const vms = await lsJson(rt);
 	if (arg === "--json") return print(jsonArray(vms));
 	if (arg) fail("usage: ls [--json]");
-	print(table([16, 10, 16, 10, 10, 9], [["NAME", "STATE", "ADDR", "DISK", "SHAPE", "KIND", "LEASE"],
+	print(table([16, 10, 18, 10, 10, 9], [["NAME", "STATE", "ADDR", "DISK", "SHAPE", "KIND", "LEASE"],
 		...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.disk ?? "-", v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
 }
 
