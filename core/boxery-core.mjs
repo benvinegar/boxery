@@ -513,13 +513,27 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 
 // ---------------------------------------------------------------- computer use
 
-const X = "export DISPLAY=:1; ";
+// Desktop tools on a headless VM (boxery new --headless) fail with this, not with an X11 error.
+const HEADLESS_EXIT = 64;
+const X = `[ ! -e /etc/boxery/headless ] || exit ${HEADLESS_EXIT}; export DISPLAY=:1; `;
+const headlessError = (vm) =>
+	new Error(`VM "${vm}" is headless (created with --headless): it has no desktop, so screenshots, mouse/keyboard input and vm_browser don't work there. Use a desktop VM (vm_manage {action:'new'} without headless) for GUI or browser work.`);
+async function desktopRun(vm, script, opts) {
+	const r = await sshRun(vm, script, opts);
+	if (r.code === HEADLESS_EXIT) throw headlessError(vm);
+	return r;
+}
+async function desktopOk(vm, script, opts) {
+	const r = await desktopRun(vm, script, opts);
+	if (r.code !== 0) throw new Error(r.stderr.trim() || `command failed (exit ${r.code})`);
+	return r.stdout;
+}
 const screenScale = new Map(); // screenshot px → screen px, per host+VM
 const screenKey = (vm) => `${currentHost().dir}\0${vm}`;
 
 export async function screenshot(vm, maxWidth = 1280) {
 	// geometry on stderr, PNG on stdout (downscaled for model image limits; clicks scale back)
-	const r = await sshRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' png:-`, { timeoutMs: 30_000 });
+	const r = await desktopRun(vm, `${X}xdotool getdisplaygeometry >&2; import -window root -resize '${maxWidth}x>' png:-`, { timeoutMs: 30_000 });
 	if (r.code !== 0) throw new Error(r.stderr.trim() || "screenshot failed");
 	const [sw, sh] = r.stderr.trim().split(/\s+/).map(Number);
 	const shotW = Math.min(sw, maxWidth);
@@ -542,19 +556,19 @@ async function after(vm, msg, want) {
 
 export async function click(vm, { x, y, button, double, screenshot: shot }) {
 	const b = { left: 1, middle: 2, right: 3 }[button ?? "left"] ?? 1;
-	await sshOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click ${double ? "--repeat 2 " : ""}${b}`);
+	await desktopOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click ${double ? "--repeat 2 " : ""}${b}`);
 	return after(vm, `clicked ${button ?? "left"} at (${x}, ${y})`, shot);
 }
 
 export async function typeText(vm, { text, screenshot: shot }) {
-	await sshOk(vm, `${X}xdotool type --clearmodifiers --delay 8 --file -`, { input: String(text) });
+	await desktopOk(vm, `${X}xdotool type --clearmodifiers --delay 8 --file -`, { input: String(text) });
 	return after(vm, `typed ${String(text).length} chars`, shot);
 }
 
 export async function pressKeys(vm, { keys, screenshot: shot }) {
 	const list = String(keys).trim().split(/\s+/);
 	if (!list.every((k) => /^[A-Za-z0-9_+\-]+$/.test(k))) throw new Error(`invalid key spec: ${keys}`);
-	await sshOk(vm, `${X}xdotool key --clearmodifiers -- ${list.join(" ")}`);
+	await desktopOk(vm, `${X}xdotool key --clearmodifiers -- ${list.join(" ")}`);
 	return after(vm, `pressed ${list.join(" ")}`, shot);
 }
 
@@ -562,7 +576,7 @@ export async function scroll(vm, { x, y, direction, amount, screenshot: shot }) 
 	const btn = { up: 4, down: 5, left: 6, right: 7 }[direction];
 	if (!btn) throw new Error("direction must be up, down, left or right");
 	const n = Math.max(1, Math.min(50, Math.floor(amount ?? 5)));
-	await sshOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click --repeat ${n} ${btn}`);
+	await desktopOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click --repeat ${n} ${btn}`);
 	return after(vm, `scrolled ${direction} x${n}`, shot);
 }
 
@@ -587,7 +601,7 @@ process.exit(0);`;
 		`--no-first-run --no-default-browser-check --password-store=basic --start-maximized about:blank >/tmp/boxery-chrome.log 2>&1 & ` +
 		`for i in $(seq 75); do curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null && break; sleep 0.2; done; fi; ` +
 		`P=/opt/boxery; [ -d $P ] || P=/opt/agentvm; cd $P && BOXERY_PW=$P/node_modules/playwright-core/index.mjs exec node --input-type=module`; // /opt/agentvm: images built before the rename
-	const r = await sshRun(vm, script, { input: program, signal, timeoutMs: (timeout ?? 60) * 1000 });
+	const r = await desktopRun(vm, script, { input: program, signal, timeoutMs: (timeout ?? 60) * 1000 });
 	const m = r.stdout.toString().match(/__BOXERY__(.*)\n?$/s);
 	if (!m) throw new Error(`browser script produced no result (exit ${r.code}): ${r.stderr.slice(-2000)}`);
 	const res = JSON.parse(m[1]);
@@ -645,7 +659,8 @@ const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ?
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
-	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.shape ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const kind = (v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
+	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.shape ?? "-", kind(v), v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
@@ -678,7 +693,7 @@ export async function ensureVm(name, notify = () => {}) {
 }
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
-export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk }, opts = {}) {
+export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk, headless }, opts = {}) {
 	const need = () => assertName(name);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
@@ -699,7 +714,7 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 		case "list":
 			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : [])], undefined, opts);
+			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
 		case "shapes":
 			return formatShapes(await listShapes());
 		case "rm":
@@ -737,7 +752,7 @@ export function guidance(current, { localToolsNote } = {}) {
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
 		local,
-		"The VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`).",
+		"Unless it was created headless, the VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`). A headless VM has /etc/boxery/headless and no desktop tools.",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,

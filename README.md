@@ -31,7 +31,7 @@ Think of it as a self-hosted [exe.dev](https://exe.dev) that you can point at an
 
 ## Why boxery
 
-- **Fast, disposable desktops.** A new Ubuntu 24.04 + XFCE VM in about 13 s, built from a golden image. Snapshots take about a second, without pausing the VM.
+- **Fast, disposable desktops.** A new Ubuntu 24.04 + XFCE VM in about 13 s, built from a golden image. Snapshots take about a second, without pausing the VM. Tasks that need no GUI can use `boxery new NAME --headless`: no desktop, and no image build needed. [Headless VMs →](docs/cli.md#lifecycle)
 - **Fork a running VM.** Copy a VM, mid-task, into several independent VMs in 15–25 s, so an agent can try three fixes in parallel and keep the one that works. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
 - **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
 - **Works with your agent.** A native [pi](https://pi.dev) extension, plus an MCP server for Claude Code, Cursor, opencode and other MCP clients.
@@ -48,7 +48,7 @@ On a **Linux host** with KVM and libvirt ([full requirements](docs/install.md#li
 ```bash
 npm install -g boxery-vm
 boxery-host init                 # storage pool, LLM proxy, lease reaper, ~/.local/bin symlinks
-boxery-host build-base           # golden desktop image (~3 min, one time)
+boxery-host build-base           # golden desktop image (~3 min, one time; skip it if you only want --headless VMs)
 ```
 
 On **your laptop**:

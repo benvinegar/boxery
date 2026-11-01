@@ -74,6 +74,7 @@ rename) vm "${pos[0]}"; [ "$(cat "$S/${pos[0]}/status")" = running ] || err "vm 
 comment) vm "${pos[0]}"; t=${pos[1]#\'}; echo "${t%\'}" >"$S/${pos[0]}/comment"; echo '{}' ;;
 pause) vm "${pos[0]}"; echo paused >"$S/${pos[0]}/status"; echo '{}' ;;
 resume | restart) vm "${pos[0]}"; echo running >"$S/${pos[0]}/status"; echo '{}' ;;
+egress) vm "${pos[0]}"; echo "${pos[1]}" >"$S/${pos[0]}/egress"; echo '{}' ;;
 resize) vm "${pos[0]}"; [ -z "${FAIL_RESIZE:-}" ] || err "injected resize failure"; echo "${flags[*]}" >"$S/${pos[0]}/resized"; echo '{}' ;;
 *) err "unknown command $cmd" ;;
 esac
@@ -127,7 +128,7 @@ bash -n "$tmp/post.sh" && grep -x 'ListenAddress 127.0.0.1' "$tmp/post.sh" >/dev
 grep -F 'systemctl unmask ssh.service ssh.socket' "$tmp/post.sh" >/dev/null && grep -F 'ssh-keygen -A' "$tmp/post.sh" >/dev/null && ok "post-build: unmasks sshd and makes host keys" || bad "sshd unmask"
 grep -F 'ExecStart=/bin/systemctl start user@$(id -u agent).service' "$tmp/post.sh" >/dev/null && ok "post-build: starts the agent's user manager at boot (exeuntu has no logind)" || bad "user session"
 grep -F 'systemctl enable boxery-exe-boot.service' "$tmp/post.sh" >/dev/null && grep -F 'resize2fs' "$tmp/post.sh" >/dev/null && grep -F '/etc/boxery/hostname' "$tmp/post.sh" >/dev/null && ok "post-build: every boot grows / and restores the hostname (exe.dev resets it)" || bad "boot unit"
-grep -F 'rm -f /usr/local/bin/opencode /usr/local/bin/pi' "$B" >/dev/null && ok "build drops exeuntu's own opencode/pi (npm won't overwrite them)" || bad "exeuntu agents"
+! grep -F 'rm -f /usr/local/bin/opencode' "$B" >/dev/null && grep -F '/usr/local/sbin/boxery-provision' "$B" >/dev/null && ok "build leaves exeuntu's opencode/pi to the devtools layer (keeps what agent can run)" || bad "exeuntu agents"
 
 # --- new
 : >"$CALLS"
@@ -158,6 +159,17 @@ j=$(lsj)
 jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == "127.0.0.1:22401" and .disk == "20GiB"' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
 jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists boxery VMs only (not the base, images or the account's other VMs)" || bad "ls names: $j"
 [[ $("$H" ip v1) == 127.0.0.1 ]] && ok "ip" || bad ip
+
+# --- headless: a new exeuntu VM, no copy of the base; layers + exe.dev specifics, then identity
+: >"$CALLS"
+out=$(BOXERY_EXE_EGRESS=integrations "$H" new hx --headless --disk 30 2>"$tmp/err") && [[ $out == "hx 127.0.0.1:22403" ]] && ok "new --headless" || bad "new --headless: $out $(cat "$tmp/err")"
+called "exe.dev new  --name=$(V hx) --no-email --cpu=2 --memory=4GB --disk=30GB" && ! called "exe.dev cp bxtest-base $(V hx)" && ok "headless: exe.dev new (exeuntu), not a copy of the base" || bad "new: $(grep 'exe.dev ' "$CALLS")"
+! grep -F -- '--egress' "$S/$(V hx)/args" >/dev/null && [[ $(cat "$S/$(V hx)/egress" 2>/dev/null) == integrations ]] && ok "egress limited only after the layers are in (they need the internet)" || bad "egress: $(cat "$S/$(V hx)/args")"
+X=$S/$(V hx)/script.1
+bash -n "$X" && grep -F '/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log' "$X" >/dev/null && grep -F 'echo plumbing\ devtools >/etc/boxery/provision' "$X" >/dev/null && ok "first script installs the layers and runs plumbing + devtools" || bad "stock script: $(head -c 600 "$X")"
+grep -x 'ListenAddress 127.0.0.1' "$X" >/dev/null && grep -F 'boxery-exe-boot.service' "$X" >/dev/null && ok "...then the exe.dev specifics (loopback sshd, boot unit)" || bad "stock script post"
+! grep -F '/home/agent/.boxery/token' "$X" >/dev/null && grep -F '/home/agent/.boxery/token' "$S/$(V hx)/script.2" >/dev/null && ok "identity (proxy token) comes after, in its own script" || bad "script order"
+"$H" rm hx >/dev/null 2>&1
 
 # --- size / resize
 [[ $("$H" __call backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$H" __call backend_size v1 2>&1)"

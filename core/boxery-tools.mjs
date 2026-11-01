@@ -199,6 +199,7 @@ export const TOOLS = [
 			"`images` lists every snapshot on the host as VM@SNAP; `new` with `from:'VM@SNAP'` creates a VM from one; `snap-rm` deletes snapshot `snapshot` of VM `name`. " +
 			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
+			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants). " +
 			"For lookups (list, shapes, grants, snaps) prefer vm_info, which is read-only.",
 		parameters: {
@@ -208,6 +209,7 @@ export const TOOLS = [
 				name: { type: "string" },
 				snapshot: { type: "string", description: "snapshot name for snap/revert/snap-rm" },
 				from: { type: "string", description: "for new: image to create the VM from, VM@SNAP (see action:'images')" },
+				headless: { type: "boolean", description: "for new: no desktop (default false: XFCE desktop, Chrome, computer use)" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean", description: "for new: also make it the current VM" },
 				shape: { type: "string", description: "for new/fork: VM size by name (see action:'shapes'); default: the host's default shape (fork: the source's size)" },
