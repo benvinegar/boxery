@@ -60,6 +60,8 @@ More cloud backends are coming. The [backend contract](host/backends/README.md) 
 
 ## Quick start
 
+Node versions: the laptop-side controller and MCP server run on Node 20+; the **host** needs Node ≥ 22.13 (its lease store uses `node:sqlite`).
+
 **1. Set up a host.** Choose one ([full install guide](docs/install.md)):
 
 ```bash
