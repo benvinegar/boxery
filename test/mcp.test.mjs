@@ -8,6 +8,7 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
 import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
+import { registerHost } from "./fixtures/register-host.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -27,6 +28,7 @@ before(() => {
 	mkdirSync(path.join(vmroot, "project"), { recursive: true });
 	mkdirSync(path.join(dir, "home"));
 	writeFileSync(path.join(dir, "home/ssh_config"), "# fake\n");
+	registerHost(path.join(dir, "home"), "local");
 	// ssh -F CONF -o BatchMode=yes NAME.boxery "bash -c '<script>'": run the script locally, cwd = fake VM home.
 	// /home/agent is rewritten to the fake VM root so absolute VM paths stay inside the sandbox.
 	writeFileSync(
@@ -63,7 +65,7 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	writeFileSync(
 		path.join(bin, "boxery"),
 		`#!/usr/bin/env bash
-[ "$1" != --host ] || shift 2
+[ "$1" != --host ] || shift 4 # --host NAME --profile-dir DIR
 echo "$*" >> "$BOXERY_HOME/calls"
 case "$*" in
 "acquire "*) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;
@@ -71,7 +73,7 @@ case "$*" in
 "ls --json") echo '[{"name":"fakevm","state":"running","ssh_addr":"10.0.0.2:22","disk_size":40,"disk_used":1.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
-"version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
+"version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"local","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
 "images --json") echo '[{"image":"fakevm@s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
@@ -360,7 +362,7 @@ describe("protocol features", () => {
 		assert.match(list.content[0].text, /current: fakevm/);
 		assert.equal(list.structuredContent.vms[0].name, "fakevm");
 		assert.equal(list.structuredContent.current, "fakevm");
-		assert.equal(list.structuredContent.host, "legacy");
+		assert.equal(list.structuredContent.host, "local");
 		assert.equal((await c.tool("vm_info", { action: "shapes" })).structuredContent.default, "standard");
 		const grants = await c.tool("vm_info", { action: "grants" });
 		assert.equal(grants.structuredContent.vm, "fakevm", "vm defaults to the current VM");
@@ -495,7 +497,7 @@ describe("live view (MCP Apps)", () => {
 		const view = await c.tool("vm_view", {});
 		assert.equal(view.isError, false, view.content[0].text);
 		assert.match(view.content[0].text, /live view of VM "fakevm" \(1600x1000\)/);
-		assert.deepEqual(view.structuredContent, { vm: "fakevm", host: "legacy", width: 1280, height: 800, screenWidth: 1600, screenHeight: 1000 });
+		assert.deepEqual(view.structuredContent, { vm: "fakevm", host: "local", width: 1280, height: 800, screenWidth: 1600, screenHeight: 1000 });
 		const f = await c.tool("vm_view_frame", { vm: "fakevm" });
 		const img = f.content.find((x) => x.type === "image");
 		assert.equal(img.mimeType, "image/jpeg");

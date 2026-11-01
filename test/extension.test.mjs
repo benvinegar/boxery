@@ -6,9 +6,11 @@ import * as nodeModule from "node:module"; // namespace import: Node < 22.15 has
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { registerHost } from "./fixtures/register-host.mjs";
 
 const canLoad = !!process.features.typescript && typeof nodeModule.registerHooks === "function"; // Node >= 22.18
 process.env.BOXERY_HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
+registerHost(process.env.BOXERY_HOME);
 
 // Stand-in for @earendil-works/pi-coding-agent: tool engines with their own parameter schemas.
 const PI_STUB = `data:text/javascript,${encodeURIComponent(`

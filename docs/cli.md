@@ -21,7 +21,6 @@ boxery host show hornet
 boxery host use laptop
 boxery --host hornet ls
 boxery --host hornet acquire                # pool lease on that host
-boxery host use legacy                      # original root profile
 boxery host rm hornet                       # forget only; preserves VMs and profile data
 ```
 
@@ -30,7 +29,7 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 ### Lifecycle
 
 ```bash
-boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
+boxery setup you@my-host                     # or: setup local   [--name NAME] [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
 boxery build-base                            # the host's desktop base image (one time, ~3 min)
@@ -122,7 +121,7 @@ boxery desktop demo                          # XFCE desktop in your browser (noV
 boxery forward demo 3000                     # localhost:3000 → the VM's dev server   [LOCAL_PORT]
 ```
 
-Editors: once the `Include ~/.boxery/ssh_config` line is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
+Editors: once the `Include` line `setup` prints is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
 
 ### Grants
 
@@ -313,24 +312,24 @@ Background jobs in the VM (started by `run --bg` or `vm_jobs`), oldest first.
 
 #### `boxery host ls --json`
 
-Registered hosts, `legacy` first. Read from local profile files only: no host is contacted. The same fields as MCP `vm_info {action:"hosts"}` (which adds `current`).
+Registered hosts, by name. Read from local profile files only: no host is contacted. The same fields as MCP `vm_info {action:"hosts"}` (which adds `current`).
 
 ```json
 [
-{"name":"legacy","dir":"/home/you/.boxery","default":false,"destination":"local","backend":"lima","same_as":["laptop"]},
 {"name":"hornet","dir":"/home/you/.boxery/profiles/hornet","default":false,"destination":"you@hornet","backend":"libvirt","same_as":[]},
-{"name":"laptop","dir":"/home/you/.boxery","default":true,"destination":"local","backend":"lima","same_as":["legacy"]}
+{"name":"laptop","dir":"/home/you/.boxery/profiles/local","default":false,"destination":"local","backend":"lima","same_as":["local"]},
+{"name":"local","dir":"/home/you/.boxery/profiles/local","default":true,"destination":"local","backend":"lima","same_as":["laptop"]}
 ]
 ```
 
 | Field | Type | |
 |---|---|---|
-| `name` | string | host name for `--host` (`legacy` is the root profile, `$BOXERY_HOME`) |
+| `name` | string | host name for `--host` |
 | `dir` | string | profile directory (`config`, `ssh_config`, grants, leases) |
-| `default` | boolean | selected by `host use` (`default-host`; legacy when there is none) |
-| `destination` | string \| null | where its VM host runs: `local` (this machine) or the ssh destination (`user@host` or an ssh-config alias). Legacy honors `BOXERY_HOST`. `null` when not set up |
+| `default` | boolean | selected by `host use` (`default-host`; the first host registered starts as the default) |
+| `destination` | string \| null | where its VM host runs: `local` (this machine) or the ssh destination (`user@host` or an ssh-config alias). `null` when not set up |
 | `backend` | string \| null | `lima`, `libvirt`, `cloud-hypervisor`, `exe`, `boat`, … as recorded by `setup` or `boxery backend`; `null` if never recorded (an older profile: run `boxery --host NAME backend`; or a host that predates `boxery-host backend`) |
-| `same_as` | string[] | other names whose profile is the same directory: the same host and VMs (e.g. `legacy` and an alias imported with `--config-dir ~/.boxery`) |
+| `same_as` | string[] | other names whose profile is the same directory: the same host and VMs (e.g. a second name imported with `--config-dir` for an existing profile) |
 
 #### `boxery snaps NAME --json`
 
@@ -380,10 +379,11 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 
 | Where | What |
 |---|---|
-| `~/.boxery/config` | Controller: host, host binary path, identity |
-| `~/.boxery/ssh_config` | Generated. `*.boxery` hosts via `ProxyCommand`. |
-| `~/.boxery/grants/NAME` | Grant names and paths (never values) |
-| `~/.boxery/leases/` | Your leases and their per-lease ssh keys |
+| `~/.boxery/host-registry/HOST`, `~/.boxery/default-host` | Registered hosts and the default one ([Named hosts](hosts.md)) |
+| `~/.boxery/profiles/HOST/config` | Controller: host, host binary path, identity |
+| `~/.boxery/profiles/HOST/ssh_config` | Generated. `*.boxery` hosts via `ProxyCommand`. |
+| `~/.boxery/profiles/HOST/grants/NAME` | Grant names and paths (never values) |
+| `~/.boxery/profiles/HOST/leases/` | Your leases and their per-lease ssh keys |
 | `~/.config/boxery/host.env` (host) | Backend and overrides (`BOXERY_BACKEND`, `BOXERY_LIMA_VMTYPE`, …) |
 | `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys |
 | `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens |

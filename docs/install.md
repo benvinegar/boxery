@@ -125,12 +125,12 @@ npm install -g boxery-vm            # or: git clone + ln -s ~/boxery/controller/
 boxery setup you@my-host                                    # or: boxery setup local
 ```
 
-`setup` checks that ssh to the host works and registers your public key, which goes into VMs created from then on. It also writes `~/.boxery/ssh_config`. Your laptop must already be able to `ssh you@my-host`. [Tailscale](https://tailscale.com) is the easy way to reach the host from anywhere.
+`setup` checks that ssh to the host works and registers your public key, which goes into VMs created from then on. It registers the host under a name (`local`, or the host part of `you@my-host`; pass `--name` to choose) and makes it the default if it's your first, writing its config to `~/.boxery/profiles/NAME/`. Running `setup` again for the same name reconfigures that host. To add more hosts, see [Named hosts](hosts.md). Your laptop must already be able to `ssh you@my-host`. [Tailscale](https://tailscale.com) is the easy way to reach the host from anywhere.
 
-**Optional: plain `ssh` to VMs.** Add this line to the **top** of `~/.ssh/config`:
+**Optional: plain `ssh` to VMs.** `setup` prints an `Include` line for your default host; add it to the **top** of `~/.ssh/config`. For a host named `local`:
 
 ```
-Include ~/.boxery/ssh_config
+Include ~/.boxery/profiles/local/ssh_config
 ```
 
 After that, `ssh demo.boxery`, VS Code / Cursor Remote-SSH and Zed remote all work.
