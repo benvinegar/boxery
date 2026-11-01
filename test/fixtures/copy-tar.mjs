@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 const args = process.argv.slice(2);
 const role = args[0] === "-cf" ? "source" : "destination";
 const endpoint = process.env.COPY_ENDPOINT ?? "local";
@@ -28,6 +29,13 @@ try {
 		} else await pipeline(child.stdout, process.stdout);
 	}
 	const code = await exited;
+	if (process.env.COPY_ORPHAN_SOURCE === endpoint && role === "source") {
+		const helper = spawn(process.execPath, [fileURLToPath(new URL("./copy-helper.mjs", import.meta.url)), "orphan"], {
+			stdio: ["ignore", "ignore", "ignore", "ipc"], env: { ...process.env, COPY_ENDPOINT: endpoint },
+		});
+		await new Promise((resolve, reject) => { helper.once("message", resolve); helper.once("error", reject); });
+		helper.unref(); // no stdout/stderr inheritance; the producer can now close completely
+	}
 	if (process.env.COPY_FAIL_SOURCE === endpoint && role === "source") {
 		// A complete, valid archive has already reached the consumer. Its exit status still matters.
 		process.stderr.write("injected producer failure after archive EOF\n"); process.exitCode = 7;

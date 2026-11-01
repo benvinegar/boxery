@@ -2,7 +2,7 @@
 // {path, vm?, sshConf?, label}. No host registry or ambient "current VM" reads here.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -12,9 +12,45 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const aborted = () => Object.assign(new Error("copy aborted"), { name: "AbortError" });
 const sshArgs = (endpoint, script) => ["-F", endpoint.sshConf, "-o", "BatchMode=yes", "-o", "ControlMaster=no", `${endpoint.vm}.boxery`, `bash -c ${q(script)}`];
 
+function groupMembers(group) {
+	const result = spawnSync("ps", ["-eo", "pid=,pgid=,stat=,lstart="], {
+		encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 5000,
+		env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+	});
+	if (result.status !== 0) return null;
+	return result.stdout.split("\n").flatMap((line) => {
+		const [pid, pgid, state, ...started] = line.trim().split(/\s+/);
+		return Number(pgid) === group && state && !/^[ZX]/.test(state)
+			? [{ pid: Number(pid), started: started.join(" ") }] : [];
+	});
+}
+function ownedMembers(worker, { initial = false, exiting = false } = {}) {
+	if (!worker.child.pid || worker.groupFinished) return [];
+	const members = groupMembers(worker.child.pid);
+	if (!members) { if (!initial) worker.stopError = new Error("cannot inspect owned process group"); return []; }
+	const leader = members.find((m) => m.pid === worker.child.pid);
+	if (initial) worker.leaderStart = leader?.started;
+	else if (leader && leader.started !== worker.leaderStart) {
+		worker.groupFinished = true; return []; // PID/PGID has been reused, never signal its new owner
+	}
+	// Snapshot surviving members at leader exit, before losing our witness to the group.
+	// Later signals need either the original leader or a previously observed member identity.
+	if (initial || exiting || leader || members.some((m) => worker.members.get(m.pid) === m.started)) {
+		for (const m of members) worker.members.set(m.pid, m.started);
+		return members;
+	}
+	if (!members.length) worker.groupFinished = true;
+	else worker.stopError = new Error("cannot verify remaining process-group ownership");
+	return [];
+}
 function childProcess(file, args, { input = false, output = false, env = process.env, label = file } = {}) {
 	const child = spawn(file, args, { env, detached: true, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
-	const worker = { child, running: !!child.pid, stderr: Buffer.alloc(0), label };
+	const worker = { child, running: !!child.pid, members: new Map(), stderr: Buffer.alloc(0), label };
+	ownedMembers(worker, { initial: true });
+	child.on("exit", (code, signal) => {
+		worker.exitCode = code; worker.exitSignal = signal;
+		ownedMembers(worker, { exiting: true });
+	});
 	child.stdin?.on("error", () => {}); // pipeline/process status reports EPIPE
 	child.stderr.on("data", (chunk) => {
 		worker.stderr = Buffer.concat([worker.stderr, chunk]).subarray(-64 * 1024);
@@ -33,32 +69,24 @@ function childProcess(file, args, { input = false, output = false, env = process
 	return worker;
 }
 function kill(worker, signal) {
-	if (!worker.running || !worker.child.pid) return;
+	const members = ownedMembers(worker);
+	if (!members.length) return false;
 	try { process.kill(-worker.child.pid, signal); }
 	catch (e) {
-		if (e.code === "ESRCH") return;
 		if (e.code === "EPERM") {
-			// Darwin can reject killpg during group teardown even when individual owned
-			// members remain signalable. Reap live members individually; ignore zombies.
-			const result = spawnSync("ps", ["-eo", "pid=,pgid=,stat="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
-			if (result.status === 0) {
-				for (const line of result.stdout.split("\n")) {
-					const [pid, group, state] = line.trim().split(/\s+/);
-					if (Number(group) !== worker.child.pid || !state || state.startsWith("Z")) continue;
-					try { process.kill(Number(pid), signal); }
-					catch (error) { if (error.code !== "ESRCH") worker.stopError = error; }
-				}
-				return;
+			// Darwin can reject killpg during teardown even when owned members are signalable.
+			for (const member of members) {
+				try { process.kill(member.pid, signal); }
+				catch (error) { if (error.code !== "ESRCH") worker.stopError = error; }
 			}
-		}
-		// Signal handlers must not throw out of AbortController.abort(), and a local
-		// signalling failure must not skip independent remote fencing/staging cleanup.
-		worker.stopError = e;
+		} else if (e.code !== "ESRCH") worker.stopError = e;
 	}
+	return true;
 }
 async function terminate(workers) {
-	const live = workers.filter((w) => w.running);
-	for (const w of live) kill(w, "SIGTERM");
+	// Group lifetime is independent of child/stdio close. A closed leader may still have
+	// TERM-ignoring descendants with no inherited descriptors; those need KILL as well.
+	const live = workers.filter((w) => kill(w, "SIGTERM"));
 	if (live.length) await delay(200);
 	for (const w of live) kill(w, "SIGKILL");
 	// Do not wait for stdio close yet: a remote job (or ProxyCommand descendant) can
@@ -67,12 +95,41 @@ async function terminate(workers) {
 
 // Metadata calls are bounded, but not interrupted mid-prepare by the user's signal: wait for
 // directory creation to finish before cleanup. The payload workers ARE immediately cancellable.
+function releaseDescriptors(worker) {
+	worker.child.stdin?.destroy(); worker.child.stdout.destroy(); worker.child.stderr.destroy();
+	worker.child.unref();
+}
 async function metadata(endpoint, script, label, timeout = 30_000) {
-	const worker = childProcess("ssh", sshArgs(endpoint, script), { label });
-	const timer = setTimeout(() => kill(worker, "SIGTERM"), timeout);
-	const hardTimer = setTimeout(() => kill(worker, "SIGKILL"), timeout + 200);
-	try { await worker.done; }
-	finally { clearTimeout(timer); clearTimeout(hardTimer); }
+	const worker = childProcess("ssh", sshArgs(endpoint, script), { label, output: true });
+	const chunks = []; let bytes = 0, timer, error;
+	worker.child.stdout.on("data", (chunk) => {
+		bytes += chunk.length;
+		if (bytes <= 64 * 1024) chunks.push(chunk);
+		else kill(worker, "SIGKILL");
+	});
+	const deadline = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(Object.assign(new Error(`${label}: timed out; remote completion unverified`), { remoteUnverified: true })), timeout);
+	});
+	try {
+		await Promise.race([worker.done, deadline]);
+		if (bytes > 64 * 1024) throw new Error(`${label}: metadata output exceeded 64 KiB`);
+	} catch (e) {
+		error = e;
+		if (worker.exitCode === 255 || worker.exitSignal) error.remoteUnverified = true;
+	} finally {
+		clearTimeout(timer);
+		await terminate([worker]);
+		// A detached helper may retain these pipes after SSH itself exits. Never wait for
+		// close indefinitely; the independent deadline must bound completion, not just signal.
+		releaseDescriptors(worker);
+	}
+	if (worker.stopError) {
+		error ??= new Error(`${label}: metadata process cleanup failed`);
+		error.remoteUnverified = true;
+		error.message += ` (${worker.stopError.message})`;
+	}
+	if (error) throw error;
+	return Buffer.concat(chunks).toString("utf8");
 }
 
 function remoteWorker(endpoint, control, command, options) {
@@ -83,7 +140,7 @@ function remoteWorker(endpoint, control, command, options) {
 	const script = `setsid -w bash -c ${q(inner)}; rc=$?; rm -f ${q(`${control}/pgid`)}; exit "$rc"`;
 	return childProcess("ssh", sshArgs(endpoint, script), options);
 }
-async function cleanRemote(stage) {
+async function cleanRemote(stage, timeout = 15_000) {
 	const c = q(stage.control), tomb = q(`${stage.control}.cleanup`);
 	const script = `set -e; c=${c}; t=${tomb}; ` +
 		`if [ -d "$c" ]; then mv "$c" "$t"; fi; ` +
@@ -93,9 +150,30 @@ async function cleanRemote(stage) {
 		`if [ "$g" -gt 1 ]; then actual=$(LC_ALL=C TZ=UTC ps -p "$g" -o lstart= 2>/dev/null || true); ` +
 		`if [ -z "$actual" ] || [ "$actual" = "$expected" ]; then ` +
 		`kill -TERM -- -"$g" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$g" 2>/dev/null || true; fi; fi; fi; ` +
-		`rm -rf "$t"; fi`;
-	await metadata(stage.endpoint, script, `cleanup ${stage.endpoint.label}`, 15_000);
+		`if ! rm -rf "$t"; then find -P "$t" -type d -exec chmod u+rwx '{}' ';'; rm -rf "$t"; fi; fi`;
+	await metadata(stage.endpoint, script, `cleanup ${stage.endpoint.label}`, timeout);
 }
+async function cleanLocal(control) {
+	try { await rm(control, { recursive: true, force: true }); }
+	catch (error) {
+		if (!["EACCES", "EPERM"].includes(error.code)) throw error;
+		// tar restores directory modes. Make only our staged directories traversable/writable,
+		// before descending; do not chmod files/hardlinks or follow archived symlinks.
+		const writableDirectories = async (directory) => {
+			let info;
+			try { info = await lstat(directory); }
+			catch (e) { if (e.code === "ENOENT") return; throw e; }
+			if (!info.isDirectory()) return;
+			await chmod(directory, 0o700);
+			for (const entry of await readdir(directory, { withFileTypes: true })) {
+				if (entry.isDirectory()) await writableDirectories(path.join(directory, entry.name));
+			}
+		};
+		await writableDirectories(control);
+		await rm(control, { recursive: true, force: true });
+	}
+}
+
 // tar may finish after its two EOF blocks, before the producer's final record padding.
 // Drain that padding on SUCCESS so an otherwise valid transfer cannot fail with EPIPE.
 const extractScript = (data) => `if (cd ${q(data)} && tar -xf -); then cat >/dev/null; else exit $?; fi`;
@@ -104,7 +182,7 @@ const commitScript = (destination, data, basename) =>
 	`if [ -d "$d" ]; then cp -a "$t"/${q(basename)} "$d"/; ` +
 	`else mkdir -p "$(dirname "$d")"; mv "$t"/${q(basename)} "$d"; fi`;
 
-export async function streamCopy(source, destination, { signal } = {}) {
+export async function streamCopy(source, destination, { signal, metadataTimeoutMs = 30_000, cleanupTimeoutMs = 15_000 } = {}) {
 	if (signal?.aborted) throw aborted();
 	const basename = path.posix.basename(source.path);
 	if (!basename) throw new Error("cannot copy the filesystem root");
@@ -118,22 +196,47 @@ export async function streamCopy(source, destination, { signal } = {}) {
 	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 	const check = () => { if (signal?.aborted) throw aborted(); };
+	const prepare = async (endpoint, script, pending) => {
+		try { return await metadata(endpoint, script, `prepare ${endpoint.label}`, metadataTimeoutMs); }
+		catch (error) {
+			// A lost SSH client/status cannot prove that a remote mkdir stopped. Even an
+			// absent directory during cleanup does not rule out a late queued preparation.
+			if (error.remoteUnverified) for (const stage of pending) stage.preparationUnverified = true;
+			throw error;
+		}
+	};
 	try {
 		let sourceControl;
 		if (source.vm) {
 			sourceControl = `/tmp/.boxery-copy-${id}-source`;
-			stages.push({ endpoint: source, control: sourceControl });
-			await metadata(source, `mkdir -m 700 ${q(sourceControl)}`, `prepare ${source.label}`);
+			const stage = { endpoint: source, control: sourceControl };
+			stages.push(stage);
+			await prepare(source, `mkdir -m 700 ${q(sourceControl)}`, [stage]);
 			check();
 		}
 		let destinationControl;
 		if (destination.vm) {
-			destinationControl = path.posix.join(path.posix.dirname(destination.path), `.boxery-copy-${id}-destination`);
-			stages.push({ endpoint: destination, control: destinationControl });
-			await metadata(destination, `mkdir -p ${q(path.posix.dirname(destination.path))} && mkdir -m 700 ${q(destinationControl)} && mkdir ${q(`${destinationControl}/data`)}`, `prepare ${destination.label}`);
+			const name = `.boxery-copy-${id}-destination`;
+			const parent = path.posix.dirname(destination.path);
+			const candidates = [...new Set([path.posix.join(destination.path, name), path.posix.join(parent, name)])];
+			// Track both possible locations until the remote reply arrives. A lost reply after
+			// mkdir must not lose ownership of the directory that needs cleanup.
+			const pending = candidates.map((control) => ({ endpoint: destination, control }));
+			stages.push(...pending);
+			const script = `set -e; d=${q(destination.path)}; if [ -d "$d" ]; then c=${q(candidates[0])}; location=inside; ` +
+				`else mkdir -p ${q(parent)}; c=${q(path.posix.join(parent, name))}; location=parent; fi; ` +
+				`mkdir -m 700 "$c"; mkdir "$c/data"; printf '%s' "$location"`;
+			const location = await prepare(destination, script, pending);
+			if (!["inside", "parent"].includes(location)) throw new Error(`prepare ${destination.label}: unexpected staging response`);
+			destinationControl = location === "inside" ? candidates[0] : path.posix.join(parent, name);
+			for (const stage of pending) if (stage.control !== destinationControl) stages.splice(stages.indexOf(stage), 1);
 		} else {
-			await mkdir(path.dirname(destination.path), { recursive: true });
-			destinationControl = await mkdtemp(path.join(path.dirname(destination.path), ".boxery-copy-"));
+			let directory = false;
+			try { directory = (await stat(destination.path)).isDirectory(); }
+			catch (e) { if (!["ENOENT", "ENOTDIR"].includes(e.code)) throw e; }
+			const parent = directory ? destination.path : path.dirname(destination.path);
+			await mkdir(parent, { recursive: true });
+			destinationControl = await mkdtemp(path.join(parent, ".boxery-copy-"));
 			stages.push({ control: destinationControl });
 			await mkdir(path.join(destinationControl, "data"));
 		}
@@ -177,16 +280,21 @@ export async function streamCopy(source, destination, { signal } = {}) {
 		const cleanupErrors = workers.filter((w) => w.stopError).map((w) => `${w.label}: ${w.stopError.message}`);
 		for (const stage of stages.reverse()) {
 			try {
-				if (stage.endpoint) await cleanRemote(stage);
-				else await rm(stage.control, { recursive: true, force: true });
+				if (stage.endpoint) await cleanRemote(stage, cleanupTimeoutMs);
+				else await cleanLocal(stage.control);
 			} catch (e) { cleanupErrors.push(e.message); }
+			if (stage.preparationUnverified) cleanupErrors.push(`prepare ${stage.endpoint.label}: completion unverified; late staging may remain`);
 		}
 		// Cleanup above terminates remote groups even if their SSH clients were killed first.
 		// Release local descriptors as well when a failed cleanup cannot reach a remote peer.
-		for (const w of workers) {
-			w.child.stdin?.destroy(); w.child.stdout.destroy(); w.child.stderr.destroy();
-		}
-		await Promise.allSettled(workers.map((w) => w.done));
+		for (const w of workers) releaseDescriptors(w);
+		let reapTimer;
+		const reaped = await Promise.race([
+			Promise.allSettled(workers.map((w) => w.done)).then(() => true),
+			new Promise((resolve) => { reapTimer = setTimeout(() => resolve(false), 2000); }),
+		]);
+		clearTimeout(reapTimer);
+		if (!reaped) cleanupErrors.push("local worker completion unverified after termination");
 		if (signal?.aborted) failure = aborted();
 		if (failure) {
 			const diagnostics = workers.map((w) => w.stderr.toString().trim()).filter(Boolean);
@@ -194,7 +302,7 @@ export async function streamCopy(source, destination, { signal } = {}) {
 		}
 		if (cleanupErrors.length) {
 			failure ??= new Error("copy cleanup failed");
-			failure.message += `\nCleanup incomplete: ${cleanupErrors.join("; ")}`;
+			failure.message += `\nCleanup incomplete: ${[...new Set(cleanupErrors)].join("; ")}`;
 		}
 	}
 	if (failure) throw failure;

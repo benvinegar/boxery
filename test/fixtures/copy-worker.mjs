@@ -1,5 +1,7 @@
 // One isolated agent process, so transfer memory measurements exclude fixture/tar processes.
-import { copyTool, withHost } from "../../core/boxery-core.mjs";
+import { copyTool, currentHost, parseLoc, withHost } from "../../core/boxery-core.mjs";
+import { streamCopy } from "../../core/copy-stream.mjs";
+import path from "node:path";
 const [from, to, settings = "{}"] = process.argv.slice(2);
 const options = JSON.parse(settings);
 if (options.groupEperm) {
@@ -21,7 +23,16 @@ const sample = () => { peakBuffers = Math.max(peakBuffers, process.memoryUsage()
 const timer = setInterval(sample, 5);
 let result;
 try {
-	const value = await withHost("alpha", () => copyTool({ from, to }, { signal: ac.signal }));
+	const value = await withHost("alpha", () => {
+		if (options.metadataTimeoutMs == null) return copyTool({ from, to }, { signal: ac.signal });
+		// Exercise the identical transport with short injected deadlines, not 30-second sleeps.
+		const endpoint = (spec) => {
+			const loc = parseLoc(spec), host = loc.host ?? currentHost();
+			return loc.vm ? { path: loc.path, vm: loc.vm, sshConf: host.sshConf, label: `${host.name}/${loc.vm}` }
+				: { path: path.resolve(loc.path), label: "local" };
+		};
+		return streamCopy(endpoint(from), endpoint(to), { signal: ac.signal, metadataTimeoutMs: options.metadataTimeoutMs, cleanupTimeoutMs: options.cleanupTimeoutMs ?? 2000 }).then((bytes) => ({ bytes }));
+	});
 	result = { ok: true, ...value };
 } catch (e) {
 	result = { ok: false, error: e.message, name: e.name };

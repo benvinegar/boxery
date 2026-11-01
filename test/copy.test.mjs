@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { createReadStream, chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test as nodeTest } from "node:test";
@@ -62,7 +62,7 @@ function noStages() {
 	assert.deepEqual(staged, [], `staging directories remain: ${staged}`);
 }
 async function noTarJobs() {
-	const pids = logs().filter((r) => ["tar", "tar-child"].includes(r.kind)).map((r) => r.pid);
+	const pids = logs().filter((r) => ["tar", "tar-child", "orphan"].includes(r.kind)).map((r) => r.pid);
 	await until(() => pids.every((pid) => !alive(pid)));
 }
 function largeFile(file, mib = 192) {
@@ -116,14 +116,21 @@ afterEach(async () => {
 	}
 	// Fault tests deliberately create TERM-ignoring jobs. If an assertion fails, do not
 	// leave those jobs behind while diagnosing it; only signal our still-running fixture.
-	for (const record of logs().filter((r) => r.kind === "tar" && r.pgid > 1 && alive(r.pid))) {
+	for (const record of logs().filter((r) => ["tar", "orphan", "metadata-holder", "late-prepare"].includes(r.kind) && r.pgid > 1 && alive(r.pid))) {
 		let command;
 		try { command = execFileSync("ps", ["-p", String(record.pid), "-o", "args="], { encoding: "utf8" }); }
 		catch { continue; } // it exited between the liveness check and inspection
-		if (command.includes(path.join(FIXTURES, "copy-tar.mjs"))) {
+		if (["copy-tar.mjs", "copy-helper.mjs"].some((file) => command.includes(path.join(FIXTURES, file)))) {
 			try { process.kill(-record.pgid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
 		}
 	}
+	const writableDirectories = (directory) => {
+		chmodSync(directory, 0o700);
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			if (entry.isDirectory()) writableDirectories(path.join(directory, entry.name));
+		}
+	};
+	writableDirectories(dir);
 	rmSync(dir, { recursive: true, force: true });
 });
 
@@ -154,6 +161,55 @@ test("local ↔ VM, same-host VM ↔ VM, cross-host, and local ↔ local preserv
 	await copy(`local:${path.join(local, "script's $file\n.txt")}`, `local:${renamed}`);
 	assert.equal(readFileSync(renamed, "utf8"), "contents\n");
 	noStages();
+});
+
+test("writable existing destinations do not require write access to their parents", async () => {
+	const source = path.join(dir, "source"); writeFileSync(source, "data");
+	const parent = path.join(dir, "readonly-parent"), destination = path.join(parent, "writable");
+	mkdirSync(destination, { recursive: true, mode: 0o700 }); chmodSync(parent, 0o555);
+	await copy(`local:${source}`, `local:${destination}`);
+	assert.equal(readFileSync(path.join(destination, "source"), "utf8"), "data");
+	assert.equal(statSync(parent).mode & 0o777, 0o555);
+	const vmParent = path.dirname(vmroot()); chmodSync(vmParent, 0o555);
+	await copy(`local:${source}`, "alpha/vm:~"); // like /home/agent with a root-owned /home
+	assert.equal(readFileSync(path.join(vmroot(), "source"), "utf8"), "data");
+	assert.equal(statSync(vmParent).mode & 0o777, 0o555);
+	noStages();
+});
+
+test("read-only trees clean up on success and producer failure without changing symlink targets", async () => {
+	const outside = path.join(dir, "outside"); mkdirSync(outside); chmodSync(outside, 0o555);
+	const tree = (name) => {
+		mkdirSync(name); writeFileSync(path.join(name, "file"), "data", { mode: 0o400 });
+		mkdirSync(path.join(name, "nested")); writeFileSync(path.join(name, "nested", "child"), "child");
+		chmodSync(path.join(name, "nested"), 0o555);
+		symlinkSync(outside, path.join(name, "external")); chmodSync(name, 0o555);
+		return name;
+	};
+	const localTree = tree(path.join(dir, "readonly"));
+	const remoteTree = tree(path.join(project(), "readonly"));
+	for (const [from, to, output] of [
+		[`local:${localTree}`, `local:${path.join(dir, "local-result")}`, path.join(dir, "local-result")],
+		[`local:${localTree}`, "beta/vm:remote-result", path.join(project("beta"), "remote-result")],
+		["alpha/vm:readonly", `local:${path.join(dir, "download-result")}`, path.join(dir, "download-result")],
+	]) {
+		mkdirSync(output);
+		await copy(from, to);
+		assert.equal(readFileSync(path.join(output, "readonly", "file"), "utf8"), "data");
+		assert.equal(statSync(path.join(output, "readonly")).mode & 0o777, 0o555);
+		assert.equal(statSync(path.join(output, "readonly", "nested")).mode & 0o777, 0o555);
+		assert.equal(statSync(outside).mode & 0o777, 0o555, "cleanup must not follow archived symlinks");
+		noStages();
+	}
+	const failed = await worker(`local:${localTree}`, "beta/vm:failed-readonly", { COPY_FAIL_SOURCE: "local" }).result;
+	assert.equal(failed.ok, false);
+	assert.match(failed.error, /injected producer failure/);
+	assert.doesNotMatch(failed.error, /Cleanup incomplete/);
+	assert.equal(existsSync(path.join(project("beta"), "failed-readonly")), false);
+	assert.equal(statSync(localTree).mode & 0o777, 0o555);
+	assert.equal(statSync(remoteTree).mode & 0o777, 0o555);
+	assert.equal(statSync(outside).mode & 0o777, 0o555);
+	noStages(); await noTarJobs();
 });
 
 test("large transfers exceed the old 64 MiB capture limit with bounded agent buffers", async () => {
@@ -251,6 +307,55 @@ test("group EPERM during cancellation falls back to owned members without skippi
 	assert.equal(result.name, "AbortError", JSON.stringify(result));
 	assert.doesNotMatch(result.error, /Cleanup incomplete/);
 	noStages(); await noTarJobs();
+});
+
+test("closed producer leaders do not leave descriptor-free TERM-ignoring descendants", async () => {
+	const source = path.join(dir, "source"); writeFileSync(source, "data");
+	await copy(`local:${source}`, `local:${path.join(dir, "destination")}`, { COPY_ORPHAN_SOURCE: "local" });
+	assert.ok(logs().some((r) => r.kind === "orphan"));
+	assert.ok(logs().some((r) => r.kind === "orphan-term"), "exercise escalation after the leader closed");
+	noStages(); await noTarJobs();
+});
+
+for (const abort of [false, true]) {
+	test(`metadata completion is bounded when a detached helper holds stdio (abort=${abort})`, async () => {
+		writeFileSync(path.join(project(), "source"), "data");
+		const started = Date.now();
+		const child = worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_HOLD_PREPARE_FD: "alpha/vm" }, { metadataTimeoutMs: 400 });
+		await until(() => logs().some((r) => r.kind === "metadata-holder"));
+		if (abort) child.send("abort");
+		const result = await child.result;
+		assert.equal(result.ok, false);
+		assert.match(result.error, /Cleanup incomplete/);
+		if (!abort) assert.match(result.error, /timed out/);
+		assert.ok(Date.now() - started < 5000, JSON.stringify(result));
+		assert.ok(logs().some((r) => r.kind === "metadata-holder" && alive(r.pid)), "helper still holds its descriptors, but cannot block completion");
+		noStages();
+	});
+}
+
+test("cleanup deadlines do not wait indefinitely for an escaped descriptor holder", async () => {
+	writeFileSync(path.join(project(), "source"), "data");
+	const destination = path.join(dir, "destination"), started = Date.now();
+	const result = await worker("alpha/vm:source", `local:${destination}`, { COPY_HOLD_CLEANUP_FD: "alpha/vm" }, { metadataTimeoutMs: 400, cleanupTimeoutMs: 400 }).result;
+	assert.equal(result.ok, false);
+	assert.match(result.error, /Cleanup incomplete/);
+	assert.match(result.error, /cleanup alpha\/vm: timed out/);
+	assert.ok(Date.now() - started < 5000, JSON.stringify(result));
+	assert.equal(readFileSync(destination, "utf8"), "data", "publication can precede a cleanup failure");
+	assert.ok(logs().some((r) => r.kind === "metadata-holder" && alive(r.pid)));
+	await noTarJobs();
+});
+
+test("timed-out remote preparation reports unverified cleanup even before late mkdir", async () => {
+	writeFileSync(path.join(project(), "source"), "data");
+	const result = await worker("alpha/vm:source", `local:${path.join(dir, "destination")}`, { COPY_LATE_PREPARE: "alpha/vm" }, { metadataTimeoutMs: 400 }).result;
+	assert.equal(result.ok, false);
+	assert.match(result.error, /Cleanup incomplete/);
+	assert.match(result.error, /late staging may remain/);
+	assert.ok(!logs().some((r) => r.kind === "tar"));
+	await until(() => logs().some((r) => r.kind === "late-prepare-finished"));
+	assert.ok(readdirSync(dir, { recursive: true }).some((p) => path.basename(p).startsWith(".boxery-copy-")), "late remote work is explicitly reported, never claimed clean");
 });
 
 test("copy cleanup remains pinned after profile/default changes during a transfer", async () => {
