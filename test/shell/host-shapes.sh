@@ -22,7 +22,7 @@ j=$("$H" shapes --json)
 [[ $(jq -r .default <<<"$j") == standard ]] && ok "default shape is standard" || bad "default: $j"
 [[ $(jq -c '.shapes.standard' <<<"$j") == '{"cpus":4,"mem":8192,"disk":40}' ]] && ok "standard = 4 vCPU / 8 GiB / 40 GiB" || bad "standard: $j"
 [[ $(jq -r '.shapes | keys | join(",")' <<<"$j") == large,small,standard ]] && ok "small, standard, large" || bad "names: $j"
-"$H" shapes | grep -q '^standard \*' && ok "table marks the default" || bad "table: $("$H" shapes)"
+t=$("$H" shapes); grep -q '^standard \*' <<<"$t" && ok "table marks the default" || bad "table: $t"
 
 echo "== new"
 "$H" new a >/dev/null 2>&1; [[ $(size a) == "4 8192 40" && $(rec a) == '{"shape":"standard","cpus":4,"mem":8192,"disk":40}' ]] && ok "no flags → default shape (recorded)" || bad "a: $(size a) $(rec a)"
@@ -37,7 +37,7 @@ echo "== ls shows the shape"
 l=$("$H" ls --json)
 [[ $(jq -r '.[] | select(.name == "b") | "\(.shape) \(.cpus) \(.mem)"' <<<"$l") == "large 8 16384" ]] && ok "ls --json: shape, cpus, mem" || bad "ls: $l"
 [[ $(jq -r '.[] | select(.name == "c") | .shape' <<<"$l") == custom ]] && ok "custom size listed as custom" || bad "ls c: $l"
-"$H" ls | grep -qE '^b +running .* large ' && ok "ls table has a SHAPE column" || bad "ls table: $("$H" ls)"
+t=$("$H" ls); grep -qE '^b +running .* large ' <<<"$t" && ok "ls table has a SHAPE column" || bad "ls table: $t"
 
 echo "== fork"
 "$H" fork b b2 >/dev/null 2>&1; [[ $(size b2) == "8 16384 80" && $(jq -r .shape "$BOXERY_CONF/vm-shapes/b2.json") == large ]] && ok "fork copies the source's shape" || bad "b2: $(size b2) $(rec b2)"
