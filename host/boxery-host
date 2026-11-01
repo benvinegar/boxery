@@ -290,24 +290,6 @@ _lease_acquire() { lifecycle install-held "$@"; }
 _lease_release() { lifecycle release-held "$@"; }
 _reap_candidate() { lifecycle reap-held "$@"; }
 
-# Private, allowlisted effect bridge for the Node runtime. Arguments remain argv, not eval.
-# No business decisions or DB transitions here: backend commands and guest SSH only.
-backend_bridge() {
-	local action=$1 ep; shift
-	case $action in
-	restore) valid_name "$1"; valid_snap "$2"; restore_vm "$@" ;;
-	lease-keys) valid_name "$1"; lease_set_keys "$@" ;;
-	wait-ready)
-		valid_name "$1"; ep=$(backend_wait_endpoint "$1")
-		wait_ssh "${ep% *}" "${ep#* }" ;;
-	guest)
-		valid_name "$1"; ep=$(backend_ssh_endpoint "$1")
-		vm_ssh_cmd "${ep% *}" "${ep#* }" "$2" ;;
-	drift) _reconcile_drift ;;
-	*) die "unknown backend bridge action: $action" ;;
-	esac
-}
-
 # Durable intent handlers run under the original operation's complete lock set. Only artifacts
 # named by that journal are removed: an unfamiliar VM or snapshot is never guessed to be garbage.
 capture_vm() { # NAME IMAGE
@@ -365,18 +347,6 @@ _reconcile_vm() {
 		if [[ $row != null ]]; then leases missing "$1" >/dev/null; log "$1 missing from backend → BROKEN"; fi
 		token_del "$1"; edge_clear "$1"; vm_shape_del "$1"; vm_kind_del "$1"
 	fi
-}
-_reconcile_drift() {
-	local inventory rows tokens names name
-	inventory=$(backend_list) || die "cannot read backend inventory; refusing drift repair"
-	rows=$(leases list) || return 1
-	tokens='{}'; [[ ! -f $CONF/tokens.json ]] || tokens=$(cat "$CONF/tokens.json")
-	names=$( { printf '%s\n' "$inventory" | cut -f1; jq -r '.[].name' <<<"$rows"; jq -r 'keys[]' <<<"$tokens"; } | sort -u)
-	while IFS= read -r name; do
-		[[ -n $name ]] || continue
-		valid_name "$name"
-		with_vm_lock "$name" _reconcile_vm "$name"
-	done <<<"$names"
 }
 
 # ---------------------------------------------------------------- commands
@@ -921,7 +891,6 @@ c=${1:-help}; shift || true
 case $c in
 __dispatch) c=$1; shift ;;
 __call) "$@"; exit ;;
-__backend) backend_bridge "$@"; exit ;;
 __recover) recover_operation; exit ;;
 # Mutating commands run under the lifecycle supervisor, which locks their VMs and re-enters as __dispatch.
 new|fork|start|stop|resize|rm|delete|snap|snap-rm|revert|edge-set|pool)

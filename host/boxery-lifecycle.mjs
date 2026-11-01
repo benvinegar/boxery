@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-// Runtime adapter for lease-workflows.mjs. Owns CLI parsing, SQLite/journal bindings and the
-// private shell-backend bridge. Hypervisor commands still live in host/backends/*.sh.
+// Runtime adapter for lease-workflows.mjs. Owns CLI parsing and the SQLite/journal/backend bindings.
+// Hypervisor commands live in host/backends/*.sh, reached through host/backend.mjs.
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { createBackend } from "./backend.mjs";
 import * as leases from "./boxery-leases.mjs";
 import { recordIntent, completeIntent } from "./boxery-operations.mjs";
+import { loadConfig } from "./config.mjs";
+import { createGuest } from "./guest.mjs";
+import { restoreVm } from "./images.mjs";
 import { LeaseWorkflows } from "./lease-workflows.mjs";
+import { reconcileDrift } from "./recovery.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const HOST = fileURLToPath(new URL("./boxery-host", import.meta.url));
@@ -74,10 +78,11 @@ function publicKey() {
 
 async function main() {
 	const [command, ...args] = process.argv.slice(2);
-	const conf = path.resolve(process.env.BOXERY_CONF ?? path.join(homedir(), ".config/boxery"));
+	const config = loadConfig();
+	const { conf } = config;
 	const db = leases.open(path.join(conf, "leases.db"));
 	const operationId = process.env.BOXERY_OPERATION_ID;
-	const bridge = (action, argv = [], options) => run(HOST, ["__backend", action, ...argv], options);
+	const vms = createBackend(config.env), guest = createGuest(config);
 	const requireLock = (name) => {
 		nameOf(name);
 		if (!process.env.BOXERY_LOCKS?.includes(`:${name}:`)) throw new Error(`lifecycle lock required for ${name}`);
@@ -86,14 +91,16 @@ async function main() {
 	const store = Object.fromEntries(["get", "find", "claim", "commit", "beginReset", "finish", "candidates", "due", "renew"]
 		.map((method) => [method, (...argv) => leases[method](db, ...argv)]));
 	const log = (message) => process.stderr.write(`==> ${message}\n`);
+	const mustRun = async (name, command) => {
+		if (await guest.run(await vms.sshEndpoint(nameOf(name)), command) !== 0) throw new Error(`${name}: guest command failed`);
+	};
 	const backend = {
 		clearEdge: async (name) => rmSync(path.join(conf, "edge", `${nameOf(name)}.json`), { force: true }),
-		restore: (name, label) => bridge("restore", [name, label], { quiet: true }),
-		waitReady: (name) => bridge("wait-ready", [name], {
-			quiet: true, env: { ...process.env, BOXERY_SSH_WAIT_TRIES: process.env.BOXERY_SSH_WAIT_TRIES ?? "45" },
-		}),
-		stepClock: (name) => bridge("guest", [name, `sudo date -u -s @${now()} >/dev/null 2>&1; true`]),
-		setKeys: (name, pubkey) => bridge("lease-keys", [name, ...(pubkey ? [pubkey] : [])]),
+		restore: (name, label) => restoreVm(vms, nameOf(name), label, { quiet: true }),
+		waitReady: async (name) => guest.waitSsh(await vms.waitEndpoint(nameOf(name), { quiet: true }), Number(process.env.BOXERY_SSH_WAIT_TRIES || 45)),
+		stepClock: (name) => mustRun(name, `sudo date -u -s @${now()} >/dev/null 2>&1; true`),
+		// authorized_keys := the host key (+ the lease holder's). This is the fence: a pool VM accepts nobody else.
+		setKeys: async (name, pubkey) => guest.setKeys(await vms.sshEndpoint(nameOf(name)), [guest.hostPubkey(), ...(pubkey ? [pubkey] : [])]),
 	};
 	const journal = {
 		intent: (kind, data) => recordIntent(db, operationId, kind, data),
@@ -103,7 +110,7 @@ async function main() {
 	const reclaim = async () => {
 		await run(process.execPath, ["--disable-warning=ExperimentalWarning", OPERATIONS, "reconcile", conf, HOST]);
 		await flows.reapCandidates();
-		await bridge("drift");
+		await reconcileDrift({ backend: vms, db, conf, lock });
 	};
 	flows = new LeaseWorkflows({ store, backend, journal, lock, reclaim, now, sleep, log });
 	try {

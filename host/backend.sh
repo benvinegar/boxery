@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Run one hypervisor backend function: host/backend.sh FUNCTION [ARG...]
+# Sources host/backends/$BOXERY_BACKEND.sh into the prelude below, which is everything a backend may use
+# from the host: die, log, need, wait_ssh, vm_ssh_cmd, ROOT, CACHE, PROXY_PORT, SSH_OPTS. FUNCTION must
+# be a backend contract function (host/backends/README.md). Arguments stay argv; nothing is evaluated.
+#   host/backend.sh __functions             contract functions this backend defines, one per line
+#   host/backend.sh __connect NAME [PORT]   stdio to the VM's sshd (the ssh ProxyCommand; never starts Node)
+# Called by host/backend.mjs, and by host/boxery-host for connect.
+set -euo pipefail
+
+resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
+ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
+CONF=${BOXERY_CONF:-$HOME/.config/boxery}
+# Settings persisted by `init`. Explicit env vars win over the file. Same list as HOST_ENV in host/config.mjs.
+if [ -f "$CONF/host.env" ]; then
+	while IFS='=' read -r k v; do
+		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_LIMA_PREFIX | BOXERY_CH_DIR | BOXERY_CH_NET | BOXERY_CH_DNS | BOXERY_CH_FIRMWARE | BOXERY_CH_SUDO | BOXERY_EXE_DIR | BOXERY_EXE_PREFIX | BOXERY_EXE_KEY | BOXERY_EXE_PORT_BASE | BOXERY_EXE_GUEST_PORT | BOXERY_EXE_EGRESS | BOXERY_EXE_POOL | BOXERY_EXE_MAX_CPUS | BOXERY_EXE_MAX_MEM) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+	done <"$CONF/host.env"
+fi
+export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}
+# shellcheck disable=SC2034  # read by the sourced backend
+PROXY_PORT=${BOXERY_PROXY_PORT:-8088}
+BACKEND=${BOXERY_BACKEND:-libvirt}
+SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="$CONF/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+
+die() { echo "boxery-host: $*" >&2; exit 1; }
+log() { echo "==> $*" >&2; }
+need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
+vm_ssh_cmd() { local h=$1 p=$2; shift 2; ssh "${SSH_OPTS[@]}" -p "$p" "agent@$h" "$@"; }
+wait_ssh() { # HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 180 = 6 min)
+	for _ in $(seq "${BOXERY_SSH_WAIT_TRIES:-180}"); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
+	die "timed out waiting for ssh on $1:${2:-22}"
+}
+
+f="$ROOT/host/backends/$BACKEND.sh"
+[[ -f $f ]] || die "unknown backend '$BACKEND' (have: $(ls "$ROOT/host/backends" | sed -n 's/\.sh$//p' | tr '\n' ' '))"
+# shellcheck source=/dev/null
+. "$f"
+
+CONTRACT=" backend_check backend_init backend_proxy_services backend_proxy_bind guest_proxy_upstream backend_build_base
+	backend_has_base backend_exists backend_new backend_list backend_ssh_endpoint backend_wait_endpoint backend_start backend_stop
+	backend_rm backend_size backend_resize backend_capture backend_images backend_image_rm backend_reimage backend_cleanup_new
+	backend_cleanup_image backend_recover_capture backend_legacy_snaps backend_legacy_revert backend_legacy_snap_rm "
+case ${1:-} in
+__functions)
+	for fn in $CONTRACT; do if declare -F "$fn" >/dev/null; then echo "$fn"; fi; done ;;
+__connect)
+	n=${2:-}; n=${n%.boxery}; port=${3:-22}
+	[[ $n =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$n' (use [a-z][a-z0-9-]*)"
+	ep=$(backend_ssh_endpoint "$n")
+	[[ $port == 22 ]] || die "connect: only the ssh port is supported (forward other ports over ssh)"
+	exec nc "${ep% *}" "${ep#* }" ;;
+*)
+	[[ -n ${1:-} && $CONTRACT == *[[:space:]]"$1"[[:space:]]* ]] && declare -F "$1" >/dev/null || die "not a $BACKEND backend function: ${1:-}"
+	"$@" ;;
+esac
