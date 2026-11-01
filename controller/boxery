@@ -351,17 +351,18 @@ cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
 # ---------------------------------------------------------------- background jobs
 # The logic runs in the VM: core/boxery-jobs.ts is piped over ssh on every call and run by the VM's
 # Node (type stripping), so a VM never runs an old copy. See that file for the protocol and layout.
+pkg_root() { # the checkout or package this script belongs to (through npm's bin symlink)
+	local script=${BASH_SOURCE[0]} dir
+	while [ -L "$script" ]; do
+		dir=$(CDPATH='' cd -P "$(dirname "$script")" && pwd)
+		script=$(readlink "$script")
+		case $script in /*) ;; *) script=$dir/$script ;; esac
+	done
+	CDPATH='' cd -P "$(dirname "$script")/.." && pwd
+}
 JOBS_TS=""
-jobs_ts() { # path of core/boxery-jobs.ts next to this script (through npm's bin symlink)
-	if [ -z "$JOBS_TS" ]; then
-		local script=${BASH_SOURCE[0]} dir
-		while [ -L "$script" ]; do
-			dir=$(CDPATH='' cd -P "$(dirname "$script")" && pwd)
-			script=$(readlink "$script")
-			case $script in /*) ;; *) script=$dir/$script ;; esac
-		done
-		JOBS_TS="${BOXERY_JOBS_TS:-$(CDPATH='' cd -P "$(dirname "$script")/.." && pwd)/core/boxery-jobs.ts}"
-	fi
+jobs_ts() { # path of core/boxery-jobs.ts next to this script
+	[ -n "$JOBS_TS" ] || JOBS_TS="${BOXERY_JOBS_TS:-$(pkg_root)/core/boxery-jobs.ts}"
 	[ -f "$JOBS_TS" ] || die "jobs need core/boxery-jobs.ts next to the controller ($JOBS_TS); run boxery from its checkout or package"
 	printf '%s\n' "$JOBS_TS"
 }
@@ -1108,6 +1109,18 @@ cmd_upgrade_host() { # [--check] [--ref REF] [--wait S] [--reinit]
 	h upgrade "$@"
 }
 
+# cp FROM TO: vm_copy's own code (controller/cp.mjs → core), so CLI and agent copies cannot drift.
+# Needs only the profile's ssh_config, not the host: it talks to the VMs, like `boxery ssh`.
+cmd_cp() {
+	local usage="usage: boxery cp FROM TO   (FROM/TO: local:PATH | NAME:PATH | HOST/NAME:PATH | PATH = local)" js a
+	[ $# -eq 2 ] || die "$usage"
+	for a in "$@"; do case $a in -*) die "cp takes no options (directories copy recursively); for a local path starting with -, use local:$a" ;; esac; done
+	command -v node >/dev/null 2>&1 || die "cp needs Node >= 20 on this machine"
+	js="$(pkg_root)/controller/cp.mjs"
+	[ -f "$js" ] || die "cp needs controller/cp.mjs next to the controller ($js); run boxery from its checkout or package"
+	BOXERY_HOME="$ROOT_DIR" exec node "$js" "$selected" "$@"
+}
+
 cmd_prompt() { # NAME "prompt" — fire-and-forget pi task in a detached tmux window, logged to ~/project/.boxery/
 	name=$1; shift; prompt="$*"
 	[ -n "$prompt" ] || die "usage: boxery prompt NAME \"task...\""
@@ -1148,6 +1161,9 @@ usage() {
 		new NAME --from NAME@SNAP       new VM from a snapshot (also: boxery images)
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
+		cp FROM TO                      copy a file or directory (recursive) between this machine and VMs,
+		                                  or VM to VM; same locations as vm_copy: local:PATH, NAME:PATH,
+		                                  HOST/NAME:PATH (VM paths relative to ~/project); bare PATH = local
 		run [--bg] NAME [--cwd DIR] CMD [ARG...]
 		                                run a command with exactly these args (like docker exec), in
 		                                  ~/project; a relative --cwd is under ~/project
@@ -1235,6 +1251,7 @@ proxy-log) need_host; h "$cmd" "$@" ;;
 version) cmd_version "$@" ;;
 upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
+cp) cmd_cp "$@" ;;
 run) need_host; cmd_run "$@" ;;
 jobs) need_host; cmd_jobs "$@" ;;
 logs) need_host; cmd_logs "$@" ;;

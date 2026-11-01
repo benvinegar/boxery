@@ -14,6 +14,8 @@ CI (`.github/workflows/ci.yml`) runs lint, unit tests on Node 20/22/24, shell te
 
 `test/copy.test.mjs` exercises streaming transfers with real tar and isolated fake SSH endpoints: 192 MiB archives with bounded agent buffers, all endpoint combinations, producer/consumer failures, cancellation/KILL escalation (including descriptor-free descendants), metadata deadline/late-preparation faults, read-only cleanup, non-writable parents and pinned routing. `COPY_TEST_TAR=/path/to/bsdtar node --test test/copy.test.mjs` checks BSD tar locally; native macOS CI uses its system tar. Fixture subprocesses live under `test/fixtures/`.
 
+`test/parity.test.mjs` keeps the CLI and the agent tools in step: a new `vm_*` tool or action, or a new `boxery` command, fails it until it is mapped to its counterpart or listed with a reason it has none. When both sides need a feature, give the CLI the tool's implementation rather than a second one (as `boxery cp` runs `vm_copy`).
+
 `test/lease-workflows.test.mjs` tests lease policy directly through injected store/backend/journal dependencies, without SQLite or subprocesses. [Host module boundaries](docs/host-modules.md) documents ownership and dependencies. `test/operations.test.mjs` uses deterministic fake-backend barriers to SIGKILL supervisors while their worker groups are alive, checking both recovery and external side effects. Keep these tests offline: they use only temporary config and VM directories. The [lifecycle contract](docs/lifecycle.md) documents resource boundaries, durable intents and backend recovery responsibilities.
 
 Backends live in `host/backends/<name>.sh` and implement the contract in `host/backends/README.md`; `fake.sh` is the test double.

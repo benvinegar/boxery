@@ -1,6 +1,6 @@
 // Isolated host-aware core/MCP regressions. No real SSH, HOME, credentials or VM host.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -223,6 +223,31 @@ test("copy binds both hosts independently, supports local server paths and rejec
 	for (const endpoint of ["unknown/fakevm:/x", "bad host/fakevm:/x", "../fakevm:/x"])
 		assert.equal((await c.tool("vm_copy", { from: `local:${local}`, to: endpoint })).isError, true);
 	assert.equal(readFileSync(local, "utf8"), "alpha-source");
+});
+
+test("boxery cp runs vm_copy: same locations, --host and the default host route, bare paths are local", async () => {
+	const cp = (...args) => new Promise((resolve) => {
+		execFile(path.join(ROOT, "controller/boxery"), args, { env, cwd: dir }, (e, stdout, stderr) => resolve({ code: e ? e.code : 0, stdout, stderr }));
+	});
+	writeFileSync(path.join(dir, "cli's bundle.git"), "cli-source");
+	let r = await cp("cp", "cli's bundle.git", "fakevm:cli-one.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.match(r.stdout, /^copied local:.*cli's bundle\.git → alpha\/fakevm:\/home\/agent\/project\/cli-one\.git/);
+	assert.equal(readFileSync(path.join(vmroot("alpha"), "project/cli-one.git"), "utf8"), "cli-source");
+	r = await cp("--host", "beta", "cp", "local:cli's bundle.git", "fakevm:cli-beta.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(vmroot("beta"), "project/cli-beta.git"), "utf8"), "cli-source");
+	r = await cp("cp", "alpha/fakevm:cli-one.git", "beta/fakevm:cli-two.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(vmroot("beta"), "project/cli-two.git"), "utf8"), "cli-source");
+	r = await cp("cp", "beta/fakevm:cli-two.git", "./back.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(dir, "back.git"), "utf8"), "cli-source");
+	for (const args of [["cp", "only-one"], ["cp", "-r", "a", "b"], ["cp", "back.git", "unknown/fakevm:x"], ["cp", "back.git", "Bad:x"]]) {
+		r = await cp(...args);
+		assert.notEqual(r.code, 0, `boxery ${args.join(" ")} should fail`);
+		assert.match(r.stderr, /^boxery: /);
+	}
 });
 
 test("timeout cleanup stays on the snapshotted host after a concurrent session switch", async () => {
