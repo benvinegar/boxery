@@ -40,6 +40,7 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 | `vm_screenshot` | Screenshot of the XFCE desktop, downscaled to 1280 px (clicks are scaled back) |
 | `vm_click`, `vm_type`, `vm_key`, `vm_scroll` | Computer use via xdotool on `:1` |
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
+| `vm_grant` | Ask the user for a [grant](grants.md#agents-can-ask) (`github`, `ssh-agent`, `env:VAR`, `file:LOCAL[=REMOTE]`) in a confirm dialog; without a UI, returns the `boxery grant` command |
 | `vm_lease` | Pool leases: `acquire` · `renew` · `release` · `list`. Renewed while pi runs, released when the session ends. See [Pool leases](mcp.md#pool-leases). |
 | `vm_manage` | `list` · `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snaps` · `snap-rm` · `revert` · `images` · `use` · `none` · `grants` · `shapes` (`new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`) |
 | `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `version` (`name` defaults to the current VM; `version` flags a host older than the controller) |

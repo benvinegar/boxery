@@ -110,7 +110,8 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			"Copy a file or directory between the machine this agent runs on and a VM, or between VMs. Locations: `local:/path` (this machine), `NAME:/path` (a VM on the current host), " +
-			"`HOST/NAME:/path` (a VM on another registered host), or a bare path (= current VM). Directories copy recursively. Example: from `local:./notes.md` to `notes.md`.",
+			"`HOST/NAME:/path` (a VM on another registered host), or a bare path (= current VM). Directories copy recursively. Example: from `local:./notes.md` to `notes.md`. " +
+			"Never use it for credentials (tokens, .npmrc, auth files, .env): a copy lands on the VM's disk and in its snapshots. Request them with vm_grant.",
 		parameters: obj({ from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
 		annotations: { destructiveHint: true, openWorldHint: false },
 		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, localCwd: x.localCwd, signal: x.signal }),
@@ -202,7 +203,7 @@ export const TOOLS = [
 			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants). " +
+			"`grants` shows what the VM may access from the user's machine (to ask for more, use vm_grant). " +
 			"For lookups (list, shapes, grants, snaps) prefer vm_info, which is read-only.",
 		parameters: {
 			type: "object",
@@ -240,6 +241,28 @@ export const TOOLS = [
 		annotations: { readOnlyHint: true, openWorldHint: false },
 		outputSchema: INFO_OUTPUT,
 		run: (_vm, a, x) => infoAction(a, x),
+	},
+	{
+		name: "vm_grant",
+		title: "VM grant request",
+		description:
+			"Ask the user to give a VM access to something on their machine, when work there fails without it (a 401 from a package registry, git asking for credentials). " +
+			"The user approves or declines in a prompt you cannot answer; on approval the grant is added and applied. " +
+			"spec: `github` (git over https and the GitHub API; the token stays on the host proxy, never in the VM; readonly:true for clone/fetch and reads), " +
+			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable's value from this machine), " +
+			"or `file:LOCAL[=REMOTE]` (LOCAL on this machine; REMOTE relative to /home/agent, default project/<name>; e.g. `file:~/.npmrc=.npmrc`). " +
+			"Prefer `github` for GitHub. Granted values live in the VM's memory, not its disk or snapshots. Request each thing once; if the user declines, don't ask again. " +
+			"Where the client can't prompt, you get the command for the user to run. vm_info {action:'grants'} shows what the VM already has.",
+		parameters: obj(
+			{
+				spec: { type: "string", description: "github | ssh-agent | env:VAR | file:LOCAL[=REMOTE]" },
+				readonly: { type: "boolean", description: "github only: clone/fetch and read-only API calls" },
+				reason: { type: "string", description: "One sentence for the user: what failed and why this fixes it" },
+			},
+			["spec", "reason"],
+		),
+		annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
+		run: (vm, a, x) => core.grantRequest(vm, a, x),
 	},
 	{
 		name: "vm_lease",

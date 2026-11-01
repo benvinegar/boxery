@@ -174,6 +174,9 @@ const TOOL_MAP = new Map([...TOOLS, ...VIEW_TOOLS].map((t) => [t.name, t]));
 const allSessions = new Set();
 function newSession() {
 	const session = { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), protocolVersion: PROTOCOL_VERSIONS.at(-1), lastActive: Date.now() };
+	// Requests this server sent the client (elicitation), by id, awaiting the client's response.
+	session.pending = new Map();
+	session.requestSeq = 0;
 	// Leases are renewed while the session is in use: a call is running, or one ran within the TTL.
 	// An abandoned session (HTTP client gone without DELETE) stops renewing, and the host reaper resets the VM.
 	session.keeper = new core.LeaseKeeper({
@@ -240,7 +243,42 @@ const instructions = (s) =>
 			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
 	});
 
-async function callTool(session, params, signal, progress) {
+/** Send the client a request on this call's channel and resolve with its result. Abort sends notifications/cancelled. */
+function clientRequest(session, send, method, params, signal) {
+	return new Promise((resolve, reject) => {
+		if (signal?.aborted) return reject(new Error("aborted"));
+		const id = `boxery-${++session.requestSeq}`;
+		const onAbort = () => {
+			session.pending.delete(id);
+			send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "tool call cancelled" } });
+			reject(new Error("aborted"));
+		};
+		session.pending.set(id, (msg) => {
+			session.pending.delete(id);
+			signal?.removeEventListener("abort", onAbort);
+			if (msg.error) reject(new Error(msg.error.message ?? "client error"));
+			else resolve(msg.result);
+		});
+		signal?.addEventListener("abort", onAbort, { once: true });
+		send({ jsonrpc: "2.0", id, method, params });
+	});
+}
+
+/**
+ * vm_grant's approval prompt: an elicitation the client shows the user, with no fields, only
+ * accept/decline. Only for clients that declared form elicitation, on a channel that can carry it.
+ */
+function elicitApprover(session, send, signal) {
+	if (!session.elicit || !send) return undefined;
+	session.approve ??= core.oneAtATime(async ({ message, send: s, signal: sig }) => {
+		const params = { ...(since(session, "2025-11-25") ? { mode: "form" } : {}), message, requestedSchema: { type: "object", properties: {} } };
+		const r = await clientRequest(session, s, "elicitation/create", params, sig);
+		return ["accept", "decline"].includes(r?.action) ? r.action : "cancel";
+	});
+	return (message) => session.approve({ message, send, signal });
+}
+
+async function callTool(session, params, signal, progress, send) {
 	const tool = TOOL_MAP.get(params?.name);
 	if (!tool) throw Object.assign(new Error(`unknown tool ${params?.name}`), { code: -32602 });
 	const args = params.arguments ?? {};
@@ -255,7 +293,8 @@ async function callTool(session, params, signal, progress) {
 			core.assertName(vm);
 		}
 		const { vm: _drop, ...rest } = args;
-		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress }));
+		const approve = tool.name === "vm_grant" ? elicitApprover(session, send, signal) : undefined;
+		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress, approve }));
 		const content = [{ type: "text", text: r.text ?? "" }];
 		if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
 		const structured = r.structured !== undefined && since(session, "2025-06-18") ? { structuredContent: r.structured } : {};
@@ -275,12 +314,20 @@ async function handle(session, msg, notify) {
 	session.lastActive = Date.now();
 	const reply = (result) => (isRequest ? { jsonrpc: "2.0", id, result } : null);
 	const fail = (code, message) => (isRequest ? { jsonrpc: "2.0", id, error: { code, message } } : null);
+	// The client answering one of our requests (elicitation): never reply to a response.
+	if (method === undefined && isRequest && ("result" in msg || "error" in msg)) {
+		session.pending.get(id)?.(msg);
+		return null;
+	}
 	try {
 		switch (method) {
 			case "initialize": {
 				const want = params?.protocolVersion;
 				session.protocolVersion = PROTOCOL_VERSIONS.includes(want) ? want : PROTOCOL_VERSIONS[0];
 				session.ui = has("--ui") || !!params?.capabilities?.extensions?.[UI_EXT]?.mimeTypes?.includes(UI_MIME);
+				// Form elicitation: `elicitation: {}` (2025-06-18; form is implied) or `{form: {}, …}`.
+				const el = params?.capabilities?.elicitation;
+				session.elicit = !!el && typeof el === "object" && (Object.keys(el).length === 0 || !!el.form);
 				const serverInfo = { name: "boxery", title: "boxery VMs", version: VERSION };
 				if (since(session, "2025-11-25"))
 					Object.assign(serverInfo, { description: "Self-hosted Ubuntu desktop VMs for coding agents: shell, files, computer use and Chrome.", websiteUrl: "https://github.com/benvinegar/boxery" });
@@ -312,7 +359,7 @@ async function handle(session, msg, notify) {
 				if (isRequest) session.inflight.set(id, ac);
 				const reporter = isRequest ? progressReporter(params?._meta?.progressToken, notify, params?.name) : undefined;
 				try {
-					return reply(await callTool(session, params, ac.signal, reporter?.progress));
+					return reply(await callTool(session, params, ac.signal, reporter?.progress, isRequest ? notify : undefined));
 				} finally {
 					reporter?.stop();
 					session.inflight.delete(id);
@@ -431,10 +478,11 @@ function serveHttp(listen) {
 				if (!res.writableEnded) for (const m of msgs) session.inflight.get(m?.id)?.abort();
 			});
 			const headers = { "mcp-session-id": session.id };
-			// Progress needs a stream: answer as SSE only when the client accepts it and asked for progress;
-			// everything else keeps the plain JSON response.
-			const wantsProgress = msgs.some((m) => m?.id != null && m.method === "tools/call" && m.params?._meta?.progressToken != null);
-			if (wantsProgress && String(req.headers.accept ?? "").includes("text/event-stream")) {
+			// Progress and vm_grant's approval prompt need a stream: answer as SSE only when the client accepts
+			// it and asked for progress or may be asked to approve; everything else keeps the plain JSON response.
+			// The client posts its answer to the prompt as a separate request, which gets a 202.
+			const wantsStream = msgs.some((m) => m?.id != null && m.method === "tools/call" && (m.params?._meta?.progressToken != null || (session.elicit && m.params?.name === "vm_grant")));
+			if (wantsStream && String(req.headers.accept ?? "").includes("text/event-stream")) {
 				res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers });
 				const event = (obj) => !res.writableEnded && res.write(`event: message\ndata: ${JSON.stringify(obj)}\n\n`);
 				await Promise.all(msgs.map((m) => handle(session, m, event).then((r) => r && event(r))));

@@ -154,6 +154,7 @@ Every integration exposes the same tools:
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
 | `vm_info` | Read-only: list VMs, shapes, grants and snapshots |
+| `vm_grant` | Ask you for a grant (GitHub, ssh-agent, an env var or a file); you approve it in a prompt |
 | `vm_lease` | Lease a VM from the shared pool; renewed while the session runs, released when it ends |
 | `vm_view` | MCP Apps clients only: a live view of the desktop in the chat, which you can take control of ([details](docs/mcp.md#live-desktop-view)) |
 

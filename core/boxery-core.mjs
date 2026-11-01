@@ -4,8 +4,8 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { q } from "./shell.mjs";
@@ -768,6 +768,135 @@ export function formatGrants(name, grants) {
 	return [`grants for ${name}:`, ...grants.map((g) => `  ${line(g)}`)].join("\n");
 }
 
+// ---------------------------------------------------------------- grant requests (vm_grant)
+//
+// An agent asks; the user decides in a prompt the front-end shows (MCP elicitation, pi's confirm
+// dialog), which the agent cannot answer. Only what `boxery grant` could add without a --cmd is
+// requestable: a command run on the user's machine is theirs to write.
+
+const shellWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
+/** Is real path `p` inside `dir`? `dir` is resolved too (macOS: /var → /private/var). */
+const underDir = (p, dir) => {
+	try {
+		dir = realpathSync(dir);
+	} catch {
+		return false; // a directory that doesn't exist holds nothing
+	}
+	return p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+};
+
+/**
+ * Validate a requested grant and resolve it to the exact spec `boxery grant` will store.
+ * → {kind, spec, readonly?, var?, local?, remote?}. LOCAL paths resolve against localCwd (~ = home).
+ */
+export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
+	const s = typeof spec === "string" ? spec.trim() : "";
+	if (readonly && s !== "github") throw new Error("readonly applies only to the github grant");
+	if (s === "ssh-agent") return { kind: "ssh-agent", spec: s };
+	if (s === "github") return { kind: "github", spec: s, readonly: !!readonly };
+	const env = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
+	if (env) return { kind: "env", spec: s, var: env[1] };
+	if (s.startsWith("http:")) throw new Error(`${s} needs a command, run on the user's machine, that prints the secret; only the user can add it (boxery grant VM ${s} --cmd '…'). For GitHub, request the github grant.`);
+	if (!s.startsWith("file:")) throw new Error(`unknown grant "${s}" (ssh-agent, env:VAR, file:LOCAL[=REMOTE] or github)`);
+	const rest = s.slice(5);
+	const eq = rest.indexOf("=");
+	const loc = eq < 0 ? rest : rest.slice(0, eq);
+	if (!loc) throw new Error("usage: file:LOCAL[=REMOTE]");
+	const local = path.resolve(localCwd ?? process.cwd(), loc.replace(/^~(?=\/|$)/, homedir()));
+	let real, st;
+	try {
+		real = realpathSync(local);
+		st = statSync(real);
+	} catch {
+		throw new Error(`no such local file: ${local}`);
+	}
+	if (!st.isFile()) throw new Error(`not a regular file: ${local}`);
+	if (st.size > 1024 * 1024) throw new Error(`file grants are limited to 1 MiB: ${local}`);
+	// Keys and boxery's own credentials (VM ssh keys, proxy tokens) are never requestable.
+	const home = homedir();
+	if ([path.join(home, ".ssh"), path.join(home, ".gnupg")].some((d) => underDir(real, d))) throw new Error(`${local} holds keys; request ssh-agent instead (the keys stay on the user's machine)`);
+	if ([BOXERY_HOME, ...registeredHosts().map((h) => h.dir)].some((d) => underDir(real, d))) throw new Error(`${local} is boxery's own configuration and can't be granted`);
+	// REMOTE is relative to /home/agent; accept ~/… and /home/agent/… spellings too.
+	let remote = eq < 0 ? `project/${path.basename(local)}` : rest.slice(eq + 1).replace(/^~\//, "").replace(/^\/home\/agent\//, "");
+	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + local)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to /home/agent)`);
+	return { kind: "file", spec: `file:${local}=${remote}`, local, remote };
+}
+
+const grantedAlready = (g, grants) =>
+	g.kind === "ssh-agent"
+		? grants.some((x) => x.kind === "ssh-agent")
+		: g.kind === "env"
+			? grants.some((x) => x.kind === "env" && x.var === g.var)
+			: g.kind === "file"
+				? grants.some((x) => x.kind === "file" && x.local === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
+				: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
+
+/** What the user is agreeing to, in their terms. The agent's reason comes last and is labelled as such. */
+function grantPrompt(vm, host, g, reason) {
+	const where = host === "legacy" ? `VM "${vm}"` : `VM "${vm}" on host "${host}"`;
+	const what = {
+		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
+		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
+		file: [`file: ${g.local} → ${REMOTE_HOME}/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
+		github: [
+			`github${g.readonly ? " (read-only)" : ""}: git over https and the GitHub API, as this machine's \`gh auth token\`.`,
+			`The token stays on the VM host's proxy; the VM never holds it.${g.readonly ? " Only clone/fetch and GET requests are allowed." : " That includes git push and API writes."}`,
+		],
+	}[g.kind];
+	const why = String(reason ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+	return [`Give ${where} access to:`, "", ...what, "", `Revoke any time: ${grantCommand("revoke", vm, host, g)}`, ...(why ? ["", `The agent's reason: "${why}"`] : [])].join("\n");
+}
+
+function grantCommand(verb, vm, host, g) {
+	const spec = verb === "revoke" && g.kind === "file" ? `file:${g.local}` : g.spec;
+	return ["boxery", ...(host === "legacy" ? [] : ["--host", host]), verb, vm, spec, ...(verb === "grant" && g.readonly ? ["--readonly"] : [])].map(shellWord).join(" ");
+}
+
+/**
+ * Wrap a front-end's approve(message) → "accept" | "decline" | "cancel" so a session shows one
+ * grant prompt at a time; a request made while one is open fails with e.busy.
+ */
+export function oneAtATime(approve) {
+	let open = false;
+	return async (message) => {
+		if (open) throw Object.assign(new Error("another grant request is waiting for the user"), { busy: true });
+		open = true;
+		try {
+			return await approve(message);
+		} finally {
+			open = false;
+		}
+	};
+}
+
+/**
+ * vm_grant: ask the user to grant VM `vm` something, and on approval add it with `boxery grant`.
+ * ctx.approve(message) shows the prompt (absent: the front-end can't prompt, so the user gets the command).
+ */
+export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
+	const g = parseGrantRequest(a, { localCwd });
+	const host = currentHost().name;
+	const command = grantCommand("grant", vm, host, g);
+	if (g.kind === "env" && process.env[g.var] === undefined)
+		return { text: `$${g.var} isn't set where boxery runs, so there is nothing to grant. Ask the user to grant it from a command that prints the value, e.g.:\n  ${command} --cmd '…'`, isError: true };
+	if (grantedAlready(g, await boxeryJson(["grants", vm])))
+		return { text: `${vm} already has ${g.spec}; login shells (and vm_bash) have it. If it still fails, the problem is elsewhere: tell the user what you saw.` };
+	const manual = `Ask the user to run this on their machine:\n  ${command}`;
+	if (!approve) return { text: `This client can't show the user an approval prompt, so nothing was granted. ${manual}`, isError: true };
+	let answer;
+	try {
+		answer = await approve(grantPrompt(vm, host, g, a.reason));
+	} catch (e) {
+		if (signal?.aborted) throw e;
+		if (e?.busy) return { text: "Another grant request is waiting for the user's answer. Wait for it before asking again.", isError: true };
+		return { text: `The approval prompt failed (${e?.message ?? e}), so nothing was granted. ${manual}`, isError: true };
+	}
+	if (answer !== "accept")
+		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up: carry on without it, or ask them how to proceed.` };
+	const out = await boxeryCli(["grant", vm, g.spec, ...(g.readonly ? ["--readonly"] : [])], 120_000);
+	return { text: `The user approved: ${vm} now has ${g.spec}. New login shells (vm_bash runs one) pick it up.\n${out}` };
+}
+
 export async function vmExists(name) {
 	return (await listVms()).some((v) => v.name === name);
 }
@@ -844,7 +973,8 @@ export function guidance(current, { localToolsNote } = {}) {
 		local,
 		"Unless it was created headless, the VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`). A headless VM has /etc/boxery/headless and no desktop tools.",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
-		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
+		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. " +
+			"If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant, which asks the user. Never copy credentials into the VM with vm_copy or vm_write: they would land on its disk and in its snapshots.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
 		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");

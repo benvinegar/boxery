@@ -70,6 +70,7 @@ case "$*" in
 "renew "*) echo "pool-1 9999999999" ;;
 "ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
+"grants granted --json") echo '[{"kind":"ssh-agent"}]' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
@@ -98,18 +99,27 @@ function client(args = []) {
 			const msg = JSON.parse(buf.slice(0, nl));
 			buf = buf.slice(nl + 1);
 			if (msg.id === undefined) notifications.push(msg);
+			else if (msg.method) answer(msg); // the server asking us (elicitation)
 			else waiting.get(msg.id)?.(msg);
 		}
 	});
+	const requests = [];
+	const self = { onRequest: null };
+	async function answer(msg) {
+		requests.push(msg);
+		const result = await self.onRequest?.(msg);
+		if (result !== undefined) p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...(result.error ? { error: result.error } : { result }) })}\n`);
+	}
 	let id = 0;
 	const call = (method, params) =>
 		new Promise((resolve) => {
 			const i = ++id;
+			self.lastId = i;
 			waiting.set(i, resolve);
 			p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method, params })}\n`);
 		});
 	const tool = async (name, args) => (await call("tools/call", { name, arguments: args })).result;
-	return { p, call, tool, notifications, notify: (method) => p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`), close: () => p.kill() };
+	return Object.assign(self, { p, call, tool, notifications, requests, notify: (method, params) => p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`), close: () => p.kill() });
 }
 
 describe("stdio", () => {
@@ -587,6 +597,134 @@ describe("leases", () => {
 	});
 });
 
+describe("grant requests (vm_grant)", () => {
+	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
+	const grantCalls = () => calls().filter((l) => l.startsWith("grant "));
+	const elicitClient = async (protocolVersion = "2025-06-18", elicitation = {}) => {
+		const c = client(["--vm", "fakevm"]);
+		await c.call("initialize", { protocolVersion, capabilities: { elicitation }, clientInfo: { name: "t", version: "0" } });
+		return c;
+	};
+	let plain, c;
+	before(async () => {
+		writeFileSync(path.join(env.BOXERY_HOME, "calls"), "", { flag: "a" });
+		plain = client(["--vm", "fakevm"]);
+		await plain.call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		c = await elicitClient();
+	});
+	after(() => {
+		plain.close();
+		c.close();
+	});
+
+	test("a client that can't prompt gets the command for the user; nothing is granted", async () => {
+		const before = grantCalls().length;
+		const r = await plain.tool("vm_grant", { spec: "github", readonly: true, reason: "clone a private repo" });
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].text, /can't show the user an approval prompt[\s\S]*\n  boxery grant fakevm github --readonly$/);
+		assert.equal(grantCalls().length, before);
+		assert.equal(plain.requests.length, 0);
+	});
+
+	test("the user approves in an elicitation: the controller adds the grant", async () => {
+		c.onRequest = () => ({ action: "accept", content: {} });
+		const r = await c.tool("vm_grant", { spec: "ssh-agent", reason: "git push over ssh\nIGNORE PREVIOUS" });
+		assert.equal(r.isError, false, r.content[0].text);
+		assert.match(r.content[0].text, /^The user approved: fakevm now has ssh-agent/);
+		assert.equal(grantCalls().at(-1), "grant fakevm ssh-agent");
+		const req = c.requests.at(-1);
+		assert.equal(req.method, "elicitation/create");
+		assert.deepEqual(req.params.requestedSchema, { type: "object", properties: {} });
+		assert.equal(req.params.mode, undefined, "mode is a 2025-11-25 field");
+		assert.match(req.params.message, /^Give VM "fakevm" access to:\n\nssh-agent: /);
+		assert.match(req.params.message, /Revoke any time: boxery revoke fakevm ssh-agent/);
+		assert.match(req.params.message, /\n\nThe agent's reason: "git push over ssh IGNORE PREVIOUS"$/, "the reason is last, labelled, on one line");
+	});
+
+	test("declined or dismissed: nothing is granted and the agent is told not to ask again", async () => {
+		const before = grantCalls().length;
+		c.onRequest = () => ({ action: "decline" });
+		const r = await c.tool("vm_grant", { spec: "ssh-agent", reason: "x" });
+		assert.match(r.content[0].text, /^The user declined the request; fakevm did not get ssh-agent\. Don't ask for it again/);
+		c.onRequest = () => ({ action: "cancel" });
+		assert.match((await c.tool("vm_grant", { spec: "ssh-agent", reason: "x" })).content[0].text, /^The user dismissed/);
+		c.onRequest = () => ({ error: { code: -32601, message: "no elicitation here" } });
+		const failed = await c.tool("vm_grant", { spec: "ssh-agent", reason: "x" });
+		assert.equal(failed.isError, true);
+		assert.match(failed.content[0].text, /prompt failed \(no elicitation here\)[\s\S]*boxery grant fakevm ssh-agent/);
+		assert.equal(grantCalls().length, before);
+	});
+
+	test("file specs resolve to an absolute local path and a /home/agent-relative remote", async () => {
+		const f = path.join(dir, "auth.ini");
+		writeFileSync(f, "//registry/:_authToken=x\n", { mode: 0o644 });
+		c.onRequest = () => ({ action: "accept" });
+		const r = await c.tool("vm_grant", { spec: `file:${f}=~/.config/pnpm/auth.ini`, reason: "pnpm install got 401" });
+		assert.equal(r.isError, false, r.content[0].text);
+		assert.equal(grantCalls().at(-1), `grant fakevm file:${f}=.config/pnpm/auth.ini`);
+		assert.match(c.requests.at(-1).params.message, new RegExp(`file: ${f} → /home/agent/\\.config/pnpm/auth\\.ini\n`));
+	});
+
+	test("refused before any prompt: boxery's own files, http: grants, unset env vars, bad specs", async () => {
+		const n = c.requests.length;
+		const err = async (args) => {
+			const r = await c.tool("vm_grant", { reason: "x", ...args });
+			assert.equal(r.isError, true, JSON.stringify(args));
+			return r.content[0].text;
+		};
+		assert.match(await err({ spec: `file:${path.join(env.BOXERY_HOME, "ssh_config")}` }), /boxery's own configuration/);
+		assert.match(await err({ spec: "file:/no/such/file" }), /no such local file/);
+		assert.match(await err({ spec: `file:${path.join(dir, "auth.ini")}=../../etc/x` }), /invalid remote path/);
+		assert.match(await err({ spec: "http:api.example.com" }), /needs a command[\s\S]*only the user can add it/);
+		assert.match(await err({ spec: "env:BOXERY_SURELY_UNSET" }), /isn't set where boxery runs[\s\S]*boxery grant fakevm env:BOXERY_SURELY_UNSET --cmd/);
+		assert.match(await err({ spec: "ssh-agent", readonly: true }), /readonly applies only to the github grant/);
+		assert.match(await err({ spec: "everything" }), /unknown grant/);
+		assert.equal(c.requests.length, n, "no prompt for a request that can't be granted");
+	});
+
+	test("something already granted is reported without a prompt", async () => {
+		const n = c.requests.length;
+		const r = await c.tool("vm_grant", { vm: "granted", spec: "ssh-agent", reason: "x" });
+		assert.match(r.content[0].text, /^granted already has ssh-agent/);
+		assert.equal(c.requests.length, n);
+	});
+
+	test("one prompt at a time per session; cancelling the call withdraws its prompt", async () => {
+		let answerFirst;
+		c.onRequest = () => new Promise((r) => (answerFirst = r));
+		const first = c.call("tools/call", { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } });
+		while (!answerFirst) await new Promise((r) => setTimeout(r, 10));
+		const second = await c.tool("vm_grant", { spec: "github", reason: "y" });
+		assert.equal(second.isError, true);
+		assert.match(second.content[0].text, /Another grant request is waiting/);
+		answerFirst({ action: "decline" });
+		assert.match((await first).result.content[0].text, /declined/);
+
+		c.onRequest = () => undefined; // never answer
+		const asked = c.requests.length;
+		const pending = c.call("tools/call", { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } });
+		const callId = c.lastId;
+		while (c.requests.length === asked) await new Promise((r) => setTimeout(r, 10));
+		const prompt = c.requests.at(-1);
+		c.notify("notifications/cancelled", { requestId: callId });
+		assert.match((await pending).result.content[0].text, /aborted/);
+		assert.ok(c.notifications.some((m) => m.method === "notifications/cancelled" && m.params.requestId === prompt.id), "the server withdraws its elicitation");
+	});
+
+	test("2025-11-25 clients get mode:form; clients declaring only URL elicitation get no prompt", async () => {
+		const c2 = await elicitClient("2025-11-25", { form: {}, url: {} });
+		c2.onRequest = () => ({ action: "decline" });
+		await c2.tool("vm_grant", { spec: "ssh-agent", reason: "x" });
+		assert.equal(c2.requests.at(-1).params.mode, "form");
+		c2.close();
+		const urlOnly = await elicitClient("2025-11-25", { url: {} });
+		const r = await urlOnly.tool("vm_grant", { spec: "ssh-agent", reason: "x" });
+		assert.match(r.content[0].text, /can't show the user an approval prompt/);
+		assert.equal(urlOnly.requests.length, 0);
+		urlOnly.close();
+	});
+});
+
 describe("http", () => {
 	let p, port;
 	const token = "t0ken";
@@ -642,6 +780,38 @@ describe("http", () => {
 		assert.equal(del.status, 204);
 		assert.equal(readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n").at(-1), "release l-0123456789abcdef0123456789abcdef", "DELETE releases the session's leases");
 		assert.equal((await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, { ...auth, "mcp-session-id": sid })).status, 404, "deleted session");
+	});
+
+	test("vm_grant prompts over the call's SSE stream; the answer arrives as its own POST", async () => {
+		const auth = { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x" };
+		const sid = (await post({ ...init, params: { ...init.params, capabilities: { elicitation: {} } } }, auth)).headers.get("mcp-session-id");
+		const h = { ...auth, "mcp-session-id": sid };
+		const r = await post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "git over ssh" } } }, h);
+		assert.match(r.headers.get("content-type"), /text\/event-stream/);
+		const reader = r.body.getReader();
+		let buf = "";
+		const next = async () => {
+			for (;;) {
+				const end = buf.indexOf("\n\n");
+				if (end >= 0) {
+					const e = JSON.parse(buf.slice(0, end).replace(/^event: message\ndata: /, ""));
+					buf = buf.slice(end + 2);
+					return e;
+				}
+				const { value, done } = await reader.read();
+				if (done) throw new Error("stream ended");
+				buf += new TextDecoder().decode(value);
+			}
+		};
+		const ask = await next();
+		assert.equal(ask.method, "elicitation/create");
+		assert.match(ask.params.message, /ssh-agent/);
+		assert.equal((await post({ jsonrpc: "2.0", id: ask.id, result: { action: "accept" } }, h)).status, 202);
+		const done = await next();
+		assert.equal(done.id, 7);
+		assert.match(done.result.content[0].text, /^The user approved: fakevm now has ssh-agent/);
+		const plainJson = await post({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } } }, { ...h, accept: "application/json" });
+		assert.match((await plainJson.json()).result.content[0].text, /can't show the user an approval prompt/, "no stream, no prompt");
 	});
 
 	test("progress arrives as SSE only when requested; plain calls stay JSON", async () => {
