@@ -24,6 +24,7 @@
 - **[Security model](security.md)**: the credential proxy, isolation, and threat model.
 - **[Backends](../host/backends/README.md)**: libvirt, Lima, and the backend contract.
 - **[Lifecycle recovery](lifecycle.md)**: operation locks, crash recovery, reconciliation and upgrade precautions.
+- **[Host module boundaries](host-modules.md)**: Node lease policy, runtime adapters, state stores and shell backends.
 - **[Architecture](../ARCHITECTURE.md)**: design notes, roadmap, failure modes.
 - **[Migrating from agentvm](migrating-from-agentvm.md)**: upgrading an install from before the rename.
 - **[Contributing](../CONTRIBUTING.md)**: test layers and CI.
