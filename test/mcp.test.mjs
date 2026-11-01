@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
+import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -18,6 +19,7 @@ before(() => {
 	const vmroot = path.join(dir, "vm");
 	const tar = execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim();
 	mkdirSync(bin);
+	guestFixture(dir); // flock/stat shims only on macOS; no new guest dependency.
 	// Capture the actual wire archive: macOS extraction consumes AppleDouble entries, while Linux
 	// extraction leaves them as ._* files. Checking just the extracted fake VM would miss the bug.
 	writeFileSync(path.join(bin, "tar"), `#!/usr/bin/env bash\nset -eo pipefail\nif [ "$1" = -cf ]; then\n${JSON.stringify(tar)} "$@" | tee ${JSON.stringify(path.join(dir, "copy.tar"))}\nelse exec ${JSON.stringify(tar)} "$@"; fi\n`);
@@ -34,8 +36,9 @@ host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.boxery) host=$1; 
 [ "$host" = "fakevm.boxery" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
 # vm_edit carries the guest path as JSON on stdin, rather than in shell source.
-if [[ "$cmd" == *"exec python3 -c"* ]]; then
- exec python3 -c 'import io,json,os,shlex,sys; r=json.load(sys.stdin); r["path"]=r["path"].replace("/home/agent",sys.argv[2],1); inner=shlex.split(shlex.split(sys.argv[1])[2]); scope={"__name__":"fixture"}; exec(compile(inner[3],"<remote helper>","exec"),scope); scope["LOCK_DIRECTORY"]=os.path.join(sys.argv[2],"locks"); sys.stdin=io.TextIOWrapper(io.BytesIO(json.dumps(r).encode())); sys.exit(scope["main"]())' "$cmd" "${vmroot}"
+if [[ "$cmd" == *"flock -w 60"* ]]; then
+ node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);r.path=r.path.replace("/home/agent",process.argv[1]);process.stdout.write(JSON.stringify(r))})' "${vmroot}" | HOME="${vmroot}" PATH="${bin}:$PATH" bash -c "$cmd"
+ exit $?
 fi
 cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,

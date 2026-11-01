@@ -452,44 +452,31 @@ export function applyEdits(original, edits) {
 	return out + original.slice(pos);
 }
 
-const atomicEditHelper = readFileSync(new URL("./atomic-edit.py", import.meta.url), "utf8");
+const atomicEditHelper = readFileSync(new URL("./atomic-edit.mjs", import.meta.url), "utf8");
+const editScript = `set -e; umask 077
+ d="$HOME/.boxery-edit"
+ [ ! -L "$d" ]; mkdir -m 700 -p "$d"
+ [ -d "$d" ] && [ -O "$d" ] && [ "$(stat -c %a "$d")" = 700 ] || { echo 'unsafe edit lock directory' >&2; exit 1; }
+ l="$d/edit.lock"
+ [ ! -L "$l" ] && { [ ! -e "$l" ] || [ -f "$l" ]; } || { echo 'unsafe edit lock file' >&2; exit 1; }
+ exec flock -w 60 "$l" node --input-type=module -e ${q(`${atomicEditHelper}\nawait main(${applyEdits.toString()});`)}`;
 
 export async function editTool(vm, { path: p, edits, oldText, newText }, { signal } = {}) {
-	const unknownOutcome = "commit outcome may be unknown; reread before retrying";
-	const checkAbort = (committing = false) => {
-		if (signal?.aborted) throw new Error(`edit cancelled${committing ? ` (${unknownOutcome})` : ""}`);
-	};
-	const request = async (body) => {
-		checkAbort();
-		const committing = body.op === "commit";
-		const uncertain = (cause) => committing ? new Error(`${cause.message}; ${unknownOutcome}`, { cause }) : cause;
-		let result;
-		try {
-			result = await sshRun(vm, `exec python3 -c ${q(atomicEditHelper)}`, {
-				input: JSON.stringify(body), signal, timeoutMs: 65_000, maxBytes: 24 * 1024 * 1024,
-			});
-		} catch (cause) {
-			throw uncertain(cause);
-		}
-		checkAbort(committing);
-		if (result.code !== 0) throw uncertain(new Error(result.stderr.trim() || `edit interrupted (exit ${result.code}; reread before retrying)`));
-		try {
-			const response = JSON.parse(result.stdout.toString("utf8"));
-			if (committing && response?.committed !== true) throw new Error("invalid edit commit acknowledgement");
-			return response;
-		} catch (cause) {
-			throw uncertain(cause);
-		}
-	};
-	checkAbort();
+	if (signal?.aborted) throw new Error("edit cancelled");
 	const rp = vmPath(p);
 	const list = Array.isArray(edits) && edits.length ? edits : oldText != null ? [{ oldText, newText }] : [];
 	if (!list.length) throw new Error("provide edits: [{oldText, newText}]");
-	const { snapshot, data } = await request({ op: "snapshot", path: rp });
-	const original = Buffer.from(data, "base64").toString("utf8");
-	const updated = applyEdits(original, list);
-	checkAbort();
-	await request({ op: "commit", path: rp, snapshot, data: Buffer.from(updated).toString("base64") });
+	const input = JSON.stringify({ path: rp, edits: list });
+	if (signal?.aborted) throw new Error("edit cancelled");
+	if (Buffer.byteLength(input) > 3 * 16 * 1024 * 1024) throw new Error("edit request too large");
+	try {
+		const result = await sshRun(vm, editScript, { input, signal, timeoutMs: 120_000, maxBytes: 64 * 1024 });
+		if (signal?.aborted) throw new Error("edit cancelled");
+		if (result.code !== 0) throw new Error(result.stderr.trim() || `edit interrupted (exit ${result.code})`);
+		if (JSON.parse(result.stdout.toString("utf8"))?.committed !== true) throw new Error("invalid edit acknowledgement");
+	} catch (cause) {
+		throw new Error(`${cause.message}; commit outcome may be unknown; reread before retrying`, { cause });
+	}
 	return { text: `edited ${rp}: ${list.length} replacement(s)` };
 }
 

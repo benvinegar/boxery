@@ -103,40 +103,33 @@ Leases belong to the MCP session that acquired them. The server renews each one 
 
 ## Atomic file edits
 
-`vm_edit` (standalone core/MCP, not pi's edit engine) snapshots a writable regular
-file, applies exact, non-overlapping matches locally, then checks the version and
-bytes again under a guest advisory lock before atomic same-directory replacement.
-Competing cooperating edits from one snapshot cannot silently overwrite each
-other: one succeeds and the others report a conflict. Reread before retrying.
-Python 3 is required in the guest (included in the Ubuntu image); files and edit
-results are limited to 16 MiB and each remote phase to about 60 seconds.
+`vm_edit` (core/MCP, not pi's edit engine) sends one request to the Linux guest,
+requiring Node (image: Node 22) and util-linux `flock`, not Python. One persistent
+per-user lock at `~/.boxery-edit/edit.lock` covers reading the latest file,
+exact-text matching and atomic replacement. Never unlink this lock while editors
+may run. All cooperating edits serialize, including symlink/case aliases, and each
+reads the latest file. A second edit fails if the first removes its required match;
+otherwise it can apply normally, including disjoint edits that preserve both changes.
+Raw files and UTF-8 results are bounded to 16 MiB (JSON requests: 48 MiB).
 
-Symlinks are followed and preserved. One advisory lock per guest user serializes
-all cooperating edits, even to different files, so case aliases also share a lock.
-Link retargeting, file replacement (even with identical bytes), deletion, and
-parent-directory replacement observed before commit cause conflicts. The lock is
-persistent at `/tmp/boxery-edit-UID/edit.lock` and must not be removed while editors
-may be running. It is **not** protection against arbitrary noncooperating writers:
-they can still race between the final check and rename.
+OS realpath follows and preserves symlinks. Stable before/after file stats (including
+identity) and raw bytes, plus a final resolved-target/parent-identity check, reject
+observed external changes. This is advisory, **not** a filesystem transaction:
+noncooperating writers can race the final check/rename; intermediate symlink-chain
+changes with the same final target and change-and-restore sequences may go unnoticed.
+Concurrent directory relocation is unsupported and may leave staging in the old directory.
 
-Replacement requires read/write permission on the file and write/search permission
-on its directory. Linux uses `O_PATH` to open the directory without requiring read
-permission (`O_SEARCH` where available elsewhere); the `O_RDONLY` fallback on
-platforms with neither also requires directory read permission. Basic
-mode (including executable bits), uid and gid are preserved or the edit fails;
-multiple hard links are rejected because replacement would break them. ACLs,
-extended attributes and other inode metadata are not preserved. A read-only
-file remains uneditable for an unprivileged user even if its directory is writable
-(root retains its normal permission bypass).
+Replacement requires normal file read/write and directory write/search permissions
+(root retains its usual bypass). Regular, singly linked files only; basic mode,
+uid and gid are preserved or the edit fails. ACLs/xattrs/other metadata are not
+preserved. Existing UTF-8 decode/exact-match semantics are unchanged.
 
-Cancellation/timeout is checked before observation and commit; handled guest
-TERM/HUP/INT and staging failures remove temporary files. An interruption leaves
-the destination either original or a complete replacement, never a partial write.
-Stopping local SSH does not guarantee the guest has stopped. Cancellation or a
-lost/malformed SSH commit acknowledgement has an **unknown commit outcome**,
-especially near/after rename, not rollback: reread before retrying. Uncatchable
-guest death may leave a private staging file; no crash/power-loss durability is
-promised.
+A private adjacent staging file is fully written and flushed before rename; the
+destination is never truncated. Normal failures and handled TERM/HUP/INT clean up
+staging after pending I/O settles. SIGKILL/crashes may leave staging; power-loss
+durability is not promised. Preaborted calls never start. Stopping SSH need not stop
+the guest; cancellation/timeout or lost/malformed acknowledgement means **unknown
+commit outcome**, not rollback: reread before retrying.
 
 ## Options
 
