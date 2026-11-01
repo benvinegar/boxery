@@ -79,11 +79,20 @@ export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
 	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
 	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
-	const args = ["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])];
+	return registryCli(["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])], 600_000, { progress });
+}
+/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
+export function removeHost(name) {
+	assertHost(name);
+	if (name === "legacy") throw new Error("legacy is reserved");
+	return registryCli(["host", "rm", name], 60_000);
+}
+// Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
+function registryCli(args, timeout, { progress } = {}) {
 	return new Promise((resolve, reject) => {
 		const env = { ...process.env, BOXERY_HOME };
 		delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN;
-		const child = execFile(BOXERY, args, { env, timeout: 600_000, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+		const child = execFile(BOXERY, args, { env, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
 			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
 			else resolve(`${stdout}${stderr}`.trim());
 		});
@@ -848,6 +857,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
 		case "images":
 			return boxeryCli(["images"], 60_000);
+		case "build-base":
+			return boxeryCli(["build-base"], 1_800_000, opts);
 		case "grants":
 			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:

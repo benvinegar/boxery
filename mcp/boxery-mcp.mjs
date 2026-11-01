@@ -53,21 +53,23 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
 // vm_manage gains hosts/host (vm_info gains hosts) because the session's host is MCP state.
 // vm_manage/vm_lease act on the session's current VM and leases.
+const HOST_ACTIONS = ["hosts", "host", "host_add", "host_rm"];
 const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
 	...t,
-	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host", "host_add"].join(" | "))} ` +
+	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, ...HOST_ACTIONS].join(" | "))} ` +
 		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. " +
 		"`host_add` registers a new host: name (its alias), dest (`local` = the machine this server runs on, or an ssh destination such as user@box) and, " +
 		"to create a separate profile there for another VM platform, backend (libvirt | lima | cloud-hypervisor | exe | boat; it gets its own state, proxy port and services), " +
-		"or profile to use one that already exists there; buildBase:true then builds its desktop base image (~3 min; headless VMs don't need it). " +
-		"It uses the user's default ssh key and never changes the CLI default; select it afterwards with action:'host'. Credentials and grants remain user-controlled.",
+		"or profile to use one that already exists there; buildBase:true then runs build-base on it. " +
+		"It uses the user's default ssh key and never changes the CLI default; select it afterwards with action:'host'. " +
+		"`host_rm` forgets registered host `name` (only the registration: its VMs, profile data and grants stay; the CLI default can't be removed). Credentials and grants remain user-controlled.",
 	parameters: {
 		...t.parameters,
 		properties: {
 			...t.parameters.properties,
-			action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host", "host_add"] },
+			action: { type: "string", enum: [...MANAGE_ACTIONS, ...HOST_ACTIONS] },
 			dest: { type: "string", description: "host_add: local, or an ssh destination (user@host or an ssh-config alias)" },
 			backend: { type: "string", description: "host_add: create a new profile on dest for this backend (libvirt | lima | cloud-hypervisor | exe | boat)" },
 			profile: { type: "string", description: "host_add: use this existing profile on dest (default: with backend, the host name)" },
@@ -80,8 +82,14 @@ const manageMcp = (t) => ({
 			if (Object.hasOwn(a, "host")) throw new Error("host_add takes the new host's alias as name, not host");
 			const out = await core.addHost(a, { progress });
 			let built = "";
-			if (a.buildBase) built = `\n${await core.withHost(a.name, () => core.boxeryCli(["build-base"], 1_800_000, { progress }))}`;
+			if (a.buildBase) built = `\n${await core.withHost(a.name, () => core.manage({ action: "build-base" }, { progress }))}`;
 			return { text: `${out}${built}\nselect it with vm_manage {action:"host", host:"${a.name}"}` };
+		}
+		if (a.action === "host_rm") {
+			if (Object.hasOwn(a, "host")) throw new Error("host_rm takes the host's alias as name, not host");
+			const out = await core.removeHost(a.name);
+			// Resolved sessions keep their profile directory; say so when this session is one of them.
+			return { text: session.host.name === a.name ? `${out}\nthis session still uses ${a.name} until you select another host` : out };
 		}
 		if (a.action === "host") {
 			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");

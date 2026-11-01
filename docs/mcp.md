@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-`mcp/boxery-mcp.mjs` exposes the same `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). Both are built from one tool table, `core/boxery-tools.mjs`, so their tool names, descriptions and schemas match; MCP adds an optional `host` argument, the `hosts`/`host`/`host_add` actions of `vm_manage` and the `hosts` action of `vm_info`.
+`mcp/boxery-mcp.mjs` exposes the same `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). Both are built from one tool table, `core/boxery-tools.mjs`, so their tool names, descriptions and schemas match; MCP adds an optional `host` argument, the `hosts`/`host`/`host_add`/`host_rm` actions of `vm_manage` and the `hosts` action of `vm_info`.
 
 There are two ways to run it:
 
@@ -43,7 +43,7 @@ From a git checkout, use absolute paths (clients don't expand `~`): `"command": 
 
 Register profiles with `boxery host add` and select the startup host with `--host NAME`. Every tool accepts optional `host`; `vm_manage {action:"hosts"}` lists profiles and `{action:"host",host:"NAME"}` changes the session host and clears its VM. An explicit other host never inherits the current VM name. Copy endpoints can use `HOST/VM:/path`.
 
-`{action:"host_add", name:"exe", dest:"local", backend:"exe"}` registers a host, like `boxery host add exe local --backend exe`: with `backend` it first creates a separate profile for that VM platform on `dest` (its own state, proxy port and services); `profile` uses one that exists there; `buildBase:true` then builds its desktop image. `local` is the machine the server runs on. It uses the user's default ssh key, and doesn't select the host or change the CLI default.
+`{action:"host_add", name:"exe", dest:"local", backend:"exe"}` registers a host, like `boxery host add exe local --backend exe`: with `backend` it first creates a separate profile for that VM platform on `dest` (its own state, proxy port and services); `profile` uses one that exists there; `buildBase:true` then builds its desktop image. `local` is the machine the server runs on. It uses the user's default ssh key, and doesn't select the host or change the CLI default. `{action:"host_rm", name:"exe"}` forgets a registration (never the CLI default; VMs, profile data and grants stay). `{action:"build-base"}` builds the call's host's desktop base image.
 
 See [Named hosts](hosts.md). Pool leases (`vm_lease`) are held against the host the call targets.
 
