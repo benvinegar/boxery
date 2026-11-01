@@ -5,8 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-let L, O;
-try { L = await import("../host/boxery-leases.mjs"); O = await import("../host/boxery-operations.mjs"); }
+let L, O, runtime;
+try { L = await import("../host/boxery-leases.mjs"); O = await import("../host/boxery-operations.mjs"); runtime = await import("../host/boxery-lifecycle.mjs"); }
 catch (e) { if (!String(e.message).includes("sqlite")) throw e; }
 const it = L ? test : test.skip;
 const HOST = path.resolve(import.meta.dirname, "../host/boxery-host");
@@ -17,14 +17,15 @@ async function until(fn) {
 	for (let i = 0; i < 400; i++) { if (fn()) return; await pause(25); }
 	throw new Error("timed out waiting for lifecycle barrier");
 }
-function run(args, extra = {}, input) {
+function run(args, extra = {}, input, { keepInputOpen = false } = {}) {
 	const child = spawn(HOST, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
 	children.push(child);
 	let stdout = "", stderr = "";
 	child.stdout.on("data", (d) => { stdout += d; });
 	child.stderr.on("data", (d) => { stderr += d; });
 	child.stdin.on("error", () => {});
-	child.stdin.end(input);
+	if (keepInputOpen) child.stdin.write(input);
+	else child.stdin.end(input);
 	child.result = new Promise((resolve, reject) => {
 		child.on("error", reject);
 		child.on("close", (code) => resolve({ code, stdout, stderr }));
@@ -210,6 +211,37 @@ it("crashed deletion resumes image, token and grant cleanup after the VM is alre
 	assert.equal(existsSync(path.join(conf, "edge", "gone.json")), false);
 	assert.equal(existsSync(path.join(vms, ".images", "gone@one")), false);
 	cleanJournal();
+});
+
+it("acquire consumes one public-key line without waiting for stdin EOF", async () => {
+	await ok(["new", "pool"]); await ok(["pool", "add", "pool"]);
+	const acquire = run(["acquire", "--holder", "streaming-client"], {}, `${KEY}\n`, { keepInputOpen: true });
+	await until(() => acquire.exitCode != null);
+	const result = await acquire.result;
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /^pool l-[0-9a-f]{32} \d+\n$/);
+	acquire.stdin.destroy();
+	cleanJournal();
+});
+
+it("held-lock callbacks cannot execute guest effects without a lifecycle lock", async () => {
+	await ok(["new", "pool"]);
+	const before = token("pool");
+	const result = await run(["__call", "_lease_reset", "pool", "2", "epoch"]).result;
+	assert.equal(result.code, 1);
+	assert.match(result.stderr, /lifecycle lock required/);
+	assert.equal(token("pool"), before);
+	cleanJournal();
+});
+
+it("lease CLI parsing keeps defaults and rejects missing, unknown or malformed options", () => {
+	const flags = { "--holder": "holder", "--ttl": "ttl", "--wait": "wait" };
+	const defaults = { holder: "", ttl: 1800, wait: 0 };
+	assert.deepEqual(runtime.parseOptions([], defaults, flags), defaults);
+	assert.deepEqual(runtime.parseOptions(["--holder", "alice", "--ttl", "60", "--wait", "0"], defaults, flags), { holder: "alice", ttl: 60, wait: 0 });
+	for (const args of [["--ttl"], ["--ttl", "x"], ["--wait", "-1"], ["--unknown", "1"], ["toString", "1"], ["__proto__", "1"]]) {
+		assert.throws(() => runtime.parseOptions(args, defaults, flags));
+	}
 });
 
 it("reaper cannot change an acquiring generation while key installation owns the VM lock", async () => {

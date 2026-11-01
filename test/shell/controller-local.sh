@@ -37,6 +37,13 @@ grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key wi
 "$BOXERY_HOST_BIN" build-base >/dev/null 2>&1
 "$A" new w1 >/dev/null 2>&1 && ok "new via local host" || bad "new"
 "$A" ls 2>/dev/null | grep -q '^w1 ' && ok "ls shows the VM with GRANTS column" || bad "ls"
+"$A" new w2 --shape small --cpus 3 >/dev/null 2>&1 && [ "$(cat "$tmp/vms/w2/size")" = "3 4096 20" ] && ok "new --shape + size flag passed to the host" || bad "new --shape: $(cat "$tmp/vms/w2/size" 2>&1)"
+"$A" fork w2 w3 >/dev/null 2>&1 && [ "$(cat "$tmp/vms/w3/size")" = "3 4096 20" ] && ok "fork keeps the source's size" || bad "fork size: $(cat "$tmp/vms/w3/size" 2>&1)"
+"$A" ls --json | jq -e '.[] | select(.name == "w2") | .shape == "custom" and .cpus == 3' >/dev/null && ok "ls --json has shape fields" || bad "ls shape: $("$A" ls --json)"
+"$A" shapes --json | jq -e '.default == "standard" and .shapes.large.cpus == 8' >/dev/null && ok "shapes --json via controller" || bad "shapes: $("$A" shapes --json 2>&1)"
+if "$A" new w4 --shape 'x;id' >/dev/null 2>&1; then bad "invalid --shape accepted"; else ok "invalid --shape rejected by the controller"; fi
+if "$A" shapes bogus >/dev/null 2>&1; then bad "shapes bogus accepted"; else ok "shapes rejects extra args"; fi
+"$A" rm w2 >/dev/null 2>&1; "$A" rm w3 >/dev/null 2>&1
 
 printf 'SECRET_FILE=1\n' >"$tmp/dev.env"
 export MY_TOKEN='va lue $with "quotes"'
@@ -52,6 +59,11 @@ grep -qx '/.env' "$tmp/vms/w1/home/project/.git/info/exclude" && ok "file grant 
 "$A" ls --json | jq -e '.[] | select(.name == "w1") | .state == "running" and (.grants | map(.kind) == ["ssh-agent", "env", "env", "file"])' >/dev/null && ok "ls --json merges local grants" || bad "ls --json: $("$A" ls --json)"
 "$A" revoke w1 env:MY_TOKEN "file:$tmp/dev.env" >/dev/null 2>&1
 if (unset MY_TOKEN; . "$envsh"; [[ -z ${MY_TOKEN:-} && $FROM_CMD == computed ]]) && [[ ! -e $link && ! -L $link ]]; then ok "revoke removes exactly the revoked items"; else bad "revoke: env=$(cat "$envsh") link=$(ls -la "$link" 2>&1)"; fi
+# resize restarts the VM, which empties its tmpfs: the controller must push the grants again
+rm -f "$envsh"
+"$A" resize w1 --cpus 2 --mem 4096 >/dev/null 2>&1 && [[ $(cut -d' ' -f1,2 "$tmp/vms/w1/size") == "2 4096" ]] && ok "resize via the controller" || bad "resize: $(cat "$tmp/vms/w1/size")"
+[[ -f $envsh ]] && (. "$envsh"; [[ $FROM_CMD == computed ]]) && ok "resize pushes the VM's grants again" || bad "grants not re-applied after resize"
+if "$A" resize 'bad;name' --cpus 2 >/dev/null 2>&1; then bad "resize accepted an invalid VM name"; else ok "resize rejects an invalid VM name"; fi
 if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted"; else ok "invalid env name rejected"; fi
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi

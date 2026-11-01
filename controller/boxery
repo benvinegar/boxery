@@ -285,18 +285,26 @@ run_literal_note() { # NAME CMD [ARG...]
 # Exact argv, like docker/kubectl exec: ssh would join the args into a string the VM's shell re-parses,
 # so each one is quoted first. Pipes, ~ and $VAR need an explicit shell: boxery run NAME bash -c '…'.
 # Runs in ~/project (home if it is missing) and resolves a relative --cwd there, like the vm_bash tool.
-cmd_run() { # NAME [--cwd DIR] [--] CMD [ARG...]
-	local usage="usage: boxery run NAME [--cwd DIR] [--] CMD [ARG...]   (a shell line: ... bash -c 'A | B')"
+cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
+	local bg=false
+	if [ "${1:-}" = --bg ]; then bg=true; shift; fi
+	local usage="usage: boxery run [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]   (a shell line: ... bash -c 'A | B')"
 	case ${1:-} in '' | -h | --help) echo "$usage"; run_examples; [ -n "${1:-}" ]; return ;; esac
 	need_vm "$1"; local name=$1 cwd="" line rc=0; shift
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--cwd) [ $# -ge 2 ] && [ -n "$2" ] || die "$usage"; cwd=$2; shift 2 ;;
+		--bg) bg=true; shift ;;
 		--) shift; break ;;
 		*) break ;;
 		esac
 	done
 	[ $# -gt 0 ] || die "$usage"
+	if "$bg"; then
+		job_call "$name" start "$cwd" "$@"
+		run_literal_note "$name" "$@"
+		return
+	fi
 	line=$(literal_args "$@")
 	case $cwd in
 	'') line="cd ~/project 2>/dev/null; $line" ;;
@@ -308,6 +316,27 @@ cmd_run() { # NAME [--cwd DIR] [--] CMD [ARG...]
 	case $rc:$1 in 127:*[[:space:]]*) warn "hint: run takes the command and its arguments separately; for a shell line use: boxery run $name bash -c $(literal "$1")" ;; esac
 	run_literal_note "$name" "$@"
 	return "$rc"
+}
+
+# Ship the shared guest protocol; resolve npm's bin symlink before finding its sibling.
+job_call() { # NAME ACTION [ARGS...]
+	local name=$1 script=${BASH_SOURCE[0]} dir; shift
+	need_vm "$name"
+	while [ -L "$script" ]; do
+		dir=$(cd -P "$(dirname "$script")" && pwd)
+		script=$(readlink "$script")
+		case $script in /*) ;; *) script=$dir/$script ;; esac
+	done
+	dir=$(cd -P "$(dirname "$script")" && pwd)
+	vm_ssh -T "$name.boxery" "bash -s -- $(literal_args "$@")" <"$dir/jobs.sh"
+}
+
+cmd_jobs() { need_vm "${1:-}"; local name=$1; shift; job_call "$name" list "$@"; }
+cmd_job() { # ACTION NAME JOB [OPTIONS...]
+	local action=$1; shift
+	[ $# -ge 2 ] || die "usage: boxery $action NAME JOB [OPTIONS...]"
+	local name=$1; shift
+	job_call "$name" "$action" "$@"
 }
 
 cmd_attach() { # NAME [pi|opencode|shell] [session]
@@ -680,13 +709,14 @@ migrate_legacy_agent_forward() { # ~/.boxery/agent-forward/NAME markers → gran
 	[ -n "$HOST" ] && write_ssh_config || true
 }
 
-cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--grant SPEC]... [--agent-forward]
+cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--grant SPEC]... [--agent-forward]
 	name=""; pass=""; specs=""; from=""
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--from) valid_image "${2:-}" || die "invalid image name: ${2:-} (use VM@SNAP)"; from=$2; shift 2 ;;
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
+		--shape) [ $# -ge 2 ] || die "--shape needs a value"; valid_vm "$2" || die "invalid shape name: $2"; pass="$pass --shape $2"; shift 2 ;;
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
 			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
 			pass="$pass $1 $2"; shift 2 ;;
@@ -709,7 +739,8 @@ EOF
 	fi
 }
 
-# fork SRC DST... [--cpus N --mem MiB --disk GiB] [--grants]: copy SRC (running or not) into new VMs.
+# fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB] [--grants]: copy SRC (running or not) into
+# new VMs (same size as SRC unless --shape or size flags are given).
 # Each fork is a pet with its own identity. Grants are per VM and not copied unless --grants is given
 # (then the fork gets the same grant list, applied from this machine).
 cmd_fork() {
@@ -719,12 +750,13 @@ cmd_fork() {
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
 			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
 			pass="$pass $1 $2"; shift 2 ;;
+		--shape) [ $# -ge 2 ] || die "--shape needs a value"; valid_vm "$2" || die "invalid shape name: $2"; pass="$pass --shape $2"; shift 2 ;;
 		--grants) copy_grants=1; shift ;;
 		-*) die "unknown flag $1" ;;
 		*) need_vm "$1"; if [ -z "$src" ]; then src=$1; else dsts="$dsts $1"; fi; shift ;;
 		esac
 	done
-	[ -n "$src" ] && [ -n "$dsts" ] || die "usage: boxery fork SRC DST... [--cpus N --mem MiB --disk GiB] [--grants]"
+	[ -n "$src" ] && [ -n "$dsts" ] || die "usage: boxery fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB] [--grants]"
 	# shellcheck disable=SC2086  # word splitting of validated names/flags is intended
 	h fork "$src" $dsts $pass || rc=$?
 	for d in $dsts; do
@@ -822,8 +854,8 @@ cmd_ls() { # [--json]
 	out=$(h ls) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
-		if [ "$n" = NAME ]; then printf '%-62s %s\n' "$line" GRANTS
-		else printf '%-62s %s\n' "$line" "$(grants_summary "$n")"; fi
+		if [ "$n" = NAME ]; then printf '%-73s %s\n' "$line" GRANTS
+		else printf '%-73s %s\n' "$line" "$(grants_summary "$n")"; fi
 	done
 }
 
@@ -880,19 +912,27 @@ usage() {
 		host ls | show NAME | use NAME|legacy | rm NAME
 		setup user@host|local [--key K.pub] [--host-bin PATH]
 		                                configure the VM host (local = this machine) + register your ssh key
-		new NAME [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
-		ls [--json]                     list VMs (with their grants)
+		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--grant SPEC]... [--agent-forward]
+		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
+		ls [--json]                     list VMs (with their shape and grants)
 		rm NAME                         destroy VM (revokes its LLM token)
 		start|stop NAME
-		fork SRC DST... [--grants]      copy a VM (running or not) into new VMs, ~10 s; each gets its own
-		                                identity (--grants: give the forks SRC's grants too)
+		resize NAME [--cpus N] [--mem MiB] [--disk GiB]
+		                                change a VM's size (restarts it if running; disk only grows)
+		fork SRC DST... [--grants] [--shape S]
+		                                copy a VM (running or not) into new VMs, ~10 s; each gets its own
+		                                identity and SRC's size (--grants: give the forks SRC's grants too)
 		snap NAME [SNAP] | snaps NAME [--json] | revert NAME SNAP | snap-rm NAME SNAP
 		new NAME --from NAME@SNAP       new VM from a snapshot (also: boxery images)
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
-		run NAME [--cwd DIR] CMD [ARG...]
+		run [--bg] NAME [--cwd DIR] CMD [ARG...]
 		                                run a command with exactly these args (like docker exec), in
 		                                  ~/project; a relative --cwd is under ~/project
+		jobs NAME [--json]             list detached command jobs (state, start time, exit code)
+		logs NAME JOB [-f] [--strip-ansi] [--lines N] [--bytes N]
+		                                tail a job's output; -f follows until it finishes
+		wait NAME JOB [--timeout SEC]  wait and return the command's exit code (timeout: 124)
 		attach NAME [pi|opencode|shell] [session]
 		                                attach to a persistent tmux session running the agent
 		prompt NAME "task"              start a headless pi task in the background
@@ -911,7 +951,7 @@ usage() {
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
 
-		--json on ls, snaps, sessions, leases, grants prints JSON (fields: docs/cli.md)
+		--json on ls, snaps, sessions, leases, grants, jobs prints JSON (fields: docs/cli.md)
 
 	EOF
 	run_examples
@@ -944,6 +984,8 @@ setup) cmd_setup "$@" ;;
 rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")" "$(edge_marker "${1:-x}")"; write_ssh_config ;;
 stop) need_host; drop_master "${1:-}"; h stop "$@"; drop_master "${1:-}" ;;
 start) need_host; drop_master "${1:-}"; h start "$@"; drop_master "${1:-}"; if has_pushed_grants "${1:-x}"; then grants_apply "$1" || true; fi ;;
+# a resize restarts a running VM: like start, the connection is stale afterwards and tmpfs grants are gone
+resize) need_host; need_vm "${1:-}"; drop_master "$1"; h resize "$@"; drop_master "$1"; if has_pushed_grants "$1"; then grants_apply "$1" --quiet || true; fi ;;
 # a revert restores the snapshot's tmpfs too: always reconcile to the current grants
 revert) need_host; valid_snap "${2:-}" || die "invalid snapshot name: ${2:-}"; drop_master "${1:-}"; h revert "$@"; drop_master "${1:-}"; grants_apply "$1" --quiet || true ;;
 snap) need_host
@@ -953,11 +995,14 @@ new) need_host; cmd_new "$@" ;;
 fork) need_host; cmd_fork "$@" ;;
 snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
 images) need_host; h images ;;
+shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; cmd_run "$@" ;;
+jobs) need_host; cmd_jobs "$@" ;;
+logs | wait) need_host; cmd_job "$cmd" "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
 desktop) need_host; cmd_desktop "$@" ;;
 forward) need_host; cmd_forward "$@" ;;

@@ -155,6 +155,19 @@ backend_wait_endpoint() {
 
 backend_start() { limactl start "$(linst "$1")" --timeout 10m >/dev/null 2>&1 || die "limactl start failed"; }
 backend_stop() { limactl stop "$(linst "$1")" >/dev/null 2>&1 || die "limactl stop failed"; }
+backend_size() { lima_json "$(linst "$1")" | jq -r '"\(.cpus) \(.memory / 1048576 | floor) \(.disk / 1073741824 | floor)"'; }
+# limactl edit only changes a stopped instance, so a running VM is stopped and started again.
+backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
+	local i was args=() out rc=0; i=$(linst "$1"); was=$(lima_status "$i")
+	[[ -z $2 ]] || args+=(--cpus "$2")
+	[[ -z $3 ]] || args+=(--memory "$(awk -v m="$3" 'BEGIN { printf "%g", m / 1024 }')")
+	[[ -z $4 ]] || args+=(--disk "$4")
+	[[ $was == Stopped ]] || log "stopping $1 to resize it"
+	lima_stop "$i"
+	out=$(limactl edit --tty=false "$i" "${args[@]}" 2>&1) || rc=$?
+	if [[ $was == Running ]]; then limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "resized $1, but could not start it again"; fi
+	((rc == 0)) || die "limactl edit failed: $(printf '%s' "$out" | tail -1)"
+}
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; limactl delete --force "$(linst "$1")" >/dev/null 2>&1; }
 
 backend_cleanup_new() {

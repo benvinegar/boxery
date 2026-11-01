@@ -309,6 +309,65 @@ export async function bashTool(vm, { command, timeout }, { signal } = {}) {
 	return { text: `${note}${t.text || "(no output)"}\n[exit ${r.exitCode}]`, isError: r.exitCode !== 0 };
 }
 
+const JOB_SCRIPT = readFileSync(new URL("../controller/jobs.sh", import.meta.url));
+
+/** Detached jobs: cancelling a tool call stops observation, never the tmux job. */
+export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi, timeout }, { signal } = {}) {
+	assertName(vm);
+	if (signal?.aborted) throw new Error("aborted");
+	const args = [action];
+	if (action === "start") {
+		if (typeof command !== "string" || !command.trim() || command.includes("\0")) throw new Error("start requires a command");
+		if (cwd != null && (typeof cwd !== "string" || cwd.includes("\0"))) throw new Error("invalid cwd");
+		args.push(cwd ?? "", "bash", "-lc", command);
+	} else if (action === "list") args.push("--json");
+	else if (action === "logs" || action === "wait") {
+		if (typeof job !== "string" || !/^job-[A-Za-z0-9]{12}$/.test(job)) throw new Error("invalid job ID");
+		args.push(job);
+		if (action === "logs") {
+			if (lines != null && (!Number.isInteger(lines) || lines < 0 || lines > MAX_LINES)) throw new Error(`lines must be an integer from 0 to ${MAX_LINES}`);
+			args.push("--lines", String(lines ?? 200), "--bytes", String(MAX_BYTES));
+			if (stripAnsi) args.push("--strip-ansi");
+		} else {
+			if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600)) throw new Error("timeout must be an integer from 1 to 3600 seconds");
+			args.push("--json", "--timeout", String(timeout ?? 120));
+		}
+	} else throw new Error(`unknown jobs action: ${action}`);
+	const r = await sshRun(vm, `bash -s -- ${args.map(q).join(" ")}`, {
+		input: JOB_SCRIPT, signal, timeoutMs: action === "wait" ? ((timeout ?? 120) + 15) * 1000 : 120_000,
+		...(action === "logs" ? { maxBytes: MAX_BYTES } : {}),
+	});
+	if (signal?.aborted) throw new Error("aborted (detached job was not stopped)");
+	if (r.code !== 0) throw new Error(r.stderr.trim() || `job operation failed (exit ${r.code ?? "timeout"})`);
+	const out = r.stdout.toString().trim();
+	if (action === "start") return { text: JSON.stringify({ id: out }) };
+	if (action === "logs") {
+		// The guest already bounds bytes and lines; do not drop an oversized final
+		// line via the shared whole-line truncator. Skip a clipped UTF-8 prefix.
+		let start = 0;
+		while (start < r.stdout.length && (r.stdout[start] & 0xc0) === 0x80) start++;
+		let log = r.stdout.subarray(start).toString();
+		// Invalid UTF-8 decodes to replacement characters, which can expand the
+		// encoded response beyond the raw guest cap. Keep a character-safe suffix,
+		// not whole lines: a single huge line can still have a useful ending.
+		const decoded = Buffer.from(log);
+		const responseTruncated = decoded.length > MAX_BYTES;
+		if (responseTruncated) {
+			let cut = decoded.length - MAX_BYTES;
+			while (cut < decoded.length && (decoded[cut] & 0xc0) === 0x80) cut++;
+			log = decoded.subarray(cut).toString();
+		}
+		const truncated = responseTruncated || r.stderr.includes("boxery jobs: output byte-truncated");
+		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}` };
+	}
+	if (action === "wait") {
+		const result = JSON.parse(out);
+		if (result.state === "running") result.timed_out = true;
+		return { text: JSON.stringify(result), isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
+	}
+	return { text: out };
+}
+
 export async function readTool(vm, { path: p, offset, limit }) {
 	const rp = vmPath(p);
 	const mime = (await sshOk(vm, `test -r ${q(rp)} || { printf 'cannot read %s\\n' ${q(rp)} >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();
@@ -518,15 +577,29 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 	});
 }
 
-/** VMs on the host: [{name, state, addr, disk, lease, grants}] (fields: docs/cli.md). */
+/** VMs on the host: [{name, state, addr, disk, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
 export const listVms = () => boxeryJson(["ls"]);
+
+/** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
+export const listShapes = () => boxeryJson(["shapes"]);
+
+export function assertShape(s) {
+	if (typeof s !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(s)) throw new Error(`invalid shape name: ${s}`);
+	return s;
+}
+
+export function formatShapes({ default: def, shapes }) {
+	const rows = [["SHAPE", "CPUS", "MEM", "DISK"], ...Object.entries(shapes).map(([n, s]) => [n + (n === def ? " (default)" : ""), String(s.cpus), `${s.mem / 1024} GiB`, `${s.disk} GiB`])];
+	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
+	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(w[i]))).join("  ")).join("\n");
+}
 
 const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
-	const rows = [["NAME", "STATE", "ADDR", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.shape ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
@@ -559,21 +632,24 @@ export async function ensureVm(name, notify = () => {}) {
 }
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
-export async function manage({ action, name, snapshot, to }) {
+export async function manage({ action, name, snapshot, to, shape }) {
 	const need = () => assertName(name);
+	const shapeArgs = () => (shape == null || shape === "" ? [] : ["--shape", assertShape(shape)]);
 	switch (action) {
 		case "fork": {
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
 			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
-			return boxeryCli(["fork", need(), ...dsts], 900_000);
+			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000);
 		}
 		case "snaps":
 			return boxeryCli(["snaps", need()], 60_000);
 		case "list":
 			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName()]);
+			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs()]);
+		case "shapes":
+			return formatShapes(await listShapes());
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000);
 		case "snap":

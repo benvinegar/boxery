@@ -184,6 +184,34 @@ backend_wait_endpoint() { echo "$(wait_ip "$1") 22"; }
 
 backend_start() { virsh start "$(dom "$1")" >/dev/null; }
 backend_stop() { virsh shutdown "$(dom "$1")" >/dev/null; }
+backend_size() {
+	local d; d=$(dom "$1")
+	printf '%s %s %s\n' "$(virsh vcpucount "$d" --config --maximum)" \
+		"$(virsh dominfo "$d" | awk '/^Max memory:/ { print int($3 / 1024) }')" "$(($(vol_bytes "$1") / 1073741824))"
+}
+# CPU and memory go into the persistent config, the disk grows offline; the guest's cloud-init growpart
+# extends the root filesystem on the next boot. Raising and lowering need the limits set in opposite order.
+libvirt_set_vcpus() { # DOM FROM TO
+	if (($3 > $2)); then virsh setvcpus "$1" "$3" --config --maximum && virsh setvcpus "$1" "$3" --config
+	else virsh setvcpus "$1" "$3" --config && virsh setvcpus "$1" "$3" --config --maximum; fi >/dev/null
+}
+libvirt_set_mem() { # DOM FROM_MIB TO_MIB
+	if (($3 > $2)); then virsh setmaxmem "$1" "${3}M" --config && virsh setmem "$1" "${3}M" --config
+	else virsh setmem "$1" "${3}M" --config && virsh setmaxmem "$1" "${3}M" --config; fi >/dev/null
+}
+backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
+	local name=$1 d st c m i rc=0; d=$(dom "$1"); st=$(virsh domstate "$d" | head -1)
+	read -r c m _ < <(backend_size "$name")
+	if [[ $st != "shut off" ]]; then
+		log "stopping $name to resize it"
+		virsh shutdown "$d" >/dev/null || die "could not shut down $name"
+		for i in $(seq 120); do [[ $(virsh domstate "$d" | head -1) == "shut off" ]] && break; ((i < 120)) || die "$name did not shut down within 2 minutes"; sleep 1; done
+	fi
+	{ [[ -z $2 ]] || libvirt_set_vcpus "$d" "$c" "$2"; } && { [[ -z $3 ]] || libvirt_set_mem "$d" "$m" "$3"; } &&
+		{ [[ -z $4 ]] || virsh vol-resize --pool "$POOL" "$d.qcow2" "${4}G" >/dev/null; } || rc=$?
+	if [[ $st == running ]]; then virsh start "$d" >/dev/null || die "could not start $name again after resizing it"; fi
+	((rc == 0)) || die "resizing $name failed partway; check: virsh dominfo $d"
+}
 
 backend_rm() {
 	local d; d=$(dom "$1")

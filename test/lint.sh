@@ -2,7 +2,7 @@
 # Static checks: shellcheck (warnings are errors), node syntax checks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-shellcheck -S warning controller/boxery host/boxery-host host/backends/*.sh e2e.sh mcp/test-mcp.sh test/shell/*.sh
+shellcheck -S warning controller/boxery controller/jobs.sh host/boxery-host host/backends/*.sh e2e.sh mcp/test-mcp.sh test/shell/*.sh
 for f in core/*.mjs host/*.mjs mcp/*.mjs proxy/*.mjs test/*.mjs; do node --check "$f"; done
-for f in controller/boxery host/boxery-host host/backends/*.sh; do bash -n "$f"; done   # bash -n: catches bash 3.2 parse errors when run on macOS
+for f in controller/boxery controller/jobs.sh host/boxery-host host/backends/*.sh; do bash -n "$f"; done   # bash -n: catches bash 3.2 parse errors when run on macOS
 echo "lint ok"

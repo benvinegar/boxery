@@ -1,0 +1,8 @@
+{
+  "default": "standard",
+  "shapes": {
+    "small": { "cpus": 2, "mem": 4096, "disk": 20 },
+    "standard": { "cpus": 4, "mem": 8192, "disk": 40 },
+    "large": { "cpus": 8, "mem": 16384, "disk": 80 }
+  }
+}

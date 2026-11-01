@@ -34,7 +34,7 @@ echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://1
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
 "$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
-"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", lease: null} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", addr: .[0].addr, disk: "1GiB", lease: null, shape: "custom", cpus: 2, mem: 2048} and (.[0].addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
@@ -82,5 +82,37 @@ if echo '{}' | "$H" edge-set nosuchvm >/dev/null 2>&1; then bad "edge-set on mis
 echo '{}' | "$H" edge-set edg >/dev/null 2>&1 && [[ ! -f $BOXERY_CONF/edge/edg.json ]] && ok "edge-set {} clears" || bad "clear"
 echo '{"a.example.com":{"headers":{}}}' | "$H" edge-set edg >/dev/null 2>&1; "$H" rm edg >/dev/null 2>&1
 [[ ! -f $BOXERY_CONF/edge/edg.json ]] && ok "rm deletes edge routes" || bad "rm left routes"
+
+echo; # --- resize (#8)
+"$H" new rz --cpus 2 --mem 2048 --disk 10 >/dev/null 2>&1
+sz() { cat "$BOXERY_FAKE_DIR/rz/size"; }
+restarts() { [[ -f $BOXERY_FAKE_DIR/rz/restarts ]] && wc -l <"$BOXERY_FAKE_DIR/rz/restarts" | tr -d ' ' || echo 0; }
+out=$("$H" resize rz --cpus 4 --mem 4096 2>&1) && [[ $(sz) == "4 4096 10" ]] && ok "resize changes CPUs and memory, keeps disk" || bad "resize: $(sz) $out"
+[[ $out == *"2 vCPU, 2048 MiB, 10 GiB → 4 vCPU, 4096 MiB, 10 GiB"* ]] && ok "resize reports before → after" || bad "resize output: $out"
+[[ $(cat "$BOXERY_FAKE_DIR/rz/state") == running && $(restarts) == 1 ]] && ok "a running VM is restarted and left running" || bad "state $(cat "$BOXERY_FAKE_DIR/rz/state"), restarts $(restarts)"
+"$H" resize rz --disk 20 >/dev/null 2>&1 && [[ $(sz) == "4 4096 20" ]] && ok "resize grows the disk" || bad "disk grow: $(sz)"
+expect_fail "resize refuses to shrink the disk" "$H" resize rz --disk 5
+[[ $(sz) == "4 4096 20" ]] && ok "...and leaves the VM as it was" || bad "after shrink attempt: $(sz)"
+"$H" resize rz --cpus 2 --mem 1024 >/dev/null 2>&1 && [[ $(sz) == "2 1024 20" ]] && ok "CPUs and memory can go down" || bad "shrink cpu/mem: $(sz)"
+r=$(restarts); out=$("$H" resize rz --cpus 2 --disk 20 2>&1) && [[ $(restarts) == "$r" && $out == *"already has"* ]] && ok "a no-op resize does not restart the VM" || bad "no-op: restarts $(restarts), $out"
+"$H" stop rz >/dev/null 2>&1; r=$(restarts)
+"$H" resize rz --mem 2048 >/dev/null 2>&1 && [[ $(cat "$BOXERY_FAKE_DIR/rz/state") == "shut off" && $(restarts) == "$r" && $(sz) == "2 2048 20" ]] \
+	&& ok "a stopped VM is resized and stays stopped" || bad "stopped resize: $(cat "$BOXERY_FAKE_DIR/rz/state") $(sz)"
+"$H" start rz >/dev/null 2>&1
+if BOXERY_FAKE_FAIL_RESIZE=1 "$H" resize rz --cpus 8 >/dev/null 2>&1; then bad "failed resize reported success"; else ok "a failed resize exits non-zero"; fi
+[[ $(sz) == "2 2048 20" && $(cat "$BOXERY_FAKE_DIR/rz/state") == running ]] && ok "...and leaves the VM running at its old size" || bad "after failure: $(sz) $(cat "$BOXERY_FAKE_DIR/rz/state")"
+"$H" resize rz --cpus 3 >/dev/null 2>&1 && [[ $(sz) == "3 2048 20" ]] && "$H" resize rz --cpus 2 >/dev/null 2>&1 \
+	&& ok "...and releases the VM's operation lock (the next resize runs)" || bad "resize after a failure: $(sz)"
+# Lima's limactl start leaves a hostagent daemon behind; the supervisor must not wait for it (fd 3)
+t0=$(date +%s); BOXERY_FAKE_DAEMON=20 "$H" resize rz --cpus 3 >/dev/null 2>&1; t1=$(date +%s)
+"$H" stop rz >/dev/null 2>&1; BOXERY_FAKE_DAEMON=20 "$H" start rz >/dev/null 2>&1; t2=$(date +%s)
+((t1 - t0 < 10 && t2 - t1 < 10)) && [[ $(sz) == "3 2048 20" ]] && ok "resize and start do not wait for a daemon they leave behind" \
+	|| bad "operations waited for a daemon: resize $((t1 - t0))s, start $((t2 - t1))s"
+"$H" resize rz --cpus 2 >/dev/null 2>&1
+for args in "rz" "rz --cpus" "rz --cpus 0" "rz --cpus x" "rz --mem 256" "rz --disk -1" "rz --bogus 1" "rz extra --cpus 2" "--cpus 2" "nosuchvm --cpus 2" "Bad --cpus 2"; do
+	read -r -a argv <<<"$args"; expect_fail "resize rejects: $args" "$H" resize "${argv[@]}"
+done
+[[ $(sz) == "2 2048 20" ]] && ok "rejected invocations left the size alone" || bad "size changed: $(sz)"
+"$H" rm rz >/dev/null 2>&1 || true
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-The host uses `host/boxery-operations.mjs` to supervise VM mutations. It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the CLI starts a supervisor for each operation, and the existing reaper performs recovery.
+The host uses `host/boxery-operations.mjs` to supervise VM mutations. Lease workflow policy lives in `host/lease-workflows.mjs`, with CLI/SQLite/backend bindings in `host/boxery-lifecycle.mjs`; see [host module boundaries](host-modules.md). It needs Node with `node:sqlite` (Node ≥ 22.13) and the system `ps` command. There is no new daemon: the CLI starts a supervisor for each operation, and the existing reaper performs recovery.
 
 ## Lock boundary
 
@@ -12,7 +12,7 @@ Short `BEGIN IMMEDIATE` transactions in `~/.config/boxery/leases.db` arbitrate l
 |---|---|
 | `new NAME` | NAME; also the source VM name for `--from SOURCE@LABEL` |
 | `fork SRC DST…` | SRC and every destination, acquired together |
-| `start`, `stop`, `rm`, `snap`, `snap-rm`, `revert`, `edge-set` | The target VM |
+| `start`, `stop`, `resize`, `rm`, `snap`, `snap-rm`, `revert`, `edge-set` | The target VM |
 | `pool add`, `pool rm` | The target VM |
 | Acquire key installation and commit | The claimed VM |
 | Release/reset | The target VM, including readiness checks, key installation and final state commit |
@@ -56,7 +56,7 @@ Workers record intent **after preflight, before side effects**, and clear it onl
 | Pool add | Preserve an already registered member; otherwise restore pet access and remove the incomplete clean image |
 | Pool remove | Finish removing membership/clean image and restoring pet access |
 
-Start/stop expose the resulting hypervisor state; they do not promise rollback to the old power state. Edge-route publication is an atomic rename; retries set the desired routes again. Token read/modify/rename uses a short SQLite transaction, not a crash-prone mkdir lock.
+Start/stop/resize expose the resulting hypervisor state; they do not promise rollback to the old power state or size. An interrupted resize can leave a VM stopped; `boxery start` brings it back. Edge-route publication is an atomic rename; retries set the desired routes again. Token read/modify/rename uses a short SQLite transaction, not a crash-prone mkdir lock.
 
 The journal contains names, operation metadata and backend routing settings, not grant secrets or tokens. Seed files remain in a private per-operation work directory until cleanup. This is process-crash recovery, not a guarantee of atomicity across a machine power failure, guest application transactions, or external administrator actions.
 

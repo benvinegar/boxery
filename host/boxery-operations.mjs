@@ -52,7 +52,7 @@ export function resources(command, args) {
 	let names = [];
 	if (["new", "fork"].includes(command)) {
 		for (let i = 0; i < args.length; i++) {
-			if (["--cpus", "--mem", "--disk"].includes(args[i])) { i++; continue; }
+			if (["--cpus", "--mem", "--disk", "--shape"].includes(args[i])) { i++; continue; }
 			if (args[i] === "--from") {
 				const image = args[++i];
 				if (!/^[a-z][a-z0-9-]{0,30}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(image ?? "")) throw new Error("invalid image name");
@@ -62,7 +62,7 @@ export function resources(command, args) {
 		}
 	} else if (command === "pool") {
 		if (["add", "rm"].includes(args[0])) names = [assertName(args[1])];
-	} else if (["start", "stop", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
+	} else if (["start", "stop", "resize", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
 	return [...new Set(names)].sort();
 }
 
@@ -73,6 +73,18 @@ function transaction(db, fn) {
 }
 const row = (db, id) => db.prepare("SELECT * FROM operations WHERE id=?").get(id);
 const actions = (db, id) => db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id).map((r) => ({ ...r, data: JSON.parse(r.data) }));
+
+// Shared by shell CLI workers and the Node lifecycle adapter; ownership and storage stay here.
+export function recordIntent(db, operationId, kind, data) {
+	const op = row(db, operationId);
+	if (!op || !alive(op)) throw new Error("operation no longer owns its locks");
+	const id = randomUUID();
+	db.prepare("INSERT INTO operation_intents(id, operation_id, kind, data) VALUES(?,?,?,?)").run(id, operationId, kind, JSON.stringify(data));
+	return id;
+}
+export function completeIntent(db, operationId, intentId) {
+	db.prepare("DELETE FROM operation_intents WHERE id=? AND operation_id=?").run(intentId, operationId);
+}
 
 function stopAbandoned(r) {
 	if (!r.child || r.boot !== BOOT) return;
@@ -96,7 +108,10 @@ async function worker(db, op, host, args, recovery = false) {
 		if (value == null) delete env[key];
 		else env[key] = value;
 	}
-	const child = spawn("bash", ["-c", 'IFS= read -r gate <&3 || exit 1; exec "$@"', "boxery-worker", host, ...args], {
+	// Close the gate after reading it: anything the worker starts inherits its fds, and a daemon that
+	// outlives it (Lima's hostagent, via limactl start) would hold the pipe open, so "close" never fires.
+	// A bare `exec 3<&-`: `exec "$@" 3<&-` makes bash keep a restorable copy (fd 10) that is inherited.
+	const child = spawn("bash", ["-c", 'IFS= read -r gate <&3 || exit 1; exec 3<&-; exec "$@"', "boxery-worker", host, ...args], {
 		env, detached: true, stdio: [recovery ? "ignore" : "inherit", "inherit", "inherit", "pipe"],
 	});
 	// Install listeners before opening the gate (a fast child may exit immediately).
@@ -193,13 +208,9 @@ async function main() {
 	}
 	if (mode === "intent") {
 		const [kind, ...data] = args;
-		const op = row(db, id);
-		if (!op || !alive(op)) throw new Error("operation no longer owns its locks");
-		const actionId = randomUUID();
-		db.prepare("INSERT INTO operation_intents(id, operation_id, kind, data) VALUES(?,?,?,?)").run(actionId, id, kind, JSON.stringify(data));
-		console.log(actionId); return;
+		console.log(recordIntent(db, id, kind, data)); return;
 	}
-	if (mode === "done") { db.prepare("DELETE FROM operation_intents WHERE id=? AND operation_id=?").run(args[0], id); return; }
+	if (mode === "done") { completeIntent(db, id, args[0]); return; }
 	if (mode === "intents") { console.log(JSON.stringify(actions(db, id))); return; }
 	const env = { BOXERY_CONF: conf, ...Object.fromEntries(SETTINGS.map((k) => [k, process.env[k] ?? null])) };
 	if (mode === "reconcile") { await acquire(db, [], "reconcile", env, args[0], conf, true); return; }

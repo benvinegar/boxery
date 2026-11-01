@@ -112,6 +112,10 @@ export function get(db, name) {
 	return db.prepare("SELECT * FROM vms WHERE name = ?").get(name) ?? null;
 }
 
+export function find(db, leaseId) {
+	return db.prepare("SELECT * FROM vms WHERE lease_id=?").get(leaseId) ?? null;
+}
+
 export function list(db) {
 	const t = now();
 	return db
@@ -247,7 +251,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 			case "add": out(add(db, a[0])); break;
 			case "remove": out(remove(db, a[0], a[1] === "--force")); break;
 			case "get": out(get(db, a[0])); break;
-			case "find": out(db.prepare("SELECT * FROM vms WHERE lease_id=?").get(a[0]) ?? null); break;
+			case "find": out(find(db, a[0])); break;
 			case "candidates": out(candidates(db)); break;
 			case "missing":
 				db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
