@@ -109,12 +109,15 @@ exe_edge() { # VM COMMAND (stdin: passed through)
 	# shellcheck disable=SC2086  # dest is "-l USER HOST" or "HOST"
 	"${EXE_SSH[@]}" $dest "$@"
 }
-exe_sizes() { # CPUS MEM_MIB → "--cpu=N --memory=NGB", capped to the plan (BOXERY_EXE_MAX_CPUS/MEM)
+# CPUS MEM_MIB → "CPUS MEM_MIB" as exe.dev will size the VM: capped to the plan (BOXERY_EXE_MAX_CPUS/MEM),
+# memory in whole GB.
+exe_cap() {
 	local c=$1 m=$2
 	if ((c > EXE_MAX_CPUS)); then log "capping to $EXE_MAX_CPUS vCPU (BOXERY_EXE_MAX_CPUS)"; c=$EXE_MAX_CPUS; fi
 	if ((m > EXE_MAX_MEM)); then log "capping to $EXE_MAX_MEM MiB (BOXERY_EXE_MAX_MEM)"; m=$EXE_MAX_MEM; fi
-	echo "--cpu=$c --memory=$(((m + 1023) / 1024))GB"
+	echo "$c $((((m + 1023) / 1024) * 1024))"
 }
+exe_sizes() { local c m; read -r c m <<<"$(exe_cap "$1" "$2")"; echo "--cpu=$c --memory=$((m / 1024))GB"; }   # → cp/new flags
 exe_pool_flag() { [[ -z $EXE_POOL ]] || echo "--pool=$EXE_POOL"; }
 # cp SRC DST [FLAGS…]: a copy boots fresh from SRC's disk. Fails without leaving DST behind.
 exe_cp() {
@@ -373,6 +376,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	[[ -n $srcdisk ]] || srcdisk=0
 	if ((disk < srcdisk)); then disk=$srcdisk; fi
 	echo "$disk" >"$d/disk"
+	echo "$(exe_cap "$cpus" "$mem" 2>/dev/null) $disk" >"$d/size"   # CPUS MEM_MIB DISK_GIB, for backend_size
 	local flags; flags="$(exe_sizes "$cpus" "$mem") $(exe_pool_flag)"
 	if ((disk > srcdisk)); then flags="$flags --disk=${disk}GB"; fi
 	[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
@@ -441,6 +445,33 @@ backend_stop() {
 	exe_do pause "$vm" >/dev/null || die "exe.dev pause $vm failed"
 }
 
+backend_size() { # → CPUS MEM_MIB DISK_GIB, as created/resized (exe.dev's ls doesn't report sizes)
+	[[ -f $(exe_dir "$1")/size ]] || die "no recorded size for $1"
+	cat "$(exe_dir "$1")/size"
+}
+# exe.dev resize, then a restart of a running VM so the guest sees the new CPUs, memory and disk
+# (exeuntu grows / at boot). A paused VM is left paused.
+backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
+	local vm d c m k j st flags=""; vm=$(exe_vm "$1"); d=$(exe_dir "$1")
+	read -r c m k <"$d/size" || die "no recorded size for $1"
+	[[ -z $2 && -z $3 ]] || read -r c m <<<"$(exe_cap "${2:-$c}" "${3:-$m}")"
+	[[ -z $2 ]] || flags="$flags --cpu=$c"
+	[[ -z $3 ]] || flags="$flags --memory=$((m / 1024))GB"
+	[[ -z $4 ]] || { k=$4; flags="$flags --disk=${k}GB"; }
+	j=$(exe_ls) || exit 1
+	st=$(exe_status "$vm" "$j")
+	[[ -n $st ]] || die "$1 is gone from exe.dev ($vm)"
+	# shellcheck disable=SC2086
+	exe_do resize "$vm" $flags >/dev/null || die "exe.dev resize $vm failed"
+	echo "$c $m $k" >"$d/size"; echo "$k" >"$d/disk"
+	if [[ $st == running ]]; then
+		log "restarting $1 to apply the new size"
+		exe_sync "$vm" || true
+		exe_do restart "$vm" >/dev/null || die "resized $1, but exe.dev restart failed"
+		exe_tunnel_start "$1"   # reconnect now rather than after the keepalive notices
+	fi
+}
+
 # Remove NAME's exe.dev VM(s), tunnel and local state, whatever exists. Idempotent.
 exe_destroy() {
 	local j v
@@ -500,6 +531,8 @@ backend_reimage() { # NAME IMAGE: same exe.dev name (endpoint) and tunnel slot; 
 		if exe_has "$stg" "$j"; then exe_do rm "$stg" >/dev/null || die "could not remove a stale $stg"; fi
 		disk=$(cat "$(exe_dir "$1")/disk" 2>/dev/null || echo 0); srcdisk=$(exe_disk_of_image "$img" "$j")
 		flags=$(exe_pool_flag)
+		# The image may come from before a resize: keep the VM's own CPU and memory.
+		local c m; if read -r c m _ <"$(exe_dir "$1")/size" 2>/dev/null; then flags="$flags $(exe_sizes "$c" "$m")"; fi
 		if ((disk > ${srcdisk:-0})); then flags="$flags --disk=${disk}GB"; fi
 		[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
 		# Copy first, swap after: a failed copy leaves the VM as it was.

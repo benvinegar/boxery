@@ -74,6 +74,7 @@ rename) vm "${pos[0]}"; [ ! -d "$S/${pos[1]}" ] || err "VM ${pos[1]} already exi
 comment) vm "${pos[0]}"; t=${pos[1]#\'}; echo "${t%\'}" >"$S/${pos[0]}/comment"; echo '{}' ;;
 pause) vm "${pos[0]}"; echo paused >"$S/${pos[0]}/status"; echo '{}' ;;
 resume | restart) vm "${pos[0]}"; echo running >"$S/${pos[0]}/status"; echo '{}' ;;
+resize) vm "${pos[0]}"; [ -z "${FAIL_RESIZE:-}" ] || err "injected resize failure"; echo "${flags[*]}" >"$S/${pos[0]}/resized"; echo '{}' ;;
 *) err "unknown command $cmd" ;;
 esac
 STUB
@@ -151,6 +152,16 @@ jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == "127.0.0
 jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists boxery VMs only (not the base, images or the account's other VMs)" || bad "ls names: $j"
 [[ $("$H" ip v1) == 127.0.0.1 ]] && ok "ip" || bad ip
 
+# --- size / resize
+[[ $("$H" __call backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$H" __call backend_size v1 2>&1)"
+: >"$CALLS"
+expect "resize a running VM" "$H" resize v1 --cpus 1 --disk 30
+called "exe.dev resize bxtest-v-v1 --cpu=1 --disk=30GB" && called "exe.dev restart bxtest-v-v1" && ok "resize: exe.dev resize, then a restart to apply it" || bad "resize: $(cat "$CALLS")"
+[[ $(cat "$E/v1/size") == "1 4096 30" && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "new size recorded; tunnel back up" || bad "after resize: $(cat "$E/v1/size")"
+expect_fail "disks don't shrink" "$H" resize v1 --disk 25
+expect "resize back to 2 vCPU" "$H" resize v1 --cpus 2
+[[ $("$H" __call backend_size v1 2>/dev/null) == "2 4096 30" ]] && ok "backend_size follows resizes" || bad "size: $(cat "$E/v1/size")"
+
 # --- stop / start
 : >"$CALLS"
 expect "stop" "$H" stop v1
@@ -169,10 +180,10 @@ echo v1-work >"$S/bxtest-v-v1/data"
 expect "snapshot of a running VM" "$H" snap v1 s1
 IS1=$(img v1@s1)
 grep -x sync "$S/bxtest-v-v1/edge.log" >/dev/null && called "exe.dev cp bxtest-v-v1 $IS1 --copy-tags=false" && ok "guest sync, then cp to the image VM" || bad "capture: $(cat "$CALLS")"
-[[ $(cat "$S/$IS1/comment") == "boxery-image:v1@s1:20" && $(st "$IS1") == paused && $(cat "$S/$IS1/data") == v1-work ]] && ok "image: labelled with its name and disk, paused, a copy of the disk" || bad "image: $(cat "$S/$IS1/comment") $(st "$IS1")"
+[[ $(cat "$S/$IS1/comment") == "boxery-image:v1@s1:30" && $(st "$IS1") == paused && $(cat "$S/$IS1/data") == v1-work ]] && ok "image: labelled with its name and disk, paused, a copy of the disk" || bad "image: $(cat "$S/$IS1/comment") $(st "$IS1")"
 [[ $(st bxtest-v-v1) == running ]] && ok "source keeps running" || bad "source state"
 expect_fail "duplicate snapshot name rejected" "$H" snap v1 s1
-"$H" images | grep -E '^v1@s1 +2026-10-31T12:00:00 +20GiB' >/dev/null && ok "images: name, created, size" || bad "images: $("$H" images)"
+"$H" images | grep -E '^v1@s1 +2026-10-31T12:00:00 +30GiB' >/dev/null && ok "images: name, created, size" || bad "images: $("$H" images)"
 [[ $("$H" images | grep -c '@') == 1 ]] && ok "images: the base isn't an image" || bad "images: $("$H" images)"
 : >"$CALLS"
 FAIL_CP=1 expect_fail "failed capture fails" "$H" snap v1 s2
@@ -182,7 +193,7 @@ FAIL_CP=1 expect_fail "failed capture fails" "$H" snap v1 s2
 echo changed >"$S/bxtest-v-v1/data"
 : >"$CALLS"
 expect "revert" "$H" revert v1 s1
-called "exe.dev cp $IS1 bxtest-s-v1" && called "exe.dev rm bxtest-v-v1" && called "exe.dev rename bxtest-s-v1 bxtest-v-v1" && ok "revert: copy to staging, remove, rename" || bad "revert: $(cat "$CALLS")"
+called "exe.dev cp $IS1 bxtest-s-v1 --copy-tags=false --cpu=2 --memory=4GB" && called "exe.dev rm bxtest-v-v1" && called "exe.dev rename bxtest-s-v1 bxtest-v-v1" && ok "revert: copy to staging, remove, rename" || bad "revert: $(cat "$CALLS")"
 [[ $(cat "$S/bxtest-v-v1/data") == v1-work && $(cat "$E/v1/slot") == 1 && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "disk restored, slot kept, tunnel up" || bad "after revert"
 expect_fail "revert to an unknown snapshot fails" "$H" revert v1 nope
 
