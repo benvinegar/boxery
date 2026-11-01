@@ -3,7 +3,8 @@
 | Layer | Command | Needs |
 |---|---|---|
 | Lint (shellcheck + node syntax) | `npm run lint` | shellcheck, node |
-| Unit/integration tests: core helpers, proxy, MCP, SQLite leases and lifecycle crash recovery (real host dispatcher with a fake backend) | `npm test` | node ≥ 20; lease/lifecycle cases need node ≥ 22.13 |
+| Type check: VM-side TypeScript (`core/*.ts`, run by Node's type stripping, no build step) | `npm i --no-save typescript@5.9.3 @types/node@22 && npm run typecheck` | node |
+| Unit/integration tests: core helpers, proxy, MCP, SQLite leases and lifecycle crash recovery (real host dispatcher with a fake backend), background jobs (real CLI + MCP, helper run as in a VM) | `npm test` | node ≥ 20; lease/lifecycle cases need node ≥ 22.13, job cases ≥ 22.18 |
 | Shell tests: host dispatcher against the `fake` backend, leases, images/forks (`host-images.sh`: the behaviour every backend must match), controller local mode + grants, named registry/import/defaults, injection/concurrency regressions | `npm run test:shell` | bash, jq, openssl, node ≥ 22.13, ps (procps on Linux) |
 | Same under macOS's bash 3.2 | `docker run --rm -v "$PWD":/src:ro bash:3.2 bash -c 'apk add -q openssh-client jq coreutils openssl nodejs perl git procps-ng; cp -r /src /w && cd /w && bash test/shell/run.sh'` | docker |
 | MCP protocol against a live VM | `mcp/test-mcp.sh VM` | a VM |

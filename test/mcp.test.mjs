@@ -1,7 +1,7 @@
 // MCP server protocol tests with a fake VM: an `ssh` stub on PATH runs the remote script locally
 // (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -44,8 +44,9 @@ fi
 cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 `,
 	);
-	// macOS has no setsid; emulate "new process group + wait" with perl (present on macOS and Linux).
-	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- "$@"\n`);
+	// macOS has no setsid; emulate it with perl (present on macOS and Linux): a new session, then exec.
+	// -w (wait for the child) is implied: perl execs in place, so the caller already waits on it.
+	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die' -- "$@"\n`);
 	chmodSync(path.join(bin, "setsid"), 0o755);
 	// vm_jobs needs tmux in the VM; the fake keeps it off the developer's server and works where tmux isn't installed.
 	writeFileSync(path.join(bin, "tmux"), fakeTmux());
@@ -380,7 +381,9 @@ describe("protocol features", () => {
 		assert.match((await c.tool("vm_manage", { action: "list" })).content[0].text, /current: fakevm/);
 	});
 
-	test("vm_jobs declares an output schema and returns structured records", async () => {
+	// The VM-side job helper needs Node's type stripping (22.18+; boxery images ship it).
+	const jobsSkip = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module-typescript", "-e", ""]).status === 0 ? false : "needs Node >= 22.18 (type stripping)";
+	test("vm_jobs declares an output schema and returns structured records", { skip: jobsSkip }, async () => {
 		const { tools } = (await c.call("tools/list")).result;
 		assert.ok(tools.find((t) => t.name === "vm_jobs").outputSchema.properties.jobs);
 		const start = await c.tool("vm_jobs", { action: "start", command: "echo job-out" });
@@ -388,18 +391,21 @@ describe("protocol features", () => {
 		assert.match(start.structuredContent.id, /^job-/);
 		assert.deepEqual(JSON.parse(start.content[0].text), start.structuredContent);
 		const wait = await c.tool("vm_jobs", { action: "wait", job: start.structuredContent.id, timeout: 10 });
-		assert.equal(wait.structuredContent.state, "completed");
+		assert.equal(wait.structuredContent.state, "exited");
 		assert.equal(wait.structuredContent.exit_code, 0);
+		assert.match(wait.structuredContent.output, /job-out/, "wait includes the output tail");
 		const list = await c.tool("vm_jobs", { action: "list" });
 		assert.ok(list.structuredContent.jobs.some((j) => j.id === start.structuredContent.id));
 		const logs = await c.tool("vm_jobs", { action: "logs", job: start.structuredContent.id });
 		assert.match(logs.structuredContent.log, /job-out/);
 		assert.equal(logs.structuredContent.truncated, false);
-		// A job whose metadata is empty must not hide the others or break the JSON.
-		writeFileSync(path.join(env.VMROOT, ".boxery/jobs/job-AAAAAAAAAAAA.meta"), "");
+		// A job whose record is corrupt must not hide the others or break the JSON.
+		writeFileSync(path.join(env.VMROOT, ".boxery/jobs/job-20260101-000000-aaaaaa.json"), "");
 		const withBad = await c.tool("vm_jobs", { action: "list" });
 		assert.equal(withBad.isError, false, withBad.content[0].text);
-		assert.equal(withBad.structuredContent.jobs.find((j) => j.id === "job-AAAAAAAAAAAA").started_at, null);
+		assert.ok(withBad.structuredContent.jobs.some((j) => j.id === start.structuredContent.id));
+		const killed = await c.tool("vm_jobs", { action: "kill", job: start.structuredContent.id });
+		assert.equal(killed.structuredContent.id, start.structuredContent.id);
 	});
 
 	test("progress notifications stream status lines when the client sends a progressToken", async () => {

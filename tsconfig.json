@@ -1,0 +1,15 @@
+{
+  // Type-checks the code that runs under Node's built-in type stripping (no build step).
+  // `npm run typecheck` (needs: npm i --no-save typescript@5.9.3 @types/node@22; erasableSyntaxOnly is 5.8+)
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
+  },
+  "files": ["core/boxery-jobs.ts"]
+}

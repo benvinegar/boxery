@@ -50,18 +50,17 @@ export const TOOLS = [
 	{
 		name: "vm_jobs",
 		title: "VM jobs",
-		description:
-			"Detached command jobs in a VM. start runs a bash command in tmux (survives disconnects), returning a job ID; list returns state/start time/exit code; logs returns a bounded output tail; " +
-			"wait observes completion, returning exit_code or timed_out:true. Timeout/cancellation never kills the job. Jobs lost to VM reboot or tmux termination have state lost. Optional vm defaults to the current VM.",
+		description: core.JOBS_DESCRIPTION,
 		parameters: obj(
 			{
-				action: { type: "string", enum: ["start", "list", "logs", "wait"] },
-				command: { type: "string", description: "start: bash command, like vm_bash" },
+				action: { type: "string", enum: ["start", "list", "logs", "wait", "kill"] },
+				command: { type: "string", description: "start: bash command line, like vm_bash" },
 				cwd: { type: "string", description: "start: working directory (default ~/project; relative paths below it)" },
-				job: { type: "string", description: "logs/wait: ID returned by start" },
-				lines: { type: "integer", minimum: 0, maximum: core.MAX_LINES, description: "logs: last N lines (default 200)" },
+				job: { type: "string", description: "logs/wait/kill: ID returned by start" },
+				lines: { type: "integer", minimum: 0, maximum: core.MAX_LINES, description: "logs: last N lines (default 200); wait: output lines to include (default 20)" },
 				stripAnsi: { type: "boolean", description: "logs: strip terminal escape codes" },
-				timeout: { type: "integer", minimum: 1, maximum: 3600, description: "wait: seconds to observe (default 120)" },
+				timeout: { type: "integer", minimum: 0, maximum: 600, description: "wait: seconds to observe (default 60; 0 = check once)" },
+				grace: { type: "integer", minimum: 0, maximum: 60, description: "kill: seconds between SIGTERM and SIGKILL (default 5)" },
 			},
 			["action"],
 		),

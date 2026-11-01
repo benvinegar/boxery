@@ -149,6 +149,7 @@ Every integration exposes the same tools:
 | `vm_bash` `vm_read` `vm_write` `vm_edit` | Shell and files in the VM, with the same semantics as pi's built-ins |
 | `vm_jobs` | Long-running commands in the background: start, list, read logs, wait. Jobs survive disconnects |
 | `vm_copy` | Copy between your machine and VMs, or from one VM to another |
+| `vm_jobs` | Background jobs for long commands: start, poll, kill, get the real exit code |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |

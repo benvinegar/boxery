@@ -2,7 +2,12 @@
 # Static checks: shellcheck (warnings are errors), node syntax checks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-shellcheck -S warning controller/boxery controller/jobs.sh host/boxery-host host/backend.sh host/backends/*.sh image/layers/*.sh e2e.sh mcp/test-mcp.sh test/shell/*.sh test/bench/*.sh
+shellcheck -S warning controller/boxery core/boxery-job-runner.sh host/boxery-host host/backend.sh host/backends/*.sh image/layers/*.sh e2e.sh mcp/test-mcp.sh test/shell/*.sh test/bench/*.sh
 for f in core/*.mjs host/*.mjs mcp/*.mjs proxy/*.mjs test/*.mjs test/fixtures/*.mjs; do node --check "$f"; done
-for f in controller/boxery controller/jobs.sh host/boxery-host host/backend.sh host/backends/*.sh; do bash -n "$f"; done   # bash -n: catches bash 3.2 parse errors when run on macOS
+# VM-side TypeScript runs under type stripping: it must parse (types are checked by `npm run typecheck`)
+# (only where this Node can strip types: 22.18+/23.6+; older Node skips it, like the job tests)
+if node --experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript -e '' 2>/dev/null; then
+	for f in core/*.ts; do node --experimental-strip-types --disable-warning=ExperimentalWarning --check "$f"; done
+else echo "lint: skipping core/*.ts (this node can't strip types)"; fi
+for f in controller/boxery core/boxery-job-runner.sh host/boxery-host host/backend.sh host/backends/*.sh; do bash -n "$f"; done   # bash -n: catches bash 3.2 parse errors when run on macOS
 echo "lint ok"
