@@ -88,13 +88,13 @@ test("guidance mentions the current VM and the local/VM split", () => {
 
 test("formatVms / formatGrants render the --json shapes", () => {
 	const vms = [
-		{ name: "a1", state: "running", addr: "10.0.0.2", disk: "1GiB", lease: null, shape: "large", cpus: 8, mem: 16384, grants: [] },
+		{ name: "a1", state: "running", addr: "10.0.0.2", disk: "1GiB", lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [] },
 		{ name: "pool-1", state: "running", addr: null, disk: null, lease: { state: "LEASED", holder: "me@x", expires_at: 1 }, grants: [{ kind: "ssh-agent" }, { kind: "file", local: "/l/.env", remote: "/home/agent/project/.env" }] },
 	];
 	const lines = core.formatVms(vms).split("\n");
-	assert.match(lines[0], /^NAME +STATE +ADDR +SHAPE +LEASE +GRANTS$/);
-	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +large +- +-$/);
-	assert.match(lines[2], /^pool-1 +running +- +- +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -");
+	assert.match(lines[0], /^NAME +STATE +ADDR +SHAPE +KIND +LEASE +GRANTS$/);
+	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +large +headless +- +-$/);
+	assert.match(lines[2], /^pool-1 +running +- +- +desktop +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts)");
 	assert.equal(core.formatVms([]), "(no VMs)");
 	assert.equal(core.formatGrants("a1", []), "no grants for a1");
 	assert.match(core.formatGrants("a1", [{ kind: "env", var: "T", cmd: "op read x" }]), /env:T +\(from: op read x\)/);

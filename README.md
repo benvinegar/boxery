@@ -50,7 +50,7 @@ More cloud backends are coming. The [backend contract](host/backends/README.md) 
 - **Credentials stay on the control plane, even with cloud VMs.** VMs never see your LLM keys. Each VM gets a revocable token, and a proxy on the host swaps in the real credential.
 - **Grant access deliberately.** Each VM gets only what you grant it: specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, specific env vars or files. Grants are off by default.
 - **Fork a running VM.** Copy a VM mid-task into several independent VMs so an agent can try three fixes in parallel and keep the one that works. Snapshots and forks are built on one image primitive that every backend implements. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
-- **Fast, disposable desktops.** On libvirt, a new Ubuntu 24.04 + XFCE VM takes about 13 s, a snapshot about 1 s without pausing the VM, and a fork into several VMs 15–25 s.
+- **Fast, disposable desktops.** On libvirt, a new Ubuntu 24.04 + XFCE VM takes about 13 s, a snapshot about 1 s without pausing the VM, and a fork into several VMs 15–25 s. Tasks that need no GUI can use `boxery new NAME --headless`: no desktop, and no image build needed. [Headless VMs →](docs/cli.md#lifecycle)
 - **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
 - **Share a pool safely.** Several agents can lease VMs from a shared pool with exclusive, expiring leases. A VM is wiped back to a clean image when its lease ends.
 - **A lightweight controller.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
@@ -82,7 +82,7 @@ boxery-host init --backend exe && boxery-host build-base
 boxery setup local
 ```
 
-`build-base` builds the golden desktop image once (about 3 min).
+`build-base` builds the golden desktop image once (about 3 min). Skip it if you only want headless VMs (`boxery new NAME --headless`).
 
 **2. Connect your agent.**
 

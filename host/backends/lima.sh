@@ -12,6 +12,8 @@
 #   boxery-img.<hash> (the '.' can't occur in VM names), cloned with `limactl clone` (copy-on-write on
 #   APFS/btrfs). The image's name is kept in a boxery-image file in the instance dir. Lima only clones
 #   stopped instances, so capturing a running VM stops it briefly; works on vz and qemu alike.
+# - Headless VMs (SOURCE "stock") are fresh instances of Lima's Ubuntu 24.04 template instead of clones of
+#   boxery-base; backend_new runs the plumbing + devtools layers (boxery-provision) over ssh.
 
 LIMA_PREFIX=${BOXERY_LIMA_PREFIX:-boxery-}
 LIMA_BASE=${LIMA_PREFIX}base
@@ -74,7 +76,7 @@ backend_build_base() {
 	limactl start "$LIMA_BASE" --timeout 20m >/dev/null 2>"$tmp/start.log" || { tail -20 "$tmp/start.log" >&2; die "limactl start failed"; }
 	log "installing the desktop image (XFCE, VNC, Chromium/Chrome, node, pi, opencode; ~5-10 min)"
 	# Reuse the libvirt build script: extract boxery-build.sh + write_files from the cloud-config and run them.
-	lima_apply_cloudconfig "$ROOT/image/base-user-data.yaml" build || die "base build failed (see output above)"
+	lima_apply_cloudconfig "$BASE_USERDATA" build || die "base build failed (see output above)"
 	limactl stop "$LIMA_BASE" >/dev/null
 	rm -rf "$tmp"
 	log "base image ready: Lima instance $LIMA_BASE"
@@ -102,22 +104,35 @@ lima_apply_cloudconfig() { # FILE build|vm [NAME]
 backend_has_base() { lima_exists_inst "$LIMA_BASE"; }
 backend_exists() { lima_exists_inst "$(linst "$1")"; }
 
-backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
+backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} i src; i=$(linst "$1")
-	src=$LIMA_BASE
-	if [[ -n $from ]]; then
-		src=$(img_inst "$from"); lima_exists_inst "$src" || die "no such image: $from"
-		local ig; ig=$(lima_json "$src" | jq -r '.disk / 1073741824 | floor'); if ((ig > disk)); then disk=$ig; fi
+	local sshcfg="$HOME/.lima/$i/ssh.config"
+	if [[ $from == stock ]]; then
+		log "creating $name (Lima $LIMA_VMTYPE, ${cpus} vCPU, ${mem} MiB, ${disk} GiB, headless: stock Ubuntu 24.04)"
+		local tmp; tmp=$(mktemp -d)
+		lima_template "$name" "$cpus" "$mem" "$disk" >"$tmp/vm.yaml"
+		limactl create --name "$i" --tty=false "$tmp/vm.yaml" >/dev/null 2>"$tmp/create.log" || { cat "$tmp/create.log" >&2; rm -rf "$tmp"; die "limactl create failed"; }
+		rm -rf "$tmp"
+	else
+		src=$LIMA_BASE
+		if [[ -n $from ]]; then
+			src=$(img_inst "$from"); lima_exists_inst "$src" || die "no such image: $from"
+			local ig; ig=$(lima_json "$src" | jq -r '.disk / 1073741824 | floor'); if ((ig > disk)); then disk=$ig; fi
+		fi
+		log "creating $name (Lima $LIMA_VMTYPE, ${cpus} vCPU, ${mem} MiB, ${disk} GiB, cloned from ${from:-$LIMA_BASE})"
+		lima_stop "$src"
+		limactl clone --tty=false "$src" "$i" --cpus "$cpus" --memory "$(( mem / 1024 ))" --disk "$disk" >/dev/null 2>&1 ||
+			die "limactl clone failed"
+		rm -f "$(lima_dir "$i")/boxery-image"
 	fi
-	log "creating $name (Lima $LIMA_VMTYPE, ${cpus} vCPU, ${mem} MiB, ${disk} GiB, cloned from ${from:-$LIMA_BASE})"
-	lima_stop "$src"
-	limactl clone --tty=false "$src" "$i" --cpus "$cpus" --memory "$(( mem / 1024 ))" --disk "$disk" >/dev/null 2>&1 ||
-		die "limactl clone failed"
-	rm -f "$(lima_dir "$i")/boxery-image"
 	limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "limactl start $i failed"
 	# Per-VM identity: replay the generated cloud-config (files + runcmd) as root over Lima's ssh.
 	lima_apply_cloudconfig "$userdata" vm "$name" || die "applying per-VM config failed"
-	local sshcfg="$HOME/.lima/$i/ssh.config"
+	# The stock image: what the cloud-config's first runcmd step does on seeded backends. boxery-host
+	# checks the result (/var/log/boxery-provision.ok) and shows the log if it failed.
+	if [[ $from == stock ]]; then
+		ssh -F "$sshcfg" "lima-$i" 'sudo sh -c "/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1"' </dev/null || log "provisioning $name failed"
+	fi
 	# authorized keys (host mgmt key + registered controller keys), hostname, then the runcmd steps.
 	awk '/^ssh_authorized_keys:/{f=1;next} f&&/^  - /{sub(/^  - /,""); gsub(/^"|"$/,""); print; next} f{f=0}' "$userdata" |
 		ssh -F "$sshcfg" "lima-$i" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys; sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys'
@@ -127,7 +142,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 		cd ~ && git config --global user.name agent && git config --global user.email agent@boxery && git config --global init.defaultBranch main;
 		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start boxery-vnc boxery-desktop boxery-novnc 2>/dev/null || systemctl --user start agentvm-vnc agentvm-desktop agentvm-novnc 2>/dev/null || true"
 	# From an image: the disk is another VM's. Give it its own machine-id (journald, DHCP client id).
-	if [[ -n $from ]]; then ssh -F "$sshcfg" "lima-$i" 'sudo rm -f /etc/machine-id /var/lib/dbus/machine-id && sudo systemd-machine-id-setup >/dev/null' || true; fi
+	if [[ -n $from && $from != stock ]]; then ssh -F "$sshcfg" "lima-$i" 'sudo rm -f /etc/machine-id /var/lib/dbus/machine-id && sudo systemd-machine-id-setup >/dev/null' || true; fi
 }
 
 backend_list() {

@@ -24,6 +24,8 @@
 #   fresh from disk, even from a paused source, so RAM (and tmpfs grants) never travel. new --from =
 #   `cp IMAGE-VM VM`; reimage = `cp` the image to a new generation, then `rm` the old one.
 # - stop = clear pushed grants + `pause` (exe.dev has no stop); start = `resume`.
+# - Headless VMs (SOURCE "stock") are new exeuntu VMs instead of copies of the base: the backend applies
+#   the plumbing + devtools layers (which keep what exeuntu ships) and the exe.dev specifics over the edge.
 
 EXE_DIR=${BOXERY_EXE_DIR:-$HOME/.local/share/boxery/exe}
 EXE_PREFIX=${BOXERY_EXE_PREFIX:-$(cat "$EXE_DIR/prefix" 2>/dev/null || true)}
@@ -318,14 +320,14 @@ backend_build_base() {
 		echo 'set -e'
 		echo 'id agent >/dev/null 2>&1 || useradd -m -s /bin/bash -c "boxery agent" -G sudo,adm agent'
 		echo 'echo "agent ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-boxery-agent; chmod 440 /etc/sudoers.d/90-boxery-agent'
-		node "$ROOT/host/cloudconfig-sh.mjs" "$ROOT/image/base-user-data.yaml" || exit 1
+		node "$ROOT/host/cloudconfig-sh.mjs" "$BASE_USERDATA" || exit 1
 		echo 'cat >/usr/local/sbin/boxery-exe-post.sh <<'"'"'BOXERY_POST'"'"
 		exe_build_post
 		echo 'BOXERY_POST'
 		echo 'chmod 755 /usr/local/sbin/boxery-exe-post.sh'
 		echo 'rm -f /var/log/boxery-build.ok /var/log/boxery-exe.ok /var/log/boxery-build.done'
-		# exeuntu ships its own opencode, and a pi that links into exedev's home: npm won't overwrite them.
-		echo 'rm -f /usr/local/bin/opencode /usr/local/bin/pi'
+		# exeuntu ships its own opencode, and a pi that links into exedev's home: the devtools layer keeps
+		# what the agent user can run and replaces the rest.
 		# Detached: the build outlives an ssh connection dropped by the edge. Progress is polled below.
 		echo 'setsid nohup bash -c "export DEBIAN_FRONTEND=noninteractive; { apt-get update -qq && /usr/local/sbin/boxery-build.sh && /usr/local/sbin/boxery-exe-post.sh; } >/var/log/boxery-build.log 2>&1; touch /var/log/boxery-build.done" </dev/null >/dev/null 2>&1 &'
 	} >"$tmp/build.sh" || { rm -rf "$tmp"; die "could not prepare the build script"; }
@@ -387,16 +389,32 @@ exe_identity_script() { # USERDATA NAME
 	echo '[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service'
 	echo 'uid=$(id -u agent); systemctl start "user@$uid.service"'
 	echo "sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }'"
-	echo 'sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'
+	echo '[ -e /etc/boxery/headless ] || sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'
 }
 
-backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
+# A headless VM's first boot on plain exeuntu: the layers boxery-host asked for (/etc/boxery/provision),
+# then what the base build adds for exe.dev. Before the identity script, which needs the agent user.
+exe_stock_script() {
+	echo 'set -e'
+	{ echo '#cloud-config'; echo 'write_files:'; layer_files; } >"$1.layers" || return 1
+	node "$ROOT/host/cloudconfig-sh.mjs" "$1.layers" || return 1
+	rm -f "$1.layers"
+	awk '$0 == "  - path: /etc/boxery/provision" { f = 1; next } f && /^    content: / { sub(/^    content: /, ""); print; exit }' "$1" |
+		while IFS= read -r l; do printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/provision\n' "$l"; done
+	echo 'export DEBIAN_FRONTEND=noninteractive'
+	echo '/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1 || { tail -40 /var/log/boxery-provision.log >&2; exit 1; }'
+	exe_build_post
+}
+
+backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d vm src j srcdisk slot
 	[[ -n $EXE_PREFIX ]] || die "no exe.dev prefix; run: boxery-host init --backend exe"
 	[[ $name != *- ]] || die "exe.dev names can't end with '-': $name"
 	d=$(exe_dir "$name"); vm=$(exe_vm_new "$name")
 	j=$(exe_ls) || exit 1
-	if [[ -n $from ]]; then
+	if [[ $from == stock ]]; then
+		src="" srcdisk=0
+	elif [[ -n $from ]]; then
 		src=$(exe_img "$from"); exe_has "$src" "$j" || die "no such image: $from"
 		srcdisk=$(exe_disk_of_image "$src" "$j")
 	else
@@ -414,13 +432,24 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 	echo "$(exe_cap "$cpus" "$mem" 2>/dev/null) $disk" >"$d/size"   # CPUS MEM_MIB DISK_GIB, for backend_size
 	local flags; flags="$(exe_sizes "$cpus" "$mem") $(exe_pool_flag)"
 	if ((disk > srcdisk)); then flags="$flags --disk=${disk}GB"; fi
-	[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
-	log "creating $name (exe.dev $vm, copied from ${from:-the base}, 127.0.0.1:$((EXE_PORT_BASE + slot)))"
-	# shellcheck disable=SC2086  # flags: word list
-	exe_cp "$src" "$vm" $flags || die "exe.dev cp $src → $vm failed"
+	if [[ $from == stock ]]; then
+		# Full egress while the layers install; BOXERY_EXE_EGRESS applies once they are in (below).
+		log "creating $name (exe.dev $vm, headless: plain exeuntu, 127.0.0.1:$((EXE_PORT_BASE + slot)))"
+		# shellcheck disable=SC2086  # flags: word list
+		exe_do new --name="$vm" --no-email $flags >/dev/null || { exe_do rm "$vm" >/dev/null 2>&1 || true; die "exe.dev new $vm failed"; }
+	else
+		[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
+		log "creating $name (exe.dev $vm, copied from ${from:-the base}, 127.0.0.1:$((EXE_PORT_BASE + slot)))"
+		# shellcheck disable=SC2086  # flags: word list
+		exe_cp "$src" "$vm" $flags || die "exe.dev cp $src → $vm failed"
+	fi
 	local i; for i in $(seq 60); do exe_edge "$vm" true </dev/null >/dev/null 2>&1 && break; ((i < 60)) || die "no ssh to $vm"; sleep 2; done
+	if [[ $from == stock ]]; then
+		exe_stock_script "$userdata" | exe_edge "$vm" 'sudo bash -s' >&2 || die "installing boxery's layers on $name failed"
+	fi
 	# Piped, never written to disk: it carries the proxy token.
 	exe_identity_script "$userdata" "$name" | exe_edge "$vm" 'sudo bash -s' >/dev/null || die "applying $name's identity failed"
+	if [[ $from == stock && -n $EXE_EGRESS ]]; then exe_do egress "$vm" "$EXE_EGRESS" >/dev/null || die "exe.dev egress $vm $EXE_EGRESS failed"; fi
 	j=$(exe_ls) || exit 1
 	exe_tunnel_write "$name" "$j"
 	exe_tunnel_start "$name"

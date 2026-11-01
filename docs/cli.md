@@ -30,12 +30,15 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 ```bash
 boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
+boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
 boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
 boxery ls [--json]                           # VMs, with their shape and grants
 boxery start demo | stop demo
 boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
 ```
+
+**Headless VMs.** `new --headless` makes a VM without the desktop: shell, git, build tools, node 22, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
 
 `resize` takes any of `--cpus`, `--mem` (MiB) and `--disk` (GiB), the same units as `new`. A running VM is stopped, resized and started again, so its tmux sessions end; its grants are pushed again afterwards. A stopped VM stays stopped. The disk can only grow, and the guest's root filesystem grows on the next boot. Values that are already the VM's current size are ignored, so a resize that changes nothing doesn't restart anything. Like other long-lived VM products (exe.dev, Daytona, EC2), it changes the VM in place; throwaway sandboxes such as E2B are recreated instead.
 
@@ -128,9 +131,9 @@ boxery proxy-log [N]                         # which VM called which LLM provide
 
 ```
 init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
-build-base                      build the golden desktop image (one time)
+build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
-new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE]
+new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
@@ -166,8 +169,8 @@ VMs on the host, plus the grants this machine has given each one.
 
 ```json
 [
-{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"}]},
-{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"shape":"large","cpus":8,"mem":16384,"grants":[]}
+{"name":"demo","state":"running","addr":"192.168.122.50","disk":"2.1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"grants":[{"kind":"ssh-agent"}]},
+{"name":"pool-1","state":"running","addr":"192.168.122.51","disk":"1.8GiB","lease":{"state":"LEASED","holder":"ben@mac","expires_at":1793462400},"shape":"large","cpus":8,"mem":16384,"desktop":false,"grants":[]}
 ]
 ```
 
@@ -181,6 +184,7 @@ VMs on the host, plus the grants this machine has given each one.
 | `shape` | string \| null | shape the VM was created with, `custom` if size flags overrode it, `null` for VMs created before shapes |
 | `cpus` | number \| null | vCPUs the VM was created with (`null` if unknown) |
 | `mem` | number \| null | memory in MiB the VM was created with (`null` if unknown) |
+| `desktop` | boolean | `false` for headless VMs (`new --headless`, or made from a headless VM's image); `true` otherwise, including VMs created before headless VMs existed |
 | `grants` | array | this machine's grants for the VM, same objects as `grants --json` |
 
 #### `boxery shapes --json`
@@ -270,7 +274,7 @@ Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `created
 
 #### `boxery-host ls --json`
 
-Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `lease`. Built in one place from the backend's `backend_list` lines and the lease store.
+Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines and the lease store.
 
 #### `boxery-host snaps NAME --json`
 
