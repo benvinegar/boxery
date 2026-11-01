@@ -189,6 +189,7 @@ cmd_setup() {
 	{ printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'; } >"$CONF_FILE.tmp.$$"
 	mv "$CONF_FILE.tmp.$$" "$CONF_FILE"
 	write_ssh_config
+	b=$(record_backend); [ -z "$b" ] || echo "==> backend: $b"
 	if [ "$CONF_DIR" != "$ROOT_DIR" ] || [ "${selected:-legacy}" != legacy ]; then
 		echo "==> named profile: use boxery --host NAME ssh VM (do not globally Include multiple profiles' *.boxery aliases)"
 	elif [[ $SSH_CONF == *%* ]]; then
@@ -205,18 +206,74 @@ cmd_setup() {
 	echo "==> done. Try: boxery new demo"
 }
 
+# The host's VM backend, recorded in the profile's `backend` file (one line of data, never sourced) so
+# host listings need no round-trip. Best effort: a host that predates `boxery-host backend`, or fails,
+# leaves no record rather than a stale one. Prints the backend, or nothing.
+record_backend() {
+	local b
+	b=$(h backend 2>/dev/null </dev/null) || b=""
+	if valid_vm "$b"; then printf '%s\n' "$b" >"$CONF_DIR/backend.tmp.$$" && mv "$CONF_DIR/backend.tmp.$$" "$CONF_DIR/backend"
+	else rm -f "$CONF_DIR/backend"; b=""; fi
+	printf '%s\n' "$b"
+}
+cmd_backend() {
+	[ $# -eq 0 ] || die "usage: boxery backend"
+	b=$(record_backend)
+	[ -n "$b" ] || die "could not read the host's backend (does it predate 'boxery-host backend'? see: boxery version)"
+	printf '%s\n' "$b"
+}
+# Where a profile's VM host runs, as the controller resolves it: its config is sourced (trusted, in a
+# subshell) and legacy honors BOXERY_HOST. Prints local, an ssh destination, or nothing.
+profile_dest() { # NAME DIR
+	(
+		HOST=""
+		if [ -f "$2/config" ]; then . "$2/config" >/dev/null 2>&1 </dev/null || exit 0; fi
+		if [ "$1" = legacy ]; then HOST="${BOXERY_HOST:-$HOST}"; fi
+		if valid_dest "$HOST"; then printf '%s\n' "$HOST"; fi
+	) || true
+}
+profile_backend() { # DIR → recorded backend, or nothing
+	local b
+	[ -f "$1/backend" ] || return 0
+	b=$(cat -- "$1/backend" 2>/dev/null) || b=""
+	if valid_vm "$b"; then printf '%s\n' "$b"; fi # one line
+}
+# NAME, DEFAULT, CONFIG_DIR, then where it runs: DESTINATION (local or ssh destination), BACKEND (as
+# recorded) and SAME_AS (other names for the same profile directory: legacy and an alias for ~/.boxery).
+# Field names match vm_info {action:"hosts"}; nothing contacts a host.
+host_ls() { # [--json]
+	local json=false def rows alias dir c dest backend same
+	case ${1:-} in '') ;; --json) json=true; shift ;; esac
+	[ $# -eq 0 ] || die "usage: boxery host ls [--json]"
+	def=$(default_host)
+	# NAME<TAB>DIR<TAB>CANONICAL_DIR per line (profile paths cannot contain tabs or newlines).
+	c=$(cd "$ROOT_DIR" 2>/dev/null && pwd -P) || c=$ROOT_DIR
+	rows="legacy$TAB$ROOT_DIR$TAB$c$NL"
+	for f in "$REGISTRY"/*; do alias=${f##*/}; valid_alias "$alias" || continue
+		dir=$(profile_dir "$alias"); c=$(cd "$dir" 2>/dev/null && pwd -P) || c=$dir
+		rows="$rows$alias$TAB$dir$TAB$c$NL"
+	done
+	"$json" || printf 'NAME\tDEFAULT\tCONFIG_DIR\tDESTINATION\tBACKEND\tSAME_AS\n'
+	while IFS="$TAB" read -r alias dir c; do
+		[ -n "$alias" ] || continue
+		dest=$(profile_dest "$alias" "$dir"); backend=$(profile_backend "$dir")
+		same=$(printf '%s' "$rows" | N=$alias D=$c awk -F "$TAB" '$1 != ENVIRON["N"] && $3 == ENVIRON["D"] { print $1 }')
+		if "$json"; then
+			printf '{"name":%s,"dir":%s,"default":%s,"destination":%s,"backend":%s,"same_as":%s}\n' "$(json_text "$alias")" "$(json_text "$dir")" \
+				"$([ "$def" = "$alias" ] && printf true || printf false)" "$(json_str_or_null "$dest")" "$(json_str_or_null "$backend")" \
+				"[$(printf '%s' "$same" | awk 'NF { printf "%s\"%s\"", (n++ ? "," : ""), $0 }')]"
+		else
+			printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$alias" "$([ "$def" != "$alias" ] || printf '*')" "$dir" "${dest:--}" "${backend:--}" \
+				"$(printf '%s' "$same" | awk 'NF { printf "%s%s", (n++ ? "," : ""), $0 } END { if (!n) printf "-" }')"
+		fi
+	done <<<"$rows" | if "$json"; then json_array; else cat; fi
+}
+
 # Host mutations share a lock; registration/default files are published with atomic rename.
 cmd_host() {
 	action=${1:-ls}; [ $# -eq 0 ] || shift
 	case $action in
-	ls) [ $# -eq 0 ] || die "usage: boxery host ls"
-		def=$(default_host)
-		printf 'NAME\tDEFAULT\tCONFIG_DIR\n'
-		printf 'legacy\t%s\t%s\n' "$([ "$def" != legacy ] || printf '*')" "$ROOT_DIR"
-		for f in "$REGISTRY"/*; do alias=${f##*/}; valid_alias "$alias" || continue
-			dir=$(profile_dir "$alias")
-			printf '%s\t%s\t%s\n' "$alias" "$([ "$def" != "$alias" ] || printf '*')" "$dir"
-		done; return ;;
+	ls) host_ls "$@"; return ;;
 	show) [ $# -eq 1 ] || die "usage: boxery host show NAME"; profile_dir "$1"; return ;;
 	add|use|rm) ;;
 	*) die "usage: boxery host add|ls|show|use|rm" ;;
@@ -1097,7 +1154,8 @@ usage() {
 		--host NAME COMMAND             route a command to a registered host (or legacy)
 		host add NAME DEST [--key K.pub] [--host-bin PATH]
 		host add NAME --config-dir DIR   import existing config/ssh_config without setup
-		host ls | show NAME | use NAME|legacy | rm NAME
+		host ls [--json] | show NAME | use NAME|legacy | rm NAME
+		                                ls: where each host runs (local or ssh destination) and its backend
 		setup user@host|local [--key K.pub] [--host-bin PATH]
 		                                configure the VM host (local = this machine) + register your ssh key
 		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
@@ -1145,6 +1203,7 @@ usage() {
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
 		version [--json]                controller and host versions; warns when the host is behind
+		backend                         the host's VM backend (recorded for host ls / vm_info hosts)
 		upgrade-host [--check] [--ref REF] [--wait S]
 		                                update boxery on the host and restart its services (waits for
 		                                in-flight VM operations; rolls back if checks fail)
@@ -1199,6 +1258,7 @@ ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
 version) cmd_version "$@" ;;
+backend) need_host; cmd_backend "$@" ;;
 upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; cmd_run "$@" ;;

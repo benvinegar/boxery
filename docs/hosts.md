@@ -9,7 +9,7 @@ One controller/MCP server can reach several explicitly registered VM hosts. This
 boxery host add laptop local --key ~/.ssh/id_ed25519.pub
 boxery host add hornet you@hornet --host-bin '~/.local/bin/boxery-host'
 
-boxery host ls                       # name, default marker, config directory
+boxery host ls                       # name, default marker, config directory, destination, backend, same-profile names
 boxery host show hornet              # prints its config directory (not credentials)
 boxery host use hornet               # atomic default selection
 boxery --host laptop ls              # explicit selection overrides the default
@@ -23,6 +23,21 @@ boxery host rm hornet                # forget registration only
 Names use `[a-z][a-z0-9-]{0,30}`. `legacy` is reserved for the original root profile. Unknown/invalid explicit names fail closed. `--host NAME` must precede the command. Registration commands operate on the registry, not the selected host, and cannot be combined with `--host`.
 
 `host add NAME DEST [--key PUBKEY] [--host-bin PATH]` never overwrites a registration or existing managed profile directory. DEST is `local` or an SSH destination/SSH-config alias (option-like destinations and shell syntax are rejected). HOST_BIN is **one executable path**, not a command expression. Quote `~/...` to leave it for the remote host; on `local`, it refers to the controller's home. Spaces and apostrophes are supported. Paths used in generated configuration cannot contain newlines, carriage returns or tabs. Setup checks the executable and registers the public key before publishing the profile. Failed checks do not select or register a partial profile. A remote key registration that has already succeeded cannot be rolled back if a subsequent local write fails.
+
+## Where each host runs
+
+`boxery host ls` (and `--json`, and MCP `vm_info {action:"hosts"}`) says where each registered host runs, read from local profile files without contacting any host:
+
+```text
+NAME	DEFAULT	CONFIG_DIR	DESTINATION	BACKEND	SAME_AS
+legacy		/home/you/.boxery	local	lima	laptop
+hornet		/home/you/.boxery/profiles/hornet	you@hornet	libvirt	-
+laptop	*	/home/you/.boxery	local	lima	legacy
+```
+
+* **DESTINATION** is the profile's `HOST`: `local` means the VM host is the machine running the controller (or the MCP server); otherwise it is the ssh destination or ssh-config alias. `legacy` honors `BOXERY_HOST`, as routing does. The CLI sources the trusted profile config to find it; MCP never executes it and parses only plain assignments (as `setup` writes them), so a computed value shows as unknown (`-` / `null`).
+* **BACKEND** lives on the VM host (`host.env`), so it is not read live. `setup` and `host add` record it in the profile's `backend` file (one line of data); `boxery [--host NAME] backend` asks the host and refreshes the record. Profiles set up earlier, or hosts that predate `boxery-host backend`, show `-` / `null` until then.
+* **SAME_AS** lists the other names whose profile is the same directory. `legacy` is the unnamed root profile (`$BOXERY_HOME`, normally `~/.boxery`), used when no `default-host` is set; after `host add laptop --config-dir ~/.boxery`, `legacy` and `laptop` are one host with the same VMs, not two.
 
 ## Importing two existing profiles
 
@@ -70,7 +85,7 @@ Every `vm_*` tool accepts optional `host`. For example:
 {"host":"hornet","vm":"demo","command":"hostname"}
 ```
 
-`vm_info` adds read-only `{"action":"hosts"}`, and `vm_manage` adds session selection `{"action":"host","host":"hornet"}`. Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `vm_manage` cannot register hosts, change the persistent CLI default, add credentials or grant access.
+`vm_info {"action":"hosts"}` lists the hosts with the same fields as `boxery host ls --json` plus `current` (this session's host; text output marks it `*`), see [Where each host runs](#where-each-host-runs). `vm_manage` adds session selection `{"action":"host","host":"hornet"}`. Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `vm_manage` cannot register hosts, change the persistent CLI default, add credentials or grant access.
 
 Selection mutations complete in completion order; concurrent ordinary tool calls keep the host+VM snapshot they started with. Screenshot scaling is keyed by profile directory and VM name.
 

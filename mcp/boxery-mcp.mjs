@@ -53,7 +53,14 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
 // vm_manage gains host (vm_info gains hosts) because the session's host is MCP state.
 // vm_manage/vm_lease act on the session's current VM and leases.
-const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
+const hostProp = {
+	host: {
+		type: "string",
+		description: "Registered host name (see vm_info {action:\"hosts\"} for where each runs); default: this session's host. " +
+			"\"legacy\" is the unnamed root profile ($BOXERY_HOME, normally ~/.boxery), the controller's default when no default-host is set; " +
+			"an alias registered for that same directory (hosts shows same_as) is the same host.",
+	},
+};
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
 	...t,
@@ -85,18 +92,40 @@ const manageMcp = (t) => ({
 });
 const infoMcp = (t) => ({
 	...t,
-	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts.`,
+	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts: where each runs (local or its ssh destination), its backend, and which names share a profile (same host).`,
 	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...INFO_ACTIONS, "hosts"] } } },
-	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: { type: "array", items: { type: "object" } } } },
+	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: HOSTS_SCHEMA } },
 	async run(_vm, a, { host, current }) {
 		if (a.action === "hosts") return hostsResult(host);
 		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})`, hostName: host.name });
 		return a.action === "list" ? { ...r, structured: { ...r.structured, host: host.name } } : r;
 	},
 });
+const HOSTS_SCHEMA = {
+	type: "array",
+	description: "Registered hosts, legacy first. Read from local profile files only; no host is contacted.",
+	items: {
+		type: "object",
+		properties: {
+			name: { type: "string", description: "Host name for the host parameter" },
+			destination: { type: ["string", "null"], description: "Where its VM host runs: \"local\" (the machine running this MCP server's controller) or the ssh destination (user@host or ssh-config alias); null if the profile has no destination set or it can't be read without executing the config" },
+			backend: { type: ["string", "null"], description: "VM backend (lima, libvirt, cloud-hypervisor, exe, boat, …) as recorded by `boxery setup` or `boxery --host NAME backend`; null if never recorded" },
+			current: { type: "boolean", description: "This session's host (used when host is omitted)" },
+			default: { type: "boolean", description: "The controller's default (default-host, else legacy); new sessions start here unless started with --host" },
+			same_as: { type: "array", items: { type: "string" }, description: "Other names whose profile is the same directory, i.e. the same host and VMs" },
+			dir: { type: "string", description: "Profile directory (config, ssh_config, grants)" },
+		},
+		required: ["name", "destination", "backend", "current", "default", "same_as", "dir"],
+	},
+};
 function hostsResult(host) {
-	const hosts = core.registeredHosts().map((h) => ({ name: h.name, dir: h.dir, current: h.name === host.name }));
-	return { text: hosts.map((h) => `${h.name}${h.current ? " *" : ""}\t${h.dir}`).join("\n"), structured: { hosts } };
+	const hosts = core.describeHosts().map(({ name, destination, backend, default: def, same_as, dir }) =>
+		({ name, destination, backend, current: name === host.name, default: def, same_as, dir }));
+	const row = (h) => [`${h.name}${h.current ? " *" : ""}`, h.destination ?? "-", h.backend ?? "-",
+		[h.default && "default", h.same_as.length && `same host as ${h.same_as.join(", ")}`].filter(Boolean).join("; ") || "-", h.dir].join("\t");
+	const text = ["NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE", ...hosts.map(row),
+		"(* = this session's host; destination local = the machine running this server; backend - = not recorded, run boxery --host NAME backend)"].join("\n");
+	return { text, structured: { hosts } };
 }
 const leaseMcp = (t) => ({
 	...t,
