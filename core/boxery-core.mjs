@@ -518,15 +518,29 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 	});
 }
 
-/** VMs on the host: [{name, state, addr, disk, lease, grants}] (fields: docs/cli.md). */
+/** VMs on the host: [{name, state, addr, disk, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
 export const listVms = () => boxeryJson(["ls"]);
+
+/** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
+export const listShapes = () => boxeryJson(["shapes"]);
+
+export function assertShape(s) {
+	if (typeof s !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(s)) throw new Error(`invalid shape name: ${s}`);
+	return s;
+}
+
+export function formatShapes({ default: def, shapes }) {
+	const rows = [["SHAPE", "CPUS", "MEM", "DISK"], ...Object.entries(shapes).map(([n, s]) => [n + (n === def ? " (default)" : ""), String(s.cpus), `${s.mem / 1024} GiB`, `${s.disk} GiB`])];
+	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
+	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(w[i]))).join("  ")).join("\n");
+}
 
 const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
-	const rows = [["NAME", "STATE", "ADDR", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.shape ?? "-", v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
@@ -559,21 +573,24 @@ export async function ensureVm(name, notify = () => {}) {
 }
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). */
-export async function manage({ action, name, snapshot, to }) {
+export async function manage({ action, name, snapshot, to, shape }) {
 	const need = () => assertName(name);
+	const shapeArgs = () => (shape == null || shape === "" ? [] : ["--shape", assertShape(shape)]);
 	switch (action) {
 		case "fork": {
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
 			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
-			return boxeryCli(["fork", need(), ...dsts], 900_000);
+			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000);
 		}
 		case "snaps":
 			return boxeryCli(["snaps", need()], 60_000);
 		case "list":
 			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName()]);
+			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs()]);
+		case "shapes":
+			return formatShapes(await listShapes());
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000);
 		case "snap":

@@ -37,6 +37,13 @@ grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key wi
 "$BOXERY_HOST_BIN" build-base >/dev/null 2>&1
 "$A" new w1 >/dev/null 2>&1 && ok "new via local host" || bad "new"
 "$A" ls 2>/dev/null | grep -q '^w1 ' && ok "ls shows the VM with GRANTS column" || bad "ls"
+"$A" new w2 --shape small --cpus 3 >/dev/null 2>&1 && [ "$(cat "$tmp/vms/w2/size")" = "3 4096 20" ] && ok "new --shape + size flag passed to the host" || bad "new --shape: $(cat "$tmp/vms/w2/size" 2>&1)"
+"$A" fork w2 w3 >/dev/null 2>&1 && [ "$(cat "$tmp/vms/w3/size")" = "3 4096 20" ] && ok "fork keeps the source's size" || bad "fork size: $(cat "$tmp/vms/w3/size" 2>&1)"
+"$A" ls --json | jq -e '.[] | select(.name == "w2") | .shape == "custom" and .cpus == 3' >/dev/null && ok "ls --json has shape fields" || bad "ls shape: $("$A" ls --json)"
+"$A" shapes --json | jq -e '.default == "standard" and .shapes.large.cpus == 8' >/dev/null && ok "shapes --json via controller" || bad "shapes: $("$A" shapes --json 2>&1)"
+if "$A" new w4 --shape 'x;id' >/dev/null 2>&1; then bad "invalid --shape accepted"; else ok "invalid --shape rejected by the controller"; fi
+if "$A" shapes bogus >/dev/null 2>&1; then bad "shapes bogus accepted"; else ok "shapes rejects extra args"; fi
+"$A" rm w2 >/dev/null 2>&1; "$A" rm w3 >/dev/null 2>&1
 
 printf 'SECRET_FILE=1\n' >"$tmp/dev.env"
 export MY_TOKEN='va lue $with "quotes"'
