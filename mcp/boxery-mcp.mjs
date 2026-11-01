@@ -27,6 +27,7 @@ const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05
 const since = (session, version) => session.protocolVersion >= version;
 const PROGRESS_INTERVAL_MS = 1000; // at most one status line per second per call
 const HEARTBEAT_MS = 5000; // and an elapsed-time line when a call has been quiet this long
+const MAX_BODY = 32 * 1024 * 1024; // HTTP request body limit, in bytes
 
 // ---------------------------------------------------------------- args
 
@@ -509,14 +510,17 @@ function serveHttp(listen) {
 			if (req.method === "GET") return send(405, { error: "SSE stream not supported; use POST" }, { allow: "POST, DELETE" });
 			if (req.method !== "POST") return send(405, { error: "method not allowed" }, { allow: "POST, DELETE" });
 
-			let raw = "";
+			// Collect bytes and decode once: decoding each chunk would split multi-byte characters.
+			const chunks = [];
+			let size = 0;
 			for await (const c of req) {
-				raw += c;
-				if (raw.length > 32 * 1024 * 1024) return send(413, { error: "body too large" });
+				size += c.length;
+				if (size > MAX_BODY) return send(413, { error: "body too large" });
+				chunks.push(c);
 			}
 			let msg;
 			try {
-				msg = JSON.parse(raw);
+				msg = JSON.parse(Buffer.concat(chunks, size).toString("utf8"));
 			} catch {
 				return send(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
 			}

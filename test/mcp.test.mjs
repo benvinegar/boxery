@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -829,6 +830,27 @@ describe("http", () => {
 		assert.match(done.result.content[0].text, /^The user approved: fakevm now has ssh-agent/);
 		const plainJson = await post({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } } }, { ...h, accept: "application/json" });
 		assert.match((await plainJson.json()).result.content[0].text, /can't show the user an approval prompt/, "no stream, no prompt");
+	});
+
+	test("a multi-byte character split across request chunks arrives intact", async () => {
+		const auth = { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x" };
+		const sid = (await post(init, auth)).headers.get("mcp-session-id");
+		const content = "café 日本語 🦀 end\n";
+		const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "vm_write", arguments: { path: "utf8-split.txt", content } } }));
+		const split = body.indexOf(Buffer.from("🦀")) + 2; // inside the crab's four bytes
+		const reply = await new Promise((resolve, reject) => {
+			const req = http.request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers: { ...H, ...auth, "mcp-session-id": sid } }, (res) => {
+				let text = "";
+				res.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => resolve({ status: res.statusCode, text }));
+			});
+			req.on("error", reject);
+			// Two chunked writes with a pause, so the server reads them as separate chunks.
+			req.write(body.subarray(0, split));
+			setTimeout(() => req.end(body.subarray(split)), 100);
+		});
+		assert.equal(reply.status, 200, reply.text);
+		assert.equal(JSON.parse(reply.text).result.isError, false, reply.text);
+		assert.equal(readFileSync(path.join(env.VMROOT, "project/utf8-split.txt"), "utf8"), content);
 	});
 
 	test("progress arrives as SSE only when requested; plain calls stay JSON", async () => {
