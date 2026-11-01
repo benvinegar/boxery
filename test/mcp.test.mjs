@@ -6,6 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
+import { fakeTmux } from "./fake-tmux.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -39,6 +40,9 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	// macOS has no setsid; emulate "new process group + wait" with perl (present on macOS and Linux).
 	writeFileSync(path.join(bin, "setsid"), `#!/usr/bin/env bash\n[ "$1" = -w ] && shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- "$@"\n`);
 	chmodSync(path.join(bin, "setsid"), 0o755);
+	// vm_jobs needs tmux in the VM; the fake keeps it off the developer's server and works where tmux isn't installed.
+	writeFileSync(path.join(bin, "tmux"), fakeTmux());
+	chmodSync(path.join(bin, "tmux"), 0o755);
 	writeFileSync(
 		path.join(bin, "boxery"),
 		`#!/usr/bin/env bash
