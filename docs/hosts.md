@@ -126,7 +126,7 @@ Selection mutations complete in completion order; concurrent ordinary tool calls
 * `HOST/VM:/path`: explicitly registered host and VM, independently for each endpoint;
 * `VM:/path`: VM on the call's selected host;
 * a bare path: current VM on that host (or the optional explicit `vm`);
-* `local:/path`: **the machine running MCP**, not the selected VM host. On a Mac stdio server this means the Mac; on an HTTP server elsewhere it means that server machine.
+* `local:/path`: **the machine running MCP**, not the selected VM host. On a Mac stdio server this means the Mac; on an HTTP server elsewhere it means that server machine, and is refused unless the server runs with `--copy-root DIR` ([MCP server](mcp.md#b-streamable-http-on-the-host-over-tailscale)).
 
 VM-relative paths start at `/home/agent/project`; `~` means `/home/agent`. Local relative paths start at the server's working directory; local `~` means the server user's home. Unknown hosts in `HOST/VM:` are errors, not literal paths or fallback targets. A relative path containing `/` before a colon is interpreted as an explicit host/VM endpoint; use an absolute VM path to disambiguate a literal filename of that shape.
 

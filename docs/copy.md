@@ -8,7 +8,7 @@
 
 ## Locations
 
-- `local:/path`: the machine running the tools/MCP server, not necessarily your laptop.
+- `local:/path`: the machine running the tools/MCP server, not necessarily your laptop. An HTTP MCP server refuses `local:` unless started with `--copy-root DIR`, which confines it to `DIR` ([MCP server](mcp.md#b-streamable-http-on-the-host-over-tailscale)).
 - `VM:/path`: a VM on the selected host.
 - `HOST/VM:/path`: an explicit named host and VM.
 - A bare path: the current VM.

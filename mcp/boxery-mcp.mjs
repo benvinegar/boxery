@@ -7,8 +7,10 @@
 //        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth),
 //              optional --allow-user a@b.c (checks Tailscale-User-Login from `tailscale serve`)
 //   --ui   offer vm_view (live desktop view) even to clients that don't advertise MCP Apps support
+//   --copy-root DIR   allow vm_copy local: paths only inside DIR (never boxery's config, ~/.ssh, ~/.pi)
 //
-// "local" (vm_copy) and grant sources are the machine this server runs on.
+// "local" (vm_copy) and grant sources are the machine this server runs on. Over HTTP that is the
+// control plane, so vm_copy local: endpoints are refused unless --copy-root confines them.
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
@@ -48,6 +50,20 @@ const DEFAULT_HOST = core.resolveHost(opt("--host"));
 const DEFAULT_VM = opt("--vm") ?? process.env.BOXERY_VM ?? null;
 if (DEFAULT_VM) core.assertName(DEFAULT_VM);
 const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
+const HTTP_LISTEN = opt("--http");
+const TOKEN_FILE = opt("--token-file");
+if (has("--copy-root") && !opt("--copy-root")) throw new Error("--copy-root needs a directory");
+// vm_copy local: endpoints (core.copyTool's `local`): any path in stdio mode (the client's own machine),
+// refused over HTTP (the control plane), or confined to --copy-root. The MCP token file is never copyable.
+const COPY_DENY = TOKEN_FILE ? [TOKEN_FILE] : [];
+const COPY_ROOT = opt("--copy-root") ? core.copyRoot(opt("--copy-root"), { deny: COPY_DENY }) : null;
+const LOCAL_COPY = COPY_ROOT ? { root: COPY_ROOT, deny: COPY_DENY } : HTTP_LISTEN ? false : undefined;
+const LOCAL_COPY_NOTE =
+	LOCAL_COPY === false
+		? "On this server `local:` endpoints are disabled: it runs on the boxery control plane, not your machine. Copy between VMs, or use vm_read/vm_write for small files."
+		: LOCAL_COPY
+			? `On this server \`local:\` means the machine it runs on, confined to ${COPY_ROOT} (relative paths resolve there; no "..", symlinks may not leave it, boxery's config and key directories are refused). Copies into it never merge into or replace an existing directory.`
+			: null;
 
 // ---------------------------------------------------------------- tools
 
@@ -168,7 +184,9 @@ const leaseMcp = (t) => ({
 		});
 	},
 });
-const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t.name === "vm_lease" ? leaseMcp(t) : t.name === "vm_info" ? infoMcp(t) : t)).map((t) => ({
+const copyMcp = (t) => (LOCAL_COPY_NOTE ? { ...t, description: `${t.description} ${LOCAL_COPY_NOTE}` } : t);
+const MCP_TOOL = { vm_manage: manageMcp, vm_lease: leaseMcp, vm_info: infoMcp, vm_copy: copyMcp };
+const TOOLS = SHARED_TOOLS.map((t) => MCP_TOOL[t.name]?.(t) ?? t).map((t) => ({
 	name: t.name,
 	title: t.title,
 	description: t.description,
@@ -297,7 +315,7 @@ const instructions = (s) =>
 	`Current host: ${s.host.name}. VM selections belong only to that host. Every vm_* tool accepts optional host.\n` + core.guidance(s.current, {
 		localToolsNote:
 			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
-	});
+	}) + (LOCAL_COPY_NOTE ? `\nvm_copy: ${LOCAL_COPY_NOTE}` : "");
 
 /** Send the client a request on this call's channel and resolve with its result. Abort sends notifications/cancelled. */
 function clientRequest(session, send, method, params, signal) {
@@ -350,7 +368,7 @@ async function callTool(session, params, signal, progress, send) {
 		}
 		const { vm: _drop, ...rest } = args;
 		const approve = tool.name === "vm_grant" ? elicitApprover(session, send, signal) : undefined;
-		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress, approve }));
+		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress, approve, localCopy: LOCAL_COPY }));
 		const content = [{ type: "text", text: r.text ?? "" }];
 		if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });
 		const structured = r.structured !== undefined && since(session, "2025-06-18") ? { structuredContent: r.structured } : {};
@@ -465,8 +483,7 @@ function serveStdio() {
 
 function serveHttp(listen) {
 	const [hostPart, portPart] = listen.includes(":") ? [listen.slice(0, listen.lastIndexOf(":")), listen.slice(listen.lastIndexOf(":") + 1)] : ["127.0.0.1", listen];
-	const tokenFile = opt("--token-file");
-	const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : process.env.BOXERY_MCP_TOKEN;
+	const token = TOKEN_FILE ? readFileSync(TOKEN_FILE, "utf8").trim() : process.env.BOXERY_MCP_TOKEN;
 	const noAuth = has("--no-auth");
 	if (!token && !noAuth) {
 		log("refusing to start: set BOXERY_MCP_TOKEN or --token-file (or --no-auth for local testing)");
@@ -558,10 +575,9 @@ function serveHttp(listen) {
 	});
 	server.requestTimeout = 0;
 	server.listen(Number(portPart), hostPart, () =>
-		log(`http ready on http://${hostPart}:${portPart}/mcp (auth: ${noAuth ? "none" : "bearer"}${allowUsers.length ? `, tailnet users: ${allowUsers.join(",")}` : ""})`),
+		log(`http ready on http://${hostPart}:${portPart}/mcp (auth: ${noAuth ? "none" : "bearer"}${allowUsers.length ? `, tailnet users: ${allowUsers.join(",")}` : ""}; vm_copy local: ${COPY_ROOT ? `confined to ${COPY_ROOT}` : "disabled"})`),
 	);
 }
 
-const httpListen = opt("--http");
-if (httpListen) serveHttp(httpListen);
+if (HTTP_LISTEN) serveHttp(HTTP_LISTEN);
 else serveStdio();

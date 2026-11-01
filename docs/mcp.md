@@ -9,7 +9,7 @@ There are two ways to run it:
 | | Runs on | Transport | Good for |
 |---|---|---|---|
 | **A. stdio** (recommended) | your laptop | stdin/stdout | Full features. Grants and `vm_copy local:` use your laptop. |
-| **B. HTTP** | the VM host | Streamable HTTP over Tailscale | Nothing to install on clients |
+| **B. HTTP** | the VM host | Streamable HTTP over Tailscale | Nothing to install on clients. `vm_copy local:` is off unless confined with `--copy-root`. |
 
 ## A. stdio on your laptop
 
@@ -60,7 +60,22 @@ claude mcp add --transport http boxery https://my-host.<tailnet>.ts.net:8765/mcp
   --header "Authorization: Bearer $BOXERY_MCP_TOKEN"
 ```
 
-In this mode, "local" means **the machine running MCP**, not necessarily the selected VM host: `vm_copy local:…` copies to and from that server, and grants are read from its env, files and ssh agent.
+In this mode, "local" means **the machine running MCP**, not necessarily the selected VM host, and grants are read from its env, files and ssh agent.
+
+That machine is the control plane, which holds the credentials boxery keeps away from VMs (`proxy.env`, `tokens.json`, the management ssh key, the host pi's OAuth). So `vm_copy` **refuses `local:` endpoints over HTTP by default**: otherwise any MCP client, a prompt-injected agent included, could copy those secrets into a VM, or write `~/.ssh/authorized_keys` from one. VM-to-VM copies still work. To allow local copies, give the server a directory for them:
+
+```bash
+boxery-mcp --http 127.0.0.1:8765 --allow-user you@example.com --copy-root ~/boxery-share
+```
+
+With `--copy-root DIR`, `local:` paths are confined to `DIR`:
+
+- Relative paths resolve inside `DIR`; `..` is refused.
+- Both endpoints are checked by their real path (`realpath`), so a symlink can't lead out of `DIR` in either direction, and a dangling symlink can't be written through.
+- Boxery's own state and the user's keys are refused even inside `DIR`, as is any path that contains them: `$BOXERY_CONF` and other `~/.config/boxery*` profiles, `~/.boxery` and registered profile directories, `~/.ssh`, `~/.gnupg`, `~/.pi`, and the `--token-file`. The server refuses to start if `DIR` is inside one of them.
+- A VM → local copy can create a new path or replace a file, but never merges into or replaces an existing directory: copy to a new path instead. It is extracted in a private staging directory (tar refuses absolute and `..` entries and writes through links within the archive), refused if it hard-links a file outside itself, and moved into place with `rename`, which replaces a symlink rather than following it. Symlinks inside a copied tree arrive as symlinks; later `local:` paths through them are checked like any other.
+
+The `initialize` instructions and the `vm_copy` description tell the agent which of the two applies. stdio mode is unchanged: there `local:` is your own machine. `--copy-root` confines it there too, if you want that.
 
 ## Protocol features
 
@@ -162,6 +177,7 @@ commit outcome**, not rollback: reread before retrying.
 | `--vm NAME` | Default VM. Without it, the model picks one with `vm_manage {action:"use"}`, and tools fail closed when no `vm` is given. |
 | `--http ADDR:PORT` | Serve Streamable HTTP at `/mcp` instead of stdio. Each MCP session keeps its own current VM. |
 | `--token-file PATH` | Bearer token from a file instead of `$BOXERY_MCP_TOKEN` |
+| `--copy-root DIR` | Allow `vm_copy` `local:` paths, confined to `DIR` (see [B](#b-streamable-http-on-the-host-over-tailscale)). Over HTTP, `local:` is refused without it. |
 | `--allow-user LOGIN` | Also require this `Tailscale-User-Login` header (set by `tailscale serve`). Loopback binds only. Can be repeated. |
 | `--allow-origin ORIGIN` | Accept requests with this `Origin`. Foreign origins are rejected by default. |
 | `--no-auth` | Skip the bearer token. **Local testing only.** |

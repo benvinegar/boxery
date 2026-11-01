@@ -2,7 +2,7 @@
 // (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,7 +24,8 @@ before(() => {
 	guestFixture(dir); // flock/stat shims only on macOS; no new guest dependency.
 	// Capture the actual wire archive: macOS extraction consumes AppleDouble entries, while Linux
 	// extraction leaves them as ._* files. Checking just the extracted fake VM would miss the bug.
-	writeFileSync(path.join(bin, "tar"), `#!/usr/bin/env bash\nset -eo pipefail\nif [ "$1" = -cf ]; then\n${JSON.stringify(tar)} "$@" | tee ${JSON.stringify(path.join(dir, "copy.tar"))}\nelse exec ${JSON.stringify(tar)} "$@"; fi\n`);
+	// A directory holding .crafted.tar produces that archive instead (hostile-VM tests).
+	writeFileSync(path.join(bin, "tar"), `#!/usr/bin/env bash\nset -eo pipefail\nif [ "$1" = -cf ] && [ -f .crafted.tar ]; then cat .crafted.tar\nelif [ "$1" = -cf ]; then\n${JSON.stringify(tar)} "$@" | tee ${JSON.stringify(path.join(dir, "copy.tar"))}\nelse exec ${JSON.stringify(tar)} "$@"; fi\n`);
 	chmodSync(path.join(bin, "tar"), 0o755);
 	mkdirSync(path.join(vmroot, "project"), { recursive: true });
 	mkdirSync(path.join(dir, "home"));
@@ -832,6 +833,27 @@ describe("http", () => {
 		assert.match((await plainJson.json()).result.content[0].text, /can't show the user an approval prompt/, "no stream, no prompt");
 	});
 
+	test("vm_copy local: is refused by default: it would be the control plane's files", async () => {
+		const auth = { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x" };
+		const r = await post(init, auth);
+		const sid = r.headers.get("mcp-session-id");
+		assert.match((await r.json()).result.instructions, /vm_copy: .*`local:` endpoints are disabled/);
+		const h = { ...auth, "mcp-session-id": sid };
+		const tools = (await (await post({ jsonrpc: "2.0", id: 2, method: "tools/list" }, h)).json()).result.tools;
+		assert.match(tools.find((t) => t.name === "vm_copy").description, /`local:` endpoints are disabled/);
+		const copy = async (args) => (await (await post({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "vm_copy", arguments: args } }, h)).json()).result;
+		const read = await copy({ from: "local:~/.config/boxery/proxy.env", to: "fakevm:/home/agent/project/stolen.env" });
+		assert.equal(read.isError, true);
+		assert.match(read.content[0].text, /local: endpoints are disabled on this server/);
+		const target = path.join(dir, "http-default-write.txt");
+		writeFileSync(path.join(env.VMROOT, "project/to-host.txt"), "x");
+		const write = await copy({ from: "fakevm:to-host.txt", to: `local:${target}` });
+		assert.equal(write.isError, true);
+		assert.match(write.content[0].text, /disabled/);
+		assert.ok(!existsSync(target));
+		assert.ok(!existsSync(path.join(env.VMROOT, "project/stolen.env")));
+	});
+
 	test("a multi-byte character split across request chunks arrives intact", async () => {
 		const auth = { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x" };
 		const sid = (await post(init, auth)).headers.get("mcp-session-id");
@@ -867,5 +889,191 @@ describe("http", () => {
 		const noSse = await post({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo x" }, _meta: { progressToken: "q" } } }, { ...auth, "mcp-session-id": sid, accept: "application/json" });
 		assert.match(noSse.headers.get("content-type"), /application\/json/);
 		assert.match((await noSse.json()).result.content[0].text, /x/);
+	});
+});
+
+/** A ustar archive from {name, type ("0" file, "1" hard link, "2" symlink, "5" dir), body, link}. For hostile-VM tests. */
+function tarball(entries) {
+	const blocks = entries.flatMap(({ name, type = "0", body = "", link = "" }) => {
+		const h = Buffer.alloc(512);
+		let prefix = "";
+		if (Buffer.byteLength(name) > 100) {
+			const cut = name.lastIndexOf("/", name.length - 2);
+			[prefix, name] = [name.slice(0, cut), name.slice(cut + 1)];
+		}
+		assert.ok(Buffer.byteLength(name) <= 100 && Buffer.byteLength(prefix) <= 155 && Buffer.byteLength(link) <= 100, "tar test path too long");
+		const data = Buffer.from(body);
+		const put = (at, s) => h.write(s, at);
+		put(0, name);
+		put(100, `${(type === "5" ? 0o755 : 0o644).toString(8).padStart(7, "0")}\0`);
+		put(108, "0000000\0");
+		put(116, "0000000\0");
+		put(124, `${data.length.toString(8).padStart(11, "0")}\0`);
+		put(136, `${Math.floor(Date.now() / 1000).toString(8).padStart(11, "0")}\0`);
+		put(148, "        ");
+		put(156, type);
+		put(157, link);
+		put(257, "ustar\0");
+		put(263, "00");
+		put(345, prefix);
+		put(148, `${h.reduce((a, b) => a + b, 0).toString(8).padStart(6, "0")}\0 `);
+		return [h, Buffer.concat([data, Buffer.alloc((512 - (data.length % 512)) % 512)])];
+	});
+	return Buffer.concat([...blocks, Buffer.alloc(1024)]);
+}
+
+describe("http vm_copy --copy-root", () => {
+	let p, port, sid, home, outside;
+	const token = "t0ken";
+	const vm = (f) => path.join(env.VMROOT, "project", f);
+	const rpc = async (method, params) => {
+		const r = await fetch(`http://127.0.0.1:${port}/mcp`, {
+			method: "POST",
+			headers: { "content-type": "application/json", accept: "application/json", authorization: `Bearer ${token}`, ...(sid ? { "mcp-session-id": sid } : {}) },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+		});
+		sid ??= r.headers.get("mcp-session-id");
+		return (await r.json()).result;
+	};
+	const copy = (from, to) => rpc("tools/call", { name: "vm_copy", arguments: { from, to } });
+	const ok = async (from, to) => {
+		const r = await copy(from, to);
+		assert.equal(r.isError, false, `${from} → ${to}: ${r.content[0].text}`);
+	};
+	const refused = async (from, to, re) => {
+		const r = await copy(from, to);
+		assert.equal(r.isError, true, `${from} → ${to} should be refused: ${r.content[0].text}`);
+		assert.match(r.content[0].text, re);
+	};
+
+	before(async () => {
+		// The fake HOME is also the copy root, so it holds the directories that stay refused inside it.
+		const base = mkdtempSync(path.join(dir, "copy-root-"));
+		home = path.join(base, "home");
+		outside = path.join(base, "outside");
+		mkdirSync(path.join(home, ".ssh"), { recursive: true });
+		writeFileSync(path.join(home, ".ssh/authorized_keys"), "KEYS\n");
+		mkdirSync(path.join(home, ".config/boxery/edge"), { recursive: true });
+		writeFileSync(path.join(home, ".config/boxery/proxy.env"), "OPENAI_API_KEY=sk-secret\n");
+		mkdirSync(path.join(home, ".pi/agent"), { recursive: true });
+		writeFileSync(path.join(home, ".pi/agent/auth.json"), "{}\n");
+		mkdirSync(path.join(home, "work"));
+		writeFileSync(path.join(home, "work/notes.txt"), "NOTES\n");
+		mkdirSync(outside);
+		writeFileSync(path.join(outside, "secret.txt"), "SECRET\n");
+		symlinkSync(outside, path.join(home, "work/out-dir"));
+		symlinkSync(path.join(outside, "secret.txt"), path.join(home, "work/out-file"));
+		symlinkSync(path.join(home, ".ssh"), path.join(home, "work/ssh-link"));
+		symlinkSync(path.join(outside, "missing"), path.join(home, "work/dangling"));
+		writeFileSync(vm("to-host.txt"), "FROM_VM\n");
+		port = 20000 + Math.floor(Math.random() * 20000);
+		p = spawn(process.execPath, [SERVER, "--http", `127.0.0.1:${port}`, "--vm", "fakevm", "--copy-root", home], { env: { ...env, HOME: home, BOXERY_MCP_TOKEN: token }, stdio: "ignore" });
+		for (let i = 0; i < 50; i++) {
+			try {
+				if ((await fetch(`http://127.0.0.1:${port}/healthz`)).ok) break;
+			} catch {}
+			await new Promise((r) => setTimeout(r, 100));
+		}
+		const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		assert.match(init.instructions, /vm_copy: .*confined to /);
+	});
+	after(() => p?.kill());
+
+	test("--copy-root inside boxery's configuration is refused at startup", async () => {
+		const q = spawn(process.execPath, [SERVER, "--http", "127.0.0.1:1", "--copy-root", path.join(home, ".config/boxery")], { env: { ...env, HOME: home, BOXERY_MCP_TOKEN: token }, stdio: "ignore" });
+		assert.notEqual(await new Promise((r) => q.on("exit", r)), 0);
+	});
+
+	test("copies inside the root work both ways; relative paths resolve there", async () => {
+		await ok("local:work/notes.txt", "fakevm:cr-notes.txt");
+		assert.equal(readFileSync(vm("cr-notes.txt"), "utf8"), "NOTES\n");
+		await ok("fakevm:to-host.txt", "local:work/back.txt");
+		assert.equal(readFileSync(path.join(home, "work/back.txt"), "utf8"), "FROM_VM\n");
+		writeFileSync(vm("to-host.txt"), "FROM_VM v2\n");
+		await ok("fakevm:to-host.txt", "local:work/back.txt"); // a file is replaced
+		assert.equal(readFileSync(path.join(home, "work/back.txt"), "utf8"), "FROM_VM v2\n");
+		mkdirSync(vm("cr-dir"));
+		writeFileSync(vm("cr-dir/a.txt"), "A\n");
+		await ok("fakevm:cr-dir", "local:work");
+		assert.equal(readFileSync(path.join(home, "work/cr-dir/a.txt"), "utf8"), "A\n");
+		await refused("fakevm:cr-dir", "local:work", /already exists.*doesn't merge/);
+	});
+
+	test("reads outside the root fail, including through symlinks and ..", async () => {
+		for (const [from, re] of [
+			[`local:${outside}/secret.txt`, /outside the copy root/],
+			["local:../outside/secret.txt", /"\.\." is not allowed/],
+			["local:work/out-file", /outside the copy root/],
+			["local:work/out-dir", /outside the copy root/],
+			["local:work/out-dir/secret.txt", /outside the copy root/],
+			["local:~/.config/boxery/proxy.env", /boxery's own configuration or keys/],
+			["local:.ssh/authorized_keys", /boxery's own configuration or keys/],
+			["local:work/ssh-link/authorized_keys", /boxery's own configuration or keys/],
+			["local:.pi/agent/auth.json", /boxery's own configuration or keys/],
+			["local:~", /is or holds/], // the root itself holds ~/.ssh
+		])
+			await refused(from, "fakevm:stolen", re);
+		assert.ok(!existsSync(vm("stolen")));
+	});
+
+	test("writes outside the root fail, including through symlinks", async () => {
+		mkdirSync(vm(".ssh"), { recursive: true });
+		writeFileSync(vm(".ssh/authorized_keys"), "ATTACKER\n");
+		for (const [from, to, re] of [
+			["fakevm:to-host.txt", `local:${outside}/w.txt`, /outside the copy root/],
+			["fakevm:to-host.txt", "local:../outside/w.txt", /"\.\." is not allowed/],
+			["fakevm:to-host.txt", "local:work/out-dir/w.txt", /outside the copy root/],
+			["fakevm:to-host.txt", "local:work/out-dir", /outside the copy root/],
+			["fakevm:to-host.txt", "local:work/dangling", /symlink to a missing path/],
+			["fakevm:to-host.txt", "local:work/dangling/w.txt", /symlink to a missing path/],
+			["fakevm:.ssh/authorized_keys", "local:.ssh/authorized_keys", /boxery's own configuration or keys/],
+			["fakevm:.ssh/authorized_keys", "local:work/ssh-link/authorized_keys", /boxery's own configuration or keys/],
+			["fakevm:.ssh", "local:.", /boxery's own configuration or keys/], // would land on ~/.ssh
+			["fakevm:to-host.txt", "local:.config/boxery/edge/x.json", /boxery's own configuration or keys/],
+		])
+			await refused(from, to, re);
+		assert.deepEqual(readdirSync(outside), ["secret.txt"]);
+		assert.equal(readFileSync(path.join(home, ".ssh/authorized_keys"), "utf8"), "KEYS\n");
+		assert.deepEqual(readdirSync(path.join(home, ".config/boxery/edge")), []);
+	});
+
+	test("a VM can't write outside the root with archive entries or symlinks it planted", async () => {
+		// 1. A hostile archive: absolute and ../ entries, and a file through a symlink it just made.
+		mkdirSync(vm("crafted"));
+		writeFileSync(vm("crafted/.crafted.tar"), tarball([
+			{ name: "payload/", type: "5" },
+			{ name: "payload/esc", type: "2", link: outside },
+			{ name: "payload/esc/evil.txt", body: "PWNED\n" },
+			{ name: `${outside}/abs-evil.txt`, body: "PWNED\n" },
+			// Enough ../ to climb from the staging directory (ROOT/work/.boxery-copy-*/data) to /.
+			{ name: `${"../".repeat(realpathSync(home).split("/").length + 3)}${outside.slice(1)}/dotdot-evil.txt`, body: "PWNED\n" },
+		]));
+		await copy("fakevm:crafted/payload", "local:work/crafted"); // tar refuses some entries; either way nothing escapes
+		assert.deepEqual(readdirSync(outside), ["secret.txt"]);
+
+		// 2. Plant a symlink with one copy, then write through it with a second: never merged into.
+		mkdirSync(vm("plant1/m"), { recursive: true });
+		symlinkSync(outside, vm("plant1/m/esc"));
+		await ok("fakevm:plant1/m", "local:work/m");
+		assert.ok(lstatSync(path.join(home, "work/m/esc")).isSymbolicLink(), "the symlink itself arrives");
+		mkdirSync(vm("plant2/m/esc"), { recursive: true });
+		writeFileSync(vm("plant2/m/esc/evil.txt"), "PWNED\n");
+		await refused("fakevm:plant2/m", "local:work", /already exists/);
+		await refused("fakevm:plant2/m/esc", "local:work/m", /already exists/);
+		await refused("fakevm:plant2/m/esc/evil.txt", "local:work/m/esc/evil.txt", /outside the copy root/);
+		await refused("local:work/m/esc", "fakevm:stolen", /outside the copy root/);
+		assert.deepEqual(readdirSync(outside), ["secret.txt"]);
+
+		// 3. A hard link to a file outside the copied entry (tar itself refuses ones outside the staging area).
+		mkdirSync(vm("hardlink"));
+		writeFileSync(vm("hardlink/.crafted.tar"), tarball([
+			{ name: "other", body: "OTHER\n" },
+			{ name: "payload/", type: "5" },
+			{ name: "payload/hl", type: "1", link: "other" },
+		]));
+		await refused("fakevm:hardlink/payload", "local:work/hl", /hard-links a file outside the copy/);
+		assert.ok(!existsSync(path.join(home, "work/hl")));
+		// No staging directories are left behind.
+		assert.deepEqual(readdirSync(path.join(home, "work")).filter((f) => f.startsWith(".boxery-copy-")), []);
 	});
 });

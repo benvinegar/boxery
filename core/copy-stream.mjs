@@ -1,8 +1,9 @@
 // Streaming tar transfers. Endpoints are already resolved/pinned by the caller:
-// {path, vm?, sshConf?, label}. No host registry or ambient "current VM" reads here.
+// {path, vm?, sshConf?, label, confine?}. No host registry or ambient "current VM" reads here.
+// A local destination with confine(realPath) (throws to refuse) is confined: see commitConfined.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -198,6 +199,50 @@ const commitScript = (destination, data, basename) =>
 	`if [ -d "$d" ]; then cp -a "$t"/${q(basename)} "$d"/; ` +
 	`else mkdir -p "$(dirname "$d")"; mv "$t"/${q(basename)} "$d"; fi`;
 
+const lstatOrNull = (p) => lstat(p).catch((e) => { if (e.code === "ENOENT") return null; throw e; });
+
+/** Refuse a staged tree with a hard link to a file outside it (tar refuses most; this is the backstop). */
+async function assertSelfContained(top) {
+	const links = new Map();
+	const walk = async (p) => {
+		const st = await lstat(p);
+		if (st.isDirectory()) {
+			for (const name of await readdir(p)) await walk(path.join(p, name));
+		} else if (st.nlink > 1) {
+			const key = `${st.dev}:${st.ino}`;
+			const seen = links.get(key) ?? { nlink: st.nlink, count: 0 };
+			seen.count++;
+			links.set(key, seen);
+		}
+	};
+	await walk(top);
+	if ([...links.values()].some((l) => l.count < l.nlink)) throw new Error("the archive hard-links a file outside the copy");
+}
+
+/**
+ * Commit a confined local copy. tar has extracted into our own staging directory, which refuses
+ * absolute and ".." entries and symlink traversal within the archive. What remains is the existing
+ * destination tree: `cp -a` into an existing directory would follow a symlink planted there by an
+ * earlier copy. So never merge: rename(2) the staged entry into place (it replaces a final symlink
+ * rather than following it), only onto nothing or onto a non-directory, after re-checking the real
+ * path of its parent.
+ */
+async function commitConfined(destination, data, basename) {
+	const staged = path.join(data, basename);
+	const incoming = await lstat(staged);
+	await assertSelfContained(staged);
+	let target = destination.path;
+	let existing = await lstatOrNull(target);
+	if (existing?.isDirectory()) {
+		target = path.join(target, basename);
+		existing = await lstatOrNull(target);
+	}
+	if (existing && (existing.isDirectory() || incoming.isDirectory()))
+		throw new Error(`local:${target} already exists; a confined local copy doesn't merge into or replace a directory: copy to a new path`);
+	destination.confine(path.join(await realpath(path.dirname(target)), path.basename(target)));
+	await rename(staged, target);
+}
+
 export async function streamCopy(source, destination, { signal, metadataTimeoutMs = 30_000, cleanupTimeoutMs = 15_000 } = {}) {
 	if (signal?.aborted) throw aborted();
 	const basename = path.posix.basename(source.path);
@@ -254,6 +299,8 @@ export async function streamCopy(source, destination, { signal, metadataTimeoutM
 			await mkdir(parent, { recursive: true });
 			destinationControl = await mkdtemp(path.join(parent, ".boxery-copy-"));
 			stages.push({ control: destinationControl });
+			// Confined: the path was checked before; make sure we did not stage through a link swapped in since.
+			destination.confine?.(await realpath(destinationControl));
 			await mkdir(path.join(destinationControl, "data"));
 		}
 		check();
@@ -280,12 +327,15 @@ export async function streamCopy(source, destination, { signal, metadataTimeoutM
 		check();
 		// EOF alone is not success: a producer can emit a valid tar and STILL exit nonzero.
 		// Commit only after BOTH process statuses and the stream pipeline have succeeded.
-		const script = commitScript(destination.path, data, basename);
-		const commit = destination.vm
-			? remoteWorker(destination, destinationControl, script, { label: `commit ${destination.label}` })
-			: childProcess("sh", ["-c", script], { label: `commit ${destination.path}` });
-		workers.push(commit);
-		await commit.done;
+		if (destination.confine && !destination.vm) await commitConfined(destination, data, basename);
+		else {
+			const script = commitScript(destination.path, data, basename);
+			const commit = destination.vm
+				? remoteWorker(destination, destinationControl, script, { label: `commit ${destination.label}` })
+				: childProcess("sh", ["-c", script], { label: `commit ${destination.path}` });
+			workers.push(commit);
+			await commit.done;
+		}
 		check();
 	} catch (e) {
 		failure = e;
