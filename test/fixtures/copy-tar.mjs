@@ -29,7 +29,7 @@ try {
 		} else await pipeline(child.stdout, process.stdout);
 	}
 	const code = await exited;
-	if (process.env.COPY_ORPHAN_SOURCE === endpoint && role === "source") {
+	if ((process.env.COPY_ORPHAN_SOURCE === endpoint && role === "source") || (process.env.COPY_ORPHAN_DESTINATION === endpoint && role === "destination")) {
 		const helper = spawn(process.execPath, [fileURLToPath(new URL("./copy-helper.mjs", import.meta.url)), "orphan"], {
 			stdio: ["ignore", "ignore", "ignore", "ipc"], env: { ...process.env, COPY_ENDPOINT: endpoint },
 		});

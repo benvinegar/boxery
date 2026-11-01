@@ -19,11 +19,12 @@ const endpoint = `${host}/${vm}`;
 const root = path.join(process.env.COPY_ROOT, "vms", host, vm);
 const script = args[0].replaceAll("/home/agent", root).replaceAll("/tmp/.boxery-copy-", `${root}/tmp/.boxery-copy-`);
 appendFileSync(process.env.COPY_LOG, JSON.stringify({ kind: "ssh", endpoint, script, pid: process.pid }) + "\n");
-if (process.env.COPY_FAIL_CLEANUP === endpoint && script.includes(".cleanup")) {
+const cleanup = script.includes('for record in "$t"/pgid.') && !script.includes("setsid -w");
+if (process.env.COPY_FAIL_CLEANUP === endpoint && cleanup) {
 	process.stderr.write("injected cleanup connection failure\n"); process.exit(255);
 }
 const preparing = script.includes("mkdir -m 700") && !script.includes("setsid -w") && !script.includes(".cleanup");
-if ((preparing && process.env.COPY_HOLD_PREPARE_FD === endpoint) || (script.includes(".cleanup") && process.env.COPY_HOLD_CLEANUP_FD === endpoint)) {
+if ((preparing && process.env.COPY_HOLD_PREPARE_FD === endpoint) || (cleanup && process.env.COPY_HOLD_CLEANUP_FD === endpoint)) {
 	const helper = spawn(process.execPath, [HELPER, "hold"], { detached: true, stdio: "inherit", env: { ...process.env, COPY_ENDPOINT: endpoint } });
 	helper.unref(); process.exit(0);
 }

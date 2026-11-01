@@ -135,22 +135,35 @@ async function metadata(endpoint, script, label, timeout = 30_000) {
 function remoteWorker(endpoint, control, command, options) {
 	// Publish the process-group identity atomically BEFORE touching the archive. Cleanup renames
 	// the control directory first. A late starter then cannot publish and must exit without work.
-	const inner = `set -e; c=${q(control)}; start=$(LC_ALL=C TZ=UTC ps -p $$ -o lstart=); ` +
-		`printf '%s\\n%s\\n' "$$" "$start" >"$c/pgid.$$"; mv "$c/pgid.$$" "$c/pgid"; ${command}`;
-	const script = `setsid -w bash -c ${q(inner)}; rc=$?; rm -f ${q(`${control}/pgid`)}; exit "$rc"`;
+	// Keep one identity snapshot per worker (extract and publish use different groups).
+	// EXIT also records descriptor-free descendants before the leader disappears. Retrying
+	// against the tomb lets a terminating worker publish its final witnesses after fencing.
+	const snapshot = `LC_ALL=C TZ=UTC ps -eo pid=,pgid=,stat=,lstart= | awk -v g="$$" ${q('$2 == g { $1=$1; print }')}`;
+	const inner = `set -e -o pipefail; c=${q(control)}; ` +
+		`publish() { ${snapshot} >"$1/pgid.$$.tmp" && mv "$1/pgid.$$.tmp" "$1/pgid.$$"; }; ` +
+		`publish "$c"; trap 'rc=$?; publish "$c" 2>/dev/null || publish "$c.cleanup" 2>/dev/null || true; exit "$rc"' EXIT; ${command}`;
+	const script = `setsid -w bash -c ${q(inner)}`;
 	return childProcess("ssh", sshArgs(endpoint, script), options);
 }
 async function cleanRemote(stage, timeout = 15_000) {
 	const c = q(stage.control), tomb = q(`${stage.control}.cleanup`);
-	const script = `set -e; c=${c}; t=${tomb}; ` +
-		`if [ -d "$c" ]; then mv "$c" "$t"; fi; ` +
-		`if [ -d "$t" ]; then ` +
-		`if [ -f "$t/pgid" ]; then { IFS= read -r g; IFS= read -r expected; } <"$t/pgid"; ` +
-		`case "$g" in ''|*[!0-9]*) g=0 ;; esac; ` +
-		`if [ "$g" -gt 1 ]; then actual=$(LC_ALL=C TZ=UTC ps -p "$g" -o lstart= 2>/dev/null || true); ` +
-		`if [ -z "$actual" ] || [ "$actual" = "$expected" ]; then ` +
-		`kill -TERM -- -"$g" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$g" 2>/dev/null || true; fi; fi; fi; ` +
-		`if ! rm -rf "$t"; then find -P "$t" -type d -exec chmod u+rwx '{}' ';'; rm -rf "$t"; fi; fi`;
+	const live = '$2 == g && $3 !~ /^[ZX]/ { found=1 } END { exit !found }';
+	const matches = `function born(s,i) { for(i=4;i<=NF;i++) s=s (i>4?" ":"") $i; return s }
+		FILENAME == ARGV[1] { if($2==g && $3 !~ /^[ZX]/) known[$1]=born(); next }
+		$2==g && $3 !~ /^[ZX]/ && ($1 in known) && known[$1]==born() { found=1 }
+		END { exit !found }`;
+	const script = `set -e; c=${c}; t=${tomb}; failed=0; ` +
+		`if [ -d "$c" ]; then mv "$c" "$t"; fi; if [ -d "$t" ]; then ` +
+		`owns() { LC_ALL=C TZ=UTC ps -eo pid=,pgid=,stat=,lstart= >"$t/current" || exit 1; ` +
+		`local rc=0; awk -v g="$g" ${q(matches)} "$record" "$t/current" || rc=$?; [ "$rc" -le 1 ] || exit "$rc"; return "$rc"; }; ` +
+		`for record in "$t"/pgid.*; do case "$record" in *.tmp) continue ;; esac; [ -f "$record" ] || continue; ` +
+		'g=${record##*.}; case "$g" in \'\'|*[!0-9]*) continue ;; esac; [ "$g" -gt 1 ] || continue; ' +
+		`if owns; then kill -TERM -- -"$g" 2>/dev/null || true; sleep 0.2; ` +
+		`if owns; then kill -KILL -- -"$g" 2>/dev/null || true; fi; ` +
+		`for attempt in 1 2 3 4 5 6 7 8 9 10; do if owns; then sleep 0.05; else break; fi; done; fi; ` +
+		`if awk -v g="$g" ${q(live)} "$t/current"; then echo "cannot stop or verify copy group $g" >&2; failed=1; fi; done; ` +
+		`if ! rm -rf "$t"; then find -P "$t" -type d -exec chmod u+rwx '{}' ';'; rm -rf "$t"; fi; ` +
+		`[ "$failed" -eq 0 ]; fi`;
 	await metadata(stage.endpoint, script, `cleanup ${stage.endpoint.label}`, timeout);
 }
 async function cleanLocal(control) {

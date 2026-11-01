@@ -317,6 +317,29 @@ test("closed producer leaders do not leave descriptor-free TERM-ignoring descend
 	noStages(); await noTarJobs();
 });
 
+for (const fail of [false, true]) {
+	test(`remote closed-leader producer descendants are stopped (failure=${fail})`, async () => {
+		writeFileSync(path.join(project(), "source"), "data");
+		const destination = path.join(dir, "destination"); writeFileSync(destination, "old");
+		const result = await worker("alpha/vm:source", `local:${destination}`, {
+			COPY_ORPHAN_SOURCE: "alpha/vm", ...(fail ? { COPY_FAIL_SOURCE: "alpha/vm" } : {}),
+		}).result;
+		assert.equal(result.ok, !fail, result.error);
+		assert.equal(readFileSync(destination, "utf8"), fail ? "old" : "data");
+		assert.ok(logs().some((r) => r.kind === "orphan-term"));
+		noStages(); await noTarJobs();
+	});
+}
+
+test("remote extractor identities survive replacement by the subsequent publish worker", async () => {
+	const source = path.join(dir, "source"); writeFileSync(source, "data");
+	const destination = path.join(project("beta"), "existing"); mkdirSync(destination);
+	await copy(`local:${source}`, "beta/vm:existing", { COPY_ORPHAN_DESTINATION: "beta/vm" });
+	assert.equal(readFileSync(path.join(destination, "source"), "utf8"), "data");
+	assert.ok(logs().some((r) => r.kind === "orphan-term"));
+	noStages(); await noTarJobs();
+});
+
 for (const abort of [false, true]) {
 	test(`metadata completion is bounded when a detached helper holds stdio (abort=${abort})`, async () => {
 		writeFileSync(path.join(project(), "source"), "data");
@@ -367,7 +390,7 @@ test("copy cleanup remains pinned after profile/default changes during a transfe
 	child.send("abort");
 	const result = await child.result;
 	assert.equal(result.name, "AbortError", JSON.stringify(result));
-	const cleanupHosts = logs().filter((r) => r.kind === "ssh" && r.script.includes(".cleanup")).map((r) => r.endpoint);
+	const cleanupHosts = logs().filter((r) => r.kind === "ssh" && r.script.includes('for record in "$t"/pgid.')).map((r) => r.endpoint);
 	assert.deepEqual(cleanupHosts.sort(), ["alpha/vm", "beta/vm"]);
 	noStages(); await noTarJobs();
 });
