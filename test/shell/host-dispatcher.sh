@@ -61,6 +61,11 @@ for i in 1 2 3 4 5 6 7 8; do "$H" new "p$i" >/dev/null 2>&1 & done; wait
 [[ $(jq '[keys[] | select(startswith("p"))] | length' "$BOXERY_CONF/tokens.json") == 8 ]] && ok "8 parallel creates → 8 tokens" || bad "lost tokens: $(jq -c 'keys' "$BOXERY_CONF/tokens.json")"
 for i in 1 2 3 4 5 6 7 8; do "$H" rm "p$i" >/dev/null 2>&1 & done; wait
 [[ $(jq '[keys[] | select(startswith("p"))] | length' "$BOXERY_CONF/tokens.json") == 0 ]] && ok "8 parallel removes → tokens revoked" || bad "stale tokens: $(jq -c 'keys' "$BOXERY_CONF/tokens.json")"
+# --- concurrent creates of one name: the loser must not remove the winner's VM
+for i in 1 2 3 4; do "$H" new same >/dev/null 2>&1 & done; wait
+[[ -d $BOXERY_FAKE_DIR/same ]] && jq -e '.same | length == 48' "$BOXERY_CONF/tokens.json" >/dev/null && ok "racing creates of one name keep the winner's VM + token" || bad "winner lost"
+[[ ! -d $BOXERY_CONF/.new-same.lock ]] && ok "name lock released" || bad "stale name lock"
+"$H" rm same >/dev/null 2>&1
 # --- failed creation rolls back its token and half-created VM
 BOXERY_FAKE_FAIL_NEW=1 expect_fail "backend failure during new fails" "$H" new f1
 jq -e 'has("f1") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "failed new revokes its token" || bad "token left behind by failed new"

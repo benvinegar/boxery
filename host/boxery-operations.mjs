@@ -168,7 +168,7 @@ async function acquire(db, wanted, command, env, host, conf, reconcile = false) 
 }
 
 // Persist only backend routing settings, never arbitrary environment variables or credentials.
-const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BOXERY_BASE_VOL", "BOXERY_DOMAIN_PREFIX", "BOXERY_NET", "LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE", "BOXERY_LIMA_ARCH", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
+const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BOXERY_BASE_VOL", "BOXERY_DOMAIN_PREFIX", "BOXERY_NET", "LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE", "BOXERY_LIMA_ARCH", "BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
 async function main() {
 	const [mode, confArg, ...args] = process.argv.slice(2);
 	const conf = path.resolve(confArg);

@@ -79,6 +79,7 @@ These hooks complement process-group shutdown: submitted hypervisor jobs can sur
 |---|---|---|
 | `libvirt` | Linux + KVM | qcow2 overlays on the base volume (`$PREFIX$IMAGE.qcow2`). Capture = shallow live `blockcopy` + `domfsfreeze` through the guest agent (no pause; a stopped VM is booted `--paused` for the copy). New-from-image = overlay on the image + `blockpull --base`, so every disk is one overlay deep on the base. Measured: capture ~1 s, fork into 2 running VMs ~17 s, 3 VMs with a 3 GiB working set ~23 s |
 | `lima` | macOS (vz) or Linux (qemu) | stopped Lima instances `boxery-img.<hash>`, made with `limactl clone` (copy-on-write on APFS/btrfs). Lima only clones stopped instances, so capture stops a running VM briefly. Works on `vz`, unlike Lima's own snapshots |
+| `cloud-hypervisor` | Linux + KVM | **Experimental.** qcow2 overlays on the base (`$BOXERY_CH_DIR/images/IMAGE.qcow2`). Capture = guest `sync`, pause (v54 drains and flushes qcow2 metadata), reflink copy of the overlay, resume. New-from-image and reimage = reflink copy of the image. See [below](#cloud-hypervisor-experimental) |
 | `fake` | tests | directories |
 
 VMs created before images existed may still have backend-internal snapshots. libvirt and Lima implement the optional `backend_legacy_snaps/revert/snap_rm NAME [SNAP]` so these stay listed, revertable and deletable, and pool VMs with an internal `boxery-clean` snapshot keep resetting. `reimage` refuses to run while legacy snapshots exist (libvirt can't delete a disk that has internal snapshots), and says which ones.
@@ -100,3 +101,34 @@ Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_C
 ## Guest contract
 
 Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, XFCE on `:1` with VNC/noVNC on localhost, xdotool + ImageMagick, a `google-chrome` binary and `/opt/boxery/node_modules/playwright-core`, `boxery-llm.service` reading `/etc/boxery/proxy-upstream`, and cloud-init (for per-instance `bootcmd`). Building from `image/base-user-data.yaml` provides all of it.
+
+## cloud-hypervisor (experimental)
+
+Runs VMs with [Cloud Hypervisor](https://www.cloudhypervisor.org/) directly, without libvirt. Tested end to end with Cloud Hypervisor v54 on arm64 (Ubuntu 24.04 in a nested-virtualization Lima VM). Not yet tested on an x86 host.
+
+**Requirements:**
+- `cloud-hypervisor` and `ch-remote` **v54 or newer**. Older versions can't open qcow2 overlays (no `backing_files`), and their `pause()` doesn't flush qcow2 metadata, so a capture could copy a stale disk.
+- Firmware: `CLOUDHV.fd` (x86) or `CLOUDHV_EFI.fd` (arm64) from the cloud-hypervisor/edk2 releases, or `hypervisor-fw` from rust-hypervisor-firmware, at `BOXERY_CH_FIRMWARE` (default `~/.local/share/boxery/ch/firmware`).
+- `qemu-img`, `cloud-localds`, `iproute2`, `nftables`, `socat`, read/write `/dev/kvm`.
+- Passwordless `sudo` for network setup (`BOXERY_CH_SUDO`, default `sudo -n`; `""` when running as root), and `cap_net_admin` on the VMM so it can open its TAPs.
+
+```bash
+sudo setcap cap_net_admin+ep "$(command -v cloud-hypervisor)"
+./host/boxery-host init --backend cloud-hypervisor
+./host/boxery-host build-base
+```
+
+| | |
+|---|---|
+| Storage | `$BOXERY_CH_DIR` (default `~/.local/share/boxery/ch`): `base.qcow2`, `images/IMAGE.qcow2`, and `vms/NAME/{disk.qcow2, seed.iso, launch.sh, slot, serial.log}` |
+| Process | `boxery-ch-NAME.service` (systemd user unit) runs `launch.sh`. `stop` presses the ACPI power button; `rm` and `reimage` stop the unit |
+| Network | VM slot S: TAP `bxchS`, host `10.77.S.1`, guest `10.77.S.2`, MAC `52:54:00:77:…:S`, all static from the seed's network-config. A VM made from an image gets a new slot. `BOXERY_CH_NET` changes `10.77`; DNS is `BOXERY_CH_DNS` (default `1.1.1.1 9.9.9.9`) |
+| Isolation | nftables table `inet boxery_ch`, replaced atomically on every `start`/`new`. Guests can't reach the host, each other, RFC1918, CGNAT/Tailscale, link-local or IPv6, and can't spoof source addresses (strict reverse-path check). Everything else is NATed out. The host can still ssh in |
+| Proxy | Guest → `VSOCK-CONNECT:2:8088` → `vms/NAME/vsock.sock_8088` (symlink) → `proxy.sock` served by `boxery-ch-vsock.service` → `127.0.0.1:8088` |
+| Recovery | `cleanup_new` stops and removes the unit, deletes the TAP and the VM directory (and a dead holder's slot lock); `cleanup_image` removes an image and its `.part`; `recover_capture` resumes a VM a dead capture left paused. `reimage` stages the new disk as `disk.qcow2.new` and renames it, so a retry after a crash is safe. Inventory fails if the systemd user manager is unreachable rather than reporting every VM stopped |
+| Images | An image is a copy of a VM's overlay, so it depends only on the base. Capturing a running VM: guest `sync` over ssh, pause, `cp --reflink=auto` (instant on XFS/btrfs, a full copy of the overlay elsewhere), resume. There's no guest agent to freeze filesystems, so captures are crash-consistent after the sync. Measured on arm64 (4 GiB guests): capture ~1 s, revert or pool reset ~20 s (a reboot), `new --from` ~22 s, fork into 2 VMs ~25 s |
+
+Known gaps:
+- VMs don't autostart after a host reboot (`start` recreates TAPs and rules).
+- Other firewalls with a FORWARD drop policy block guest traffic: Docker (allow `bxch*` in `DOCKER-USER`), ufw (`DEFAULT_FORWARD_POLICY`), firewalld.
+- `net.ipv4.ip_forward=1` is host-wide, so the host also routes between its other interfaces.

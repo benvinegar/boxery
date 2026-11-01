@@ -11,6 +11,7 @@ They can be the same machine.
 
 - [Linux host (libvirt/KVM)](#linux-host-libvirtkvm)
 - [macOS host (Lima)](#macos-host-lima)
+- [Linux host (Cloud Hypervisor, experimental)](#linux-host-cloud-hypervisor-experimental)
 - [Laptop / controller](#laptop--controller)
 - [LLM providers for in-VM agents](#llm-providers-for-in-vm-agents)
 - [Verify](#verify)
@@ -56,6 +57,16 @@ Apple Silicon notes:
 
 - The guest is arm64, so `vm_browser` uses Playwright's Chromium instead of Google Chrome. Google ships no Linux arm64 build.
 - Lima's default `vz` VM type is fast, but it can't snapshot. Set `BOXERY_LIMA_VMTYPE=qemu` (before `init`) if you need `snap` and `revert`, or if you want to use the [shared pool](pool.md).
+
+## Linux host (Cloud Hypervisor, experimental)
+
+An alternative to libvirt on Linux: no libvirtd, and a routed TAP per VM with guest isolation in nftables (guests can't reach the host, each other or your LAN). It needs Cloud Hypervisor, a firmware file, nftables and passwordless sudo for network setup. Requirements and layout: [backends → cloud-hypervisor](../host/backends/README.md#cloud-hypervisor-experimental).
+
+```bash
+sudo setcap cap_net_admin+ep "$(command -v cloud-hypervisor)"
+./host/boxery-host init --backend cloud-hypervisor
+./host/boxery-host build-base
+```
 
 Backend details: [host/backends/README.md](../host/backends/README.md).
 
