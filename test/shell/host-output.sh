@@ -17,7 +17,7 @@ bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 # run ARGS…: stdout → $tmp/out, stderr → $tmp/err (temp dir → TMP, timestamps → DATE), exit status → $rc
 run() {
 	rc=0; "$H" "$@" >"$tmp/out.raw" 2>"$tmp/err.raw" || rc=$?
-	for f in out err; do sed -E -e "s#$tmp#TMP#g" -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}/DATE/g' "$tmp/$f.raw" >"$tmp/$f"; done
+	for f in out err; do sed -E -e "s#$tmp#TMP#g" -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}/DATE/g' -e 's/, [0-9]+s\)$/, Ns)/' -e 's/installed [0-9]+s after/installed Ns after/' "$tmp/$f.raw" >"$tmp/$f"; done
 }
 # same DESC FILE EXPECTED_RC: compare $tmp/FILE with $tmp/expected, and $rc with EXPECTED_RC
 same() {
@@ -38,7 +38,7 @@ run new a1 --cpus 2 --mem 2048 --disk 10
 echo "a1 127.0.0.1:22000" >"$tmp/expected"; same "new prints NAME ADDR" out 0
 cat >"$tmp/expected" <<'EOF'
 ==> a1 reachable at 127.0.0.1:22000; waiting for ssh + cloud-init
-==> a1 ready
+==> a1 ready (desktop, Ns)
 EOF
 same "new logs progress on stderr" err 0
 run new b2
@@ -51,10 +51,11 @@ cat >"$tmp/expected" <<'EOF'
 boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
 
   init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
-  build-base                build the golden desktop image (one-time)
+  build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
-  new NAME [--shape S] [--cpus N --mem MiB --disk GiB]
-  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1)
+  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+                            --headless: no desktop; boots the stock image, no build-base needed
+  new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
   fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
                             copy a VM (running or not) into new VMs with their own identity
                             (same size as SRC unless --shape or size flags are given)
@@ -77,15 +78,15 @@ run bogus; same "unknown command → usage, exit 1" out 1
 
 echo "== listings"
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR             DISK       SHAPE      LEASE
-a1               running    127.0.0.1:22000  1GiB       custom     -
-b2               shut off   127.0.0.1:22001  1GiB       standard   -
+NAME             STATE      ADDR             DISK       SHAPE      KIND      LEASE
+a1               running    127.0.0.1:22000  1GiB       custom     desktop   -
+b2               shut off   127.0.0.1:22001  1GiB       standard   desktop   -
 EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":null,"shape":"custom","cpus":2,"mem":2048},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192}
+{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
+{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
 ]
 EOF
 run ls --json; same "ls --json (one element per line)" out 0
@@ -132,8 +133,8 @@ run ip a1; same "ip" out 0
 rm -f "$BOXERY_CONF/vm-shapes/a1.json"; rm -rf "$BOXERY_CONF/vm-shapes"
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":{"state":"FREE","holder":null,"expires_at":null},"shape":null,"cpus":null,"mem":null},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":null,"cpus":null,"mem":null}
+{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":{"state":"FREE","holder":null,"expires_at":null},"shape":null,"cpus":null,"mem":null,"desktop":true},
+{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
 ]
 EOF
 run ls --json; same "ls --json: pool lease object, nulls for VMs without a size record" out 0
@@ -141,7 +142,7 @@ mv "$BOXERY_FAKE_DIR/a1" "$tmp/a1.away"; mv "$BOXERY_FAKE_DIR/b2" "$tmp/b2.away"
 echo "[]" >"$tmp/expected"
 run ls --json; same "ls --json with no VMs → []" out 0
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR             DISK       SHAPE      LEASE
+NAME             STATE      ADDR             DISK       SHAPE      KIND      LEASE
 EOF
 run ls; same "ls with no VMs → header only" out 0
 mv "$tmp/a1.away" "$BOXERY_FAKE_DIR/a1"; mv "$tmp/b2.away" "$BOXERY_FAKE_DIR/b2"
@@ -153,7 +154,7 @@ err "snaps with a bad flag" "boxery-host: usage: snaps NAME [--json]" snaps a1 b
 err "invalid snapshot name" "boxery-host: invalid snapshot name 'x;id'" snap a1 'x;id'
 err "non-numeric size" "boxery-host: --mem must be a number" new a3 --mem '1;id'
 err "invalid VM name" "boxery-operations: invalid VM name: A1" new A1
-err "new without a name" "boxery-host: usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE]" new
+err "new without a name" "boxery-host: usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless]" new
 err "connect to a non-ssh port" "boxery-host: connect: only the ssh port is supported (forward other ports over ssh)" connect a1 80
 err "resize without sizes" "boxery-host: usage: resize NAME [--cpus N] [--mem MiB] [--disk GiB]" resize a1
 err "revert without a snapshot" "boxery-host: usage: revert NAME SNAP" revert a1
@@ -163,5 +164,26 @@ err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must 
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
 err "ls with an extra argument" "boxery-host: usage: ls [--json]" ls extra
 BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: cloud-hypervisor exe fake libvirt lima )" ls
+
+echo "== headless"
+run new h3 --headless
+echo "h3 127.0.0.1:22002" >"$tmp/expected"; same "new --headless prints NAME ADDR" out 0
+cat >"$tmp/expected" <<'EOF'
+==> h3 reachable at 127.0.0.1:22002; waiting for ssh + cloud-init (installing plumbing devtools)
+==> h3: plumbing devtools installed Ns after create
+==> h3 ready (headless, Ns)
+EOF
+same "new --headless logs the layers it installs" err 0
+run ls --json
+grep -F '"name":"h3"' "$tmp/out" >"$tmp/h3.json" || true
+echo '{"name":"h3","state":"running","addr":"127.0.0.1:22002","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
+same "ls --json: a headless VM has desktop false" h3.json 0
+run ls
+grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true
+echo "h3               running    127.0.0.1:22002  1GiB       standard   headless  -" >"$tmp/expected"
+same "ls: KIND headless" h3.txt 0
+run snap h3 hs
+"$H" new h4 --from h3@hs --headless >/dev/null 2>&1 && ok "new --from a headless image with --headless" || bad "new --from headless image"
+err "a desktop image can't become headless" "boxery-host: a1@one has a desktop, and a VM made from an image keeps it (drop --headless)" new h5 --from a1@one --headless
 
 echo; echo "passed: $pass  failed: $fail"; ((fail == 0))

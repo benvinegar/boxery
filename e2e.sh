@@ -93,7 +93,7 @@ if "$A" pool add "$VM" >/dev/null 2>&1; then
 		if [[ $1 == "$VM" ]]; then LID=$2; break; fi
 		held+=("$1")
 	done
-	for o in "${held[@]}"; do "$A" release "$o" >/dev/null 2>&1 || true; done
+	for o in ${held[@]+"${held[@]}"}; do "$A" release "$o" >/dev/null 2>&1 || true; done
 	if [[ -n $LID ]]; then
 		ok "acquire → $VM"
 		check "lease holder can use it" "$A" run "$VM" bash -c 'echo lease-work > ~/project/lease.txt'
@@ -141,7 +141,7 @@ fi
 "$A" rm "${VM}a" >/dev/null 2>&1 || true; "$A" rm "${VM}b" >/dev/null 2>&1 || true
 
 echo "== resize (running VM: restart, new size inside the guest)"
-n=$("$A" run "$VM" nproc); m=$(("$n" + 1))
+n=$("$A" run "$VM" nproc); m=$((n + 1))
 if "$A" resize "$VM" --cpus "$m" >/dev/null; then
 	[[ $("$A" run "$VM" nproc) == "$m" ]] && ok "resize $n → $m vCPUs, visible in the guest" || bad "nproc after resize: $("$A" run "$VM" nproc)"
 	check "VM still has its files after resize" "$A" run "$VM" test -f answer.txt
