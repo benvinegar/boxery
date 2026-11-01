@@ -62,7 +62,7 @@ export function resources(command, args) {
 		}
 	} else if (command === "pool") {
 		if (["add", "rm"].includes(args[0])) names = [assertName(args[1])];
-	} else if (["start", "stop", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
+	} else if (["start", "stop", "resize", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
 	return [...new Set(names)].sort();
 }
 
@@ -108,7 +108,10 @@ async function worker(db, op, host, args, recovery = false) {
 		if (value == null) delete env[key];
 		else env[key] = value;
 	}
-	const child = spawn("bash", ["-c", 'IFS= read -r gate <&3 || exit 1; exec "$@"', "boxery-worker", host, ...args], {
+	// Close the gate after reading it: anything the worker starts inherits its fds, and a daemon that
+	// outlives it (Lima's hostagent, via limactl start) would hold the pipe open, so "close" never fires.
+	// A bare `exec 3<&-`: `exec "$@" 3<&-` makes bash keep a restorable copy (fd 10) that is inherited.
+	const child = spawn("bash", ["-c", 'IFS= read -r gate <&3 || exit 1; exec 3<&-; exec "$@"', "boxery-worker", host, ...args], {
 		env, detached: true, stdio: [recovery ? "ignore" : "inherit", "inherit", "inherit", "pipe"],
 	});
 	// Install listeners before opening the gate (a fast child may exit immediately).

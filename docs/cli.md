@@ -32,8 +32,11 @@ boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/i
 boxery new demo                              # ~13 s   [--cpus 4 --mem 8192 --disk 40] [--grant SPEC]…
 boxery ls [--json]                           # VMs, with their grants
 boxery start demo | stop demo
+boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
 ```
+
+`resize` takes any of `--cpus`, `--mem` (MiB) and `--disk` (GiB), the same units as `new`. A running VM is stopped, resized and started again, so its tmux sessions end; its grants are pushed again afterwards. A stopped VM stays stopped. The disk can only grow, and the guest's root filesystem grows on the next boot. Values that are already the VM's current size are ignored, so a resize that changes nothing doesn't restart anything. Like other long-lived VM products (exe.dev, Daytona, EC2), it changes the VM in place; throwaway sandboxes such as E2B are recreated instead.
 
 ### Snapshots and forks
 

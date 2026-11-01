@@ -16,6 +16,8 @@
 | `backend_list` | lines `NAME<TAB>STATE<TAB>ADDR<TAB>DISK` (VMs only, never images; empty field = unknown); `boxery-host` turns these into the `ls --json` objects |
 | `backend_ssh_endpoint NAME` / `backend_wait_endpoint NAME` | `HOST PORT` where the VM's sshd is reachable from the host (now / after waiting) |
 | `backend_start/stop/rm NAME` | lifecycle. `rm` removes the VM, not its images (`boxery-host rm` does that) |
+| `backend_size NAME` | `CPUS MEM_MIB DISK_GIB` as configured (not usage) |
+| `backend_resize NAME CPUS MEM_MIB DISK_GIB` | optional; empty = keep. Apply the new size. It may stop NAME, but **must leave it running if it was** (also on failure) and stopped if it was. `boxery-host resize` holds the VM lock, refuses to shrink the disk, drops values that don't change anything, and waits for ssh afterwards. libvirt: `setvcpus`/`setmaxmem`/`setmem --config` + offline `vol-resize`; Lima: `limactl edit` on the stopped instance |
 
 ## Images: one primitive for snapshots, forks and pool resets
 
