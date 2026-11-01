@@ -6,7 +6,8 @@
 // ctx: { signal, current, localCwd, progress? }. progress(message) reports a status line while the
 // tool runs (MCP progress notifications); front-ends without it pass nothing.
 //   engine: pi runs this tool with its own built-in engine (same rendering/truncation as bash, read, …)
-//   noVm:   the front-end does not resolve a VM; the tool gets every argument (vm_copy, vm_manage)
+//   noVm:   the front-end does not resolve a VM; the tool gets every argument, `vm` included
+//           (vm_copy, vm_manage, vm_info, vm_lease)
 // vm_manage and vm_lease have no `run`: "current VM" and held leases are front-end session state.
 // Each front-end calls manageAction() / leaseAction() with its own session hooks.
 import * as core from "./boxery-core.mjs";
@@ -17,7 +18,7 @@ const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot 
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
-export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes"];
+export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "images", "use", "none"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
 export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "version"];
 
@@ -28,11 +29,17 @@ const INFO_OUTPUT = {
 		current: { type: ["string", "null"], description: "list: the current VM" },
 		default: { type: "string", description: "shapes: the default shape" },
 		shapes: { type: "object", description: "shapes: {NAME: {cpus, mem (MiB), disk (GiB)}}" },
-		name: { type: "string", description: "grants/snaps: the VM" },
+		vm: { type: "string", description: "grants/snaps: the VM" },
 		grants: { type: "array", items: { type: "object" } },
 		snapshots: { type: "array", items: { type: "object" } },
-		controller: { type: "object", description: "version: this controller's {version, describe}" },
-		host: { anyOf: [{ type: "object" }, { type: "string" }, { type: "null" }], description: "version: the host's {name, version, describe, install} (null if it predates versions)" },
+		controller: {
+			type: "object",
+			description: "version: this controller's {version, describe}; describe is `git describe --tags --always --dirty` of a git checkout, null for npm installs",
+		},
+		host: {
+			anyOf: [{ type: "object" }, { type: "string" }, { type: "null" }],
+			description: "version: the host's {name, version, describe, install}, describe as for controller (null if the host predates versions)",
+		},
 		behind: { type: "boolean", description: "version: the host is older than the controller" },
 	},
 };
@@ -90,7 +97,7 @@ export const TOOLS = [
 		name: "vm_edit",
 		title: "VM edit",
 		engine: "edit",
-		description: `Edit a file ${where} Exact-text replacement: each edits[].oldText must match exactly once in the original file; edits must not overlap. Standalone core/MCP commits use atomic replacement with advisory conflict detection; reread before retrying. Follows symlinks without replacing them and requires a writable regular file and parent directory. Pi uses its native edit engine.`,
+		description: `Edit a file ${where} Exact-text replacement: each edits[].oldText must match exactly once in the original file, and edits must not overlap. If it fails with a conflict (the file changed meanwhile), reread the file and retry.`,
 		parameters: obj(
 			{
 				path: { type: "string" },
@@ -195,26 +202,25 @@ export const TOOLS = [
 		title: "VM manage",
 		noVm: true,
 		description:
-			`Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: ${MANAGE_ACTIONS.join(" | ")}. ` +
-			"`shapes` lists the VM sizes (cpus/mem/disk) the host offers; pass `shape` (or cpus/mem/disk) to `new`/`fork` when a task needs more (or less) than the default. " +
-			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
-			"`images` lists every snapshot on the host as VM@SNAP; `new` with `from:'VM@SNAP'` creates a VM from one; `snap-rm` deletes snapshot `snapshot` of VM `name`. " +
-			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
-			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
+			`Create, change and select boxery VMs (Ubuntu desktop VMs on the user's VM host). action: ${MANAGE_ACTIONS.join(" | ")}. ` +
+			"`vm` is the VM to act on (`new`: the new VM's name, default generated; `fork`: the source). " +
+			"`new` creates a VM (with use:true also selects it); pass `shape` (see vm_info shapes) or cpus/mem/disk when a task needs more (or less) than the default, and `from:'VM@SNAP'` to create it from an image. " +
 			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants). " +
-			"For lookups (list, shapes, grants, snaps) prefer vm_info, which is read-only.",
+			"`fork` copies VM `vm` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
+			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
+			"`snap` snapshots VM `vm` (as `snapshot`, optional); `revert` restores snapshot `snapshot` and `snap-rm` deletes it (see vm_info snaps); `images` lists every snapshot on the host as VM@SNAP. " +
+			"`use` makes `vm` the current VM (default for all vm_* tools; created if missing); `none` clears it.",
 		parameters: {
 			type: "object",
 			properties: {
 				action: { type: "string", enum: MANAGE_ACTIONS },
-				name: { type: "string" },
+				vm: { type: "string", description: "the VM to act on; new: the new VM's name (default: generated); fork: the source VM" },
 				snapshot: { type: "string", description: "snapshot name for snap/revert/snap-rm" },
 				from: { type: "string", description: "for new: image to create the VM from, VM@SNAP (see action:'images')" },
 				headless: { type: "boolean", description: "for new: no desktop (default false: XFCE desktop, Chrome, computer use)" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean", description: "for new: also make it the current VM" },
-				shape: { type: "string", description: "for new/fork: VM size by name (see action:'shapes'); default: the host's default shape (fork: the source's size)" },
+				shape: { type: "string", description: "for new/fork: VM size by name (see vm_info shapes); default: the host's default shape (fork: the source's size)" },
 				cpus: SIZE("vCPUs", 1),
 				mem: SIZE("memory in MiB", 512),
 				disk: SIZE("disk in GiB (resize: only grows)", 1),
@@ -229,12 +235,12 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
-			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `name` may access from the user's machine; `snaps` the snapshots of VM `name`; " +
+			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (only the user can change grants); `snaps` the snapshots of VM `vm`; " +
 			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
-			"`name` defaults to the current VM.",
+			"`vm` defaults to the current VM.",
 		parameters: {
 			type: "object",
-			properties: { action: { type: "string", enum: INFO_ACTIONS }, name: { type: "string", description: "VM for grants/snaps (default: the current VM)" } },
+			properties: { action: { type: "string", enum: INFO_ACTIONS }, vm: { type: "string", description: "grants/snaps: the VM (default: the current VM)" } },
 			required: ["action"],
 		},
 		annotations: { readOnlyHint: true, openWorldHint: false },
@@ -250,12 +256,12 @@ export const TOOLS = [
 			"`acquire` waits up to `wait` seconds for a free pool VM, leases it for `ttl` seconds and (unless use=false) makes it the current VM. " +
 			"Leases are exclusive and renewed automatically while this session is active; they end when released, when the session ends, or if renewal stops. " +
 			"When a lease ends the VM is reset to its clean image and everything done in it is lost: copy results out (vm_copy, git push) before `release`. " +
-			"`list` shows this session's leases; `renew`/`release` take `name` (default: the current VM). A leased VM cannot be removed with vm_manage rm.",
+			"`list` shows this session's leases; `renew`/`release` take `vm` (default: the current VM). A leased VM cannot be removed with vm_manage rm.",
 		parameters: {
 			type: "object",
 			properties: {
 				action: { type: "string", enum: LEASE_ACTIONS },
-				name: { type: "string", description: "renew/release: the leased VM (default: the current VM)" },
+				vm: { type: "string", description: "renew/release: the leased VM (default: the current VM)" },
 				ttl: { type: "integer", minimum: core.LEASE_TTL.min, maximum: core.LEASE_TTL.max, description: `acquire/renew: lease length in seconds (default ${core.LEASE_TTL.default})` },
 				wait: { type: "integer", minimum: 0, maximum: 3600, description: "acquire: seconds to wait for a free VM (default 60)" },
 				use: { type: "boolean", description: "acquire: make the leased VM the current VM (default true)" },
@@ -271,10 +277,10 @@ export const TOOLS = [
  * ctx.hostName names the host (MCP routes named hosts through the controller as its legacy profile).
  */
 export async function infoAction(a, { current, listNote, hostName } = {}) {
-	const vmName = () => {
-		const name = a.name ?? current;
-		if (!name) throw new Error("No VM given and no current VM. Pass `name`.");
-		return core.assertName(name);
+	const target = () => {
+		const vm = a.vm ?? current;
+		if (!vm) throw new Error("No VM given and no current VM. Pass `vm`.");
+		return core.assertName(vm);
 	};
 	switch (a.action) {
 		case "list": {
@@ -286,14 +292,14 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 			return { text: core.formatShapes(shapes), structured: shapes };
 		}
 		case "grants": {
-			const name = vmName();
-			const grants = await core.boxeryJson(["grants", name]);
-			return { text: core.formatGrants(name, grants), structured: { name, grants } };
+			const vm = target();
+			const grants = await core.boxeryJson(["grants", vm]);
+			return { text: core.formatGrants(vm, grants), structured: { vm, grants } };
 		}
 		case "snaps": {
-			const name = vmName();
-			const snapshots = await core.listSnaps(name);
-			return { text: core.formatSnaps(name, snapshots), structured: { name, snapshots } };
+			const vm = target();
+			const snapshots = await core.listSnaps(vm);
+			return { text: core.formatSnaps(vm, snapshots), structured: { vm, snapshots } };
 		}
 		case "version": {
 			const v = await core.versions();
@@ -307,51 +313,49 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 
 /**
  * vm_manage, given a front-end's "current VM" session:
- *   s.current            the current VM name (or null)
  *   s.use(name)          select an existing-or-new VM as current (create, apply grants)
  *   s.adopt(name)        mark a VM that was just created as current
  *   s.clear()            no current VM
  *   s.removing?(name)    before rm (may throw to refuse); s.removed?(name) after it
- *   s.listNote           appended to the list output
  *   s.keeper?            the session's core.LeaseKeeper: leased VMs cannot be removed
  *   s.progress?(message) status lines from long controller operations (MCP progress)
  */
 export async function manageAction(a, s) {
 	switch (a.action) {
 		case "use": {
-			const name = core.assertName(a.name);
-			await s.use(name);
-			return { text: `current VM: ${name}` };
+			const vm = core.needVm(a);
+			await s.use(vm);
+			return { text: `current VM: ${vm}` };
 		}
 		case "none":
 			s.clear();
 			return { text: "no current VM" };
-		case "list":
-			return { text: `${await core.manage(a)}\ncurrent: ${s.current ?? "(none)"}${s.listNote ?? ""}` };
 		case "new": {
-			const name = a.name ? core.assertName(a.name) : core.newName();
-			const out = await core.manage({ ...a, name }, { progress: s.progress });
-			if (a.use) s.adopt(name);
-			return { text: `${out}${a.use ? `\ncurrent VM: ${name}` : ""}` };
+			const vm = a.vm ? core.assertName(a.vm) : core.newName();
+			const out = await core.manage({ ...a, vm }, { progress: s.progress });
+			if (a.use) s.adopt(vm);
+			return { text: `${out}${a.use ? `\ncurrent VM: ${vm}` : ""}` };
 		}
 		case "rm": {
-			if (s.keeper?.find(a.name)) throw new Error(`${a.name} is leased from the pool; release it with vm_lease {action:"release"}`);
-			await s.removing?.(a.name);
+			const vm = core.needVm(a);
+			if (s.keeper?.find(vm)) throw new Error(`${vm} is leased from the pool; release it with vm_lease {action:"release"}`);
+			await s.removing?.(vm);
 			const out = await core.manage(a, { progress: s.progress });
-			s.removed?.(a.name);
+			s.removed?.(vm);
 			return { text: out };
 		}
 		default:
+			if (INFO_ACTIONS.includes(a.action)) throw new Error(`vm_manage has no ${a.action}; use vm_info {action:"${a.action}"}`);
 			return { text: await core.manage(a, { progress: s.progress }) };
 	}
 }
 
 /**
- * vm_lease, given a front-end session: s.keeper (core.LeaseKeeper), s.current, s.adopt(name) and
- * s.clear() as for manageAction.
+ * vm_lease, given a front-end session: s.keeper (core.LeaseKeeper), s.current (the current VM name
+ * or null), and s.adopt(name) and s.clear() as for manageAction.
  */
 export async function leaseAction(a, s) {
-	const target = () => core.assertName(a.name ?? s.current ?? "");
+	const target = () => core.assertName(a.vm ?? s.current ?? "");
 	switch (a.action) {
 		case "acquire": {
 			const l = await s.keeper.acquire({ ttl: a.ttl ?? undefined, wait: a.wait ?? undefined });

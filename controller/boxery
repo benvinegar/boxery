@@ -1006,7 +1006,7 @@ controller_version() { # → VERSION<TAB>DESCRIBE (DESCRIBE empty outside a git 
 	local root v d=""
 	root=$(controller_root)
 	v=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$root/package.json" 2>/dev/null | head -1)
-	if [ -e "$root/.git" ] && command -v git >/dev/null 2>&1; then d=$(git -C "$root" describe --tags --always 2>/dev/null) || d=""; fi
+	if [ -e "$root/.git" ] && command -v git >/dev/null 2>&1; then d=$(git -C "$root" describe --tags --always --dirty 2>/dev/null) || d=""; fi
 	printf '%s\t%s\n' "${v:-unknown}" "$d"
 }
 # The host's `version --json` → VERSION<TAB>DESCRIBE<TAB>INSTALL. Fails on hosts that predate the command.

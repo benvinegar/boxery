@@ -774,9 +774,16 @@ export async function ensureVm(name, notify = () => {}) {
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
 
+/** The VM a vm_manage action `a` acts on: `a.vm`, which it must name. */
+export function needVm(a) {
+	if (a.vm == null || a.vm === "") throw new Error(`${a.action} needs \`vm\`, the VM to act on`);
+	return assertName(a.vm);
+}
+
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
-export async function manage({ action, name, snapshot, to, shape, from, cpus, mem, disk, headless }, opts = {}) {
-	const need = () => assertName(name);
+export async function manage(a, opts = {}) {
+	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
+	const need = () => needVm(a);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
 			if (v == null) return [];
@@ -791,14 +798,8 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
 			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
-		case "snaps":
-			return boxeryCli(["snaps", need()], 60_000);
-		case "list":
-			return formatVms(await listVms());
 		case "new":
-			return boxeryCli(["new", name ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
-		case "shapes":
-			return formatShapes(await listShapes());
+			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":
@@ -817,8 +818,6 @@ export async function manage({ action, name, snapshot, to, shape, from, cpus, me
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
 		case "images":
 			return boxeryCli(["images"], 60_000);
-		case "grants":
-			return formatGrants(name, await boxeryJson(["grants", need()]));
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
@@ -838,7 +837,7 @@ export function guidance(current, { localToolsNote } = {}) {
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
 		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. You cannot add grants yourself; ask the user if something is missing.",
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
-		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', name, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 	].join("\n");
 }
 

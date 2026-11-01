@@ -143,18 +143,18 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 	assert.match(text(await c.tool("vm_bash", { host: "beta", vm: "fakevm", command: 'echo "$HOST_TAG"' })), /^beta\n/);
 	for (const host of ["unknown", "../alpha", "", null, "alpha\n", { name: "beta", dir: profile("beta") }])
 		assert.equal((await c.tool("vm_bash", { host, vm: "fakevm", command: "true" })).isError, true);
-	assert.match(text(await c.tool("vm_manage", { action: "hosts" })), /alpha \*/);
-	assert.equal((await c.tool("vm_manage", { action: "add", name: "untrusted" })).isError, true);
+	assert.match(text(await c.tool("vm_info", { action: "hosts" })), /alpha \*/);
+	assert.equal((await c.tool("vm_manage", { action: "add", vm: "untrusted" })).isError, true);
 	assert.equal((await c.tool("vm_manage", { action: "host", host: "beta" })).isError, false);
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true, "host switch must clear VM");
-	assert.equal((await c.tool("vm_manage", { action: "use", host: "beta", name: "fakevm" })).isError, false);
+	assert.equal((await c.tool("vm_manage", { action: "use", host: "beta", vm: "fakevm" })).isError, false);
 	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
-	assert.match(text(await c.tool("vm_manage", { action: "grants", name: "fakevm" })), /PROFILE:beta OVERRIDES::/);
-	await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+	assert.match(text(await c.tool("vm_info", { action: "grants", vm: "fakevm" })), /PROFILE:beta OVERRIDES::/);
+	await c.tool("vm_manage", { action: "rm", host: "alpha", vm: "fakevm" });
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, false, "other-host rm must not clear selected pair");
-	await c.tool("vm_manage", { action: "rm", host: "beta", name: "fakevm" });
+	await c.tool("vm_manage", { action: "rm", host: "beta", vm: "fakevm" });
 	assert.equal((await c.tool("vm_bash", { command: "true" })).isError, true);
-	await c.tool("vm_manage", { action: "new", host: "alpha", name: "fakevm", use: true });
+	await c.tool("vm_manage", { action: "new", host: "alpha", vm: "fakevm", use: true });
 	assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/);
 	const other = client(["--host", "beta", "--vm", "fakevm"]);
 	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
@@ -171,7 +171,7 @@ test("startup host failures, BOXERY_VM and alias replacement cannot inherit a di
 	try {
 		writeFileSync(pointer, `${profile("beta")}\n`);
 		assert.equal((await c.tool("vm_bash", { host: "alpha", command: "true" })).isError, true);
-		await c.tool("vm_manage", { action: "rm", host: "alpha", name: "fakevm" });
+		await c.tool("vm_manage", { action: "rm", host: "alpha", vm: "fakevm" });
 		assert.match(text(await c.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^alpha\n/, "resolved sessions retain their original profile");
 	} finally { writeFileSync(pointer, `${profile("alpha")}\n`); }
 });
@@ -251,7 +251,7 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 			};
 			const tool = async (sid, name, args) => (await (await post("tools/call", { name, arguments: args }, sid)).json()).result;
 			const assertStartup = async (sid) => {
-				const listed = text(await tool(sid, "vm_manage", { action: "list" }));
+				const listed = text(await tool(sid, "vm_info", { action: "list" }));
 				assert.match(listed, new RegExp(`PROFILE:${startup.host} OVERRIDES::`));
 				assert.ok(listed.includes(`current: ${startup.vm ?? "(none)"} (host: ${startup.host})`));
 				const implicit = await tool(sid, "vm_bash", { command: 'echo "$HOST_TAG"' });
@@ -267,7 +267,7 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 			writeFileSync(defaultFile, `${startup.changedDefault}\n`);
 			const third = await initialize(); // New sessions also inherit this server's startup snapshot.
 			await Promise.all([first, second, third].map(assertStartup));
-			await Promise.all([[first, "alpha"], [second, "beta"]].map(([sid, host]) => tool(sid, "vm_manage", { action: "use", host, name: "fakevm" })));
+			await Promise.all([[first, "alpha"], [second, "beta"]].map(([sid, host]) => tool(sid, "vm_manage", { action: "use", host, vm: "fakevm" })));
 			const out = await Promise.all([first, second].map((sid) => tool(sid, "vm_bash", { command: 'sleep 0.1; echo "$HOST_TAG"' })));
 			assert.match(text(out[0]), /^alpha\n/); assert.match(text(out[1]), /^beta\n/);
 			await tool(first, "vm_manage", { action: "host", host: "beta" });

@@ -51,17 +51,16 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // ---------------------------------------------------------------- tools
 
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
-// vm_manage gains hosts/host (vm_info gains hosts) because the session's host is MCP state.
+// vm_manage gains host (vm_info gains hosts) because the session's host is MCP state.
 // vm_manage/vm_lease act on the session's current VM and leases.
 const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
 	...t,
-	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host"].join(" | "))} ` +
-		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
-	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host"] } } },
-	run(_vm, a, { session, host, current, progress }) {
-		if (a.action === "hosts") return hostsResult(host);
+	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "host"].join(" | "))} ` +
+		"`host` selects a session host via host:NAME and clears the current VM (vm_info hosts lists them). Registration and credentials remain user-controlled.",
+	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...MANAGE_ACTIONS, "host"] } } },
+	run(_vm, a, { session, host, progress }) {
 		if (a.action === "host") {
 			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
 			session.host = host;
@@ -71,9 +70,7 @@ const manageMcp = (t) => ({
 		}
 		const adopt = (name) => { session.current = name; session.host = session.currentHost = host; };
 		return manageAction(a, {
-			current,
 			keeper: session.keeper,
-			listNote: ` (host: ${host.name})`,
 			progress,
 			async use(name) {
 				await core.ensureVm(name, progress);
@@ -251,7 +248,7 @@ async function callTool(session, params, signal, progress) {
 		let vm = null;
 		if (!tool.noVm) {
 			vm = args.vm || current;
-			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', name:…} first.");
+			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', vm:…} first.");
 			core.assertName(vm);
 		}
 		const { vm: _drop, ...rest } = args;

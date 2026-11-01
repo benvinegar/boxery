@@ -8,7 +8,8 @@
  *   vm_jobs                                                 background command jobs (start / list / logs / wait / kill)
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               list / new / fork / rm / start / stop / resize / snap / snaps / snap-rm / revert / images / use / grants / shapes
+ *   vm_manage                                               new / fork / rm / start / stop / resize / snap / snap-rm / revert / images / use / none
+ *   vm_info                                                 read-only list / shapes / grants / snaps / version
  *   vm_lease                                                acquire / renew / release / list pool leases
  *
  * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs.
@@ -205,7 +206,6 @@ export default function (pi: ExtensionAPI) {
 	};
 	const withVm = (schema: any) => ({ ...schema, properties: { ...schema.properties, vm: VM_PARAM } });
 	const manageSession = (ctx: any) => ({
-		current: current?.name ?? null,
 		use: (name: string) => useVm(name, ctx),
 		adopt: (name: string) => setCurrent({ name, ephemeral: false }, ctx),
 		clear: () => setCurrent(null, ctx),
