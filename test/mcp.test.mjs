@@ -318,7 +318,7 @@ describe("stdio", () => {
 		mkdirSync(path.join(env.VMROOT, "etc/boxery"), { recursive: true });
 		writeFileSync(path.join(env.VMROOT, "etc/boxery/headless"), "no desktop\n");
 		try {
-			for (const [tool, args] of [["vm_screenshot", {}], ["vm_click", { x: 1, y: 1 }], ["vm_type", { text: "x" }], ["vm_key", { keys: "Return" }], ["vm_scroll", { x: 1, y: 1, direction: "down" }], ["vm_browser", { code: "return 1" }]]) {
+			for (const [tool, args] of [["vm_screenshot", {}], ["vm_click", { x: 1, y: 1 }], ["vm_type", { text: "x" }], ["vm_key", { keys: "Return" }], ["vm_scroll", { x: 1, y: 1, direction: "down" }], ["vm_browser", { code: "return 1" }], ["vm_view", {}], ["vm_view_frame", {}]]) {
 				const r = await c.tool(tool, { vm: "fakevm", ...args });
 				assert.equal(r.isError, true, tool);
 				assert.match(r.content[0].text, /is headless .*no desktop/, tool);
