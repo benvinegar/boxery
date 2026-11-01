@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-`mcp/boxery-mcp.mjs` exposes the same 12 `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 18 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
+`mcp/boxery-mcp.mjs` exposes the same 12 `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
 
 There are two ways to run it:
 
@@ -16,25 +16,28 @@ There are two ways to run it:
 The server runs locally and reaches VMs over the same ssh path as the CLI.
 
 ```bash
-# Claude Code
-claude mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
-
-# pi (or just use the extension)
-pi mcp add boxery -- npx -y -p boxery-vm boxery-mcp --vm demo
+npx add-mcp boxery-vm
 ```
 
-Cursor and other clients that use a JSON config:
+[add-mcp](https://github.com/neon-solutions/add-mcp) asks which agents to add it to (Claude Code, Cursor, Codex, VS Code, opencode, pi, Zed, and more) and writes each one's config. Useful flags: `-g` for all your projects, `-a claude-code` to pick a client, `--args --vm --args demo` for a default VM. Without a default VM the agent picks or creates one with `vm_manage`.
+
+**Tools appear in the next session.** Claude Code loads MCP servers at startup, so start a new session (`claude mcp get boxery-vm` should show *Connected*). In pi, run `/reload`.
+
+Or by hand, for any client:
+
+```bash
+claude mcp add boxery -- npx -y boxery-vm --vm demo
+```
 
 ```json
 {
   "mcpServers": {
-    "boxery": {
-      "command": "npx",
-      "args": ["-y", "-p", "boxery-vm", "boxery-mcp", "--vm", "demo"]
-    }
+    "boxery": { "command": "npx", "args": ["-y", "boxery-vm", "--vm", "demo"] }
   }
 }
 ```
+
+From a git checkout, use absolute paths (clients don't expand `~`): `"command": "node", "args": ["/abs/path/to/boxery/mcp/boxery-mcp.mjs"]`.
 
 ### Multiple hosts, one server
 

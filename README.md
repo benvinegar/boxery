@@ -87,8 +87,7 @@ pi --vm pool   # lease one
 **Claude Code, Cursor, …**
 
 ```bash
-claude mcp add boxery -- \
-  npx -y -p boxery-vm boxery-mcp --vm demo
+npx add-mcp boxery-vm
 ```
 
 [MCP server →](docs/mcp.md)

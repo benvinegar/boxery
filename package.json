@@ -1,6 +1,6 @@
 {
   "name": "boxery-vm",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",
   "keywords": ["pi-package", "mcp", "mcp-server", "vm", "computer-use", "coding-agent", "libvirt", "lima", "kvm"],
   "homepage": "https://github.com/benvinegar/boxery#readme",
@@ -14,7 +14,8 @@
   "bin": {
     "boxery": "controller/boxery",
     "boxery-host": "host/boxery-host",
-    "boxery-mcp": "mcp/boxery-mcp.mjs"
+    "boxery-mcp": "mcp/boxery-mcp.mjs",
+    "boxery-vm": "mcp/boxery-mcp.mjs"
   },
   "files": [
     "controller/",
