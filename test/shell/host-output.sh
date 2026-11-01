@@ -78,9 +78,9 @@ run bogus; same "unknown command → usage, exit 1" out 1
 
 echo "== listings"
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR             DISK       SHAPE      KIND      LEASE
-a1               running    127.0.0.1:22000  1GiB       custom     desktop   -
-b2               shut off   127.0.0.1:22001  1GiB       standard   desktop   -
+NAME             STATE      ADDR               DISK       SHAPE      KIND      LEASE
+a1               running    127.0.0.1:22000    1GiB       custom     desktop   -
+b2               shut off   127.0.0.1:22001    1GiB       standard   desktop   -
 EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
@@ -142,7 +142,7 @@ mv "$BOXERY_FAKE_DIR/a1" "$tmp/a1.away"; mv "$BOXERY_FAKE_DIR/b2" "$tmp/b2.away"
 echo "[]" >"$tmp/expected"
 run ls --json; same "ls --json with no VMs → []" out 0
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      ADDR             DISK       SHAPE      KIND      LEASE
+NAME             STATE      ADDR               DISK       SHAPE      KIND      LEASE
 EOF
 run ls; same "ls with no VMs → header only" out 0
 mv "$tmp/a1.away" "$BOXERY_FAKE_DIR/a1"; mv "$tmp/b2.away" "$BOXERY_FAKE_DIR/b2"
@@ -180,7 +180,7 @@ echo '{"name":"h3","state":"running","addr":"127.0.0.1:22002","disk":"1GiB","tun
 same "ls --json: a headless VM has desktop false" h3.json 0
 run ls
 grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true
-echo "h3               running    127.0.0.1:22002  1GiB       standard   headless  -" >"$tmp/expected"
+echo "h3               running    127.0.0.1:22002    1GiB       standard   headless  -" >"$tmp/expected"
 same "ls: KIND headless" h3.txt 0
 run snap h3 hs
 "$H" new h4 --from h3@hs --headless >/dev/null 2>&1 && ok "new --from a headless image with --headless" || bad "new --from headless image"
