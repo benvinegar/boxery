@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
-import { manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
+import { leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
 
 const VERSION = (() => {
 	try {
@@ -44,7 +44,8 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 // ---------------------------------------------------------------- tools
 
 // Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
-// vm_manage gains hosts/host because the session's host is MCP state.
+// vm_manage gains hosts/host because the session's host is MCP state. vm_manage/vm_lease act on the
+// session's current VM and leases.
 const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
@@ -65,6 +66,7 @@ const manageMcp = (t) => ({
 		const adopt = (name) => { session.current = name; session.host = session.currentHost = host; };
 		return manageAction(a, {
 			current,
+			keeper: session.keeper,
 			listNote: ` (host: ${host.name})`,
 			async use(name) {
 				await core.ensureVm(name);
@@ -77,7 +79,18 @@ const manageMcp = (t) => ({
 		});
 	},
 });
-const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t)).map((t) => ({
+const leaseMcp = (t) => ({
+	...t,
+	run(_vm, a, { session, host, current }) {
+		return leaseAction(a, {
+			keeper: session.keeper,
+			current,
+			adopt(name) { session.current = name; session.host = session.currentHost = host; },
+			clear() { session.current = null; session.currentHost = null; },
+		});
+	},
+});
+const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t.name === "vm_lease" ? leaseMcp(t) : t)).map((t) => ({
 	name: t.name,
 	description: t.description,
 	inputSchema: withHost(t.parameters),
@@ -90,9 +103,33 @@ const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
 
 // ---------------------------------------------------------------- MCP / JSON-RPC
 
+const allSessions = new Set();
 function newSession() {
-	return { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map() };
+	const session = { id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), lastActive: Date.now() };
+	// Leases are renewed while the session is in use: a call is running, or one ran within the TTL.
+	// An abandoned session (HTTP client gone without DELETE) stops renewing, and the host reaper resets the VM.
+	session.keeper = new core.LeaseKeeper({
+		alive: (l) => session.inflight.size > 0 || Date.now() - session.lastActive < l.ttl * 1000,
+		onLost(l, e) {
+			log(`lost lease on ${l.name} (${e.message})`);
+			if (session.current === l.name && sameHost(session.currentHost, l.host)) session.current = session.currentHost = null;
+		},
+	});
+	allSessions.add(session);
+	return session;
 }
+
+/** Give back a session's leases (the host resets those VMs) and forget it. */
+async function endSession(session) {
+	allSessions.delete(session);
+	await session.keeper.releaseAll();
+}
+
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"])
+	process.on(sig, async () => {
+		await Promise.all([...allSessions].map(endSession));
+		process.exit(0);
+	});
 
 const instructions = (s) =>
 	`Current host: ${s.host.name}. VM selections belong only to that host. Every vm_* tool accepts optional host.\n` + core.guidance(s.current, {
@@ -128,6 +165,7 @@ async function callTool(session, params, signal) {
 async function handle(session, msg) {
 	const { id, method, params } = msg ?? {};
 	const isRequest = id !== undefined && id !== null;
+	session.lastActive = Date.now();
 	const reply = (result) => (isRequest ? { jsonrpc: "2.0", id, result } : null);
 	const fail = (code, message) => (isRequest ? { jsonrpc: "2.0", id, error: { code, message } } : null);
 	try {
@@ -192,7 +230,10 @@ function serveStdio() {
 			for (const m of Array.isArray(msg) ? msg : [msg]) handle(session, m).then((r) => r && send(r));
 		}
 	});
-	process.stdin.on("end", () => process.exit(0));
+	process.stdin.on("end", async () => {
+		await endSession(session);
+		process.exit(0);
+	});
 	log(`stdio ready${DEFAULT_VM ? ` (current VM: ${DEFAULT_VM})` : ""}`);
 }
 
@@ -235,7 +276,11 @@ function serveHttp(listen) {
 			}
 			const sid = req.headers["mcp-session-id"];
 			if (req.method === "DELETE") {
-				if (sid) sessions.delete(sid);
+				const ended = sid && sessions.get(sid);
+				if (ended) {
+					sessions.delete(sid);
+					await endSession(ended);
+				}
 				return send(204, null);
 			}
 			if (req.method === "GET") return send(405, { error: "SSE stream not supported; use POST" }, { allow: "POST, DELETE" });

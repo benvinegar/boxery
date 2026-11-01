@@ -30,6 +30,8 @@ pi --vm pool --vm-ttl 3600
 /vm pool                         # inside a running pi; /vm off releases
 ```
 
+From an agent over MCP (or pi), with the `vm_lease` tool: `{"action":"acquire"}` leases a VM and makes it current, and the lease is renewed while the session is in use and released when it ends. See [Pool leases](mcp.md#pool-leases).
+
 From the CLI or scripts:
 
 ```bash
