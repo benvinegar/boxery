@@ -41,7 +41,7 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 | `vm_click`, `vm_type`, `vm_key`, `vm_scroll` | Computer use via xdotool on `:1` |
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
 | `vm_lease` | Pool leases: `acquire` · `renew` · `release` · `list`. Renewed while pi runs, released when the session ends. See [Pool leases](mcp.md#pool-leases). |
-| `vm_manage` | `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snap-rm` · `revert` · `use` · `none` on VM `vm` (for `fork`, the source; `new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`, see `vm_info images`) |
+| `vm_manage` | `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snap-rm` · `revert` · `use` · `none` · `build-base` on VM `vm` (for `fork`, the source; `new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`, see `vm_info images`; `build-base` builds the host's desktop base image) |
 | `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `images` · `version` (`vm` defaults to the current VM; `version` flags a host older than the controller) |
 
 Every tool takes an optional `vm` argument (default: the current VM), so one agent can **fan out** across several VMs at once. The system prompt tells the model that project work happens in the VM through `vm_*` tools, and that built-ins act locally.

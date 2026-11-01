@@ -1,6 +1,8 @@
-# File transfers with `vm_copy`
+# File transfers with `vm_copy` and `boxery cp`
 
 ← [Docs](README.md)
+
+`boxery cp FROM TO` is the same code from the CLI, with the same locations, except that a bare path is local there (the CLI has no current VM). See the [CLI reference](cli.md#files).
 
 `vm_copy` transfers a file or directory **when explicitly called**. It does not continuously synchronize workspaces, and ordinary shell/file/browser tools do not copy the project back and forth. VM forks use a separate disk-image mechanism.
 

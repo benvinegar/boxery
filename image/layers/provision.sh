@@ -2,7 +2,7 @@
 # boxery-provision [LAYER...]: apply boxery's image layers (/usr/local/lib/boxery/layers/LAYER.sh) in order.
 # Default: the layers listed in /etc/boxery/provision (written by boxery-host's per-VM cloud-config).
 #   plumbing   every VM: agent user, boxery-llm (LLM proxy bridge), sshd/sysctl/cloud-init/tmux config
-#   devtools   git, build tools, node 22, pi, opencode, ripgrep (keeps what the image already has)
+#   devtools   git, build tools, node 24, pi, opencode, ripgrep (keeps what the image already has)
 #   desktop    XFCE, VNC/noVNC, browsers, playwright-core (the desktop base build only)
 # Records what's installed in /etc/boxery/layers; /etc/boxery/headless marks a VM without the desktop.
 set -euo pipefail

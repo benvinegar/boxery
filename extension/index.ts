@@ -8,7 +8,7 @@
  *   vm_jobs                                                 background command jobs (start / list / logs / wait / kill)
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               new / fork / rm / start / stop / resize / snap / snap-rm / revert / use / none
+ *   vm_manage                                               new / fork / rm / start / stop / resize / snap / snap-rm / revert / use / none / build-base
  *   vm_info                                                 read-only list / shapes / grants / snaps / images / version
  *   vm_lease                                                acquire / renew / release / list pool leases
  *

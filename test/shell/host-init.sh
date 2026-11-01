@@ -57,4 +57,33 @@ if echo hello | "$H" add-key >/dev/null 2>&1; then bad "add-key accepted a non-k
 echo "== build-base"
 "$H" build-base >/dev/null 2>&1 && [[ -f $BOXERY_FAKE_DIR/.base ]] && ok "build-base runs the backend's build" || bad "build-base"
 
+echo "== --profile"
+# A second profile beside the one above (found through its service files, on port 9999).
+P=(env -u BOXERY_CONF -u BOXERY_PROXY_PORT "$H" --profile two)
+pc=$HOME/.config/boxery-two
+err=$("${P[@]}" ls 2>&1) && bad "--profile accepted a missing profile" || { [[ $err == *"no profile 'two'"*"--profile two init"* ]] && ok "--profile refuses a profile that was never created" || bad "error: $err"; }
+err=$("$H" --profile ../x ls 2>&1) && bad "--profile accepted ../x" || { [[ $err == *"invalid profile name"* ]] && ok "--profile validates the name" || bad "error: $err"; }
+err=$(BOXERY_CONF=$tmp/other "$H" --profile two init 2>&1) && bad "--profile with another BOXERY_CONF" || { [[ $err == *conflicts* ]] && ok "--profile refuses a different BOXERY_CONF" || bad "error: $err"; }
+# The namespace check runs before the backend's own checks, so lima can be refused offline.
+lp=$HOME/.config/boxery-lima1; mkdir -p "$lp"; printf 'BOXERY_BACKEND=lima\nBOXERY_PROXY_PORT=8100\nBOXERY_PROXY_UNIT=boxery-proxy-lima1\n' >"$lp/host.env"
+err=$("${P[@]}" init --backend lima 2>&1) && bad "a second lima profile was created" || { [[ $err == *"$lp"*"already uses the lima backend"*BOXERY_LIMA_PREFIX* && ! -e $pc ]] && ok "same backend and settings as another profile: refused, nothing written" || bad "error: $err"; }
+rm -rf "$lp"
+err=$(env -u BOXERY_CONF BOXERY_PROXY_PORT=9999 BOXERY_FAKE_DIR="$tmp/vms-two" "$H" --profile two init --backend fake 2>&1) && bad "a taken proxy port was accepted" || { [[ $err == *"proxy port 9999 is already used"* ]] && ok "an explicit proxy port another profile uses: refused" || bad "error: $err"; }
+: >"$CALLS"
+out=$(BOXERY_FAKE_DIR=$tmp/vms-two "${P[@]}" init --backend fake 2>&1) && ok "--profile init creates the profile (same backend as the other one: fake has no namespace to check)" || bad "init: $out"
+e=$pc/host.env
+port=$(sed -n 's/^BOXERY_PROXY_PORT=//p' "$e")
+[[ $port =~ ^80(89|9[0-9])$ ]] && ok "picks a free proxy port ($port)" || bad "port: $(cat "$e")"
+grep -qx BOXERY_BACKEND=fake "$e" && grep -qx BOXERY_PROXY_UNIT=boxery-proxy-two "$e" && ok "host.env: backend and its own service name" || bad "host.env: $(cat "$e")"
+[[ $out == *"Next: boxery-host --profile two build-base"* ]] && ok "says how to build its base" || bad "output: $out"
+if [[ $(uname) == Darwin ]]; then
+	grep -q "<key>BOXERY_CONF</key><string>$pc</string>" "$HOME/Library/LaunchAgents/dev.boxery-proxy-two.plist" && [[ -f $HOME/Library/LaunchAgents/dev.boxery-reaper-two.plist ]] && ok "its own proxy and reaper agents" || bad "agents: $(ls "$HOME/Library/LaunchAgents")"
+else
+	grep -q "Environment=BOXERY_CONF=$pc" "$HOME/.config/systemd/user/boxery-proxy-two.service" && [[ -f $HOME/.config/systemd/user/boxery-reaper-two.timer ]] && ok "its own proxy and reaper units" || bad "units: $(ls "$HOME/.config/systemd/user")"
+fi
+grep -q 'boxery-proxy\.service\|dev\.boxery-proxy\.plist' "$CALLS" && bad "touched the other profile's proxy: $(cat "$CALLS")" || ok "leaves the other profile's services alone"
+BOXERY_FAKE_DIR=$tmp/vms-two "${P[@]}" init >/dev/null 2>&1 && [[ $(sed -n 's/^BOXERY_PROXY_PORT=//p' "$e") == "$port" ]] && ok "re-running init keeps its port" || bad "re-init: $(cat "$e")"
+out=$("${P[@]}" backend) && [[ $out == fake ]] && ok "--profile commands use that profile" || bad "backend: $out"
+out=$(env -u BOXERY_CONF "$H" profiles --json) && [[ $out == *'"name":"two"'*'"backend":"fake"'* && $out == *"\"conf\":\"$BOXERY_CONF\""* ]] && ok "profiles lists both" || bad "profiles: $out"
+
 echo; echo "passed: $pass  failed: $fail"; ((fail == 0))

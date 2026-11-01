@@ -13,6 +13,8 @@
 ```bash
 boxery host add laptop local
 boxery host add hornet you@hornet
+boxery host add exe local --backend exe     # a second backend on that machine: own profile, proxy port, services
+boxery host add exe2 local --profile exe    # an existing profile on that machine
 boxery host add existing --config-dir "$HOME/.boxery-other"
 boxery host ls [--json]                     # where each runs (local / ssh destination), backend, same-profile names
 boxery host show hornet
@@ -31,6 +33,7 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
+boxery build-base                            # the host's desktop base image (one time, ~3 min)
 boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
 boxery ls [--json]                           # VMs, with their shape and grants
 boxery start demo | stop demo
@@ -38,7 +41,7 @@ boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running 
 boxery rm demo                               # also revokes its LLM proxy token
 ```
 
-**Headless VMs.** `new --headless` makes a VM without the desktop: shell, git, build tools, node 22, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
+**Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
 
 `resize` takes any of `--cpus`, `--mem` (MiB) and `--disk` (GiB), the same units as `new`. A running VM is stopped, resized and started again, so its tmux sessions end; its grants are pushed again afterwards. A stopped VM stays stopped. The disk can only grow, and the guest's root filesystem grows on the next boot. Values that are already the VM's current size are ignored, so a resize that changes nothing doesn't restart anything. Like other long-lived VM products (exe.dev, Daytona, EC2), it changes the VM in place; throwaway sandboxes such as E2B are recreated instead.
 
@@ -72,6 +75,17 @@ boxery sessions demo [--json]                # list tmux sessions
 ```
 
 `run` works like `docker exec` / `kubectl exec`: the command gets exactly the arguments you pass, and nothing in them (quotes, `$`, `~`, globs, `;`) is re-parsed in the VM. For pipes, `&&`, `~` or `$VAR`, run a shell explicitly with `bash -c '…'` (how `run` used to treat every command). A whole command line passed as one argument (`boxery run demo 'make test'`) is looked up as a single command name and fails with a hint. An argument that is `~`, starts with `~/` or contains `$VAR`/`${…}` reaches the command literally and exits 0, so `run` adds a note on stderr pointing at `bash -c` (not when the command is a shell or an interpreter such as awk, perl or jq, whose code uses `$`). Like the `vm_bash` tool, `run` starts in `~/project` (home if there is none), and a relative `--cwd DIR` is under `~/project`; `~/` expands in the VM and absolute paths are used as is. `--` ends `run`'s own options. The exit code is the command's. `ssh NAME cmd…` keeps plain ssh semantics.
+
+### Files
+
+```bash
+boxery cp ./repo.bundle demo:                # this machine → VM (~/project/repo.bundle)
+boxery cp demo:dist ./dist                   # VM → here; directories copy recursively
+boxery cp demo:out.zip hornet/worker:in.zip  # VM → VM, here across named hosts
+boxery --host hornet cp local:notes.md ci-1:~/notes.md
+```
+
+`cp` is the `vm_copy` tool's own code, so it takes the same locations, `local:PATH`, `NAME:PATH` (a VM on the selected host) and `HOST/NAME:PATH`, and behaves the same way: streaming tar, staging, destination and cancellation rules are in [file transfers](copy.md). The one difference: the CLI has no current VM, so a bare path is on this machine, like `cp`/`scp` (`vm_copy` reads it as the current VM). A bare path that looks like a location with an invalid VM name (`Demo:x`) is refused instead of being written locally. Ctrl-C cancels and cleans up staging. `cp` runs on Node (≥ 20), which the npm package already needs.
 
 `prompt` logs to `~/project/.boxery/task-*.log` in the VM. Attach to a task with `boxery attach demo pi task-…`.
 
@@ -144,7 +158,11 @@ boxery upgrade-host [--check] [--ref REF]    # update boxery on the host (see In
 ## `boxery-host` (the VM host)
 
 ```
-init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
+init [--backend libvirt|lima|cloud-hypervisor|exe|boat]
+                                install proxy, vsock bridge, reaper services + backend setup, symlinks
+--profile NAME COMMAND...       run in profile NAME (~/.config/boxery-NAME): a second backend on this host.
+                                --profile NAME init --backend B creates it with a free proxy port and its own services
+profiles [--json]               every profile on this host: name, backend, proxyPort, proxyUnit, conf
 version [--json]                this install's version, commit and kind (git | npm)
 upgrade [--check] [--ref REF] [--wait S] [--reinit]
                                 update this install, re-run init for each profile using it, check, roll back on failure

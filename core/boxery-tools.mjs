@@ -18,7 +18,7 @@ const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot 
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
-export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none"];
+export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
 export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version"];
 
@@ -210,7 +210,8 @@ export const TOOLS = [
 			"`fork` copies VM `vm` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
 			"`snap` snapshots VM `vm` (as `snapshot`, optional); `revert` restores snapshot `snapshot` and `snap-rm` deletes it (see vm_info snaps). " +
-			"`use` makes `vm` the current VM (default for all vm_* tools; created if missing); `none` clears it.",
+			"`use` makes `vm` the current VM (default for all vm_* tools; created if missing); `none` clears it. " +
+			"`build-base` builds the host's desktop base image (~3 min), which desktop VMs are created from; a new host needs it once (headless VMs don't). The host refuses while VMs depend on the current base.",
 		parameters: {
 			type: "object",
 			properties: {

@@ -1,6 +1,6 @@
 // Isolated host-aware core/MCP regressions. No real SSH, HOME, credentials or VM host.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -160,6 +160,26 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
 });
 
+test("vm_manage host_add/host_rm run against the registry root with only validated arguments; build-base on the call's host", async () => {
+	const c = client(["--host", "beta"]);
+	const out = text(await c.tool("vm_manage", { action: "host_add", name: "gamma", dest: "local", backend: "exe" }));
+	assert.match(out, /PROFILE:home OVERRIDES::\nCOMMAND:host add gamma local --backend exe\n/, "registry root, not the session's profile");
+	assert.match(out, /action:"host", host:"gamma"/);
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "delta", dest: "me@box", profile: "exe" })), /COMMAND:host add delta me@box --profile exe\n/);
+	// Registers, then builds on the new host's profile (here an existing fixture so the stub can resolve it).
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "alpha", dest: "local", backend: "lima", buildBase: true })), /PROFILE:alpha OVERRIDES::\nCOMMAND:build-base/);
+	for (const bad of [{ name: "legacy", dest: "local" }, { name: "Bad", dest: "local" }, { name: "gamma", dest: "-oProxyCommand=x" }, { name: "gamma", dest: "a b" },
+		{ name: "gamma", dest: "local", backend: "../x" }, { name: "gamma", dest: "local", profile: "-x" }, { name: "gamma" }, { name: "gamma", dest: "local", host: "beta" }])
+		assert.equal((await c.tool("vm_manage", { action: "host_add", ...bad })).isError, true, JSON.stringify(bad));
+	assert.match(text(await c.tool("vm_info", { action: "list" })), /host: beta/, "session host unchanged");
+	// build-base on the call's host; host_rm forgets a registration against the registry root.
+	assert.match(text(await c.tool("vm_manage", { action: "build-base", host: "alpha" })), /PROFILE:alpha OVERRIDES::\nCOMMAND:build-base$/);
+	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "gamma" })), /^PROFILE:home OVERRIDES::\nCOMMAND:host rm gamma$/);
+	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "beta" })), /COMMAND:host rm beta\nthis session still uses beta/);
+	for (const bad of [{ name: "legacy" }, { name: "../x" }, {}, { name: "gamma", host: "beta" }])
+		assert.equal((await c.tool("vm_manage", { action: "host_rm", ...bad })).isError, true, JSON.stringify(bad));
+});
+
 test("startup host failures, BOXERY_VM and alias replacement cannot inherit a different profile's VM", async () => {
 	for (const args of [["--host"], ["--host", "unknown"], ["--host", "../alpha"]]) {
 		const p = spawn(process.execPath, [SERVER, ...args], { env, stdio: "ignore" });
@@ -209,6 +229,31 @@ test("copy binds both hosts independently, supports local server paths and rejec
 	for (const endpoint of ["unknown/fakevm:/x", "bad host/fakevm:/x", "../fakevm:/x"])
 		assert.equal((await c.tool("vm_copy", { from: `local:${local}`, to: endpoint })).isError, true);
 	assert.equal(readFileSync(local, "utf8"), "alpha-source");
+});
+
+test("boxery cp runs vm_copy: same locations, --host and the default host route, bare paths are local", async () => {
+	const cp = (...args) => new Promise((resolve) => {
+		execFile(path.join(ROOT, "controller/boxery"), args, { env, cwd: dir }, (e, stdout, stderr) => resolve({ code: e ? e.code : 0, stdout, stderr }));
+	});
+	writeFileSync(path.join(dir, "cli's bundle.git"), "cli-source");
+	let r = await cp("cp", "cli's bundle.git", "fakevm:cli-one.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.match(r.stdout, /^copied local:.*cli's bundle\.git → alpha\/fakevm:\/home\/agent\/project\/cli-one\.git/);
+	assert.equal(readFileSync(path.join(vmroot("alpha"), "project/cli-one.git"), "utf8"), "cli-source");
+	r = await cp("--host", "beta", "cp", "local:cli's bundle.git", "fakevm:cli-beta.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(vmroot("beta"), "project/cli-beta.git"), "utf8"), "cli-source");
+	r = await cp("cp", "alpha/fakevm:cli-one.git", "beta/fakevm:cli-two.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(vmroot("beta"), "project/cli-two.git"), "utf8"), "cli-source");
+	r = await cp("cp", "beta/fakevm:cli-two.git", "./back.git");
+	assert.equal(r.code, 0, r.stderr);
+	assert.equal(readFileSync(path.join(dir, "back.git"), "utf8"), "cli-source");
+	for (const args of [["cp", "only-one"], ["cp", "-r", "a", "b"], ["cp", "back.git", "unknown/fakevm:x"], ["cp", "back.git", "Bad:x"]]) {
+		r = await cp(...args);
+		assert.notEqual(r.code, 0, `boxery ${args.join(" ")} should fail`);
+		assert.match(r.stderr, /^boxery: /);
+	}
 });
 
 test("timeout cleanup stays on the snapshotted host after a concurrent session switch", async () => {

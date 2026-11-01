@@ -67,6 +67,7 @@ export function registeredHosts() {
 	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
 	return [resolveHost("legacy"), ...names.map(resolveHost)];
 }
+const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
 // A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
 function readProfileFile(file, max = 64 * 1024) {
 	let fd;
@@ -97,7 +98,6 @@ function shellWord(s) {
 	}
 	return out;
 }
-const VALID_DEST = /^[A-Za-z0-9_.@:%+][A-Za-z0-9_.@:%+-]*$/; // controller valid_dest()
 /** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
 export function hostDestination(host) {
 	const h = resolveHost(host);
@@ -133,6 +133,37 @@ export function describeHosts() {
 		backend: hostBackend(h),
 		same_as: hosts.filter((o) => o.real === r && o.host.name !== h.name).map((o) => o.host.name),
 	}));
+}
+/**
+ * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
+ * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
+ * --config-dir, which name local files (an imported config is shell code). Never changes the default.
+ */
+export function addHost({ name, dest, backend, profile }, { progress } = {}) {
+	assertHost(name);
+	if (name === "legacy") throw new Error("legacy is reserved");
+	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
+	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
+	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
+	return registryCli(["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])], 600_000, { progress });
+}
+/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
+export function removeHost(name) {
+	assertHost(name);
+	if (name === "legacy") throw new Error("legacy is reserved");
+	return registryCli(["host", "rm", name], 60_000);
+}
+// Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
+function registryCli(args, timeout, { progress } = {}) {
+	return new Promise((resolve, reject) => {
+		const env = { ...process.env, BOXERY_HOME };
+		delete env.BOXERY_HOST; delete env.BOXERY_HOST_BIN;
+		const child = execFile(BOXERY, args, { env, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
+			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
+			else resolve(`${stdout}${stderr}`.trim());
+		});
+		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
+	});
 }
 /** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
 export function controllerCommand(args) {
@@ -189,16 +220,24 @@ export function vmPath(p) {
 	return path.posix.isAbsolute(s) ? path.posix.normalize(s) : path.posix.join(PROJECT, s);
 }
 
+const hostVmLoc = (spec) => {
+	const m = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
+	return m && !m[1].startsWith("/") ? m : null;
+};
+const vmLoc = (spec) => String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
+/** A location with no host/vm:, vm: or local: prefix; parseLoc puts it on the current VM. */
+export const isBarePath = (spec) => !hostVmLoc(spec) && !vmLoc(spec);
+
 /** Parse "host/vm:/path", "vm:/path", "local:/path" or a plain path (= current VM). */
 export function parseLoc(spec, current) {
-	const explicit = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
-	if (explicit && !explicit[1].startsWith("/")) {
+	const explicit = hostVmLoc(spec);
+	if (explicit) {
 		const parts = explicit[1].split("/");
 		if (parts.length !== 2) throw new Error(`invalid host/VM endpoint: ${spec}`);
 		const host = resolveHost(parts[0]);
 		return { host, vm: assertName(parts[1]), path: vmPath(explicit[2]) };
 	}
-	const m = String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
+	const m = vmLoc(spec);
 	if (m) return m[1] === "local" ? { vm: null, path: m[2] } : { vm: m[1], path: vmPath(m[2]) };
 	if (!current) throw new Error(`"${spec}" has no VM prefix and no current VM is set (use NAME:path or local:path)`);
 	return { vm: current, path: vmPath(spec) };
@@ -897,6 +936,8 @@ export async function manage(a, opts = {}) {
 			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
 		case "snap-rm":
 			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
+		case "build-base":
+			return boxeryCli(["build-base"], 1_800_000, opts);
 		default:
 			throw new Error(`unknown action ${action}`);
 	}

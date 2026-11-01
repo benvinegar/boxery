@@ -50,7 +50,10 @@ echo "== usage"
 cat >"$tmp/expected" <<'EOF'
 boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
 
-  init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
+  init [--backend libvirt|lima|cloud-hypervisor|exe|boat]  install proxy services + backend setup, symlinks
+  --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
+                            state, proxy port and services. Create it with: --profile NAME init --backend B
+  profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
   version [--json]          this install's version, commit and kind (git or npm)
   upgrade [--check] [--ref REF] [--wait S] [--reinit]
                             update this install (git pull --ff-only, or npm), re-run init for every

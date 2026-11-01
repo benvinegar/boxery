@@ -62,7 +62,7 @@ select_profile() {
 	if [ -z "$selected" ]; then selected=$(default_host); fi
 	CONF_DIR=$(profile_dir "$selected")
 	CONF_FILE="$CONF_DIR/config"; SSH_CONF="$CONF_DIR/ssh_config"; GRANTS_DIR="$CONF_DIR/grants"; LEASES_DIR="$CONF_DIR/leases"
-	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; IDENTITY=""
+	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
 	# Configs are trusted, user-owned shell files. Never source registry pointers as shell code.
 	# shellcheck source=/dev/null
 	[ ! -f "$CONF_FILE" ] || . "$CONF_FILE"
@@ -77,10 +77,13 @@ check_target() {
 	valid_dest "$HOST" || die "invalid ssh destination: $HOST"
 	case $HOST_BIN in ''|-*) die "invalid host executable path" ;; esac
 	plain_path "$HOST_BIN"
+	[ -z "$HOST_PROFILE" ] || valid_vm "$HOST_PROFILE" || die "invalid host profile: $HOST_PROFILE"
 }
 # Expand only a leading ~ or ~/, on the remote machine; everything else is literal.
 remote_path() { case $1 in '~') printf '"$HOME"' ;; '~/'*) printf '"$HOME"/%s' "$(literal "${1#\~/}")" ;; *) literal "$1" ;; esac; }
 remote_bin() { remote_path "$HOST_BIN"; }
+# HOST_PROFILE: a second profile on the host (boxery-host --profile NAME), passed as an argument.
+profile_args() { [ -z "$HOST_PROFILE" ] || printf ' --profile %s' "$HOST_PROFILE"; }
 # argv → one remote command line that the remote shell splits back into exactly these words.
 literal_args() { local out="" a; for a in "$@"; do out="$out $(literal "$a")"; done; printf '%s' "${out# }"; }
 # Double-quoted local-shell arguments also pass OpenSSH's ProxyCommand quote validator.
@@ -106,8 +109,9 @@ local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}
 # (unquoted snapshot names or flags would be executed on the host). stdin passes through.
 h() {
 	need_host
-	if is_local; then "$(local_host_bin)" "$@"
-	else check_target; ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin) $(literal_args "$@")"; fi
+	check_target
+	if is_local; then "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
+	else ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
 }
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.
@@ -146,8 +150,8 @@ write_ssh_config() {
 		echo "Host *.boxery"
 		echo "  ForwardAgent no"
 		echo "  User agent"
-		if is_local; then proxy="$(shell_double "$(local_host_bin)") connect"
-		else proxy="ssh -o LogLevel=ERROR -- $(shell_double "$HOST") $(shell_double "exec $(remote_bin) connect")"; fi
+		if is_local; then proxy="$(shell_double "$(local_host_bin)")$(profile_args) connect"
+		else proxy="ssh -o LogLevel=ERROR -- $(shell_double "$HOST") $(shell_double "exec $(remote_bin)$(profile_args) connect")"; fi
 		# ssh joins remote argv; the entire executable expression survives the local shell as one arg.
 		# OpenSSH expands percent tokens before the local shell, so escape user-supplied percents.
 		proxy=${proxy//%/%%}
@@ -165,11 +169,25 @@ write_ssh_config() {
 	} >"$SSH_CONF"
 }
 
+# --profile P: use profile P on the host (boxery-host --profile P). --backend B: create it first
+# (boxery-host --profile P init --backend B: its own state, proxy port and services; re-running is safe).
 cmd_setup() {
-	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH]"
+	[ $# -ge 1 ] || die "usage: boxery setup user@host|local [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH] [--profile P [--backend B]]"
 	HOST=$1; shift
-	pub=""
-	while [ $# -gt 0 ]; do case $1 in --key|--host-bin) [ $# -ge 2 ] || die "$1 needs a value"; if [ "$1" = --key ]; then pub=$2; else HOST_BIN=$2; fi; shift 2 ;; *) die "unknown flag $1" ;; esac; done
+	pub="" backend=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--key | --host-bin | --profile | --backend) [ $# -ge 2 ] || die "$1 needs a value" ;;
+		*) die "unknown flag $1" ;;
+		esac
+		case $1 in --key) pub=$2 ;; --host-bin) HOST_BIN=$2 ;; --profile) HOST_PROFILE=$2 ;; --backend) backend=$2 ;; esac
+		shift 2
+	done
+	if [ -n "$backend" ]; then
+		HOST_PROFILE=${HOST_PROFILE:-${SETUP_PROFILE:-}}
+		[ -n "$HOST_PROFILE" ] || die "--backend creates a host profile: pass --profile NAME (boxery host add NAME DEST --backend B uses NAME)"
+		valid_vm "$backend" || die "invalid backend: $backend"
+	fi
 	check_target
 	if [ -z "$pub" ]; then for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ecdsa.pub" "$HOME/.ssh/id_rsa.pub"; do [ -f "$k" ] && { pub=$k; break; }; done; fi
 	[ -f "$pub" ] || die "no ssh public key found; pass --key"
@@ -183,10 +201,19 @@ cmd_setup() {
 		echo "==> checking ssh to $HOST"
 		ssh -o LogLevel=ERROR -- "$HOST" "$(remote_bin) help >/dev/null" || die "cannot run $HOST_BIN on $HOST (is it installed? did you run boxery-host init?)"
 	fi
+	if [ -n "$backend" ]; then
+		echo "==> creating host profile $HOST_PROFILE ($backend backend; its own state, proxy port and services)"
+		h init --backend "$backend" || die "boxery-host --profile $HOST_PROFILE init --backend $backend failed on $HOST (see above); fix it and re-run, init is safe to repeat"
+	elif [ -n "$HOST_PROFILE" ]; then
+		h help >/dev/null || die "cannot use host profile $HOST_PROFILE on $HOST"
+	fi
 	echo "==> registering $pub with host (applies to VMs created from now on)"
 	h add-key <"$pub"
 	mkdir -p "$CONF_DIR"
-	{ printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'; } >"$CONF_FILE.tmp.$$"
+	{
+		printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'
+		if [ -n "$HOST_PROFILE" ]; then printf 'HOST_PROFILE='; literal "$HOST_PROFILE"; printf '\n'; fi
+	} >"$CONF_FILE.tmp.$$"
 	mv "$CONF_FILE.tmp.$$" "$CONF_FILE"
 	write_ssh_config
 	b=$(record_backend); [ -z "$b" ] || echo "==> backend: $b"
@@ -203,7 +230,10 @@ cmd_setup() {
 			printf '    %s\n' "$include"
 		fi
 	fi
-	echo "==> done. Try: boxery new demo"
+	if [ -n "$backend" ]; then
+		hint="boxery build-base"; [ "${selected:-legacy}" = legacy ] || hint="boxery --host $selected build-base"
+		echo "==> done. Headless VMs work now; desktop VMs need the base image once (~3 min): $hint"
+	else echo "==> done. Try: boxery new demo"; fi
 }
 
 # The host's VM backend, recorded in the profile's `backend` file (one line of data, never sourced) so
@@ -299,7 +329,7 @@ cmd_host() {
 		rm "$REGISTRY/$alias"
 		echo "forgot $alias; profile data, VMs and grants were NOT deleted or revoked" ;;
 	add) ! metadata_present "$REGISTRY/$alias" || die "host already registered: $alias"
-		[ $# -ge 1 ] || die "usage: boxery host add NAME DEST [--key K] [--host-bin PATH] | --config-dir DIR"
+		[ $# -ge 1 ] || die "usage: boxery host add NAME DEST [--key K] [--host-bin PATH] [--backend B] [--profile P] | --config-dir DIR"
 		if [ "$1" = --config-dir ]; then
 			[ $# -eq 2 ] || die "usage: boxery host add NAME --config-dir DIR"
 			dir=$(cd "$2" && pwd -P) || die "no such config directory: $2"
@@ -309,8 +339,8 @@ cmd_host() {
 			! metadata_present "$dir" || die "profile data already exists: $dir (import it explicitly)"
 			mkdir -p "$dir"; cleanup_profile=$dir
 			CONF_DIR=$dir; CONF_FILE="$dir/config"; SSH_CONF="$dir/ssh_config"; GRANTS_DIR="$dir/grants"; LEASES_DIR="$dir/leases"
-			HOST=""; HOST_BIN='~/.local/bin/boxery-host'; IDENTITY=""
-			cmd_setup "$@"
+			HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
+			selected=$alias SETUP_PROFILE=$alias cmd_setup "$@"
 		fi
 		plain_path "$dir"
 		printf '%s\n' "$dir" >"$REGISTRY/.tmp.$$"; mv "$REGISTRY/.tmp.$$" "$REGISTRY/$alias"
@@ -378,17 +408,18 @@ cmd_run() { # [--bg] NAME [--bg] [--cwd DIR] [--] CMD [ARG...]
 # ---------------------------------------------------------------- background jobs
 # The logic runs in the VM: core/boxery-jobs.ts is piped over ssh on every call and run by the VM's
 # Node (type stripping), so a VM never runs an old copy. See that file for the protocol and layout.
+pkg_root() { # the checkout or package this script belongs to (through npm's bin symlink)
+	local script=${BASH_SOURCE[0]} dir
+	while [ -L "$script" ]; do
+		dir=$(CDPATH='' cd -P "$(dirname "$script")" && pwd)
+		script=$(readlink "$script")
+		case $script in /*) ;; *) script=$dir/$script ;; esac
+	done
+	CDPATH='' cd -P "$(dirname "$script")/.." && pwd
+}
 JOBS_TS=""
-jobs_ts() { # path of core/boxery-jobs.ts next to this script (through npm's bin symlink)
-	if [ -z "$JOBS_TS" ]; then
-		local script=${BASH_SOURCE[0]} dir
-		while [ -L "$script" ]; do
-			dir=$(CDPATH='' cd -P "$(dirname "$script")" && pwd)
-			script=$(readlink "$script")
-			case $script in /*) ;; *) script=$dir/$script ;; esac
-		done
-		JOBS_TS="${BOXERY_JOBS_TS:-$(CDPATH='' cd -P "$(dirname "$script")/.." && pwd)/core/boxery-jobs.ts}"
-	fi
+jobs_ts() { # path of core/boxery-jobs.ts next to this script
+	[ -n "$JOBS_TS" ] || JOBS_TS="${BOXERY_JOBS_TS:-$(pkg_root)/core/boxery-jobs.ts}"
 	[ -f "$JOBS_TS" ] || die "jobs need core/boxery-jobs.ts next to the controller ($JOBS_TS); run boxery from its checkout or package"
 	printf '%s\n' "$JOBS_TS"
 }
@@ -1135,6 +1166,18 @@ cmd_upgrade_host() { # [--check] [--ref REF] [--wait S] [--reinit]
 	h upgrade "$@"
 }
 
+# cp FROM TO: vm_copy's own code (controller/cp.mjs → core), so CLI and agent copies cannot drift.
+# Needs only the profile's ssh_config, not the host: it talks to the VMs, like `boxery ssh`.
+cmd_cp() {
+	local usage="usage: boxery cp FROM TO   (FROM/TO: local:PATH | NAME:PATH | HOST/NAME:PATH | PATH = local)" js a
+	[ $# -eq 2 ] || die "$usage"
+	for a in "$@"; do case $a in -*) die "cp takes no options (directories copy recursively); for a local path starting with -, use local:$a" ;; esac; done
+	command -v node >/dev/null 2>&1 || die "cp needs Node >= 20 on this machine"
+	js="$(pkg_root)/controller/cp.mjs"
+	[ -f "$js" ] || die "cp needs controller/cp.mjs next to the controller ($js); run boxery from its checkout or package"
+	BOXERY_HOME="$ROOT_DIR" exec node "$js" "$selected" "$@"
+}
+
 cmd_prompt() { # NAME "prompt" — fire-and-forget pi task in a detached tmux window, logged to ~/project/.boxery/
 	name=$1; shift; prompt="$*"
 	[ -n "$prompt" ] || die "usage: boxery prompt NAME \"task...\""
@@ -1152,14 +1195,17 @@ usage() {
 		boxery — remote desktop VMs for coding agents
 
 		--host NAME COMMAND             route a command to a registered host (or legacy)
-		host add NAME DEST [--key K.pub] [--host-bin PATH]
+		host add NAME DEST [--key K.pub] [--host-bin PATH] [--backend B] [--profile P]
+		                                --backend B: create a new profile on DEST for backend B (own state,
+		                                  free proxy port, own services); --profile P: use an existing one
 		host add NAME --config-dir DIR   import existing config/ssh_config without setup
 		host ls [--json] | show NAME | use NAME|legacy | rm NAME
 		                                ls: where each host runs (local or ssh destination) and its backend
-		setup user@host|local [--key K.pub] [--host-bin PATH]
+		setup user@host|local [--key K.pub] [--host-bin PATH] [--profile P [--backend B]]
 		                                configure the VM host (local = this machine) + register your ssh key
 		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
 		                                --headless: no desktop (shell + agents only); needs no build-base
+		build-base                      build the host's desktop base image (one-time, ~3 min)
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
 		ls [--json]                     list VMs (with their shape and grants)
 		rm NAME                         destroy VM (revokes its LLM token)
@@ -1173,6 +1219,9 @@ usage() {
 		new NAME --from NAME@SNAP       new VM from a snapshot (also: boxery images)
 
 		ssh NAME [cmd...]               shell into VM (also: ssh NAME.boxery)
+		cp FROM TO                      copy a file or directory (recursive) between this machine and VMs,
+		                                  or VM to VM; same locations as vm_copy: local:PATH, NAME:PATH,
+		                                  HOST/NAME:PATH (VM paths relative to ~/project); bare PATH = local
 		run [--bg] NAME [--cwd DIR] CMD [ARG...]
 		                                run a command with exactly these args (like docker exec), in
 		                                  ~/project; a relative --cwd is under ~/project
@@ -1253,6 +1302,7 @@ new) need_host; cmd_new "$@" ;;
 fork) need_host; cmd_fork "$@" ;;
 snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
 images) need_host; h images "$@" ;;
+build-base) need_host; [ $# -eq 0 ] || die "usage: boxery build-base"; h build-base ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
@@ -1261,6 +1311,7 @@ version) cmd_version "$@" ;;
 backend) need_host; cmd_backend "$@" ;;
 upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
+cp) cmd_cp "$@" ;;
 run) need_host; cmd_run "$@" ;;
 jobs) need_host; cmd_jobs "$@" ;;
 logs) need_host; cmd_logs "$@" ;;

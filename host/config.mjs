@@ -23,8 +23,14 @@ export const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BO
 	"LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE", "BOXERY_LIMA_ARCH",
 	"BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
 
+export const defaultConf = () => path.join(homedir(), ".config/boxery");
+/** `boxery-host --profile NAME`: a second profile's state directory. */
+export const profileConf = (name) => `${defaultConf()}-${name}`;
+
 export function loadConfig(env = process.env) {
-	const conf = path.resolve(env.BOXERY_CONF || path.join(homedir(), ".config/boxery"));
+	const conf = path.resolve(env.BOXERY_CONF || defaultConf());
+	// Set by `boxery-host --profile NAME` (together with BOXERY_CONF); ignored for any other directory.
+	const profile = env.BOXERY_PROFILE && conf === path.resolve(profileConf(env.BOXERY_PROFILE)) ? env.BOXERY_PROFILE : null;
 	const merged = { ...env };
 	let text = "";
 	try { text = readFileSync(path.join(conf, "host.env"), "utf8"); }
@@ -34,9 +40,10 @@ export function loadConfig(env = process.env) {
 		const [k, v] = i < 0 ? [line, ""] : [line.slice(0, i), line.slice(i + 1)];
 		if (HOST_ENV.includes(k) && !merged[k]) merged[k] = v;
 	}
-	const proxyUnit = merged.BOXERY_PROXY_UNIT || "boxery-proxy";
+	const proxyUnit = merged.BOXERY_PROXY_UNIT || (profile ? `boxery-proxy-${profile}` : "boxery-proxy");
 	return {
 		conf,
+		profile,
 		root: ROOT,
 		env: merged,
 		backend: merged.BOXERY_BACKEND || "libvirt",
