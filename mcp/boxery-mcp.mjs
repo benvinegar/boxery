@@ -130,17 +130,23 @@ function progressReporter(token, notify, tool) {
 	const started = Date.now();
 	let n = 0;
 	let last = 0;
+	let done = false;
 	const send = (message) => {
+		if (done) return; // never after the response
 		last = Date.now();
 		notify({ jsonrpc: "2.0", method: "notifications/progress", params: { progressToken: token, progress: ++n, message } });
 	};
+	// Check every second, so a quiet gap never exceeds HEARTBEAT_MS by more than a tick.
 	const timer = setInterval(() => {
 		if (Date.now() - last >= HEARTBEAT_MS) send(`${tool}: running (${Math.round((Date.now() - started) / 1000)}s)`);
-	}, HEARTBEAT_MS);
+	}, PROGRESS_INTERVAL_MS);
 	timer.unref?.();
 	return {
 		progress: (message) => Date.now() - last >= PROGRESS_INTERVAL_MS && send(message),
-		stop: () => clearInterval(timer),
+		stop: () => {
+			done = true;
+			clearInterval(timer);
+		},
 	};
 }
 
@@ -211,7 +217,7 @@ async function handle(session, msg, notify) {
 			case "tools/call": {
 				const ac = new AbortController();
 				if (isRequest) session.inflight.set(id, ac);
-				const reporter = progressReporter(params?._meta?.progressToken, notify, params?.name);
+				const reporter = isRequest ? progressReporter(params?._meta?.progressToken, notify, params?.name) : undefined;
 				try {
 					return reply(await callTool(session, params, ac.signal, reporter?.progress));
 				} finally {
@@ -327,7 +333,7 @@ function serveHttp(listen) {
 			const headers = { "mcp-session-id": session.id };
 			// Progress needs a stream: answer as SSE only when the client accepts it and asked for progress;
 			// everything else keeps the plain JSON response.
-			const wantsProgress = msgs.some((m) => m?.method === "tools/call" && m.params?._meta?.progressToken != null);
+			const wantsProgress = msgs.some((m) => m?.id != null && m.method === "tools/call" && m.params?._meta?.progressToken != null);
 			if (wantsProgress && String(req.headers.accept ?? "").includes("text/event-stream")) {
 				res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", ...headers });
 				const event = (obj) => !res.writableEnded && res.write(`event: message\ndata: ${JSON.stringify(obj)}\n\n`);
@@ -340,6 +346,7 @@ function serveHttp(listen) {
 		} catch (e) {
 			log("error", e?.stack ?? e);
 			if (!res.headersSent) send(500, { error: String(e?.message ?? e) });
+			else res.end(); // mid-SSE: close the stream rather than leave it hanging
 		}
 	});
 	server.requestTimeout = 0;

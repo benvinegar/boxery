@@ -67,7 +67,7 @@ The server speaks MCP `2024-11-05` through `2025-11-25` and sends newer fields o
 | Feature | Clients | What it does |
 |---|---|---|
 | Tool annotations | all | `vm_info`, `vm_read` and `vm_screenshot` are `readOnlyHint`, so clients that honor hints skip confirmation for them. File and lifecycle tools are `openWorldHint: false`. `vm_manage` keeps its lookup actions, but `vm_info` is the read-only way to list VMs, shapes, grants and snapshots. |
-| Progress | all, when the request has `_meta.progressToken` | `notifications/progress` while a call runs: output lines from `vm_bash`, controller lines from `vm_manage` `new`/`fork`/`snap`/`revert`/`rm`/`use`, and an elapsed-time line every 5 s for quiet calls. At most one line per second. Over HTTP the response becomes an SSE stream when the client accepts `text/event-stream`; otherwise it stays JSON without progress. |
+| Progress | all, when the request has `_meta.progressToken` | `notifications/progress` while a call runs: output lines from `vm_bash`, controller lines from `vm_manage` `new`/`fork`/`snap`/`revert`/`rm`, a "creating" line when `use` creates a VM, and an elapsed-time line every 5 s for quiet calls. At most one line per second. Over HTTP the response becomes an SSE stream when the client accepts `text/event-stream`; otherwise it stays JSON without progress. |
 | Structured output | `2025-06-18`+ | `vm_jobs` and `vm_info` declare an `outputSchema` and return `structuredContent` next to the same text as before. Tools also get a top-level `title`. |
 | Server description | `2025-11-25`+ | `serverInfo.description` and `websiteUrl`. |
 

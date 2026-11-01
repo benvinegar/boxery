@@ -306,6 +306,7 @@ describe("protocol features", () => {
 		assert.equal(snaps.structuredContent.snapshots[0].name, "s1");
 		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
 		assert.equal((await c.tool("vm_info", { action: "snaps", name: "Bad;Name" })).isError, true);
+		assert.equal((await c.tool("vm_info", { action: "grants", name: ["fakevm"] })).isError, true, "names must be strings, not arrays that coerce");
 	});
 
 	test("vm_manage keeps its lookup actions", async () => {
@@ -327,6 +328,11 @@ describe("protocol features", () => {
 		const logs = await c.tool("vm_jobs", { action: "logs", job: start.structuredContent.id });
 		assert.match(logs.structuredContent.log, /job-out/);
 		assert.equal(logs.structuredContent.truncated, false);
+		// A job whose metadata is empty must not hide the others or break the JSON.
+		writeFileSync(path.join(env.VMROOT, ".boxery/jobs/job-AAAAAAAAAAAA.meta"), "");
+		const withBad = await c.tool("vm_jobs", { action: "list" });
+		assert.equal(withBad.isError, false, withBad.content[0].text);
+		assert.equal(withBad.structuredContent.jobs.find((j) => j.id === "job-AAAAAAAAAAAA").started_at, null);
 	});
 
 	test("progress notifications stream status lines when the client sends a progressToken", async () => {
@@ -429,6 +435,8 @@ describe("http", () => {
 		const events = (await r.text()).split("\n\n").filter(Boolean).map((e) => JSON.parse(e.replace(/^event: message\ndata: /, "")));
 		assert.deepEqual(events.filter((e) => e.method === "notifications/progress").map((e) => e.params.message), ["one", "two"]);
 		assert.match(events.at(-1).result.content[0].text, /one\ntwo/);
+		const asNotification = await post({ jsonrpc: "2.0", method: "tools/call", params: { name: "vm_bash", arguments: { command: "true" }, _meta: { progressToken: "n" } } }, { ...auth, "mcp-session-id": sid });
+		assert.equal(asNotification.status, 202, "a tools/call without id gets no stream");
 		const noSse = await post({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo x" }, _meta: { progressToken: "q" } } }, { ...auth, "mcp-session-id": sid, accept: "application/json" });
 		assert.match(noSse.headers.get("content-type"), /application\/json/);
 		assert.match((await noSse.json()).result.content[0].text, /x/);

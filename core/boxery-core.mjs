@@ -102,7 +102,7 @@ export function assertSnap(s) {
 }
 
 export function assertName(name) {
-	if (!name || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
+	if (typeof name !== "string" || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
 	return name;
 }
 
@@ -371,7 +371,11 @@ export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi
 		if (result.state === "running") result.timed_out = true;
 		return { text: JSON.stringify(result), structured: result, isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
 	}
-	return { text: out, structured: { jobs: JSON.parse(out) } };
+	try {
+		return { text: out, structured: { jobs: JSON.parse(out) } };
+	} catch {
+		return { text: out }; // unparseable job metadata: still show the raw list
+	}
 }
 
 const JOB_RECORD = {
@@ -379,7 +383,7 @@ const JOB_RECORD = {
 	properties: {
 		id: { type: "string" },
 		state: { type: "string", enum: ["running", "completed", "lost"] },
-		started_at: { type: "number", description: "Unix seconds" },
+		started_at: { type: ["number", "null"], description: "Unix seconds" },
 		exit_code: { type: ["integer", "null"] },
 	},
 };
