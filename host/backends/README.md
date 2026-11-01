@@ -148,7 +148,7 @@ A remote backend sets `REMOTE_DIR`, `REMOTE_SUPERVISOR`, `REMOTE_PORT_BASE`, `RE
 - **Guest sshd lets `agent` in from loopback only.** The tunnel's `-L` end arrives from `127.0.0.1`, so the lease holder's key works through the host and nowhere else (exe.dev: `ListenAddress 127.0.0.1`; boat.dev, whose own sshd must stay public: `Match User agent Address *,!127.0.0.1,!::1` → `DenyUsers agent`).
 - **Inventory never reports an unreachable API as an empty account**, and every listing is filtered to the backend's own prefix or labels: the account's other VMs are never touched.
 
-Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_CONF/host.env`) or `BOXERY_BACKEND`.
+Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_CONF/host.env`) or `BOXERY_BACKEND`. A second backend on the same host is a second profile: `boxery-host --profile NAME init --backend B` (or `boxery host add NAME DEST --backend B` from the controller) gives it `~/.config/boxery-NAME`, a free proxy port and its own services. Init refuses a new profile with the same backend and the same namespace settings as an existing one; a backend's namespace keys are listed in `NAMESPACE` in [host/setup.mjs](../setup.mjs) (add yours there).
 
 ## Guest contract
 

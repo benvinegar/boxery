@@ -102,6 +102,18 @@ boxery setup local                                    # or: boxery setup you@thi
 
 VM sizes are boat's four types: a VM gets the smallest that fits (`small` 2 vCPU/4 GB, `default` 4/8, `large` 8/16; `xlarge` with `BOXERY_BOAT_MAX_TYPE=xlarge` on the $100 plan). `stop` is a real stop, and boat keeps a stopped VM's disk for 14 days. Each VM is reached through an ssh tunnel the host keeps open, so the host must stay up. Saved snapshots beyond your plan's allowance cost $0.056 a day each. Layout and what's still unverified: [backends → boat](../host/backends/README.md#boat-experimental).
 
+### A second backend on the same machine
+
+Already running a host (say Lima) and want exe.dev or boat.dev VMs from the same machine? Add it as a second host profile from the controller. It gets its own state, proxy port and services, so it doesn't touch the first one:
+
+```bash
+boxery host add exe local --backend exe     # or: you@my-host
+boxery --host exe build-base
+boxery --host exe new demo
+```
+
+See [Named hosts → several backends on one machine](hosts.md#several-backends-on-one-machine).
+
 Backend details: [host/backends/README.md](../host/backends/README.md).
 
 ## Laptop / controller
@@ -174,7 +186,7 @@ Hosts installed before `upgrade` existed need one manual update, on the host:
 
 ```bash
 cd ~/boxery && git pull --ff-only    # or: npm update -g boxery-vm
-boxery-host init                     # and BOXERY_CONF=… boxery-host init for each extra profile
+boxery-host init                     # and boxery-host --profile NAME init (or BOXERY_CONF=… boxery-host init) for each extra profile
 ```
 
 `upgrade-host` is a CLI command for you, not a `vm_*` tool. Agents can see version skew with `vm_info {action:"version"}`. They are told to pass the upgrade on to you rather than run it. An agent that could swap the code next to your credentials is a risk the read-only tools don't carry.

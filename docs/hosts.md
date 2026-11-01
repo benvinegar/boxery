@@ -8,6 +8,9 @@ One controller/MCP server can reach several explicitly registered VM hosts. This
 # Provision a new controller profile; registers your public key for future new VMs.
 boxery host add laptop local --key ~/.ssh/id_ed25519.pub
 boxery host add hornet you@hornet --host-bin '~/.local/bin/boxery-host'
+# A second VM platform on a host that already runs one (here: exe.dev beside Lima on this Mac).
+boxery host add exe local --backend exe
+boxery --host exe build-base         # desktop base image, once (~3 min); headless VMs don't need it
 
 boxery host ls                       # name, default marker, config directory
 boxery host show hornet              # prints its config directory (not credentials)
@@ -22,7 +25,28 @@ boxery host rm hornet                # forget registration only
 
 Names use `[a-z][a-z0-9-]{0,30}`. `legacy` is reserved for the original root profile. Unknown/invalid explicit names fail closed. `--host NAME` must precede the command. Registration commands operate on the registry, not the selected host, and cannot be combined with `--host`.
 
-`host add NAME DEST [--key PUBKEY] [--host-bin PATH]` never overwrites a registration or existing managed profile directory. DEST is `local` or an SSH destination/SSH-config alias (option-like destinations and shell syntax are rejected). HOST_BIN is **one executable path**, not a command expression. Quote `~/...` to leave it for the remote host; on `local`, it refers to the controller's home. Spaces and apostrophes are supported. Paths used in generated configuration cannot contain newlines, carriage returns or tabs. Setup checks the executable and registers the public key before publishing the profile. Failed checks do not select or register a partial profile. A remote key registration that has already succeeded cannot be rolled back if a subsequent local write fails.
+`host add NAME DEST [--key PUBKEY] [--host-bin PATH] [--backend B | --profile P]` never overwrites a registration or existing managed profile directory. DEST is `local` or an SSH destination/SSH-config alias (option-like destinations and shell syntax are rejected). HOST_BIN is **one executable path**, not a command expression. Quote `~/...` to leave it for the remote host; on `local`, it refers to the controller's home. Spaces and apostrophes are supported. Paths used in generated configuration cannot contain newlines, carriage returns or tabs. Setup checks the executable and registers the public key before publishing the profile. Failed checks do not select or register a partial profile. A remote key registration that has already succeeded cannot be rolled back if a subsequent local write fails.
+
+### Several backends on one machine
+
+One VM host can run more than one backend (Lima and exe.dev on a Mac, libvirt and boat.dev on a Linux box). Each runs as its own **host profile**: its own state directory, proxy port, proxy and reaper services, lease store and VMs. `--backend B` creates one on DEST, named after the host alias, and registers it in one step:
+
+```bash
+boxery host add exe local --backend exe                 # this machine
+boxery host add hornet-boat you@hornet --backend boat   # a remote host
+boxery host add exe2 local --profile exe                # another alias for a profile that already exists
+```
+
+`--backend` runs `boxery-host --profile NAME init --backend B` on DEST. The profile lives in `~/.config/boxery-NAME` there; on its first init it gets the first free proxy port from 8089 and the services `boxery-proxy-NAME` and `boxery-reaper-NAME`, all recorded in its `host.env`. The controller profile stores `HOST_PROFILE=NAME` and passes `--profile NAME` on every call and in its ProxyCommand, so no wrapper script or environment variable is involved. Re-running is safe: init keeps an existing profile's port and settings, so after a failed setup (a backend check, say) fix the cause and run the same `host add` again.
+
+Init refuses a new profile that would collide with an existing one on that machine: the same proxy port or service name, or the same backend with the same settings (both would manage the same VMs under two lease stores). Two profiles of one backend need their own namespace, such as `BOXERY_LIMA_PREFIX` or `BOXERY_EXE_DIR` and `BOXERY_EXE_PORT_BASE`. Backend settings and secrets that init reads from the environment (`BOAT_API_KEY`, `BOXERY_EXE_KEY`, …) reach it only for `local`: `BOAT_API_KEY=… boxery host add boat local --backend boat`. For a remote host, run init there, then register it:
+
+```bash
+ssh you@hornet 'BOAT_API_KEY=boat_… boxery-host --profile boat init --backend boat'
+boxery host add hornet-boat you@hornet --profile boat
+```
+
+On the host, `boxery-host profiles` lists every profile (backend, port, service, directory) and `boxery-host --profile NAME COMMAND` runs a command in one. `boxery-host upgrade` re-runs init for all of them.
 
 ## Importing two existing profiles
 
@@ -70,7 +94,7 @@ Every `vm_*` tool accepts optional `host`. For example:
 {"host":"hornet","vm":"demo","command":"hostname"}
 ```
 
-`vm_manage` adds read-only `{"action":"hosts"}` (also on `vm_info`) and session selection `{"action":"host","host":"hornet"}`. Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `vm_manage` cannot register hosts, change the persistent CLI default, add credentials or grant access.
+`vm_manage` adds read-only `{"action":"hosts"}` (also on `vm_info`), session selection `{"action":"host","host":"hornet"}` and registration `{"action":"host_add","name":"exe","dest":"local","backend":"exe"}` (see below). Host selection clears the current VM, even when selecting the same host. `use` and `new` with `use:true` select both host and VM after success. `rm` clears the current VM only when both its host and name match. An explicit other host without an explicit VM never inherits the current VM's name. `host_add` runs `boxery host add NAME DEST` with optional `backend` or `profile`, and `buildBase:true` then runs `build-base` on the new host. It uses your default ssh key and host executable: there is no `key`, `host-bin` or `config-dir` (those name files on the server's machine, and an imported config is shell code). It doesn't select the new host; follow it with `{"action":"host","host":"exe"}`. `vm_manage` cannot forget hosts, change the persistent CLI default, add credentials or grant access.
 
 Selection mutations complete in completion order; concurrent ordinary tool calls keep the host+VM snapshot they started with. Screenshot scaling is keyed by profile directory and VM name.
 

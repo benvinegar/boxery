@@ -160,6 +160,20 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
 });
 
+test("vm_manage host_add runs host add against the registry root with only validated arguments", async () => {
+	const c = client(["--host", "beta"]);
+	const out = text(await c.tool("vm_manage", { action: "host_add", name: "gamma", dest: "local", backend: "exe" }));
+	assert.match(out, /PROFILE:home OVERRIDES::\nCOMMAND:host add gamma local --backend exe\n/, "registry root, not the session's profile");
+	assert.match(out, /action:"host", host:"gamma"/);
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "delta", dest: "me@box", profile: "exe" })), /COMMAND:host add delta me@box --profile exe\n/);
+	// Registers, then builds on the new host's profile (here an existing fixture so the stub can resolve it).
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "alpha", dest: "local", backend: "lima", buildBase: true })), /PROFILE:alpha OVERRIDES::\nCOMMAND:build-base/);
+	for (const bad of [{ name: "legacy", dest: "local" }, { name: "Bad", dest: "local" }, { name: "gamma", dest: "-oProxyCommand=x" }, { name: "gamma", dest: "a b" },
+		{ name: "gamma", dest: "local", backend: "../x" }, { name: "gamma", dest: "local", profile: "-x" }, { name: "gamma" }, { name: "gamma", dest: "local", host: "beta" }])
+		assert.equal((await c.tool("vm_manage", { action: "host_add", ...bad })).isError, true, JSON.stringify(bad));
+	assert.match(text(await c.tool("vm_manage", { action: "list" })), /host: beta/, "session host unchanged");
+});
+
 test("startup host failures, BOXERY_VM and alias replacement cannot inherit a different profile's VM", async () => {
 	for (const args of [["--host"], ["--host", "unknown"], ["--host", "../alpha"]]) {
 		const p = spawn(process.execPath, [SERVER, ...args], { env, stdio: "ignore" });

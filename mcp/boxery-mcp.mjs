@@ -57,11 +57,32 @@ const hostProp = { host: { type: "string", description: "Registered host alias (
 const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
 const manageMcp = (t) => ({
 	...t,
-	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host"].join(" | "))} ` +
-		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
-	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host"] } } },
-	run(_vm, a, { session, host, current, progress }) {
+	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host", "host_add"].join(" | "))} ` +
+		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. " +
+		"`host_add` registers a new host: name (its alias), dest (`local` = the machine this server runs on, or an ssh destination such as user@box) and, " +
+		"to create a separate profile there for another VM platform, backend (libvirt | lima | cloud-hypervisor | exe | boat; it gets its own state, proxy port and services), " +
+		"or profile to use one that already exists there; buildBase:true then builds its desktop base image (~3 min; headless VMs don't need it). " +
+		"It uses the user's default ssh key and never changes the CLI default; select it afterwards with action:'host'. Credentials and grants remain user-controlled.",
+	parameters: {
+		...t.parameters,
+		properties: {
+			...t.parameters.properties,
+			action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host", "host_add"] },
+			dest: { type: "string", description: "host_add: local, or an ssh destination (user@host or an ssh-config alias)" },
+			backend: { type: "string", description: "host_add: create a new profile on dest for this backend (libvirt | lima | cloud-hypervisor | exe | boat)" },
+			profile: { type: "string", description: "host_add: use this existing profile on dest (default: with backend, the host name)" },
+			buildBase: { type: "boolean", description: "host_add: then build the desktop base image (~3 min)" },
+		},
+	},
+	async run(_vm, a, { session, host, current, progress }) {
 		if (a.action === "hosts") return hostsResult(host);
+		if (a.action === "host_add") {
+			if (Object.hasOwn(a, "host")) throw new Error("host_add takes the new host's alias as name, not host");
+			const out = await core.addHost(a, { progress });
+			let built = "";
+			if (a.buildBase) built = `\n${await core.withHost(a.name, () => core.boxeryCli(["build-base"], 1_800_000, { progress }))}`;
+			return { text: `${out}${built}\nselect it with vm_manage {action:"host", host:"${a.name}"}` };
+		}
 		if (a.action === "host") {
 			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
 			session.host = host;

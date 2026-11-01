@@ -10,6 +10,20 @@ set -eu
 resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
 
+# --profile NAME: a second profile on this host (its own state, backend, proxy port and services) in
+# ~/.config/boxery-NAME. The controller passes it as an argument, so it needs no wrapper or env var.
+if [ "${1:-}" = --profile ]; then
+	p=${2:-}
+	[[ $p =~ ^[a-z][a-z0-9-]{0,30}$ ]] || { echo "boxery-host: invalid profile name '$p' (use [a-z][a-z0-9-]*)" >&2; exit 1; }
+	pconf=$HOME/.config/boxery-$p
+	if [ -n "${BOXERY_CONF:-}" ] && [ "$BOXERY_CONF" != "$pconf" ]; then echo "boxery-host: --profile $p conflicts with BOXERY_CONF=$BOXERY_CONF" >&2; exit 1; fi
+	if [ "${3:-}" != init ] && [ ! -f "$pconf/host.env" ]; then
+		echo "boxery-host: no profile '$p' on this host (create it: boxery-host --profile $p init --backend NAME)" >&2; exit 1
+	fi
+	export BOXERY_CONF=$pconf BOXERY_PROFILE=$p
+	shift 2
+fi
+
 if [ "${1:-}" = connect ]; then shift; exec "$ROOT/host/backend.sh" __connect "$@"; fi
 
 # The node `init` recorded: nvm/fnm shims are often missing from PATH in non-interactive ssh sessions.
