@@ -166,7 +166,7 @@ out=$(BOXERY_EXE_EGRESS=integrations "$H" new hx --headless --disk 30 2>"$tmp/er
 called "exe.dev new  --name=$(V hx) --no-email --cpu=2 --memory=4GB --disk=30GB" && ! called "exe.dev cp bxtest-base $(V hx)" && ok "headless: exe.dev new (exeuntu), not a copy of the base" || bad "new: $(grep 'exe.dev ' "$CALLS")"
 ! grep -F -- '--egress' "$S/$(V hx)/args" >/dev/null && [[ $(cat "$S/$(V hx)/egress" 2>/dev/null) == integrations ]] && ok "egress limited only after the layers are in (they need the internet)" || bad "egress: $(cat "$S/$(V hx)/args")"
 X=$S/$(V hx)/script.1
-bash -n "$X" && grep -F '/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log' "$X" >/dev/null && grep -F 'echo plumbing\ devtools >/etc/boxery/provision' "$X" >/dev/null && ok "first script installs the layers and runs plumbing + devtools" || bad "stock script: $(head -c 600 "$X")"
+bash -n "$X" && grep -F '/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log' "$X" >/dev/null && grep -F 'mkdir -p /etc/boxery; echo plumbing\ devtools >/etc/boxery/provision' "$X" >/dev/null && ok "first script installs the layers and runs plumbing + devtools" || bad "stock script: $(head -c 600 "$X")"
 grep -x 'ListenAddress 127.0.0.1' "$X" >/dev/null && grep -F 'boxery-exe-boot.service' "$X" >/dev/null && ok "...then the exe.dev specifics (loopback sshd, boot unit)" || bad "stock script post"
 ! grep -F '/home/agent/.boxery/token' "$X" >/dev/null && grep -F '/home/agent/.boxery/token' "$S/$(V hx)/script.2" >/dev/null && ok "identity (proxy token) comes after, in its own script" || bad "script order"
 "$H" rm hx >/dev/null 2>&1

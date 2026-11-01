@@ -389,7 +389,7 @@ exe_identity_script() { # USERDATA NAME
 	echo '[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service'
 	echo 'uid=$(id -u agent); systemctl start "user@$uid.service"'
 	echo "sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }'"
-	echo 'sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'
+	echo '[ -e /etc/boxery/headless ] || sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'
 }
 
 # A headless VM's first boot on plain exeuntu: the layers boxery-host asked for (/etc/boxery/provision),
@@ -400,7 +400,7 @@ exe_stock_script() {
 	node "$ROOT/host/cloudconfig-sh.mjs" "$1.layers" || return 1
 	rm -f "$1.layers"
 	awk '$0 == "  - path: /etc/boxery/provision" { f = 1; next } f && /^    content: / { sub(/^    content: /, ""); print; exit }' "$1" |
-		while IFS= read -r l; do printf 'echo %q >/etc/boxery/provision\n' "$l"; done
+		while IFS= read -r l; do printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/provision\n' "$l"; done
 	echo 'export DEBIAN_FRONTEND=noninteractive'
 	echo '/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1 || { tail -40 /var/log/boxery-provision.log >&2; exit 1; }'
 	exe_build_post
