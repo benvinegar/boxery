@@ -268,12 +268,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			let last: any;
-			for (const e of ctx.sessionManager.getBranch() as any[]) if (e.type === "custom" && (e.customType === "boxery-current" || e.customType === "agentvm-current")) last = e.data;
+			for (const e of ctx.sessionManager.getBranch() as any[]) if (e.type === "custom" && e.customType === "boxery-current") last = e.data;
 			// A recorded throwaway VM belongs to its original process; don't adopt it.
 			if (last?.vm && !last.ephemeral) {
 				const host = core.currentHost();
-				// Old entries predate named hosts and therefore belong only to the legacy profile.
-				if ((last.host ?? "legacy") === host.name && (!last.configDir || last.configDir === host.dir))
+				if (last.host === host.name && last.configDir === host.dir)
 					setCurrent({ name: last.vm, ephemeral: false }, ctx, false);
 				else ctx.ui?.notify?.("boxery: saved VM belongs to another host; select a VM with /vm use NAME", "warning");
 			}

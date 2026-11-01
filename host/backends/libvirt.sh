@@ -164,7 +164,6 @@ root_vol() { # VOLNAME → volume name ($BASE_VOL if it has no backing file: sho
 pull_to_base() { # NAME ROOT_VOL
 	virsh blockpull "$(dom "$1")" vda --base "$POOL_DIR/$2" --wait >/dev/null || die "blockpull failed for $1"
 }
-legacy_snaps() { virsh snapshot-list "$(dom "$1")" --name 2>/dev/null | grep -v '^$' || true; }
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d; d=$(dom "$1")
@@ -251,7 +250,6 @@ backend_rm() {
 	local d; d=$(dom "$1")
 	exists "$1" || die "no such vm: $1"
 	virsh destroy "$d" >/dev/null 2>&1 || true
-	legacy_snaps "$1" | while read -r s; do virsh snapshot-delete "$d" "$s" >/dev/null; done
 	virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null
 	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null 2>&1 || true
 	virsh vol-delete --pool "$POOL" "$d-seed.iso" >/dev/null 2>&1 || true
@@ -328,8 +326,6 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 	local name=$1 img=$2 d; d=$(dom "$1")
 	exists "$name" || die "no such vm: $name"
 	virsh vol-info --pool "$POOL" "$(vol "$img")" >/dev/null 2>&1 || die "no such image: $img"
-	local legacy; legacy=$(legacy_snaps "$name" | tr '\n' ' ')
-	[[ -z $legacy ]] || die "$name has snapshots from an older boxery ($legacy); revert to or delete them first (boxery-host snap-rm $name SNAP)"
 	local bytes ib; ib=$(vol_bytes "$img"); bytes=$ib
 	if virsh vol-info --pool "$POOL" "$d.qcow2" >/dev/null 2>&1; then bytes=$(vol_bytes "$name"); fi
 	if ((ib > bytes)); then bytes=$ib; fi
@@ -342,11 +338,3 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 	virsh start "$d" >/dev/null || die "could not start $name"
 	pull_to_base "$name" "$(root_vol "$(vol "$img")")"
 }
-
-# VMs from before images used libvirt internal snapshots. Still listed, revertable and deletable.
-backend_legacy_snaps() { legacy_snaps "$1"; }
-backend_legacy_revert() { # NAME SNAP → 1 if there is no such internal snapshot
-	legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1
-	virsh snapshot-revert "$(dom "$1")" "$2" --running >/dev/null || die "revert failed"
-}
-backend_legacy_snap_rm() { legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1; virsh snapshot-delete "$(dom "$1")" "$2" >/dev/null; }

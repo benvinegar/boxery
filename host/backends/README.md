@@ -105,8 +105,6 @@ These hooks complement process-group shutdown: submitted hypervisor jobs can sur
 | `exe` | anywhere with ssh ([exe.dev](https://exe.dev)) | **Experimental.** Headless VMs are new exeuntu VMs (`exe.dev new`), not copies of the base. Images: paused exe.dev VMs made with `cp` (a copy boots fresh from disk), named `PREFIXi-HASH`, with the image name in the exe.dev comment. Reimage = `cp` to a new exe.dev name, then `rm` the old one (names are never reused). See [below](#exe-experimental) |
 | `fake` | tests | directories |
 
-VMs created before images existed may still have backend-internal snapshots. libvirt and Lima implement the optional `backend_legacy_snaps/revert/snap_rm NAME [SNAP]` so these stay listed, revertable and deletable, and pool VMs with an internal `boxery-clean` snapshot keep resetting. `reimage` refuses to run while legacy snapshots exist (libvirt can't delete a disk that has internal snapshots), and says which ones.
-
 ### Writing a new backend (e.g. exe.dev)
 
 The image contract maps onto most VM platforms:

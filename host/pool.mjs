@@ -37,7 +37,6 @@ export async function poolAdd(rt, [name]) {
 	await sleep(1000);
 	await rt.guest.run(ep, "sync");
 	if (await rt.vms.imageExists(`${name}@${POOL_SNAP}`)) await rt.vms.call("backend_image_rm", [`${name}@${POOL_SNAP}`]);
-	if (await rt.vms.has("backend_legacy_snap_rm")) await rt.vms.call("backend_legacy_snap_rm", [name, POOL_SNAP]).catch(() => {});
 	await captureVm(rt, name, `${name}@${POOL_SNAP}`);
 	leases.add(rt.db(), name);
 	rt.done(action);

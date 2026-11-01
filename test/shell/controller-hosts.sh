@@ -42,15 +42,6 @@ proxy=$("$REAL_SSH" -F "$BOXERY_HOME/profiles/alpha/ssh_config" -G demo.boxery |
 proxy=${proxy//%%/PERCENT_PLACEHOLDER}; proxy=${proxy//%h/demo.boxery}; proxy=${proxy//%p/22}; proxy=${proxy//PERCENT_PLACEHOLDER/%}
 sh -c "$proxy" | grep -q '^CONNECTED:demo.boxery:22$'
 [ ! -e NOT_EXECUTED ]
-# Old Bash 3.2 unquoted tilde configs are read compatibly without rewriting imported data.
-printf 'HOST=user@fake\nHOST_BIN=~/.local/bin/boxery-host\n' >"$tmp/old-config"
-mkdir -p "$tmp/old-profile" "$REMOTE_HOME/.local/bin"
-cp "$tmp/old-config" "$tmp/old-profile/config"
-printf '# old imported SSH config\n' >"$tmp/old-profile/ssh_config"
-cp "$REMOTE_HOME/$rel" "$REMOTE_HOME/.local/bin/boxery-host"
-"$CLI" host add old --config-dir "$tmp/old-profile" >/dev/null
-"$CLI" --host old ls | grep -q '^demo '
-cmp "$tmp/old-config" "$tmp/old-profile/config"
 # Import as-is: paths with spaces/apostrophes, no setup, writes, or SSH invocations.
 import="$tmp/imported profile's"
 mkdir -p "$import/grants"

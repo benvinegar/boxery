@@ -105,7 +105,7 @@ printf 'one\tDATE\t1MiB\n' >"$tmp/expected"
 run snaps a1; same "snaps (tab-separated)" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"one","created":"DATE","size":"1MiB","legacy":false}
+{"name":"one","created":"DATE","size":"1MiB"}
 ]
 EOF
 run snaps a1 --json; same "snaps --json" out 0

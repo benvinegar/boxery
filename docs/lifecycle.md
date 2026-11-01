@@ -22,7 +22,7 @@ All preconditions that can race with another VM mutation are checked inside thes
 
 Pool claims exclude resource-locked VMs, including the interval between a reset committing FREE and its worker exiting. Reset candidates are observations only: the reaper rechecks generation, pool incarnation (`epoch`), state and deadline after obtaining the lock. Removing/re-adding a pool member changes its epoch, preventing a stale callback from matching a reused numeric generation. Guest side effects run under the same lock as these checks.
 
-`init`, `build-base`, and direct hypervisor commands are administrative operations outside this protocol. Do not run them concurrently with lifecycle commands. Stop older boxery-host processes before upgrading; old processes do not participate in the SQLite lock protocol. Journals written by an older boxery-host (including the Bash one) replay unchanged: intent kinds and their data are a stable format. The retired `locks/` directories and `.tokens.lock` are no longer consulted.
+`init`, `build-base`, and direct hypervisor commands are administrative operations outside this protocol. Do not run them concurrently with lifecycle commands. Stop older boxery-host processes before upgrading; old processes do not participate in the SQLite lock protocol. Journals written by an older boxery-host replay unchanged: intent kinds and their data are a stable format.
 
 ## Process lifetime
 

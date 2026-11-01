@@ -28,19 +28,6 @@ beforeEach(() => {
 	for (const n of ["p1", "p2", "p3"]) L.add(db, n);
 });
 
-it("opening an existing lease store migrates incarnation fencing without losing leases", () => {
-	const c = L.claim(db, "existing-holder", 600, KEY);
-	L.commit(db, c.name, c.gen);
-	db.exec("ALTER TABLE vms DROP COLUMN epoch"); // schema before lifecycle coordination
-	db.close(); db = L.open(file);
-	const r = L.get(db, c.name);
-	assert.equal(r.state, "LEASED");
-	assert.equal(r.lease_id, c.lease_id);
-	assert.equal(r.holder, "existing-holder");
-	assert.match(r.epoch, /^[0-9a-f]{32}$/);
-	assert.equal(L.list(db).length, 3);
-});
-
 it("claim → commit → renew → release → finish: the happy path", () => {
 	const c = L.claim(db, "ben@laptop/s1", 600, KEY);
 	assert.equal(c.name, "p1");

@@ -78,7 +78,7 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.equal(await b.imageExists("a1@one"), true);
 	assert.equal(await b.imageExists("a1@on"), false);
 	assert.equal(await b.has("backend_resize"), true);
-	assert.equal(await b.has("backend_legacy_revert"), false);
+	assert.equal(await b.has("backend_no_such_function"), false);
 	assert.equal(await b.endpointProblem("a1"), null, "no backend_endpoint_problem: nothing known to be wrong");
 	assert.equal(await b.guestProxyUpstream(), "TCP:fake-gateway:8088");
 });

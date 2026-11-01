@@ -408,7 +408,7 @@ exe_identity_script() { # USERDATA NAME
 	printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/hostname; /usr/local/sbin/boxery-exe-boot.sh\n' "$2"
 	echo 'rm -rf /run/user/*/boxery'
 	echo 'chown -R agent:agent /home/agent'
-	echo '[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service'
+	echo 'systemctl restart boxery-llm.service'
 	echo 'uid=$(id -u agent); systemctl start "user@$uid.service"'
 	echo "sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }'"
 	echo '[ -e /etc/boxery/headless ] || sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'

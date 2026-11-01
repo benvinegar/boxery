@@ -81,7 +81,7 @@ async function snaps(rt, [name, arg]) {
 	validName(name);
 	if (arg === "--json") {
 		return print(jsonArray((await snapsLines(rt, name)).map(([n, created, size]) =>
-			({ name: n, created: created === "(legacy)" ? null : created, size: size === "-" ? null : size, legacy: created === "(legacy)" }))));
+			({ name: n, created, size: size === "-" ? null : size }))));
 	}
 	if (arg) fail("usage: snaps NAME [--json]");
 	for (const l of await snapsLines(rt, name)) print(l.join("\t"));
