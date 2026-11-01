@@ -7,7 +7,7 @@ node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/nu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 H=$ROOT/host/boxery-host
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-export BOXERY_CONF=$tmp/conf BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_PROXY_PORT=9999 BOXERY_BOOT_ID=boot-1 BOXERY_SSH_WAIT_TRIES=2
+export BOXERY_CONF=$tmp/conf BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_PROXY_PORT=9999 BOXERY_BOOT_ID=boot-1 BOXERY_SSH_WAIT_TRIES=2 BOXERY_CACHE=$tmp/cache
 mkdir -p "$tmp/bin" "$BOXERY_CONF"
 echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAImgmtmgmtmgmtmgmtmgmt mgmt@host" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 cat >"$tmp/bin/ssh" <<STUB

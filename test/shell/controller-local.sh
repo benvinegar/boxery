@@ -6,7 +6,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 A=$ROOT/controller/boxery
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-export BOXERY_CONF=$tmp/hostconf BOXERY_HOME=$tmp/ctl BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms
+export BOXERY_CONF=$tmp/hostconf BOXERY_HOME=$tmp/ctl BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_CACHE=$tmp/cache
 export BOXERY_HOST_BIN=$ROOT/host/boxery-host BOXERY_RUNTIME_DIR=$tmp/run
 # Keep git's "global" config inside the fake VM home: never touch the real ~/.config/git/config.
 export XDG_CONFIG_HOME=$tmp/xdg GIT_CONFIG_NOSYSTEM=1; unset GIT_CONFIG_GLOBAL

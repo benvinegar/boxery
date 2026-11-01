@@ -12,6 +12,8 @@ export BOXERY_BOAT_POLL=0 BOXERY_BOAT_RETRIES=1 BOXERY_REMOTE_BUILD_TIMEOUT=5 BO
 export BOAT_API_KEY=boat_testkey123 FAKE_BOAT_KEY=boat_testkey123 HOME=$tmp/home CALLS=$tmp/calls.log UNITS=$tmp/units BOAT_STATE=$tmp/cloud
 mkdir -p "$tmp/bin" "$BOXERY_CONF" "$HOME" "$UNITS" "$BOAT_STATE/sb" "$BOAT_STATE/saved"
 touch "$CALLS"
+# the stuck worker sleeps for a duration of our own (60.PID), so pgrep can't see other tests' sleeps
+export STUCK=60.$$
 echo "ssh-ed25519 AAAAtestmgmt mgmt@host" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" >"$tmp/bin/$1"; chmod +x "$tmp/bin/$1"; }
@@ -67,7 +69,7 @@ POST:/sandboxes)
 	mkdir "$d"; echo provisioning >"$d/state"; jq -r .type <<<"$body" >"$d/type"; jq -r .name <<<"$body" >"$d/name"; jq -c 'if .from then {} else .labels // {} end' <<<"$body" >"$d/labels"; echo "$body" >"$d/create.json"; echo "$body" >>"$S/creates.log"
 	if [ -n "$from" ]; then cp "$S/saved/$from/data" "$d/data"; else echo stock >"$d/data"; fi
 	newmachine "$id"
-	[ -z "${SLOW_CREATE:-}" ] || sleep 60
+	[ -z "${SLOW_CREATE:-}" ] || sleep "$STUCK"
 	reply 202 "{\"ok\":true,\"type\":\"sandbox.created\",\"sandbox\":$(sbjson "$id")}" ;;
 GET:/sandboxes/*/* | POST:/sandboxes/*/* | DELETE:/sandboxes/*)
 	rest=${path#/sandboxes/}; id=${rest%%/*}; act=${rest#"$id"}; act=${act#/}; d=$S/sb/$id
@@ -340,10 +342,10 @@ rec backend_reimage v4 v4@c && [[ $(ids_of v4) == "$(ID v4) " && $(st "$(ID v4)"
 
 # --- a create killed mid-way is recovered through backend_cleanup_new (docs/lifecycle.md)
 SLOW_CREATE=1 "$H" new crash >/dev/null 2>&1 & cli=$!
-for _ in $(seq 200); do pgrep -f 'sleep 60' >/dev/null && break; sleep 0.05; done
+for _ in $(seq 200); do pgrep -f "sleep $STUCK\$" >/dev/null && break; sleep 0.05; done
 [[ -f $E/crash/slot ]] && ok "create got as far as POST /sandboxes" || bad "crash: no state"
 kill -9 "$cli" 2>/dev/null; wait "$cli" 2>/dev/null || true
-pkill -f 'sleep 60' 2>/dev/null || true
+pkill -f "sleep $STUCK\$" 2>/dev/null || true
 "$H" reconcile >/dev/null 2>&1
 [[ ! -d $E/crash && -z $(ids_of crash) ]] && jq -e 'has("crash") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "reconcile recovers an interrupted create: sandbox, state and token gone" || bad "crash recovery: $(ls "$E") $(ids_of crash)"
 
