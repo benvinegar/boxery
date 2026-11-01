@@ -2,12 +2,12 @@
 // table (core/boxery-tools.mjs), the same table the MCP server is built from.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { registerHooks } from "node:module";
+import * as nodeModule from "node:module"; // namespace import: Node 20 has no registerHooks export
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-const canLoad = !!process.features.typescript && typeof registerHooks === "function"; // Node >= 22.18
+const canLoad = !!process.features.typescript && typeof nodeModule.registerHooks === "function"; // Node >= 22.18
 process.env.BOXERY_HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
 
 // Stand-in for @earendil-works/pi-coding-agent: tool engines with their own parameter schemas.
@@ -25,7 +25,7 @@ const PI_STUB = `data:text/javascript,${encodeURIComponent(`
 
 describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript stripping + module.registerHooks)" }, () => {
 	async function load() {
-		registerHooks({
+		nodeModule.registerHooks({
 			resolve: (spec, ctx, next) => (spec === "@earendil-works/pi-coding-agent" ? { url: PI_STUB, shortCircuit: true } : next(spec, ctx)),
 		});
 		const tools = new Map();
