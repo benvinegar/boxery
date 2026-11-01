@@ -122,16 +122,24 @@ export function vmPath(p) {
 	return path.posix.isAbsolute(s) ? path.posix.normalize(s) : path.posix.join(PROJECT, s);
 }
 
+const hostVmLoc = (spec) => {
+	const m = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
+	return m && !m[1].startsWith("/") ? m : null;
+};
+const vmLoc = (spec) => String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
+/** A location with no host/vm:, vm: or local: prefix; parseLoc puts it on the current VM. */
+export const isBarePath = (spec) => !hostVmLoc(spec) && !vmLoc(spec);
+
 /** Parse "host/vm:/path", "vm:/path", "local:/path" or a plain path (= current VM). */
 export function parseLoc(spec, current) {
-	const explicit = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
-	if (explicit && !explicit[1].startsWith("/")) {
+	const explicit = hostVmLoc(spec);
+	if (explicit) {
 		const parts = explicit[1].split("/");
 		if (parts.length !== 2) throw new Error(`invalid host/VM endpoint: ${spec}`);
 		const host = resolveHost(parts[0]);
 		return { host, vm: assertName(parts[1]), path: vmPath(explicit[2]) };
 	}
-	const m = String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
+	const m = vmLoc(spec);
 	if (m) return m[1] === "local" ? { vm: null, path: m[2] } : { vm: m[1], path: vmPath(m[2]) };
 	if (!current) throw new Error(`"${spec}" has no VM prefix and no current VM is set (use NAME:path or local:path)`);
 	return { vm: current, path: vmPath(spec) };
