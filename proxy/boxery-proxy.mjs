@@ -8,7 +8,7 @@
 //   /edge/<token>/<host>/*  -> https://<host>/*       (headers granted to this VM: `boxery grant VM http:HOST`)
 //
 // Auth from VM: "Authorization: Bearer <token>" or "x-api-key: <token>".
-// <token> is "name:secret" or a JWT-shaped string whose payload carries {"boxery":"name:secret"} (legacy key: "avm")
+// <token> is "name:secret" or a JWT-shaped string whose payload carries {"boxery":"name:secret"}
 // (the Codex client derives the account id from a JWT, so we hand it a fake one).
 import http from "node:http";
 import fs from "node:fs";
@@ -69,7 +69,7 @@ function authenticate(req) {
 	if (parts.length === 3) {
 		try {
 			const payload = b64urlJson(parts[1]);
-			cred = payload?.boxery ?? payload?.avm; // "avm": tokens minted before the rename to boxery
+			cred = payload?.boxery;
 		} catch {
 			return null;
 		}

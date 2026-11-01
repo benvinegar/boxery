@@ -668,7 +668,7 @@ process.exit(0);`;
 		`setsid nohup google-chrome --remote-debugging-port=${CDP_PORT} --remote-debugging-address=127.0.0.1 --user-data-dir=$HOME/.config/boxery-chrome ` +
 		`--no-first-run --no-default-browser-check --password-store=basic --start-maximized about:blank >/tmp/boxery-chrome.log 2>&1 & ` +
 		`for i in $(seq 75); do curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null && break; sleep 0.2; done; fi; ` +
-		`P=/opt/boxery; [ -d $P ] || P=/opt/agentvm; cd $P && BOXERY_PW=$P/node_modules/playwright-core/index.mjs exec node --input-type=module`; // /opt/agentvm: images built before the rename
+		`cd /opt/boxery && BOXERY_PW=/opt/boxery/node_modules/playwright-core/index.mjs exec node --input-type=module`;
 	const r = await desktopRun(vm, script, { input: program, signal, timeoutMs: (timeout ?? 60) * 1000 });
 	const m = r.stdout.toString().match(/__BOXERY__(.*)\n?$/s);
 	if (!m) throw new Error(`browser script produced no result (exit ${r.code}): ${r.stderr.slice(-2000)}`);
@@ -703,7 +703,7 @@ export const listVms = () => boxeryJson(["ls"]);
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 export const listShapes = () => boxeryJson(["shapes"]);
 
-/** Snapshots of VM NAME: [{name, created, size, legacy}] (docs/cli.md). */
+/** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
 
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
@@ -719,7 +719,7 @@ export function formatVersions({ controller, host, behind }) {
 
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
-	return snaps.map((s) => `${s.name}\t${s.legacy ? "(legacy)" : (s.created ?? "-")}\t${s.size ?? "-"}`).join("\n");
+	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
 }
 
 export function assertShape(s) {

@@ -55,7 +55,7 @@ export function createBackend(env = process.env) {
 	const meta = (fn, args = [], options) => run(env, fn, args, { ...options, capture: true });
 	return {
 		call,
-		/** Optional contract functions (backend_resize, backend_legacy_*, …) vary by backend. */
+		/** Optional contract functions (backend_resize, backend_endpoint_problem, …) vary by backend. */
 		async has(fn) {
 			functions ??= (await meta("__functions")).split("\n").filter(Boolean);
 			return functions.includes(fn);
@@ -92,7 +92,6 @@ export function createBackend(env = process.env) {
 			if (!/^\d+ \d+ \d+$/.test(sz)) throw new BackendError(`backend_size returned "${sz}"`);
 			return sz.split(" ").map(Number);
 		},
-		legacySnaps: async (name, options) => (await meta("backend_legacy_snaps", [name], options)).split("\n").filter(Boolean),
 		guestProxyUpstream: async () => (await meta("guest_proxy_upstream")).trim(),
 		/** image/layers as cloud-config write_files lines (the prelude's layer_files) */
 		layerFiles: async () => (await meta("__layer_files")).split("\n").filter(Boolean),

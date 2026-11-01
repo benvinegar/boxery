@@ -99,7 +99,7 @@ export function open(file) {
 			lease_id TEXT UNIQUE,
 			holder TEXT, pubkey TEXT,
 			acquired_at INTEGER, expires_at INTEGER, boot_id TEXT,
-			updated_at INTEGER NOT NULL
+			updated_at INTEGER NOT NULL, epoch TEXT
 		);
 		CREATE TABLE IF NOT EXISTS operations (
 			id TEXT PRIMARY KEY, command TEXT NOT NULL, resources TEXT NOT NULL, env TEXT NOT NULL,
@@ -111,13 +111,6 @@ export function open(file) {
 			seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
 			operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
 		);`));
-	// Old installations predate incarnation fencing. Serialize the migration with other openers.
-	tx(db, () => {
-		if (!db.prepare("PRAGMA table_info(vms)").all().some((c) => c.name === "epoch")) {
-			db.exec("ALTER TABLE vms ADD COLUMN epoch TEXT");
-			db.exec("UPDATE vms SET epoch=lower(hex(randomblob(16))) WHERE epoch IS NULL");
-		}
-	});
 	return db;
 }
 

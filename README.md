@@ -193,7 +193,6 @@ The control plane runs on any Linux box or Mac, including your laptop. It owns e
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
 | [Architecture](ARCHITECTURE.md) | Design, roadmap, and failure modes |
-| [Migrating from agentvm](docs/migrating-from-agentvm.md) | Upgrading an install from before the rename |
 
 ## Status
 

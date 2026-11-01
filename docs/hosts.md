@@ -40,14 +40,6 @@ boxery-mcp --host laptop --vm demo
 
 Both `config` and `ssh_config` must already exist. Import records the canonical absolute directory. Each distinct host must have its own config directory, SSH control paths and grant store. Importing the same directory under two aliases does not create isolation or change the imported SSH config. Legacy setup prints an SSH-config-quoted/escaped `Include` recommendation; named setup instead recommends explicit host routing. Avoid including multiple profiles' `*.boxery` sections in your global SSH config: duplicate VM aliases are ambiguous there. Prefer `boxery --host NAME ssh demo`, or `ssh -F "$(boxery host show NAME)/ssh_config" demo.boxery`. Legacy setup quotes its optional global Include recommendation; for paths containing `%`, it recommends `-F` instead because OpenSSH versions differ on percent expansion in Include.
 
-Older Bash 3.2 setup could save `HOST_BIN=~/.local/bin/boxery-host` without quotes. The controller now preserves this literal remote tilde when loading that old config, and newly saved config always uses literal serialization. **Import deliberately leaves an old ProxyCommand unchanged**. If it has the old tilde/quoting bug, explicitly regenerate it after import (this also performs setup's public-key registration):
-
-```bash
-boxery --host hornet setup you@hornet --host-bin '~/.local/bin/boxery-host' --key ~/.ssh/id_ed25519.pub
-```
-
-An existing absolute remote HOST_BIN remains valid. Do not replace it with the controller's local home path.
-
 ## Layout and precedence
 
 `BOXERY_HOME` is the registry root (default `~/.boxery`), not an implicit host name:
@@ -66,7 +58,7 @@ Registry metadata must be readable regular files, not symlinks (including dangli
 * CLI: leading `--host NAME` > `default-host` > legacy root. `--host legacy` explicitly bypasses a named default. `setup` configures the selected profile; `host add` never changes the default.
 * Legacy root continues to honor `BOXERY_HOST` / `BOXERY_HOST_BIN` overrides. Named profiles ignore those ambient overrides; new managed profiles start with their own HOST_BIN default. Use `--host-bin` when provisioning them.
 * MCP: explicit tool `host` > session host, initially startup `--host` > registry default > legacy. No new ambient BOXERY_HOST alias selector is introduced. `--vm` > existing `BOXERY_VM` sets the startup VM, bound to that initial host.
-* Existing pi extension tool/flag APIs are unchanged. Its implicit host is pinned on first transport use for the process; desktop tunnels and core transport use the same profile. Restart pi to adopt a changed CLI default. Saved VM entries now include host identity; old entries belong only to legacy, and entries from another host are not automatically adopted.
+* Existing pi extension tool/flag APIs are unchanged. Its implicit host is pinned on first transport use for the process; desktop tunnels and core transport use the same profile. Restart pi to adopt a changed CLI default. Saved VM entries include host identity; entries from another host are not automatically adopted.
 
 MCP snapshots the resolved profile directory for each call, including nested operations and abort/timeout cleanup. HTTP sessions have independent host+VM state. Changing the CLI default does not retarget existing MCP sessions. Forgetting/replacing a registration does not revoke already-resolved sessions: restart those clients when retiring a host. Explicit names are always looked up afresh and unknown names fail.
 

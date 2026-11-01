@@ -15,7 +15,7 @@ echo "== create $VM"
 t0=$(date +%s); "$A" new "$VM" >/dev/null; ok "created in $(($(date +%s) - t0))s"
 
 echo "== guest basics"
-out=$("$A" run "$VM" bash -c 'pi --version; opencode --version; p=boxery; systemctl --user cat boxery-vnc >/dev/null 2>&1 || p=agentvm; systemctl --user is-active $p-vnc $p-desktop $p-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
+out=$("$A" run "$VM" bash -c 'pi --version; opencode --version; systemctl --user is-active boxery-vnc boxery-desktop boxery-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
 grep -q '^active$' <<<"$out" && ok "desktop services active" || bad "desktop services: $out"
 grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable from the guest" || bad "proxy"
 

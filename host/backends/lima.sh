@@ -138,9 +138,9 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 		ssh -F "$sshcfg" "lima-$i" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys; sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys'
 	# Same as the libvirt cloud-config's runcmd: everything under the agent's home belongs to the agent
 	# (write_files creates parent dirs such as ~/.pi/agent as root).
-	ssh -F "$sshcfg" "lima-$i" "sudo chown -R agent:agent /home/agent; sudo hostnamectl set-hostname $(printf %q "$name"); { [ -e /etc/agentvm ] || sudo ln -s /etc/boxery /etc/agentvm; sudo systemctl restart boxery-llm.service 2>/dev/null || sudo systemctl restart agentvm-llm.service; };
+	ssh -F "$sshcfg" "lima-$i" "sudo chown -R agent:agent /home/agent; sudo hostnamectl set-hostname $(printf %q "$name"); sudo systemctl restart boxery-llm.service;
 		cd ~ && git config --global user.name agent && git config --global user.email agent@boxery && git config --global init.defaultBranch main;
-		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start boxery-vnc boxery-desktop boxery-novnc 2>/dev/null || systemctl --user start agentvm-vnc agentvm-desktop agentvm-novnc 2>/dev/null || true"
+		mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }; systemctl --user daemon-reload; systemctl --user start boxery-vnc boxery-desktop boxery-novnc 2>/dev/null || true"
 	# From an image: the disk is another VM's. Give it its own machine-id (journald, DHCP client id).
 	if [[ -n $from && $from != stock ]]; then ssh -F "$sshcfg" "lima-$i" 'sudo rm -f /etc/machine-id /var/lib/dbus/machine-id && sudo systemd-machine-id-setup >/dev/null' || true; fi
 }
@@ -243,8 +243,3 @@ backend_reimage() { # NAME IMAGE: replace the instance with a clone of the image
 	limactl rename --tty=false "$tmp" "$i" >/dev/null 2>&1 || die "limactl rename failed (the new disk is instance $tmp)"
 	limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "limactl start failed"
 }
-
-# VMs from before images may have Lima snapshots (qemu vmType). Still listed, revertable and deletable.
-backend_legacy_snaps() { [[ $LIMA_VMTYPE == qemu ]] || return 0; limactl snapshot list "$(linst "$1")" 2>/dev/null | awk 'NR > 1 {print $2}' || true; }
-backend_legacy_revert() { backend_legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1; limactl snapshot apply "$(linst "$1")" --tag "$2" >/dev/null 2>&1 || die "revert failed"; }
-backend_legacy_snap_rm() { backend_legacy_snaps "$1" | grep -xF "$2" >/dev/null || return 1; limactl snapshot delete "$(linst "$1")" --tag "$2" >/dev/null 2>&1; }
