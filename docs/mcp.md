@@ -41,7 +41,7 @@ From a git checkout, use absolute paths (clients don't expand `~`): `"command": 
 
 ### Multiple hosts, one server
 
-Register profiles with `boxery host add` and select the startup host with `--host NAME`. Every tool accepts optional `host`; `vm_manage {action:"hosts"}` lists profiles and `{action:"host",host:"NAME"}` changes the session host and clears its VM. An explicit other host never inherits the current VM name. Copy endpoints can use `HOST/VM:/path`.
+Register profiles with `boxery host add` and select the startup host with `--host NAME`. Every tool accepts optional `host`; `vm_info {action:"hosts"}` lists them with where each runs (`destination`: `local` or the ssh destination), its recorded `backend`, and `same_as` (names for the same profile: `legacy`, the root profile, and an alias for `~/.boxery` are one host); and `{action:"host",host:"NAME"}` changes the session host and clears its VM. An explicit other host never inherits the current VM name. Copy endpoints can use `HOST/VM:/path`.
 
 See [Named hosts](hosts.md). Pool leases (`vm_lease`) are held against the host the call targets.
 

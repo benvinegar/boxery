@@ -4,7 +4,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,73 @@ export function registeredHosts() {
 	const registry = path.join(BOXERY_HOME, "host-registry");
 	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n) && n !== "legacy").sort() : [];
 	return [resolveHost("legacy"), ...names.map(resolveHost)];
+}
+// A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
+function readProfileFile(file, max = 64 * 1024) {
+	let fd;
+	try {
+		fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+		const st = fstatSync(fd);
+		return st.isFile() && st.size <= max ? readFileSync(fd, "utf8") : null;
+	} catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+// One shell word as `boxery setup` writes it (literal(): '…' with '\'' for quotes), or a plain word.
+// Anything needing expansion ($, `, globs…) is unknown: profile configs are never executed here.
+function shellWord(s) {
+	let out = "";
+	for (let i = 0; i < s.length;) {
+		const c = s[i];
+		if (c === "'") {
+			const j = s.indexOf("'", i + 1);
+			if (j < 0) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === '"') {
+			const j = s.indexOf('"', i + 1);
+			if (j < 0 || /[$`\\]/.test(s.slice(i + 1, j))) return null;
+			out += s.slice(i + 1, j); i = j + 1;
+		} else if (c === "\\" && i + 1 < s.length) { out += s[i + 1]; i += 2; }
+		else if (c === " " || c === "\t") return /^[ \t]*(#.*)?$/.test(s.slice(i)) ? out : null;
+		else if (/[A-Za-z0-9_.@:%+\-/~,=]/.test(c)) { out += c; i++; }
+		else return null;
+	}
+	return out;
+}
+const VALID_DEST = /^[A-Za-z0-9_.@:%+][A-Za-z0-9_.@:%+-]*$/; // controller valid_dest()
+/** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
+export function hostDestination(host) {
+	const h = resolveHost(host);
+	let dest = h.name === "legacy" ? process.env.BOXERY_HOST || null : null; // legacy honors BOXERY_HOST, like the controller
+	if (!dest) {
+		const text = readProfileFile(path.join(h.dir, "config")) ?? "";
+		const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
+		dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
+	}
+	return dest && VALID_DEST.test(dest) ? dest : null;
+}
+/** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. */
+export function hostBackend(host) {
+	const text = readProfileFile(path.join(resolveHost(host).dir, "backend"), 64);
+	const name = text?.replace(/\n$/, "");
+	return name && VALID_HOST.test(name) ? name : null; // one line, like the controller's valid_vm
+}
+/**
+ * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
+ * profile files (never sources them, never contacts a host). same_as names the other entries sharing this
+ * profile directory: `legacy` and an alias registered for ~/.boxery are the same host.
+ */
+export function describeHosts() {
+	let def = null;
+	try { def = resolveHost().name; } catch {}
+	const real = (d) => { try { return realpathSync(d); } catch { return path.resolve(d); } };
+	const hosts = registeredHosts().map((h) => ({ host: h, real: real(h.dir) }));
+	return hosts.map(({ host: h, real: r }) => ({
+		name: h.name,
+		dir: h.dir,
+		default: h.name === def,
+		destination: hostDestination(h),
+		backend: hostBackend(h),
+		same_as: hosts.filter((o) => o.real === r && o.host.name !== h.name).map((o) => o.host.name),
+	}));
 }
 /** Per-subprocess environment; ambient legacy overrides must never replace a named target. */
 export function controllerCommand(args) {

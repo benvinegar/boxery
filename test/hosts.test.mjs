@@ -280,3 +280,42 @@ test("HTTP startup defaults, overrides and sessions stay pinned across registry 
 		}
 	} finally { writeFileSync(defaultFile, "alpha\n"); }
 });
+
+test("vm_info hosts says where each host runs, its recorded backend, and which names are the same profile", async () => {
+	const home = path.join(dir, "home");
+	try {
+		// As `boxery setup` writes it; the last assignment wins, as when the controller sources it.
+		writeFileSync(path.join(profile("alpha"), "config"), "HOST='old@box'\nHOST_BIN='~/.local/bin/boxery-host'\nexport HOST=you@alpha-box # moved\n");
+		writeFileSync(path.join(profile("alpha"), "backend"), "libvirt\n");
+		writeFileSync(path.join(profile("beta"), "config"), 'HOST="$(whoami)@box"\n'); // needs execution: unknown, never run
+		writeFileSync(path.join(profile("beta"), "backend"), "not a backend\n");
+		writeFileSync(path.join(home, "config"), "HOST='local'\n");
+		writeFileSync(path.join(home, "ssh_config"), "# fake SSH config\n");
+		writeFileSync(path.join(home, "backend"), "lima\n");
+		writeFileSync(path.join(home, "host-registry", "root"), `${home}\n`);
+		const c = client(["--host", "alpha"]);
+		await c.call("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+		const r = await c.tool("vm_info", { action: "hosts" });
+		assert.equal(r.isError, false, text(r));
+		const byName = Object.fromEntries(r.structuredContent.hosts.map((h) => [h.name, h]));
+		assert.deepEqual(r.structuredContent.hosts.map((h) => h.name), ["legacy", "alpha", "beta", "root"]);
+		// legacy routes through the ambient BOXERY_HOST override (as the controller does); named profiles never do.
+		assert.deepEqual(byName.legacy, { name: "legacy", destination: "must-not-leak", backend: "lima", current: false, default: false, same_as: ["root"], dir: home });
+		assert.deepEqual(byName.alpha, { name: "alpha", destination: "you@alpha-box", backend: "libvirt", current: true, default: true, same_as: [], dir: profile("alpha") });
+		assert.deepEqual(byName.beta, { name: "beta", destination: null, backend: null, current: false, default: false, same_as: [], dir: profile("beta") });
+		assert.deepEqual(byName.root, { name: "root", destination: "local", backend: "lima", current: false, default: false, same_as: ["legacy"], dir: home });
+		const lines = text(r).split("\n");
+		assert.equal(lines[0], "NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE");
+		assert.equal(lines[2], `alpha *\tyou@alpha-box\tlibvirt\tdefault\t${profile("alpha")}`);
+		assert.equal(lines[4], `root\tlocal\tlima\tsame host as legacy\t${home}`);
+		const info = (await c.call("tools/list")).result.tools.find((t) => t.name === "vm_info");
+		assert.deepEqual(Object.keys(info.outputSchema.properties.hosts.items.properties).sort(), Object.keys(byName.alpha).sort());
+		assert.match(info.inputSchema.properties.host.description, /legacy.*root profile/);
+	} finally {
+		for (const h of ["alpha", "beta"]) {
+			writeFileSync(path.join(profile(h), "config"), "# fake controller config\n");
+			rmSync(path.join(profile(h), "backend"), { force: true });
+		}
+		for (const f of ["config", "ssh_config", "backend", "host-registry/root"]) rmSync(path.join(home, f), { force: true });
+	}
+});
