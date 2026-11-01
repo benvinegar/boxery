@@ -26,6 +26,32 @@ pi --vm demo --vm-grant ssh-agent,env:GH_TOKEN,file:.env
 /vm grant env:GH_TOKEN                                # inside pi, for the current VM
 ```
 
+## Agents can ask
+
+An agent can't grant itself anything, but it can ask. When work in a VM fails for lack of access (`pnpm install` gets a 401, git wants credentials), the `vm_grant` tool asks you in a prompt:
+
+```text
+Give VM "demo" on host "hornet" access to:
+
+file: ~/Library/Preferences/pnpm/auth.ini
+  → in the VM: ~/.config/pnpm/auth.ini
+Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it.
+
+Revoke any time: boxery --host hornet revoke demo file:/Users/you/Library/Preferences/pnpm/auth.ini
+
+The agent's reason: "pnpm install got a 401 from the registry"
+```
+
+If you allow it, the tool runs `boxery grant` for you, which applies the grant the same way. If you decline, nothing changes, and the agent is told not to ask again.
+
+- **The prompt comes from boxery, not the agent.** In MCP clients it's an [elicitation](https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation), and in pi it's a confirm dialog. Neither is a tool call the agent can answer. A client that can't show one (no form elicitation, a plain-JSON HTTP call, pi in print mode) gets no prompt: the agent gets the exact `boxery grant …` command to pass on to you.
+- **Agents can request `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg` or boxery's own config directories. An `env:VAR` request needs `VAR` set where boxery runs.
+- One prompt at a time per session. Something already granted is reported without a prompt.
+- The agent's reason is shown last and labelled as the agent's. Judge the request by the lines above it.
+- Claude Code shows the first three lines and folds the rest; expand it to read the warning and the reason.
+
+This is the way to get credentials into a VM on another [host](hosts.md). Grants belong to a host profile, so a VM on `hornet` starts with none of your local VMs' grants. Agents are told never to copy credentials in with `vm_copy` or `vm_write`, because a copy lands on the VM's disk and in its snapshots.
+
 ## How it works
 
 - **http:HOST and github (edge-injected).** The secret never enters the VM.

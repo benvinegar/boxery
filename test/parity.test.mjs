@@ -32,6 +32,7 @@ const CLI_FOR_TOOL = {
 	},
 	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
+	vm_grant: "grant", // the agent asks; the user approves in a prompt, then it runs boxery grant
 };
 
 // CLI commands no tool maps to, and why agents don't get them.
@@ -41,8 +42,7 @@ const CLI_ONLY = {
 	setup: "configuring the VM host is the user's setup",
 	backend: "refreshes the backend recorded in the user's profile (vm_info hosts reads that record)",
 	"upgrade-host": "upgrading the host is the user's to run (vm_info version tells agents to ask)",
-	grant: "only the user changes what a VM may access (vm_info grants reads them)",
-	revoke: "only the user changes what a VM may access",
+	revoke: "only the user takes access away (agents can only ask for it, with vm_grant)",
 	"agent-forward": "only the user changes what a VM may access",
 	ssh: "interactive shell (agents use vm_bash)",
 	attach: "interactive tmux session",

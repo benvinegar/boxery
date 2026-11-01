@@ -1,7 +1,7 @@
 // pi extension (extension/index.ts) against a stub pi: it must register exactly the shared tool
 // table (core/boxery-tools.mjs), the same table the MCP server is built from.
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import * as nodeModule from "node:module"; // namespace import: Node < 22.15 has no registerHooks export
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +11,11 @@ import { registerHost } from "./fixtures/register-host.mjs";
 const canLoad = !!process.features.typescript && typeof nodeModule.registerHooks === "function"; // Node >= 22.18
 process.env.BOXERY_HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
 registerHost(process.env.BOXERY_HOME);
+// A stub controller: no grants yet; every call is recorded.
+const CALLS = path.join(process.env.BOXERY_HOME, "calls");
+process.env.BOXERY_BIN = path.join(process.env.BOXERY_HOME, "boxery");
+writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\nwhile [ "$1" = --host ] || [ "$1" = --profile-dir ]; do shift 2; done\necho "$*" >> ${JSON.stringify(CALLS)}\ncase "$*" in *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
+chmodSync(process.env.BOXERY_BIN, 0o755);
 
 // Stand-in for @earendil-works/pi-coding-agent: tool engines with their own parameter schemas.
 const PI_STUB = `data:text/javascript,${encodeURIComponent(`
@@ -66,6 +71,21 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		assert.deepEqual(r.content, [{ type: "text", text: "no current VM" }]);
 		assert.deepEqual(entries.at(-1), { type: "boxery-current", data: { vm: null } });
 		await assert.rejects(tools.get("vm_click").execute("2", { x: 1, y: 1 }, undefined, undefined, {}), /no current VM/i);
+	});
+
+	it("vm_grant asks with pi's confirm dialog; without a UI it hands over the command", async () => {
+		const { tools } = await load();
+		const grant = tools.get("vm_grant");
+		const asked = [];
+		const ui = (answer) => ({ hasUI: true, ui: { confirm: async (title, message) => (asked.push({ title, message }), answer) } });
+		const ok = await grant.execute("1", { vm: "demo", spec: "ssh-agent", reason: "git over ssh" }, undefined, undefined, ui(true));
+		assert.match(ok.content[0].text, /^The user approved: demo now has ssh-agent/);
+		assert.equal(readFileSync(CALLS, "utf8").trim().split("\n").at(-1), "grant demo ssh-agent");
+		assert.equal(asked[0].title, "boxery: grant VM access?");
+		assert.match(asked[0].message, /^Give VM "demo" on host "test" access to:/);
+		const no = await grant.execute("2", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, ui(false));
+		assert.match(no.content[0].text, /^The user declined/);
+		await assert.rejects(grant.execute("3", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, { hasUI: false, ui: {} }), /can't show the user an approval prompt[\s\S]*boxery --host test grant demo ssh-agent/);
 	});
 
 	it("vm_lease runs on the extension's lease keeper", async () => {

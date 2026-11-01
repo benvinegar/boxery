@@ -11,6 +11,7 @@
  *   vm_manage                                               new / fork / rm / start / stop / resize / snap / snap-rm / revert / use / none / build-base
  *   vm_info                                                 read-only list / shapes / grants / snaps / images / version
  *   vm_lease                                                acquire / renew / release / list pool leases
+ *   vm_grant                                                ask the user (confirm dialog) to grant the VM access
  *
  * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs.
  * Both are built from one tool table (core/boxery-tools.mjs) on top of core/boxery-core.mjs. Here,
@@ -205,6 +206,9 @@ export default function (pi: ExtensionAPI) {
 		vm_edit: "Edit files in the VM",
 	};
 	const withVm = (schema: any) => ({ ...schema, properties: { ...schema.properties, vm: VM_PARAM } });
+	// vm_grant's approval: pi's own confirm dialog, which the agent cannot answer. No UI (print mode): no prompt.
+	const confirmGrant = core.oneAtATime(async ({ ctx, message }: any) => ((await ctx.ui.confirm("boxery: grant VM access?", message)) ? "accept" : "decline"));
+	const grantApprover = (ctx: any) => (ctx?.hasUI && ctx.ui?.confirm ? (message: string) => confirmGrant({ ctx, message }) : undefined);
 	const manageSession = (ctx: any) => ({
 		use: (name: string) => useVm(name, ctx),
 		adopt: (name: string) => setCurrent({ name, ephemeral: false }, ctx),
@@ -247,7 +251,8 @@ export default function (pi: ExtensionAPI) {
 				if (t.name === "vm_manage") return toPi(await manageAction(p, manageSession(ctx)));
 				if (t.name === "vm_lease") return toPi(await leaseAction(p, leaseSession(ctx)));
 				const { vm, ...rest } = p;
-				return toPi(await t.run(t.noVm ? null : pick(vm), t.noVm ? p : rest, { signal, current: current?.name, localCwd: ctx?.cwd }));
+				const approve = t.name === "vm_grant" ? grantApprover(ctx) : undefined;
+				return toPi(await t.run(t.noVm ? null : pick(vm), t.noVm ? p : rest, { signal, current: current?.name, localCwd: ctx?.cwd, approve }));
 			},
 		});
 	}
