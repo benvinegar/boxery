@@ -75,7 +75,7 @@ export async function snapRm(rt, [name, label]) {
 export async function revertVm(rt, name, label) {
 	await restoreVm(rt.vms, name, label);
 	const ep = await rt.vms.waitEndpoint(name);
-	await rt.guest.waitSsh(ep);
+	await rt.waitSsh(name, ep);
 	// The guest clock may resume from snapshot time (legacy memory snapshots); step it to host time.
 	await rt.guest.run(ep, `sudo date -u -s @${Math.floor(Date.now() / 1000)} >/dev/null`);
 }

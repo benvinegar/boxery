@@ -55,7 +55,7 @@ f="$ROOT/host/backends/$BACKEND.sh"
 CONTRACT=" backend_check backend_init backend_proxy_services backend_proxy_bind guest_proxy_upstream backend_build_base
 	backend_has_base backend_exists backend_new backend_list backend_ssh_endpoint backend_wait_endpoint backend_start backend_stop
 	backend_rm backend_size backend_resize backend_capture backend_images backend_image_rm backend_reimage backend_cleanup_new
-	backend_cleanup_image backend_recover_capture backend_legacy_snaps backend_legacy_revert backend_legacy_snap_rm "
+	backend_cleanup_image backend_recover_capture backend_legacy_snaps backend_legacy_revert backend_legacy_snap_rm backend_endpoint_problem "
 case ${1:-} in
 __layer_files) layer_files ;;
 __functions)

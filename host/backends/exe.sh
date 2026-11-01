@@ -39,6 +39,7 @@ EXE_MAX_MEM=${BOXERY_EXE_MAX_MEM:-4096}          # MiB
 EXE_BASE_DISK=20                                 # GB, the base VM's disk (copies grow from it)
 EXE_SUPERVISOR=${BOXERY_EXE_SUPERVISOR:-$([[ $(uname) == Darwin ]] && echo launchd || echo systemd)}
 EXE_POLL=${BOXERY_EXE_POLL:-15}                  # seconds between build-base progress checks
+EXE_TUNNEL_WAIT=${BOXERY_EXE_TUNNEL_WAIT:-120}   # seconds new/start/revert wait for a tunnel to connect
 EXE_MAX_SLOT=500
 # Never forward the host's agent or X11 into a guest, whatever ~/.ssh/config says: guest root would get
 # the exe.dev account key, i.e. root in every VM. LogLevel=ERROR keeps ssh's notices out of JSON replies.
@@ -207,6 +208,27 @@ exe_tunnel_stop() {
 exe_tunnel_active() {
 	if [[ $EXE_SUPERVISOR == launchd ]]; then launchctl print "gui/$(id -u)/dev.$(exe_unit "$1")" >/dev/null 2>&1
 	else systemctl --user is-active --quiet "$(exe_unit "$1").service"; fi
+}
+# Supervised at all: launchd has the agent, or the unit is enabled (it is "inactive" between restarts).
+exe_tunnel_loaded() {
+	if [[ $EXE_SUPERVISOR == launchd ]]; then exe_tunnel_active "$1"
+	else systemctl --user is-enabled --quiet "$(exe_unit "$1").service"; fi
+}
+# Local checks only (no API call), cheap enough for ls and connect:
+#   up         supervised, and the -L end accepts connections: ssh is connected to exe.dev
+#   connecting supervised, not connected: the host is offline or just woke from sleep, exe.dev is
+#              unreachable, or the VM was paused outside boxery. The supervisor retries every 5s.
+#   down       not supervised: the VM is stopped, or the unit/agent was removed by hand
+exe_tunnel_state() {
+	exe_tunnel_loaded "$1" || { echo down; return; }
+	if exe_tunnel_active "$1" && nc -z 127.0.0.1 "$(exe_port "$1")" >/dev/null 2>&1; then echo up; else echo connecting; fi
+}
+exe_tunnel_log() { # NAME → where the tunnel's ssh errors go
+	if [[ $EXE_SUPERVISOR == launchd ]]; then echo "$(exe_dir "$1")/tunnel.log"; else echo "journalctl --user -u $(exe_unit "$1")"; fi
+}
+exe_tunnel_last_error() {
+	if [[ $EXE_SUPERVISOR == launchd ]]; then tail -n 1 "$(exe_dir "$1")/tunnel.log" 2>/dev/null
+	else journalctl --user -u "$(exe_unit "$1")" -n 1 -o cat --no-pager 2>/dev/null; fi
 }
 exe_tunnel_remove() {
 	exe_tunnel_stop "$1"
@@ -455,38 +477,58 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	exe_tunnel_start "$name"
 }
 
-backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK
+backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK<TAB>TUNNEL
 	[[ -n $EXE_PREFIX ]] || return 0
-	local j n st addr disk
+	local j n st addr disk tun
 	j=$(exe_ls) || exit 1
 	jq -r --arg re "^${EXE_PREFIX}v[0-9a-f]{6}-(?<n>.+)$" '.vms[] | (.vm_name | capture($re)) as $m | select($m) | [$m.n, .status, .vm_name] | @tsv' <<<"$j" |
 		while IFS=$'\t' read -r n st v; do
 			[[ $n =~ ^[a-z][a-z0-9-]*$ ]] || continue
 			[[ ! -f $(exe_dir "$n")/vm || $(exe_vm "$n") == "$v" ]] || continue   # a reimage's leftover disk
-			addr="" disk=""
+			addr="" disk="" tun=""
 			[[ ! -f $(exe_dir "$n")/disk ]] || disk="$(cat "$(exe_dir "$n")/disk")GiB"
-			if [[ $st == running && -f $(exe_dir "$n")/slot ]] && exe_tunnel_active "$n"; then addr="127.0.0.1:$(exe_port "$n")"; fi
+			[[ ! -f $(exe_dir "$n")/slot ]] || tun=$(exe_tunnel_state "$n")
+			if [[ $st == running && $tun == up ]]; then addr="127.0.0.1:$(exe_port "$n")"; fi
 			[[ $st != stopped ]] || st="shut off"
-			printf '%s\t%s\t%s\t%s\n' "$n" "$st" "$addr" "$disk"
+			printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$st" "$addr" "$disk" "$tun"
 		done
+}
+
+# Why NAME's endpoint can't be reached (dispatcher hook, see README; no API call): prints nothing and
+# returns 0 when the tunnel is up; 1 = it is reconnecting and may recover; 2 = there is no tunnel.
+# Either way the VM has no ssh endpoint and its agents have no LLM proxy: both ride the tunnel.
+backend_endpoint_problem() {
+	[[ -f $(exe_dir "$1")/slot ]] || { echo "no such vm: $1"; return 2; }
+	case $(exe_tunnel_state "$1") in
+	up) return 0 ;;
+	down) echo "$1 is stopped, or its ssh tunnel isn't running (no ssh, no LLM proxy). Fix: boxery-host start $1"; return 2 ;;
+	esac
+	local last; last=$(exe_tunnel_last_error "$1" | tr -d '\r' | cut -c1-200) || last=""
+	echo "the ssh tunnel to $1 isn't connected to exe.dev${last:+ (last error: $last)}; until it is, $1 has no ssh and its agents have no LLM proxy.
+  $EXE_SUPERVISOR retries every 5s. Is this host online and awake? Check: ssh exe.dev whoami; log: $(exe_tunnel_log "$1").
+  If it was paused outside boxery or doesn't recover: boxery-host start $1"
+	return 1
 }
 
 # No API call: `connect` runs this for every ssh session.
 backend_ssh_endpoint() {
 	[[ -f $(exe_dir "$1")/slot ]] || die "no such vm: $1"
-	exe_tunnel_active "$1" || die "$1 is not running (or its tunnel is down: boxery-host start $1)"
+	local msg; msg=$(backend_endpoint_problem "$1") || die "$msg"
 	echo "127.0.0.1 $(exe_port "$1")"
 }
 # The tunnel's local end is up. ssh readiness (through it) is the dispatcher's wait_ssh.
 backend_wait_endpoint() {
-	local i p
+	local rc msg
 	[[ -f $(exe_dir "$1")/slot ]] || die "no such vm: $1"
-	p=$(exe_port "$1")
-	for i in $(seq 120); do
-		exe_tunnel_active "$1" && nc -z 127.0.0.1 "$p" >/dev/null 2>&1 && { echo "127.0.0.1 $p"; return; }
+	for _ in $(seq "$EXE_TUNNEL_WAIT"); do
+		rc=0; msg=$(backend_endpoint_problem "$1") || rc=$?
+		case $rc in
+		0) echo "127.0.0.1 $(exe_port "$1")"; return ;;
+		2) die "$msg" ;;
+		esac
 		sleep 1
 	done
-	die "timed out waiting for the tunnel to $1 ($(exe_dir "$1")/tunnel.sh)"
+	die "timed out after ${EXE_TUNNEL_WAIT}s: $msg"
 }
 
 backend_start() {

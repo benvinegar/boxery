@@ -25,7 +25,7 @@ const endpoint = (text) => {
 // capture: collect stdout (metadata) and return it; otherwise the backend's stdout goes to our stderr,
 // so it can never corrupt this command's own output. quiet: discard the backend's stderr too.
 // extraEnv: variables for this call only (e.g. BASE_USERDATA for backend_build_base).
-function run(env, fn, args, { capture = false, quiet = false, extraEnv } = {}) {
+function run(env, fn, args, { capture = false, quiet = false, status = false, extraEnv } = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(SCRIPT, [fn, ...args.map(String)], { env: extraEnv ? { ...env, ...extraEnv } : env, stdio: ["ignore", capture ? "pipe" : 2, quiet ? "ignore" : 2] });
 		const chunks = [];
@@ -41,6 +41,7 @@ function run(env, fn, args, { capture = false, quiet = false, extraEnv } = {}) {
 		child.on("error", reject);
 		child.on("close", (code, signal) => {
 			if (bytes > MAX_OUTPUT) return reject(new BackendError(`${fn}: backend output exceeded 16 MiB`));
+			if (status) return resolve({ code: code ?? (signal ? 128 : 1), out: Buffer.concat(chunks).toString("utf8") });
 			if (code !== 0) return reject(new BackendError(`${fn} failed`, { exitCode: code ?? (signal ? 128 : 1), reported: !quiet }));
 			resolve(Buffer.concat(chunks).toString("utf8"));
 		});
@@ -59,8 +60,9 @@ export function createBackend(env = process.env) {
 			functions ??= (await meta("__functions")).split("\n").filter(Boolean);
 			return functions.includes(fn);
 		},
-		/** [{name, state, addr, disk}]; empty fields are "". Fails if the inventory is unavailable. */
-		list: async (options) => tsv(await meta("backend_list", [], options)).map(([name, state = "", addr = "", disk = ""]) => ({ name, state, addr, disk })),
+		/** [{name, state, addr, disk, tunnel}]; empty fields are "" (tunnel: only backends that reach VMs
+		 *  through one, see backend_list). Fails if the inventory is unavailable. */
+		list: async (options) => tsv(await meta("backend_list", [], options)).map(([name, state = "", addr = "", disk = "", tunnel = ""]) => ({ name, state, addr, disk, tunnel })),
 		/** [{image, created, size}] */
 		images: async (options) => tsv(await meta("backend_images", [], options)).map(([image, created = "", size = ""]) => ({ image, created, size })),
 		imageExists: async (image, options) => (await meta("backend_images", [], options)).split("\n").some((l) => l.split("\t")[0] === image),
@@ -74,6 +76,13 @@ export function createBackend(env = process.env) {
 		},
 		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options)),
 		waitEndpoint: async (name, options) => endpoint(await meta("backend_wait_endpoint", [name], options)),
+		/** Why NAME's endpoint can't be reached (optional backend_endpoint_problem; local checks only):
+		 *  null when nothing is known to be wrong, else {fatal, message}. fatal: it won't recover without the fix. */
+		async endpointProblem(name) {
+			if (!await this.has("backend_endpoint_problem")) return null;
+			const { code, out } = await run(env, "backend_endpoint_problem", [name], { capture: true, quiet: true, status: true });
+			return code === 0 ? null : { fatal: code === 2, message: out.trim() };
+		},
 		/** [cpus, mem MiB, disk GiB] as configured */
 		async size(name, options) {
 			const sz = (await meta("backend_size", [name], options)).trim();

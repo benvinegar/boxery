@@ -74,7 +74,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	setVmKind(rt.conf, name, kind);
 	const ep = await rt.vms.waitEndpoint(name);
 	log(`${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
-	await rt.guest.waitSsh(ep);
+	await rt.waitSsh(name, ep);
 	await mustRun(rt, ep, "cloud-init status --wait >/dev/null 2>&1; true");
 	if (provision) {
 		if (await rt.guest.run(ep, "test -f /var/log/boxery-provision.ok") !== 0) {
@@ -180,7 +180,7 @@ export async function rm(rt, [name]) {
 export async function start(rt, [name]) {
 	validName(name);
 	await rt.vms.call("backend_start", [name]);
-	await rt.guest.waitSsh(await rt.vms.waitEndpoint(name));
+	await rt.waitSsh(name, await rt.vms.waitEndpoint(name));
 	if (!rt.poolRow(name)) await setPetKeys(rt, name);
 	log(`${name} started`);
 }
@@ -221,7 +221,7 @@ async function resizeVm(rt, name, want) {
 	const was = (await rt.vms.list()).find((v) => v.name === name)?.state;
 	await rt.vms.call("backend_resize", [name, ...change]);
 	if (was === "running") {
-		await rt.guest.waitSsh(await rt.vms.waitEndpoint(name));
+		await rt.waitSsh(name, await rt.vms.waitEndpoint(name));
 		if (!rt.poolRow(name)) await setPetKeys(rt, name);
 	}
 	let after;

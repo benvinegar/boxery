@@ -626,7 +626,7 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 	});
 }
 
-/** VMs on the host: [{name, state, addr, disk, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
+/** VMs on the host: [{name, state, addr, disk, tunnel, lease, shape, cpus, mem, grants}] (fields: docs/cli.md). */
 export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
@@ -653,11 +653,14 @@ export function formatShapes({ default: def, shapes }) {
 
 const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
+// A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
+const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.addr ?? "-"));
+
 /** Human-readable table for tools and /vm ls. */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
 	const kind = (v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
-	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.shape ?? "-", kind(v), v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const rows = [["NAME", "STATE", "ADDR", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.shape ?? "-", kind(v), v.lease?.state ?? "-", (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }

@@ -63,7 +63,7 @@ export async function runLifecycle(rt, command, args) {
 	const backend = {
 		clearEdge: async (name) => rt.clearEdge(nameOf(name)),
 		restore: (name, label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
-		waitReady: async (name) => rt.guest.waitSsh(await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
+		waitReady: async (name) => rt.waitSsh(nameOf(name), await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
 		async stepClock(name) {
 			if (await rt.guest.run(await rt.vms.sshEndpoint(nameOf(name)), `sudo date -u -s @${now()} >/dev/null 2>&1; true`) !== 0) throw new Error(`${name}: could not reach the guest`);
 		},
