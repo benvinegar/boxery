@@ -64,11 +64,13 @@ pc=$HOME/.config/boxery-two
 err=$("${P[@]}" ls 2>&1) && bad "--profile accepted a missing profile" || { [[ $err == *"no profile 'two'"*"--profile two init"* ]] && ok "--profile refuses a profile that was never created" || bad "error: $err"; }
 err=$("$H" --profile ../x ls 2>&1) && bad "--profile accepted ../x" || { [[ $err == *"invalid profile name"* ]] && ok "--profile validates the name" || bad "error: $err"; }
 err=$(BOXERY_CONF=$tmp/other "$H" --profile two init 2>&1) && bad "--profile with another BOXERY_CONF" || { [[ $err == *conflicts* ]] && ok "--profile refuses a different BOXERY_CONF" || bad "error: $err"; }
-err=$("${P[@]}" init --backend fake 2>&1) && bad "a second fake profile was created" || { [[ $err == *"$BOXERY_CONF"*"already uses the fake backend"* && ! -e $pc ]] && ok "same backend and settings as another profile: refused, nothing written" || bad "error: $err"; }
-sed -i.bak 's/^BOXERY_BACKEND=fake$/BOXERY_BACKEND=lima/' "$BOXERY_CONF/host.env"
+# The namespace check runs before the backend's own checks, so lima can be refused offline.
+lp=$HOME/.config/boxery-lima1; mkdir -p "$lp"; printf 'BOXERY_BACKEND=lima\nBOXERY_PROXY_PORT=8100\nBOXERY_PROXY_UNIT=boxery-proxy-lima1\n' >"$lp/host.env"
+err=$("${P[@]}" init --backend lima 2>&1) && bad "a second lima profile was created" || { [[ $err == *"$lp"*"already uses the lima backend"*BOXERY_LIMA_PREFIX* && ! -e $pc ]] && ok "same backend and settings as another profile: refused, nothing written" || bad "error: $err"; }
+rm -rf "$lp"
 err=$(env -u BOXERY_CONF BOXERY_PROXY_PORT=9999 BOXERY_FAKE_DIR="$tmp/vms-two" "$H" --profile two init --backend fake 2>&1) && bad "a taken proxy port was accepted" || { [[ $err == *"proxy port 9999 is already used"* ]] && ok "an explicit proxy port another profile uses: refused" || bad "error: $err"; }
 : >"$CALLS"
-out=$(BOXERY_FAKE_DIR=$tmp/vms-two "${P[@]}" init --backend fake 2>&1) && ok "--profile init creates the profile" || bad "init: $out"
+out=$(BOXERY_FAKE_DIR=$tmp/vms-two "${P[@]}" init --backend fake 2>&1) && ok "--profile init creates the profile (same backend as the other one: fake has no namespace to check)" || bad "init: $out"
 e=$pc/host.env
 port=$(sed -n 's/^BOXERY_PROXY_PORT=//p' "$e")
 [[ $port =~ ^80(89|9[0-9])$ ]] && ok "picks a free proxy port ($port)" || bad "port: $(cat "$e")"

@@ -7,7 +7,6 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { discover } from "./boxery-upgrade.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
-import { createRuntime } from "./runtime.mjs";
 import { baseUserdata } from "./seed.mjs";
 import { fail, jsonArray, log, print, readFd, sleep, table } from "./util.mjs";
 
@@ -78,7 +77,8 @@ export function hostProfiles({ home = homedir(), services = discover() } = {}) {
 }
 
 // The settings that say where a backend keeps its VMs. Two profiles of one backend with the same
-// values would manage the same VMs (and ports) under two lease stores.
+// values would manage the same VMs (and ports) under two lease stores. Backends not listed (fake, a
+// new one) aren't checked.
 const NAMESPACE = {
 	libvirt: /^(BOXERY_(POOL|POOL_DIR|BASE_VOL|DOMAIN_PREFIX|NET)|LIBVIRT_DEFAULT_URI)$/,
 	lima: /^(LIMA_HOME|BOXERY_LIMA_PREFIX)$/,
@@ -99,10 +99,10 @@ function checkProfiles(rt, others) {
 	for (const o of others) {
 		if (o.proxyPort === rt.proxyPort) fail(`proxy port ${rt.proxyPort} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_PORT${hint}`);
 		if (o.proxyUnit === rt.proxyUnit) fail(`service name ${rt.proxyUnit} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_UNIT${hint}`);
-		if (o.backend === rt.backend && namespace(o.backend, o.env) === namespace(rt.backend, rt.env)) {
-			const keys = HOST_ENV.filter((k) => NAMESPACE[rt.backend]?.test(k));
-			fail(`profile ${o.name} (${o.conf}) already uses the ${rt.backend} backend with the same settings, so both would manage the same VMs` +
-				(keys.length ? `; give this one its own ${keys.join(", ")} or use another backend` : "; use another backend"));
+		if (NAMESPACE[rt.backend] && o.backend === rt.backend && namespace(o.backend, o.env) === namespace(rt.backend, rt.env)) {
+			const keys = HOST_ENV.filter((k) => NAMESPACE[rt.backend].test(k));
+			fail(`profile ${o.name} (${o.conf}) already uses the ${rt.backend} backend with the same settings, so both would manage the same VMs; ` +
+				`give this one its own ${keys.join(", ")} or use another backend`);
 		}
 	}
 }
@@ -226,7 +226,9 @@ async function startServices(rt, { reaper }) {
 export async function init(rt) {
 	const others = hostProfiles().filter((p) => path.resolve(p.conf) !== rt.conf);
 	if (rt.profile && !rt.env.BOXERY_PROXY_PORT) {
-		// First init of a named profile (later ones read the port back from its host.env).
+		// First init of a named profile (later ones read the port back from its host.env). Loaded here:
+		// the runtime needs node:sqlite, and this module also loads on older Node (tests, build-base).
+		const { createRuntime } = await import("./runtime.mjs");
 		const sub = createRuntime({ ...process.env, BOXERY_PROXY_PORT: await pickProxyPort(others) });
 		try { return await initProfile(sub, others); } finally { sub.close(); }
 	}
