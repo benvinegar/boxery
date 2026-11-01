@@ -15,26 +15,26 @@ echo "== create $VM"
 t0=$(date +%s); "$A" new "$VM" >/dev/null; ok "created in $(($(date +%s) - t0))s"
 
 echo "== guest basics"
-out=$("$A" run "$VM" 'pi --version; opencode --version; p=boxery; systemctl --user cat boxery-vnc >/dev/null 2>&1 || p=agentvm; systemctl --user is-active $p-vnc $p-desktop $p-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
+out=$("$A" run "$VM" bash -c 'pi --version; opencode --version; p=boxery; systemctl --user cat boxery-vnc >/dev/null 2>&1 || p=agentvm; systemctl --user is-active $p-vnc $p-desktop $p-novnc | sort -u; curl -fsS 127.0.0.1:8088/healthz')
 grep -q '^active$' <<<"$out" && ok "desktop services active" || bad "desktop services: $out"
 grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable from the guest" || bad "proxy"
 
 echo "== isolation"
-code=$("$A" run "$VM" 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer x:y" 127.0.0.1:8088/ollama/v1/models')
+code=$("$A" run "$VM" bash -c 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer x:y" 127.0.0.1:8088/ollama/v1/models')
 [[ $code == 401 ]] && ok "forged token rejected" || bad "forged token got $code"
 
 echo "== pi (ChatGPT via host proxy)"
-r=$("$A" run "$VM" 'cd ~/project && timeout 180 pi -p "Reply with exactly: PI_OK" </dev/null 2>&1 | tail -1')
+r=$("$A" run "$VM" bash -c 'cd ~/project && timeout 180 pi -p "Reply with exactly: PI_OK" </dev/null 2>&1 | tail -1')
 [[ $r == *PI_OK* ]] && ok "pi answered" || bad "pi: $r"
 
 echo "== opencode (ollama via host proxy)"
-r=$("$A" run "$VM" 'cd ~/project && timeout 240 opencode run "Reply with exactly: OC_OK" 2>&1 | tail -1')
+r=$("$A" run "$VM" bash -c 'cd ~/project && timeout 240 opencode run "Reply with exactly: OC_OK" 2>&1 | tail -1')
 [[ $r == *OC_OK* ]] && ok "opencode answered" || bad "opencode: $r (is ollama running on the host?)"
 
 echo "== background task"
 "$A" prompt "$VM" "Create answer.txt containing just the number 42. Do nothing else." >/dev/null
-for _ in $(seq 36); do "$A" run "$VM" 'grep -q "task finished" ~/project/.boxery/*.log 2>/dev/null' && break; sleep 5; done
-check "task wrote answer.txt" "$A" run "$VM" 'grep -q 42 ~/project/answer.txt'
+for _ in $(seq 36); do "$A" run "$VM" bash -c 'grep -q "task finished" ~/project/.boxery/*.log 2>/dev/null' && break; sleep 5; done
+check "task wrote answer.txt" "$A" run "$VM" bash -c 'grep -q 42 ~/project/answer.txt'
 
 echo "== desktop over ssh tunnel"
 "$A" desktop "$VM" --no-open >/tmp/boxery-e2e-desk.$$ 2>&1 & tun=$!
@@ -49,7 +49,7 @@ if command -v pi >/dev/null; then
 	r=$(cd "$lt" && timeout 240 pi --no-session -e "$ext" --vm "$VM" -p "Use vm_bash to run hostname, then vm_write ext.txt containing EXT_OK, then run hostname with the local bash tool. Reply with exactly: VM=<vm hostname> LOCAL=<local hostname>" </dev/null 2>&1 | sed 's/\x1b\][^\x07]*\x07//g' | tail -1)
 	[[ $r == *"VM=$VM"* ]] && ok "vm_bash ran in VM" || bad "vm_bash: $r"
 	[[ $r == *"LOCAL=$(hostname)"* ]] && ok "built-in bash stayed local" || bad "local bash: $r"
-	check "vm_write landed in VM" "$A" run "$VM" 'grep -q EXT_OK ~/project/ext.txt'
+	check "vm_write landed in VM" "$A" run "$VM" bash -c 'grep -q EXT_OK ~/project/ext.txt'
 	[[ ! -e $lt/ext.txt ]] && ok "nothing written locally" || bad "file leaked to laptop"
 	rm -rf "$lt"
 else
@@ -62,23 +62,23 @@ if mout=$("$(cd "$(dirname "$0")" && pwd)/mcp/test-mcp.sh" "$VM" 2>&1); then ok 
 echo "== grants (env + file pushed to tmpfs, revoke removes them)"
 gtmp=$(mktemp -d); printf 'E2E_FILE_OK\n' >"$gtmp/e2e.env"
 E2E_GRANT_VAR=e2e-grant-ok "$A" grant "$VM" env:E2E_GRANT_VAR "file:$gtmp/e2e.env=project/.env" >/dev/null
-check "env grant visible in login shell" "$A" run "$VM" 'bash -lc "test \"\$E2E_GRANT_VAR\" = e2e-grant-ok"'
-check "file grant linked into project (tmpfs)" "$A" run "$VM" 'grep -q E2E_FILE_OK ~/project/.env && readlink ~/project/.env | grep -q ^/run/user/'
-check "file grant git-excluded" "$A" run "$VM" 'cd ~/project && ! git status --porcelain | grep -q "\.env"'
+check "env grant visible in login shell" "$A" run "$VM" bash -c 'bash -lc "test \"\$E2E_GRANT_VAR\" = e2e-grant-ok"'
+check "file grant linked into project (tmpfs)" "$A" run "$VM" bash -c 'grep -q E2E_FILE_OK ~/project/.env && readlink ~/project/.env | grep -q ^/run/user/'
+check "file grant git-excluded" "$A" run "$VM" bash -c 'cd ~/project && ! git status --porcelain | grep -q "\.env"'
 "$A" revoke "$VM" all >/dev/null
-check "revoke removed env + file" "$A" run "$VM" 'bash -lc "test -z \"\${E2E_GRANT_VAR:-}\"" && ! test -e ~/project/.env'
+check "revoke removed env + file" "$A" run "$VM" bash -c 'bash -lc "test -z \"\${E2E_GRANT_VAR:-}\"" && ! test -e ~/project/.env'
 rm -rf "$gtmp"
 
 echo "== edge grants (http: — credential injected by the host proxy, never in the VM)"
 if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
 	"$A" grant "$VM" github --readonly >/dev/null 2>&1 && ok "grant github --readonly" || bad "grant github"
 	repo=${BOXERY_E2E_PRIVATE_REPO:-benvinegar/boxery}
-	check "git ls-remote https://github.com/$repo via the edge" "$A" run "$VM" "git ls-remote https://github.com/$repo HEAD | grep -q HEAD"
-	check "GitHub API via \$BOXERY_EDGE" "$A" run "$VM" 'bash -lc "curl -sf \"\$BOXERY_EDGE/api.github.com/user\" | grep -q login"'
-	check "read-only grant blocks writes" "$A" run "$VM" 'bash -lc "test \$(curl -s -o /dev/null -w %{http_code} -X POST \"\$BOXERY_EDGE/api.github.com/user/repos\" -d {}) = 403"'
+	check "git ls-remote https://github.com/$repo via the edge" "$A" run "$VM" bash -c "git ls-remote https://github.com/$repo HEAD | grep -q HEAD"
+	check "GitHub API via \$BOXERY_EDGE" "$A" run "$VM" bash -c 'bash -lc "curl -sf \"\$BOXERY_EDGE/api.github.com/user\" | grep -q login"'
+	check "read-only grant blocks writes" "$A" run "$VM" bash -c 'bash -lc "test \$(curl -s -o /dev/null -w %{http_code} -X POST \"\$BOXERY_EDGE/api.github.com/user/repos\" -d {}) = 403"'
 	check "token is nowhere in the VM" bash -c "gh auth token | '$A' run '$VM' 'T=\$(cat); ! grep -rqsF -e \"\$T\" /run/user/\$(id -u) ~ 2>/dev/null && ! env | grep -qF -e \"\$T\"'"
 	"$A" revoke "$VM" github >/dev/null 2>&1
-	check "revoke cuts access" "$A" run "$VM" "! git ls-remote https://github.com/$repo HEAD >/dev/null 2>&1"
+	check "revoke cuts access" "$A" run "$VM" bash -c "! git ls-remote https://github.com/$repo HEAD >/dev/null 2>&1"
 else
 	echo "  - gh not logged in on this machine; skipping"
 fi
@@ -96,13 +96,13 @@ if "$A" pool add "$VM" >/dev/null 2>&1; then
 	for o in "${held[@]}"; do "$A" release "$o" >/dev/null 2>&1 || true; done
 	if [[ -n $LID ]]; then
 		ok "acquire → $VM"
-		check "lease holder can use it" "$A" run "$VM" 'echo lease-work > ~/project/lease.txt'
+		check "lease holder can use it" "$A" run "$VM" bash -c 'echo lease-work > ~/project/lease.txt'
 		stale=/tmp/boxery-e2e-stale.$$; cp "${BOXERY_HOME:-$HOME/.boxery}/leases/$LID.key" "$stale"
 		"$A" release "$VM" >/dev/null 2>&1 && ok "release" || bad release
 		check "released lease key is locked out" bash -c "! ssh -F '${BOXERY_HOME:-$HOME/.boxery}/ssh_config' -i '$stale' -o IdentitiesOnly=yes -o BatchMode=yes '$VM.boxery' true"
 		rm -f "$stale"
 		"$A" pool rm "$VM" >/dev/null 2>&1 && ok "pool rm" || bad "pool rm"
-		check "reset on release: work from the lease is gone" "$A" run "$VM" 'test ! -e ~/project/lease.txt'
+		check "reset on release: work from the lease is gone" "$A" run "$VM" bash -c 'test ! -e ~/project/lease.txt'
 	else
 		bad "could not acquire $VM from the pool"
 		"$A" pool rm "$VM" --force >/dev/null 2>&1 || true
@@ -114,27 +114,27 @@ fi
 
 echo "== snapshot / revert"
 "$A" snap "$VM" e2e >/dev/null
-"$A" run "$VM" 'rm -f ~/project/answer.txt'
+"$A" run "$VM" bash -c 'rm -f ~/project/answer.txt'
 "$A" revert "$VM" e2e >/dev/null
-check "revert restored answer.txt" "$A" run "$VM" 'test -f ~/project/answer.txt'
+check "revert restored answer.txt" "$A" run "$VM" bash -c 'test -f ~/project/answer.txt'
 [[ $("$A" run "$VM" hostname) == "$VM" ]] && ok "revert kept the VM's identity" || bad "hostname after revert"
 "$A" rm "${VM}s" >/dev/null 2>&1 || true
-"$A" new "${VM}s" --from "$VM@e2e" >/dev/null && check "new --from a snapshot has its files" "$A" run "${VM}s" 'test -f ~/project/answer.txt' || bad "new --from"
+"$A" new "${VM}s" --from "$VM@e2e" >/dev/null && check "new --from a snapshot has its files" "$A" run "${VM}s" bash -c 'test -f ~/project/answer.txt' || bad "new --from"
 "$A" rm "${VM}s" >/dev/null 2>&1 || true
 
 echo "== fork (running VM → 2 copies)"
-"$A" run "$VM" 'echo fork-me > ~/project/fork.txt'
+"$A" run "$VM" bash -c 'echo fork-me > ~/project/fork.txt'
 t0=$(date +%s)
 if "$A" fork "$VM" "${VM}a" "${VM}b" >/dev/null; then
 	ok "forked into 2 in $(($(date +%s) - t0))s"
 	for f in "${VM}a" "${VM}b"; do
-		r=$("$A" run "$f" 'echo "$(hostname) $(cat ~/project/fork.txt) $(curl -fsS 127.0.0.1:8088/healthz)"')
+		r=$("$A" run "$f" bash -c 'echo "$(hostname) $(cat ~/project/fork.txt) $(curl -fsS 127.0.0.1:8088/healthz)"')
 		[[ $r == "$f fork-me ok" ]] && ok "$f: own hostname, src's files, proxy works" || bad "$f: $r"
 	done
-	"$A" run "${VM}a" 'echo only-a > ~/project/a.txt'
-	check "forks are independent" "$A" run "${VM}b" '! test -e ~/project/a.txt'
+	"$A" run "${VM}a" bash -c 'echo only-a > ~/project/a.txt'
+	check "forks are independent" "$A" run "${VM}b" bash -c '! test -e ~/project/a.txt'
 	check "source kept running" "$A" run "$VM" true
-	[[ $("$A" run "${VM}a" 'cat /etc/machine-id') != $("$A" run "${VM}b" 'cat /etc/machine-id') ]] && ok "forks have distinct machine-ids" || bad "same machine-id"
+	[[ $("$A" run "${VM}a" bash -c 'cat /etc/machine-id') != $("$A" run "${VM}b" bash -c 'cat /etc/machine-id') ]] && ok "forks have distinct machine-ids" || bad "same machine-id"
 else
 	bad "fork"
 fi

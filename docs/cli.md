@@ -55,12 +55,16 @@ Snapshots and forks are built on one backend primitive, the image (a copy of a V
 
 ```bash
 boxery ssh demo [cmd…]                       # interactive shell (or: ssh demo.boxery)
-boxery run demo 'git -C project log --oneline'
+boxery run demo git log --oneline -5         # exact argv, like docker exec; runs in ~/project
+boxery run demo --cwd app pnpm test          # in ~/project/app
+boxery run demo bash -c 'make test 2>&1 | tail'   # a shell line: bash -c
 boxery attach demo                           # pi in tmux. Ctrl-b d detaches; it keeps running.
 boxery attach demo opencode                  # or: shell
 boxery prompt demo "fix the failing tests and commit"   # headless pi task in its own tmux session
 boxery sessions demo [--json]                # list tmux sessions
 ```
+
+`run` works like `docker exec` / `kubectl exec`: the command gets exactly the arguments you pass, and nothing in them (quotes, `$`, `~`, globs, `;`) is re-parsed in the VM. For pipes, `&&`, `~` or `$VAR`, run a shell explicitly with `bash -c '…'` (how `run` used to treat every command). A whole command line passed as one argument (`boxery run demo 'make test'`) is looked up as a single command name and fails with a hint. An argument that is `~`, starts with `~/` or contains `$VAR`/`${…}` reaches the command literally and exits 0, so `run` adds a note on stderr pointing at `bash -c` (not when the command is a shell or an interpreter such as awk, perl or jq, whose code uses `$`). Like the `vm_bash` tool, `run` starts in `~/project` (home if there is none), and a relative `--cwd DIR` is under `~/project`; `~/` expands in the VM and absolute paths are used as is. `--` ends `run`'s own options. The exit code is the command's. `ssh NAME cmd…` keeps plain ssh semantics.
 
 `prompt` logs to `~/project/.boxery/task-*.log` in the VM. Attach to a task with `boxery attach demo pi task-…`.
 
