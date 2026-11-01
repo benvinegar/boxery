@@ -117,7 +117,8 @@ Every integration exposes the same tools:
 | `vm_copy` | Copy between your machine and VMs, or from one VM to another |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
-| `vm_manage` | List, create, fork, remove, snapshot, revert, and switch VMs |
+| `vm_manage` | Create, fork, remove, snapshot, revert, and switch VMs |
+| `vm_info` | Read-only: list VMs, shapes, grants and snapshots |
 
 Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
 
