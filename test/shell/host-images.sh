@@ -104,7 +104,7 @@ grep -q v1 "$(f s2 project/v)" && ok "VMs made from an image survive its removal
 echo "== concurrency: snapshots of one VM are serialized"
 "$H" new c1 >/dev/null 2>&1
 for i in 1 2 3 4; do ("$H" snap c1 "k$i" >/dev/null 2>&1 || true) & done; wait
-[[ $("$H" snaps c1 | wc -l) == 4 ]] && ok "4 parallel snaps → 4 images" || bad "snaps: $("$H" snaps c1 | tr '\n' ' ')"
+(( $("$H" snaps c1 | wc -l) == 4 )) && ok "4 parallel snaps → 4 images" || bad "snaps: $("$H" snaps c1 | tr '\n' ' ')"
 [[ ! -d $BOXERY_CONF/locks/c1 ]] && ok "lock released" || bad "lock left behind"
 mkdir -p "$BOXERY_CONF/locks/c1"; echo 999999 >"$BOXERY_CONF/locks/c1/pid"
 "$H" snap c1 k5 >/dev/null 2>&1 && ok "a dead owner's lock is taken over" || bad "stale lock blocks"
