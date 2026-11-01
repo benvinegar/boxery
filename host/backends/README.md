@@ -22,6 +22,20 @@ The host (Node) runs one backend function per process: `host/backend.sh FUNCTION
 | `backend_size NAME` | `CPUS MEM_MIB DISK_GIB` as configured (not usage) |
 | `backend_resize NAME CPUS MEM_MIB DISK_GIB` | optional; empty = keep. Apply the new size. It may stop NAME, but **must leave it running if it was** (also on failure) and stopped if it was. `boxery-host resize` holds the VM lock, refuses to shrink the disk, drops values that don't change anything, and waits for ssh afterwards. libvirt: `setvcpus`/`setmaxmem`/`setmem --config` + offline `vol-resize`; Lima: `limactl edit` on the stopped instance |
 
+### Optional functions
+
+boxery-host asks the backend which functions it defines (`host/backend.sh __functions`) and falls back when one of these is missing:
+
+| Function | Without it |
+|---|---|
+| `backend_resize` | `resize` fails with "the BACKEND backend cannot resize VMs" |
+| `backend_proxy_bind` | the LLM proxy listens on `127.0.0.1` (no backend overrides it today; for one whose guests reach the proxy over a host interface instead of vsock or a tunnel) |
+| `backend_endpoint_problem` | waits for ssh report only a timeout, not why the VM can't be reached (remote backends: [`remote_endpoint_problem`](#remote-backends)) |
+
+### Persisted settings
+
+`boxery-host init` saves the backend's settings in `$BOXERY_CONF/host.env`, and later commands export the saved values that the environment doesn't set. The keys are listed in `HOST_ENV` in [host/config.mjs](../config.mjs) and in the matching `case` in [host/backend.sh](../backend.sh); a new backend adds its `BOXERY_<NAME>_*` keys to both. Never list secrets: host.env isn't private (boat keeps its API key in its own 0600 file).
+
 ## Images: one primitive for snapshots, forks and pool resets
 
 An **image** is an immutable copy of a VM's disk, named `VM@LABEL`. boxery-host builds everything on four functions:
@@ -103,21 +117,36 @@ These hooks complement process-group shutdown: submitted hypervisor jobs can sur
 | `lima` | macOS (vz) or Linux (qemu) | Headless VMs are fresh instances of Lima's `ubuntu-24.04` template, not clones of the base. Images: stopped Lima instances `boxery-img.<hash>`, made with `limactl clone` (copy-on-write on APFS/btrfs). Lima only clones stopped instances, so capture stops a running VM briefly. Works on `vz`, unlike Lima's own snapshots |
 | `cloud-hypervisor` | Linux + KVM | **Experimental.** qcow2 overlays on the base, or for headless VMs on `$BOXERY_CH_DIR/stock.qcow2` (a copy of the cloud image); images are `$BOXERY_CH_DIR/images/IMAGE.qcow2`. Capture = guest `sync`, pause (v54 drains and flushes qcow2 metadata), reflink copy of the overlay, resume. New-from-image and reimage = reflink copy of the image. See [below](#cloud-hypervisor-experimental) |
 | `exe` | anywhere with ssh ([exe.dev](https://exe.dev)) | **Experimental.** Headless VMs are new exeuntu VMs (`exe.dev new`), not copies of the base. Images: paused exe.dev VMs made with `cp` (a copy boots fresh from disk), named `PREFIXi-HASH`, with the image name in the exe.dev comment. Reimage = `cp` to a new exe.dev name, then `rm` the old one (names are never reused). See [below](#exe-experimental) |
+| `boat` | anywhere with ssh ([boat.dev](https://boat.dev)) | **Experimental.** No headless VMs yet. Images: boat saved snapshots named `PREFIXi-HASH` (exact, independent disk copies of a running sandbox), the image name kept in `$BOXERY_BOAT_DIR/images/`. New-from-image = a sandbox `from` the snapshot. Reimage = a new sandbox from the image, then delete the old one. See [below](#boat-experimental) |
 | `fake` | tests | directories |
 
-VMs created before images existed may still have backend-internal snapshots. libvirt and Lima implement the optional `backend_legacy_snaps/revert/snap_rm NAME [SNAP]` so these stay listed, revertable and deletable, and pool VMs with an internal `boxery-clean` snapshot keep resetting. `reimage` refuses to run while legacy snapshots exist (libvirt can't delete a disk that has internal snapshots), and says which ones.
-
-### Writing a new backend (e.g. exe.dev)
+### Writing a new backend
 
 The image contract maps onto most VM platforms:
 
 | Platform | capture | new from image | reimage |
 |---|---|---|---|
 | exe.dev (implemented: `exe`) | `cp NAME IMAGE-vm`, then `pause` it | `cp IMAGE-vm NAME` | `cp IMAGE-vm NAME-NEWGEN && rm NAME-OLDGEN` |
+| boat.dev (implemented: `boat`) | `POST /saved-snapshots {sandboxId, name}` | `POST /sandboxes {from: name}` | new sandbox from the image, then `DELETE` the old one |
 | Firecracker / Cloud Hypervisor | reflink-copy the rootfs (`cp --reflink`) | boot from a reflink copy | swap the rootfs file |
 | ZFS / btrfs-backed anything | `zfs snapshot` + `zfs clone` | `zfs clone` | `zfs rollback` or re-clone |
 
 Run `bash test/shell/host-images.sh` against the fake backend to see the behaviour every backend has to match.
+
+### Remote backends
+
+A backend whose VMs live on a hosted platform (exe.dev, boat.dev, and likely Daytona, #61) faces the same problems every time: the guest has no cloud-init, the host may be a laptop behind NAT, and boxery-host wants a stable `HOST PORT` for each VM's sshd. [`lib/remote.sh`](lib/remote.sh) solves them once:
+
+- **One supervised tunnel per VM** (`remote_tunnel_write/start/stop/active/remove`): `ssh -N … -L 127.0.0.1:PORT:127.0.0.1:22 -R 127.0.0.1:GPORT:127.0.0.1:PROXY_PORT` as the platform's admin user, run by a systemd user unit (Linux) or a launchd agent (macOS). `-L` is the VM's endpoint (`remote_ssh_endpoint`, `remote_wait_endpoint`); `-R` carries the guest's `boxery-llm` back to the host's proxy, so `guest_proxy_upstream` is `TCP:127.0.0.1:GPORT`. The backend passes the ssh argv; the lib owns the supervisor.
+- **Tunnel state** (`remote_tunnel_state`: `up`, `connecting`, `down`, local checks only): the `TUNNEL` column of `backend_list`, and `remote_endpoint_problem` / `remote_ssh_endpoint` / `remote_wait_endpoint` say why a VM can't be reached (its tunnel's last error, where the log is, the fix) instead of an ssh timeout. `REMOTE_PLATFORM` and `REMOTE_CHECK` fill in the messages.
+- **Host ports** (`remote_alloc_slot`, `remote_port`, `remote_clear_stale_slot_lock`): slot S ↔ `REMOTE_PORT_BASE + S`, kept for the VM's life (also across reimages).
+- **Identity without cloud-init** (`remote_identity_script USERDATA NAME BOOT_SCRIPT regen|keep`): replays `boxery_seed`'s user-data as one root script, replaces `authorized_keys`, makes a fresh machine-id, records the hostname for a boot unit to restore, and regenerates ssh host keys unless the platform pins its own (`keep`, boat).
+- **The base build** (`remote_build_script POST_FN OK_MARKER`, `remote_build_wait`): the agent user, `$BASE_USERDATA` and the backend's post-build script, run detached in a builder VM and polled. `remote_post_agent_session`, `remote_post_boot_unit` and `remote_hostname_restore` are the post-build pieces most hosted images need.
+
+A remote backend sets `REMOTE_DIR`, `REMOTE_SUPERVISOR`, `REMOTE_PORT_BASE`, `REMOTE_MAX_SLOT`, `REMOTE_PLATFORM`, `REMOTE_CHECK` and `REMOTE_TUNNEL_WAIT`, defines `remote_unit NAME`, and then only has to talk to its platform's API: create, copy, stop/start, list, delete. Two rules carry over from exe.dev:
+
+- **Guest sshd lets `agent` in from loopback only.** The tunnel's `-L` end arrives from `127.0.0.1`, so the lease holder's key works through the host and nowhere else (exe.dev: `ListenAddress 127.0.0.1`; boat.dev, whose own sshd must stay public: `Match User agent Address *,!127.0.0.1,!::1` → `DenyUsers agent`).
+- **Inventory never reports an unreachable API as an empty account**, and every listing is filtered to the backend's own prefix or labels: the account's other VMs are never touched.
 
 Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_CONF/host.env`) or `BOXERY_BACKEND`.
 
@@ -193,3 +222,35 @@ Not verified yet:
 
 Not supported:
 - No HTTPS (`POST /exec`) transport: its 30 s limit is too short for `cp`, `new` and the build, and the tunnels need ssh anyway.
+
+## boat (experimental)
+
+Runs VMs as [boat.dev](https://boat.dev) sandboxes: full Ubuntu 24.04 VMs (own kernel, systemd, Docker, `/dev/kvm`) driven through boat's REST API with `curl`. Like `exe`, the host can be any machine with ssh, a Mac included. Offline tests: `test/shell/host-boat-backend.sh` (a fake API). Verified on a real free-trial account (November 2026, macOS host): `init`, the base build (on boat's image, next to its own desktop on `:0`), identity, the launchd tunnel with ssh as `agent` through it (and refused on the public endpoint), the desktop on `:1` and screenshots, the LLM proxy through the `-R` end, `stop`/`start`, and `resize` onto a new machine (re-pinned, hostname restored). Everything that needs a saved snapshot is not, because the trial can't make one: saving the base, `new`, `snap`/`revert`, `fork`, `new --from`, pool resets.
+
+```bash
+BOAT_API_KEY=boat_… ./host/boxery-host init --backend boat   # key saved in $BOXERY_BOAT_DIR/api-key (0600), never in host.env
+./host/boxery-host build-base                                # builder sandbox → saved snapshot PREFIXbase → builder deleted
+```
+
+| | |
+|---|---|
+| Account | A **paid** plan: images are saved snapshots, which the free trial refuses (`403 trial_saved_snapshots_not_allowed`), so on the trial `build-base` builds but can't save the base. The trial also refuses sandboxes without auto-stop: set `BOXERY_BOAT_TTL` (≤ 7200 s there) and a VM stops by itself that long after each create or start. Every image counts against the plan's saved snapshots (10 per $20), and each one beyond that costs $0.056 a day: the base, each `snap`, each pool VM's clean state, and a fork's image while the fork runs. `BOXERY_BOAT_ORG` bills an organization (`X-Boat-Org`) |
+| Names | Sandboxes are named `PREFIXvm-NAME` (VMs) and `PREFIXbuild` (the builder), and found with `GET /sandboxes?namePrefix=PREFIX`. `PREFIX` is `BOXERY_BOAT_PREFIX`, default `bx<6 hex>-`, generated by `init`. Names rather than labels, because boat drops the labels of a sandbox created from a saved snapshot. A VM's current sandbox id (`bx_…`) is `$BOXERY_BOAT_DIR/vms/NAME/id`; it changes with every disk the VM gets (new, revert, pool reset). The account's other sandboxes are never listed or touched |
+| Sandboxes | Created with `ttlSeconds: null` (no auto-stop; boat's default stops a sandbox after 1 h; `BOXERY_BOAT_TTL` sets one) and `noEnv: true`, so a VM gets none of the account's environment variables, secret files, logins or CLI token and can't act on the account. Credentials stay on the host, as with every backend |
+| ssh | boat runs a real sshd as user `user` (passwordless sudo). The host's admin key (`$BOXERY_BOAT_DIR/id_ed25519`) is authorized through `POST /sandboxes/ID/sshkey`, which also answers the address (`machineIp`, or `sshEndpoint` when the machine has no IPv4) and the host key, pinned per VM in `vms/NAME/known_hosts` under `HostKeyAlias=ID`. Nothing is trusted on first use. Every resume puts the sandbox on a new machine (new address and host key), so `start` re-pins it and rewrites the tunnel. boat's sshd has to stay public, so the base adds `Match User agent Address *,!127.0.0.1,!::1` → `DenyUsers agent` (checked with `sshd -t` in the build) |
+| Tunnels | [`lib/remote.sh`](#remote-backends): systemd unit `boxery-boat-PREFIXNAME.service` / launchd agent `dev.boxery-boat-PREFIXNAME`, host port `BOXERY_BOAT_PORT_BASE` + slot (default 22601…), guest port `BOXERY_BOAT_GUEST_PORT` (18088) for the proxy. `ls` shows each tunnel's state and the waits fail with its last error, as for exe (`BOXERY_BOAT_TUNNEL_WAIT`, 120 s). As with exe, run the host on an always-on machine: the tunnel is each VM's only route to the LLM proxy |
+| Identity | No cloud-init, so the backend replays the cloud-config as root over ssh (`remote_identity_script`): keys replaced, fresh machine-id, hostname. boat's snapshots don't keep the hostname, so `boxery-boat-boot.service` restores it at every boot. The shared build deletes the ssh host keys, so boat's post-build makes new ones before `sshd -t` (boat's API reports the machine's live key, so pinning follows); per VM, boat's host keys are kept: they are unique per machine and pinned through the API. boat ships its own `pi` and `opencode`; the build removes their `/usr/local/bin` links so boxery's npm installs win ("deleted files stay deleted" across boat's snapshots) |
+| Lifecycle | `stop` = `sync`, `POST /stop`, then wait for `archived`: boat saves the disk and removes the machine, so memory and tmpfs grants are gone as after a shutdown. **boat deletes a stopped sandbox's disk after 14 days**; `boxery snap` it to keep it. `start` = `POST /resume` (with `ttlSeconds: null`) |
+| Sizes | boat has four fixed types: `small` 2 vCPU / 4 GB / 51 GB, `default` 4 / 8 / 51, `large` 8 / 16 / 111, `xlarge` 16 / 32 / 251. A VM gets the smallest type that fits its CPUs, memory and disk (boxery's `small`, `standard` and `large` shapes map one to one), capped at `BOXERY_BOAT_MAX_TYPE` (`large`; `xlarge` needs boat's $100 plan). `backend_size` reports the type's size. `resize` picks a type the same way (without `--disk`, a VM can move down a type: boat refuses with `type_too_small` when its data doesn't fit, and the VM stays as it was); a running VM is stopped and resumed with the new type, a stopped one gets it at its next start |
+| Images | `capture` = guest `sync`, `POST /saved-snapshots` (`PREFIXi-HASH`; saved snapshot names are `[a-z0-9-]`), poll until `ready`. The image name and disk size are recorded in `$BOXERY_BOAT_DIR/images/` first, so an interrupted save is still found. The source keeps running. A saved snapshot is a full copy that outlives its sandbox, so images are independent. boat's automatic per-minute snapshots and `fork` aren't used: a fork of a running sandbox can miss its last minute of writes |
+| Recovery | `cleanup_new` stops and removes the tunnel and deletes every sandbox with the VM's boat name; `cleanup_image` deletes the saved snapshot (saving or ready) and its record; `recover_capture` has no source state to restore. `reimage` creates the new sandbox before deleting anything, so a retry leaves exactly one; `ls` ignores a sandbox that isn't the recorded one. Inventory fails if boat's API is unreachable rather than reporting an empty account |
+| API | `boat_api METHOD PATH [JSON [HEADER]]`: the key goes to curl through a config on a pipe, never the command line. Retries 429 `rate_limited` and 503 (`no_ready_machine`: nothing was created) on every method, and 5xx on GET/DELETE; creates send an `Idempotency-Key`. Deletes send `X-Ascii-Confirm-Delete` |
+
+Not verified yet (needs a paid account):
+- everything built on saved snapshots: saving the base, `new`, `snap`/`revert`, `fork`, `new --from`, pool resets, and the JSON of `GET /saved-snapshots/NAME` while saving
+- saves of busy running VMs (boat: a write right after the save call can still land in it)
+- a Linux host (systemd user units); the live run used a Mac (launchd)
+
+Not supported:
+- Headless VMs (`new --headless`): `backend_new … stock` refuses. boat's own image would work as the stock image (boat sandboxes ship Node, git and build tools); it needs the plumbing + devtools layers run over ssh, as exe does.
+- boat's desktop streaming, public URLs, integrated agents, environments and AI credentials proxy. boxery uses its own desktop (noVNC through the tunnel) and LLM proxy.

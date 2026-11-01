@@ -56,7 +56,7 @@ boxery images                                # every snapshot on the host
 
 A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Forks get the source's size (cpus, memory, disk) unless you pass `--shape` or size flags. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
 
-Snapshots and forks are built on one backend primitive, the image (a copy of a VM's disk named `VM@LABEL`). They hold disk state only, never memory, so secrets pushed by grants (tmpfs) are never captured. `rm` removes a VM's snapshots too. Snapshots made by boxery versions before images are still listed (marked legacy) and can be reverted or deleted. How each backend implements images: [backends](../host/backends/README.md#images-one-primitive-for-snapshots-forks-and-pool-resets).
+Snapshots and forks are built on one backend primitive, the image (a copy of a VM's disk named `VM@LABEL`). They hold disk state only, never memory, so secrets pushed by grants (tmpfs) are never captured. `rm` removes a VM's snapshots too. How each backend implements images: [backends](../host/backends/README.md#images-one-primitive-for-snapshots-forks-and-pool-resets).
 
 ### Shell and in-VM agents
 
@@ -193,7 +193,7 @@ VMs on the host, plus the grants this machine has given each one.
 | Field | Type | |
 |---|---|---|
 | `name` | string | VM name |
-| `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima; `paused` on exe.dev) |
+| `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima; `paused` on exe.dev; `starting`/`stopping` on boat.dev) |
 | `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
 | `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
 | `tunnel` | string \| null | exe.dev only: the host's ssh tunnel to the VM, which carries its ssh endpoint and LLM proxy: `up`, `connecting` (retrying; is the host online?) or `down` (`boxery-host start NAME`). `null` on other backends. A running VM shows `addr: null` while its tunnel isn't `up` |
@@ -293,11 +293,11 @@ Background jobs in the VM (started by `run --bg` or `vm_jobs`), oldest first.
 
 #### `boxery snaps NAME --json`
 
-Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `created` and `size` are `null` for legacy snapshots.
+Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `size` is `null` when the backend does not report it.
 
 ```json
 [
-{"name":"before-refactor","created":"2026-10-31T19:28:31","size":"173MiB","legacy":false}
+{"name":"before-refactor","created":"2026-10-31T19:28:31","size":"173MiB"}
 ]
 ```
 
@@ -309,7 +309,7 @@ Same objects as `boxery ls --json` without `grants` (grants live on the controll
 
 #### `boxery-host snaps NAME --json`
 
-`[{"name", "created", "size", "legacy"}]`, from the backend's `backend_images` (and `backend_legacy_snaps`).
+`[{"name", "created", "size"}]`, from the backend's `backend_images`.
 
 #### `boxery-host pool ls --json`
 

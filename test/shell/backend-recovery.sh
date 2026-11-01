@@ -31,7 +31,6 @@ log() { :; }
 		*) die "unexpected virsh command: $*" ;;
 		esac
 	}
-	legacy_snaps() { :; }
 	vol_bytes() { echo 100; }
 	new_overlay() { disk=1; }
 	pull_to_base() { :; }

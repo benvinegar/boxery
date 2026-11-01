@@ -1,16 +1,36 @@
 {
   "name": "boxery-vm",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",
-  "keywords": ["pi-package", "mcp", "mcp-server", "vm", "computer-use", "coding-agent", "libvirt", "lima", "kvm"],
+  "keywords": [
+    "pi-package",
+    "mcp",
+    "mcp-server",
+    "vm",
+    "computer-use",
+    "coding-agent",
+    "libvirt",
+    "lima",
+    "kvm"
+  ],
   "homepage": "https://github.com/benvinegar/boxery#readme",
-  "bugs": { "url": "https://github.com/benvinegar/boxery/issues" },
-  "repository": { "type": "git", "url": "git+https://github.com/benvinegar/boxery.git" },
+  "bugs": {
+    "url": "https://github.com/benvinegar/boxery/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benvinegar/boxery.git"
+  },
   "author": "Ben Vinegar",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" },
-  "os": ["linux", "darwin"],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
   "bin": {
     "boxery": "controller/boxery",
     "boxery-host": "host/boxery-host",
@@ -40,10 +60,14 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   },
   "pi": {
-    "extensions": ["./extension/index.ts"],
+    "extensions": [
+      "./extension/index.ts"
+    ],
     "image": "https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png"
   }
 }

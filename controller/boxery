@@ -66,11 +66,6 @@ select_profile() {
 	# Configs are trusted, user-owned shell files. Never source registry pointers as shell code.
 	# shellcheck source=/dev/null
 	[ ! -f "$CONF_FILE" ] || . "$CONF_FILE"
-	# Older Bash 3.2 printf %q left ~/ unquoted. Restore that literal prefix after source,
-	# without rewriting imported config or evaluating its contents a second time.
-	if [ -f "$CONF_FILE" ] && grep -q '^HOST_BIN=~/' "$CONF_FILE"; then
-		case $HOST_BIN in "$HOME"/*) HOST_BIN="~/${HOST_BIN#"$HOME"/}" ;; esac
-	fi
 	if [ "$selected" = legacy ]; then
 		HOST="${BOXERY_HOST:-$HOST}"; HOST_BIN="${BOXERY_HOST_BIN:-$HOST_BIN}"
 	fi
@@ -666,7 +661,7 @@ mkdir -p "$R/files"
 exec 9>"$R/.lock"; if command -v flock >/dev/null; then flock 9; fi
 : >"$R/env.sh.new"; : >"$R/links.new"; : >"$R/targets.new"; : >"$R/gitconfig.new"
 # Edge grants: the VM only learns *where* to send requests; the host proxy adds the credential.
-TOK=$(cat "$HOME/.boxery/token" 2>/dev/null || cat "$HOME/.agentvm/token" 2>/dev/null || true)
+TOK=$(cat "$HOME/.boxery/token" 2>/dev/null || true)
 EDGE="http://127.0.0.1:8088/edge/$(printf %s "$TOK" | sed 's/:/%3A/')"
 put_edge() {
 	[ -n "$TOK" ] || { echo "boxery: no proxy token in the VM; http grants unavailable" >&2; return 0; }
@@ -812,16 +807,6 @@ cmd_agent_forward() { # NAME on|off  (alias for grant/revoke ssh-agent)
 	off) need_host; need_vm "$1"; grant_del "$1" ssh-agent "" >/dev/null; echo "==> agent forwarding off for $1"; grants_changed "$1" ;;
 	*) die "usage: boxery agent-forward NAME on|off" ;;
 	esac
-}
-
-migrate_legacy_agent_forward() { # ~/.boxery/agent-forward/NAME markers → grants
-	[ -d "$CONF_DIR/agent-forward" ] || return 0
-	for m in "$CONF_DIR"/agent-forward/*; do
-		[ -f "$m" ] || continue
-		valid_vm "${m##*/}" && grant_put "${m##*/}" ssh-agent "" ""
-	done
-	rm -rf "$CONF_DIR/agent-forward"
-	[ -n "$HOST" ] && write_ssh_config || true
 }
 
 cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless] [--grant SPEC]... [--agent-forward]
@@ -1193,7 +1178,6 @@ if [ "$cmd" = host ]; then [ -z "$explicit" ] || die "--host does not apply to h
 # Internal (tests): __skew CTL_VERSION CTL_DESCRIBE HOST_VERSION HOST_DESCRIBE [HOST_NAME]
 if [ "$cmd" = __skew ]; then selected=${5:-legacy}; skew_note "$1" "$2" "$3" "$4"; exit; fi
 select_profile "$explicit"
-migrate_legacy_agent_forward
 case $cmd in
 setup) cmd_setup "$@" ;;
 rm) need_host; drop_master "${1:-}"; h rm "$@"; drop_master "${1:-}"; rm -f "$(grant_file "${1:-x}")" "$(edge_marker "${1:-x}")"; write_ssh_config ;;

@@ -3,18 +3,12 @@
 //   snap   = capture NAME → NAME@LABEL          revert = put NAME's own image back (reimage)
 //   fork   = capture SRC → new VM(s) from it    pool   = reset to NAME@boxery-clean
 // Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
-import { BackendError } from "./backend.mjs";
 import { fail, log, POOL_SNAP, stamp, validName, validSnap } from "./util.mjs";
 
-/** Put VM NAME back to its image NAME@LABEL. VMs from before images may still have a backend-internal
- * snapshot of that label (libvirt pool VMs added before images existed). */
+/** Put VM NAME back to its image NAME@LABEL. */
 export async function restoreVm(backend, name, label, options) {
 	const image = `${name}@${label}`;
 	if (await backend.imageExists(image, options)) return backend.call("backend_reimage", [name, image], options);
-	if (await backend.has("backend_legacy_revert")) {
-		try { return await backend.call("backend_legacy_revert", [name, label], options); }
-		catch (e) { if (!(e instanceof BackendError)) throw e; }
-	}
 	throw new Error(`no snapshot ${label} for ${name}`);
 }
 
@@ -30,10 +24,8 @@ export async function captureVm(rt, name, image) {
 /** [label, created, size] for NAME's images (incl. the pool's clean state and in-flight fork images). */
 export async function snapsLines(rt, name) {
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
-	const lines = (await rt.vms.images()).filter((i) => i.image.startsWith(`${name}@`))
+	return (await rt.vms.images()).filter((i) => i.image.startsWith(`${name}@`))
 		.map((i) => [i.image.slice(name.length + 1), i.created, i.size]);
-	if (await rt.vms.has("backend_legacy_snaps")) lines.push(...(await rt.vms.legacySnaps(name)).map((l) => [l, "(legacy)", "-"]));
-	return lines;
 }
 
 export async function cleanupVmImages(rt, name) {
@@ -53,12 +45,7 @@ export async function snap(rt, [name, label]) {
 export async function deleteSnapshot(rt, name, label) {
 	let images;
 	try { images = await rt.vms.images(); } catch { fail("cannot inspect images during removal"); }
-	if (images.some((i) => i.image === `${name}@${label}`)) return rt.vms.call("backend_image_rm", [`${name}@${label}`]);
-	if (await rt.vms.has("backend_legacy_snaps")) {
-		let legacy;
-		try { legacy = await rt.vms.legacySnaps(name); } catch { fail("cannot inspect legacy snapshots"); }
-		if (legacy.includes(label)) await rt.vms.call("backend_legacy_snap_rm", [name, label]);
-	}
+	if (images.some((i) => i.image === `${name}@${label}`)) await rt.vms.call("backend_image_rm", [`${name}@${label}`]);
 }
 
 export async function snapRm(rt, [name, label]) {
@@ -76,7 +63,7 @@ export async function revertVm(rt, name, label) {
 	await restoreVm(rt.vms, name, label);
 	const ep = await rt.vms.waitEndpoint(name);
 	await rt.waitSsh(name, ep);
-	// The guest clock may resume from snapshot time (legacy memory snapshots); step it to host time.
+	// Step the guest clock to host time, as a pool reset does.
 	await rt.guest.run(ep, `sudo date -u -s @${Math.floor(Date.now() / 1000)} >/dev/null`);
 }
 

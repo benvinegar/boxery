@@ -89,7 +89,7 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		"runcmd:",
 		// Backends without a cloud-init seed (Lima, exe) run boxery-provision themselves (README: backend_new).
 		...(provision ? ['  - [bash, -c, "/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1"]'] : []),
-		'  - [bash, -c, "[ -e /etc/agentvm ] || ln -s /etc/boxery /etc/agentvm; systemctl restart boxery-llm.service 2>/dev/null || systemctl restart agentvm-llm.service"]  # agentvm-*: pre-rename images',
+		'  - [bash, -c, "systemctl restart boxery-llm.service"]',
 		"  - [bash, -c, \"chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'\"]",
 		"",
 	].join("\n");

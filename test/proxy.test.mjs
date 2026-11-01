@@ -67,7 +67,7 @@ test("rejects missing, wrong and malformed tokens without crashing", async () =>
 });
 
 test("valid token (plain, x-api-key, JWT-wrapped) reaches upstream with VM auth stripped", async () => {
-	for (const h of [{ authorization: "Bearer demo:s3cret" }, { "x-api-key": "demo:s3cret" }, { authorization: `Bearer ${jwt({ boxery: "demo:s3cret" })}` }, { authorization: `Bearer ${jwt({ avm: "demo:s3cret" })}` }]) {
+	for (const h of [{ authorization: "Bearer demo:s3cret" }, { "x-api-key": "demo:s3cret" }, { authorization: `Bearer ${jwt({ boxery: "demo:s3cret" })}` }]) {
 		const r = await req("/ollama/v1/chat/completions?x=1", { method: "POST", headers: { ...h, "content-type": "application/json" }, body: '{"m":1}' });
 		assert.equal(r.status, 200);
 		assert.equal(seen.url, "/v1/chat/completions?x=1");

@@ -10,7 +10,7 @@ JOBS=${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}
 [ "$JOBS" -ge 1 ] || JOBS=1
 tests=()
 # Slowest first, so a long test doesn't start last.
-for t in host-exe-backend.sh host-dispatcher.sh controller-local.sh host-leases.sh host-ch-backend.sh host-upgrade.sh host-output.sh host-images.sh host-shapes.sh host-init.sh controller-hosts.sh controller-config.sh backend-recovery.sh host-libvirt-backend.sh; do
+for t in host-exe-backend.sh host-dispatcher.sh controller-local.sh host-leases.sh host-ch-backend.sh host-boat-backend.sh host-upgrade.sh host-output.sh host-images.sh host-shapes.sh host-init.sh controller-hosts.sh controller-config.sh backend-recovery.sh host-libvirt-backend.sh; do
 	[ -f "$t" ] && tests+=("$t")
 done
 ver=$("$B" -c 'echo $BASH_VERSION')

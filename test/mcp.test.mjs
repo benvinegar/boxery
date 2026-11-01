@@ -72,7 +72,7 @@ case "$*" in
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
-"snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G","legacy":false}]' ;;
+"snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
 *) echo "stub boxery $*" ;;
 esac

@@ -44,7 +44,6 @@ upload_vol() { printf 'upload %s %s\n' "$1" "$2" >>"$LOG"; : >"$V/$2"; }
 wait_ip() { echo 192.0.2.10; }
 flock() { :; }   # util-linux; not on macOS
 vol_bytes() { echo 1073741824; }
-legacy_snaps() { :; }
 called() { grep -F -- "$1" "$LOG" >/dev/null; }
 
 : >"$V/$BASE_VOL"
