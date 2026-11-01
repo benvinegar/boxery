@@ -2,6 +2,13 @@
 import { copyTool, withHost } from "../../core/boxery-core.mjs";
 const [from, to, settings = "{}"] = process.argv.slice(2);
 const options = JSON.parse(settings);
+if (options.groupEperm) {
+	const kill = process.kill.bind(process);
+	process.kill = (pid, signal) => {
+		if (pid < 0) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+		return kill(pid, signal);
+	};
+}
 const ac = new AbortController();
 process.on("message", (message) => {
 	if (message === "abort") ac.abort();

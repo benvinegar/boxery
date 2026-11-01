@@ -1,6 +1,6 @@
 // Streaming tar transfers. Endpoints are already resolved/pinned by the caller:
 // {path, vm?, sshConf?, label}. No host registry or ambient "current VM" reads here.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
@@ -35,7 +35,26 @@ function childProcess(file, args, { input = false, output = false, env = process
 function kill(worker, signal) {
 	if (!worker.running || !worker.child.pid) return;
 	try { process.kill(-worker.child.pid, signal); }
-	catch (e) { if (e.code !== "ESRCH") throw e; }
+	catch (e) {
+		if (e.code === "ESRCH") return;
+		if (e.code === "EPERM") {
+			// Darwin can reject killpg during group teardown even when individual owned
+			// members remain signalable. Reap live members individually; ignore zombies.
+			const result = spawnSync("ps", ["-eo", "pid=,pgid=,stat="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+			if (result.status === 0) {
+				for (const line of result.stdout.split("\n")) {
+					const [pid, group, state] = line.trim().split(/\s+/);
+					if (Number(group) !== worker.child.pid || !state || state.startsWith("Z")) continue;
+					try { process.kill(Number(pid), signal); }
+					catch (error) { if (error.code !== "ESRCH") worker.stopError = error; }
+				}
+				return;
+			}
+		}
+		// Signal handlers must not throw out of AbortController.abort(), and a local
+		// signalling failure must not skip independent remote fencing/staging cleanup.
+		worker.stopError = e;
+	}
 }
 async function terminate(workers) {
 	const live = workers.filter((w) => w.running);
@@ -155,7 +174,7 @@ export async function streamCopy(source, destination, { signal } = {}) {
 		signal?.removeEventListener("abort", onAbort);
 		transfer.abort();
 		await terminate(workers);
-		const cleanupErrors = [];
+		const cleanupErrors = workers.filter((w) => w.stopError).map((w) => `${w.label}: ${w.stopError.message}`);
 		for (const stage of stages.reverse()) {
 			try {
 				if (stage.endpoint) await cleanRemote(stage);

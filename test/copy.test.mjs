@@ -46,7 +46,7 @@ function worker(from, to, extra = {}, settings = {}) {
 		child.on("error", reject);
 		child.on("close", () => {
 			clearTimeout(deadline); clearTimeout(hardDeadline);
-			try { resolve({ ...JSON.parse(out), ...(inspection ? { inspection, debug: err } : {}) }); }
+			try { resolve({ ...JSON.parse(out), ...(err.includes("Timed out") ? { inspection, debug: err } : {}) }); }
 			catch { reject(new Error(`copy worker produced no result: ${err} ${out}`)); }
 		});
 	});
@@ -241,6 +241,17 @@ for (const [from, to, sourceEndpoint] of [
 		noStages(); await noTarJobs();
 	});
 }
+
+test("group EPERM during cancellation falls back to owned members without skipping cleanup", async () => {
+	const source = path.join(dir, "source"); largeFile(source, 32);
+	const child = worker(`local:${source}`, `local:${path.join(dir, "destination")}`, { COPY_SLOW_SOURCE: "local", COPY_IGNORE_TERM: "local" }, { groupEperm: true });
+	await until(() => logs().filter((r) => r.kind === "tar").length >= 2);
+	child.send("abort");
+	const result = await child.result;
+	assert.equal(result.name, "AbortError", JSON.stringify(result));
+	assert.doesNotMatch(result.error, /Cleanup incomplete/);
+	noStages(); await noTarJobs();
+});
 
 test("copy cleanup remains pinned after profile/default changes during a transfer", async () => {
 	largeFile(path.join(project(), "source"), 32);
