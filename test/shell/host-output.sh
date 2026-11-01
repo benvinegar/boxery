@@ -167,7 +167,7 @@ err "pool rm of a pet" "boxery-host: b2 is not a pool VM" pool rm b2
 err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)" edge-set a1 </dev/null
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
 err "ls with an extra argument" "boxery-host: usage: ls [--json]" ls extra
-BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: cloud-hypervisor exe fake libvirt lima )" ls
+BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: boat cloud-hypervisor exe fake libvirt lima )" ls
 
 echo "== headless"
 run new h3 --headless

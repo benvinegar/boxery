@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # boxery-host: manage Ubuntu desktop VMs for coding agents.
-# Runs on the VM host (Linux with libvirt, macOS/Linux with Lima, or anywhere with ssh for exe.dev). The
+# Runs on the VM host (Linux with libvirt, macOS/Linux with Lima, or anywhere with ssh for exe.dev/boat.dev). The
 # controller (`boxery`) calls it over ssh, or directly when the controller runs on the host itself (HOST=local).
 # Entry point only: commands run in Node (host/boxery-host.mjs). `connect` is the ssh ProxyCommand for
 # every VM connection, so it stays in Bash (host/backend.sh) and never pays Node's startup.
