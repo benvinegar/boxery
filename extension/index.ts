@@ -8,7 +8,7 @@
  *   vm_jobs                                                 detached command jobs (start / list / logs / wait)
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               list / new / fork / rm / snap / snaps / revert / use / grants / shapes
+ *   vm_manage                                               list / new / fork / rm / start / stop / resize / snap / snaps / snap-rm / revert / images / use / grants / shapes
  *
  * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs.
  * Both are built from one tool table (core/boxery-tools.mjs) on top of core/boxery-core.mjs. Here,
