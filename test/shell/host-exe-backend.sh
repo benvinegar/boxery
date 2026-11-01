@@ -90,6 +90,8 @@ is-active) [[ -f "$UNITS/$4" ]] ;;
 is-enabled) [[ -f "$UNITS/enabled.$4" ]] ;;
 esac'
 stub nc 'echo "nc $*" >>"$CALLS"; [[ -z ${NC_DOWN:-} ]]'
+# The tunnel's journal: only lines from ssh itself (_COMM=ssh) are its errors.
+stub journalctl 'echo "journalctl $*" >>"$CALLS"; [[ " $* " == *" _COMM=ssh "* ]] && echo "ssh: connect to host x.exe.xyz port 22: Network is unreachable" || echo "Scheduled restart job, restart counter is at 7."'
 # Generations (exe_vm_new) from a counter, so runs are reproducible.
 stub openssl "[[ \"\$*\" == 'rand -hex 3' ]] || exec $(command -v openssl) \"\$@\"
 "'n=$(($(cat "$UNITS/gen" 2>/dev/null || echo 0) + 1)); echo $n >"$UNITS/gen"; printf "%06x\n" $n'
@@ -209,12 +211,17 @@ jq -e 'map(select(.name == "v1"))[0].tunnel == "up"' <<<"$(lsj)" >/dev/null && o
 rm -f "$UNITS/$UV"   # enabled, between restarts: ssh can't reach exe.dev
 lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == null and .tunnel == "connecting"' >/dev/null && ok "ls --json: reconnecting tunnel, no addr" || bad "ls: $(lsj)"
 "$H" ls | grep -E '^v1 +running +tunnel connecting ' >/dev/null && ok "ls shows the tunnel state in place of the address" || bad "ls: $("$H" ls)"
+"$H" ls | awk 'NR == 1 { d = index($0, "DISK") } $1 == "v1" { f = (substr($0, d - 1, 1) == " " && substr($0, d, 1) != " ") } END { exit !f }' && ok "ls: tunnel connecting fits ADDR (DISK stays aligned)" || bad "ls alignment: $("$H" ls)"
 e=$("$H" connect v1 2>&1) && bad "connect through a reconnecting tunnel succeeded" ||
-	{ [[ $e == *"isn't connected to exe.dev"* && $e == *"no LLM proxy"* && $e == *"ssh exe.dev whoami"* && $e == *"journalctl --user -u ${UV%.service}"* && $e == *"boxery-host start v1"* ]] && ok "connect: explains a reconnecting tunnel, where its log is, and the fix" || bad "connect: $e"; }
+	{ [[ $e == *"isn't connected to exe.dev"* && $e == *"no LLM proxy"* && $e == *"ssh exe.dev whoami"* && $e == *"journalctl --user -u ${UV%.service} _COMM=ssh"* && $e == *"boxery-host start v1"* ]] && ok "connect: explains a reconnecting tunnel, where its log is, and the fix" || bad "connect: $e"; }
+[[ $e == *"(last error: ssh: connect to host x.exe.xyz port 22: Network is unreachable)"* && $e != *"Scheduled restart"* ]] && ok "systemd: the last error is ssh's, not systemd's restart notice" || bad "last error: $e"
 touch "$UNITS/$UV"
 NC_DOWN=1 lsj | jq -e 'map(select(.name == "v1"))[0].tunnel == "connecting"' >/dev/null && ok "unit active but its -L end closed: connecting" || bad "nc down: $(NC_DOWN=1 lsj)"
 e=$(NC_DOWN=1 BOXERY_EXE_TUNNEL_WAIT=1 "$H" start v1 2>&1) && bad "start succeeded without a tunnel" ||
 	{ [[ $e == *"timed out after 1s: the ssh tunnel to v1 isn't connected"* && $e != *"waiting for ssh"* ]] && ok "start: a tunnel that never connects is reported as such, not as an ssh timeout" || bad "start: $e"; }
+e=$(BOXERY_EXE_TUNNEL_WAIT=0 "$H" start v1 2>&1) && bad "start with BOXERY_EXE_TUNNEL_WAIT=0 succeeded" ||
+	{ [[ $e == *"BOXERY_EXE_TUNNEL_WAIT must be a number of seconds >= 1 (got '0')"* && $e != *"unbound variable"* ]] && ok "BOXERY_EXE_TUNNEL_WAIT=0 is rejected clearly" || bad "wait 0: $e"; }
+"$H" ls | awk '$1 == "v1" && substr($0, 29, 19) == "127.0.0.1:22401    " { f = 1 } END { exit !f }' && ok "ls: ADDR column is 18 wide" || bad "ls width: $("$H" ls)"
 rm -f "$UNITS/$UV" "$UNITS/enabled.$UV"   # unit removed by hand
 lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .tunnel == "down"' >/dev/null && "$H" ls | grep -E '^v1 +running +tunnel down ' >/dev/null && ok "ls: running VM without a tunnel shows tunnel down" || bad "ls: $("$H" ls)"
 e=$("$H" ip v1 2>&1) && bad "ip without a tunnel succeeded" || { [[ $e == *"its ssh tunnel isn't running"* && $e == *"Fix: boxery-host start v1"* ]] && ok "ip: no tunnel → names the fix" || bad "ip: $e"; }

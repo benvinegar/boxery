@@ -80,6 +80,9 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.equal(await b.has("backend_resize"), true);
 	assert.equal(await b.has("backend_no_such_function"), false);
 	assert.equal(await b.endpointProblem("a1"), null, "no backend_endpoint_problem: nothing known to be wrong");
+	// The check is advisory: if it can't run at all, nothing is known (the ssh wait keeps going).
+	const broken = createBackend({ ...env, BOXERY_BACKEND: "no-such-backend" });
+	assert.equal(await broken.endpointProblem("a1"), null);
 	assert.equal(await b.guestProxyUpstream(), "TCP:fake-gateway:8088");
 });
 

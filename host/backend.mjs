@@ -77,11 +77,14 @@ export function createBackend(env = process.env) {
 		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options)),
 		waitEndpoint: async (name, options) => endpoint(await meta("backend_wait_endpoint", [name], options)),
 		/** Why NAME's endpoint can't be reached (optional backend_endpoint_problem; local checks only):
-		 *  null when nothing is known to be wrong, else {fatal, message}. fatal: it won't recover without the fix. */
+		 *  null when nothing is known to be wrong, else {fatal, message}. fatal: it won't recover without the fix.
+		 *  Advisory: if the check itself can't run, nothing is known (the caller keeps waiting as before). */
 		async endpointProblem(name) {
-			if (!await this.has("backend_endpoint_problem")) return null;
-			const { code, out } = await run(env, "backend_endpoint_problem", [name], { capture: true, quiet: true, status: true });
-			return code === 0 ? null : { fatal: code === 2, message: out.trim() };
+			try {
+				if (!await this.has("backend_endpoint_problem")) return null;
+				const { code, out } = await run(env, "backend_endpoint_problem", [name], { capture: true, quiet: true, status: true });
+				return code === 0 ? null : { fatal: code === 2, message: out.trim() };
+			} catch { return null; }
 		},
 		/** [cpus, mem MiB, disk GiB] as configured */
 		async size(name, options) {

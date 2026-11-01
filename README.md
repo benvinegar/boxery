@@ -149,6 +149,7 @@ Every integration exposes the same tools:
 | `vm_bash` `vm_read` `vm_write` `vm_edit` | Shell and files in the VM, with the same semantics as pi's built-ins |
 | `vm_jobs` | Long-running commands in the background: start, list, read logs, wait. Jobs survive disconnects |
 | `vm_copy` | Copy between your machine and VMs, or from one VM to another |
+| `vm_jobs` | Background jobs for long commands: start, poll, kill, get the real exit code |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
@@ -195,7 +196,7 @@ The control plane runs on any Linux box or Mac, including your laptop. It owns e
 
 ## Status
 
-boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap-re-ordered-after-review) lists what's next: profiles, network isolation, per-VM budgets.
+boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap) lists what's next: profiles, network isolation, per-VM budgets.
 
 ## Contributing
 

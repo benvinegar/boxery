@@ -230,4 +230,20 @@ u=0
 [ "$u" = 0 ] && ok "run rejects usage errors and invalid VM names" || bad "a malformed run invocation was accepted"
 "$A" rm w5 >/dev/null 2>&1 || true
 
+# version: the controller and the host (here, the same checkout) agree, so there is no warning.
+v=$("$A" version --json 2>/dev/null) || v=""
+case $v in '{"controller":{"version":"'*'"host":{"name":"legacy","version":"'*'"behind":false}') ok "version --json reports controller and host" ;; *) bad "version --json: $v" ;; esac
+out=$("$A" version 2>&1) && printf '%s\n' "$out" | grep -q '^controller ' && printf '%s\n' "$out" | grep -q '^host .*\[legacy\]' && ! printf '%s\n' "$out" | grep -q 'older' && ok "version (text), no skew warning" || bad "version: $out"
+# A host that predates `version` (any failure) is reported as behind, with the manual path.
+BOXERY_HOST_BIN=$tmp/old-host; printf '#!/bin/sh\nexit 1\n' >"$tmp/old-host"; chmod +x "$tmp/old-host"
+out=$(BOXERY_HOST_BIN=$tmp/old-host "$A" version 2>&1); printf '%s\n' "$out" | grep -q "predates 'boxery-host version'" && ok "version: old host gets the manual upgrade path" || bad "old host: $out"
+rc=0; out=$(BOXERY_HOST_BIN=$tmp/old-host "$A" upgrade-host 2>&1) || rc=$?
+[ "$rc" != 0 ] && printf '%s\n' "$out" | grep -q "predates 'upgrade'" && ok "upgrade-host refuses a host without upgrade, explains the one-time manual step" || bad "upgrade-host on old host: rc=$rc $out"
+# skew_note: a host behind the controller (release or commits after the same tag) gets a hint.
+sn() { "$A" __skew "$@"; }
+[ -n "$(sn 0.8.0 v0.8.0 0.7.0 v0.7.0 legacy)" ] && ok "skew: older release" || bad "skew: older release"
+sn 0.7.0 v0.7.0-15-gabc 0.7.0 v0.7.0-3-gdef hornet | grep -q 'boxery --host hornet upgrade-host' && ok "skew: same release, fewer commits; hint names the host" || bad "skew: commits"
+[ -z "$(sn 0.7.0 v0.7.0 0.8.0 v0.8.0 legacy)" ] && ok "skew: a newer host is fine" || bad "skew: newer host"
+[ -z "$(sn 0.7.0 '' 0.7.0 '' legacy)" ] && ok "skew: equal npm releases are fine" || bad "skew: equal"
+
 echo; echo "passed: $pass  failed: $fail"; [ "$fail" -eq 0 ]

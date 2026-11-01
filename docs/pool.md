@@ -59,4 +59,4 @@ FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / 
 
 To recover a `BROKEN` VM, fix it, then run `boxery pool rm NAME && boxery pool add NAME`.
 
-Design notes: [ARCHITECTURE.md → Leases](../ARCHITECTURE.md#1-leases-multi-laptop-coordination).
+Design notes: [ARCHITECTURE.md → Leases](../ARCHITECTURE.md#leases). Not built yet (gateway, `--keep`, profiles): [plan](plans/2026-11-01-profiles-and-lease-extensions.md).

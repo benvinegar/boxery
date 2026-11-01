@@ -33,6 +33,7 @@
     "test": "node --test test/*.test.mjs",
     "test:shell": "bash test/shell/run.sh",
     "lint": "bash test/lint.sh",
+    "typecheck": "tsc -p tsconfig.json",
     "prepublishOnly": "npm test"
   },
   "peerDependencies": {

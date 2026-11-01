@@ -171,9 +171,18 @@ export function sshRun(vm, script, opts = {}) {
 			if (opts.onData) return opts.onData(d);
 			if (err.length < 64 * 1024) err += d.toString();
 		});
-		const onAbort = () => child.kill();
+		// opts.closePipes (job helper calls): also close our ends of the pipes, so a remote side that outlives
+		// ssh gets EPIPE at its next write. Other callers keep them: e.g. vm_edit's guest cleans up on SIGTERM
+		// and must not be cut off mid-cleanup.
+		function stop() {
+			child.kill();
+			if (!opts.closePipes) return;
+			child.stdout.destroy();
+			child.stderr.destroy();
+		}
+		const onAbort = stop;
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
-		if (opts.timeoutMs) timer = setTimeout(() => child.kill(), opts.timeoutMs);
+		if (opts.timeoutMs) timer = setTimeout(stop, opts.timeoutMs);
 		child.on("error", reject);
 		child.on("close", (code) => {
 			if (timer) clearTimeout(timer);
@@ -323,84 +332,139 @@ export async function bashTool(vm, { command, timeout }, { signal, progress } = 
 	return { text: `${note}${t.text || "(no output)"}\n[exit ${r.exitCode}]`, isError: r.exitCode !== 0 };
 }
 
-const JOB_SCRIPT = readFileSync(new URL("../controller/jobs.sh", import.meta.url));
+// ---------------------------------------------------------------- background jobs (vm_jobs; same helper as `boxery run --bg`)
 
-/** Detached jobs: cancelling a tool call stops observation, never the tmux job. */
-export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi, timeout }, { signal } = {}) {
+// core/boxery-jobs.ts runs in the VM under Node's type stripping, piped over ssh on each call.
+const JOBS_SOURCE = readFileSync(new URL("./boxery-jobs.ts", import.meta.url));
+// The runner it starts each job with (plain bash), sent along with every start.
+const JOBS_RUNNER = readFileSync(new URL("./boxery-job-runner.sh", import.meta.url)).toString("base64");
+// Probe for type stripping rather than matching versions (it arrived in 22.18 and 23.6, not 23.0).
+const JOBS_NODE = `T="--experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript"
+node $T -e "" >/dev/null 2>&1 || { echo "boxery jobs: need Node >= 22.18 in the VM (found: $(node -v 2>/dev/null || echo none))" >&2; exit 1; }
+BOXERY_CALLER=$PPID exec node $T -`;
+export const VALID_JOB = /^job-[a-z0-9-]{1,36}$/;
+const b64 = (s) => Buffer.from(s).toString("base64");
+
+/** Run the helper; args must be validated (ids, numbers) or base64. Resolves {code, stdout, stderr}. */
+function jobsHelper(vm, args, opts = {}) {
+	return sshRun(vm, `${JOBS_NODE} ${args.join(" ")}`, { ...opts, input: JOBS_SOURCE, closePipes: true });
+}
+const helperError = (r, signal) =>
+	new Error(
+		signal?.aborted
+			? "aborted (the job itself was not stopped)"
+			: r.stderr.trim().replace(/^boxery jobs: /, "") || (r.code == null ? "timed out waiting for the VM" : `job operation failed (exit ${r.code})`),
+	);
+async function jobsJson(vm, args, opts) {
+	const r = await jobsHelper(vm, args, opts);
+	const text = r.stdout.toString().trim(); // wait's heartbeat newlines are whitespace
+	if (r.code !== 0 || !text) throw helperError(r, opts?.signal);
+	return JSON.parse(text);
+}
+const int = (v, name, dflt, min, max) => {
+	if (v == null) return dflt;
+	if (!Number.isInteger(v) || v < min || v > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
+	return v;
+};
+
+/** Text tail of a raw byte tail: no partial leading UTF-8 character, at most MAX_BYTES once decoded. */
+function boundedText(buf) {
+	let start = 0;
+	while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+	let text = buf.subarray(start).toString();
+	// Invalid UTF-8 decodes to U+FFFD (3 bytes): keep a character-safe suffix, not whole lines.
+	const decoded = Buffer.from(text);
+	if (decoded.length <= MAX_BYTES) return { text, clipped: false };
+	let cut = decoded.length - MAX_BYTES;
+	while (cut < decoded.length && (decoded[cut] & 0xc0) === 0x80) cut++;
+	return { text: decoded.subarray(cut).toString(), clipped: true };
+}
+
+/**
+ * vm_jobs: background jobs in tmux in the VM. Cancelling or timing out a call stops observing, never
+ * the job (only `kill` does). The VM side of an abandoned wait exits within ~2 s (heartbeat).
+ */
+export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi, timeout, grace }, { signal } = {}) {
 	assertName(vm);
-	if (signal?.aborted) throw new Error("aborted");
-	const args = [action];
-	if (action === "start") {
-		if (typeof command !== "string" || !command.trim() || command.includes("\0")) throw new Error("start requires a command");
-		if (cwd != null && (typeof cwd !== "string" || cwd.includes("\0"))) throw new Error("invalid cwd");
-		args.push(cwd ?? "", "bash", "-lc", command);
-	} else if (action === "list") args.push("--json");
-	else if (action === "logs" || action === "wait") {
-		if (typeof job !== "string" || !/^job-[A-Za-z0-9]{12}$/.test(job)) throw new Error("invalid job ID");
-		args.push(job);
-		if (action === "logs") {
-			if (lines != null && (!Number.isInteger(lines) || lines < 0 || lines > MAX_LINES)) throw new Error(`lines must be an integer from 0 to ${MAX_LINES}`);
-			args.push("--lines", String(lines ?? 200), "--bytes", String(MAX_BYTES));
-			if (stripAnsi) args.push("--strip-ansi");
-		} else {
-			if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600)) throw new Error("timeout must be an integer from 1 to 3600 seconds");
-			args.push("--json", "--timeout", String(timeout ?? 120));
+	const id = () => {
+		if (typeof job !== "string" || !VALID_JOB.test(job)) throw new Error("invalid job ID (see vm_jobs {action:\"list\"})");
+		return job;
+	};
+	const opts = { signal, timeoutMs: 120_000 };
+	switch (action) {
+		case "start": {
+			if (typeof command !== "string" || !command.trim() || command.includes("\0")) throw new Error("start requires a command");
+			if (cwd != null && (typeof cwd !== "string" || cwd.includes("\0"))) throw new Error("invalid cwd");
+			// A shell line, like vm_bash. The job's runner is already a login shell (profile, PATH, grants).
+			const argv = b64(["bash", "-c", command].map((a) => `${a}\0`).join(""));
+			const j = await jobsJson(vm, ["start", argv, cwd ? b64(cwd) : "-", JOBS_RUNNER], opts);
+			const started = { id: j.id, state: j.state, cwd: j.cwd };
+			return { text: JSON.stringify(started), structured: started };
 		}
-	} else throw new Error(`unknown jobs action: ${action}`);
-	const r = await sshRun(vm, `bash -s -- ${args.map(q).join(" ")}`, {
-		input: JOB_SCRIPT, signal, timeoutMs: action === "wait" ? ((timeout ?? 120) + 15) * 1000 : 120_000,
-		...(action === "logs" ? { maxBytes: MAX_BYTES } : {}),
-	});
-	if (signal?.aborted) throw new Error("aborted (detached job was not stopped)");
-	if (r.code !== 0) throw new Error(r.stderr.trim() || `job operation failed (exit ${r.code ?? "timeout"})`);
-	const out = r.stdout.toString().trim();
-	if (action === "start") return { text: JSON.stringify({ id: out }), structured: { id: out } };
-	if (action === "logs") {
-		// The guest already bounds bytes and lines; do not drop an oversized final
-		// line via the shared whole-line truncator. Skip a clipped UTF-8 prefix.
-		let start = 0;
-		while (start < r.stdout.length && (r.stdout[start] & 0xc0) === 0x80) start++;
-		let log = r.stdout.subarray(start).toString();
-		// Invalid UTF-8 decodes to replacement characters, which can expand the
-		// encoded response beyond the raw guest cap. Keep a character-safe suffix,
-		// not whole lines: a single huge line can still have a useful ending.
-		const decoded = Buffer.from(log);
-		const responseTruncated = decoded.length > MAX_BYTES;
-		if (responseTruncated) {
-			let cut = decoded.length - MAX_BYTES;
-			while (cut < decoded.length && (decoded[cut] & 0xc0) === 0x80) cut++;
-			log = decoded.subarray(cut).toString();
+		case "list": {
+			const jobs = (await jobsJson(vm, ["list"], opts)).map(({ argv: _a, log: _l, ...j }) => j);
+			return { text: JSON.stringify(jobs), structured: { jobs } };
 		}
-		const truncated = responseTruncated || r.stderr.includes("boxery jobs: output byte-truncated");
-		return { text: `${truncated ? "[output truncated]\n" : ""}${log || "(no output)"}`, structured: { log, truncated } };
-	}
-	if (action === "wait") {
-		const result = JSON.parse(out);
-		if (result.state === "running") result.timed_out = true;
-		return { text: JSON.stringify(result), structured: result, isError: result.state === "lost" || (result.state === "completed" && result.exit_code !== 0) };
-	}
-	try {
-		return { text: out, structured: { jobs: JSON.parse(out) } };
-	} catch {
-		return { text: out }; // unparseable job metadata: still show the raw list
+		case "logs": {
+			const n = int(lines, "lines", 200, 0, MAX_LINES);
+			// The VM clips raw bytes before selecting lines or stripping ANSI: a huge log moves ≤ 50KB.
+			const r = await jobsHelper(vm, ["logs", id(), "--lines", String(n), "--bytes", String(MAX_BYTES), ...(stripAnsi ? ["--strip-ansi"] : [])], { ...opts, maxBytes: 2 * MAX_BYTES });
+			if (r.code !== 0) throw helperError(r, signal);
+			const t = boundedText(r.stdout);
+			const clipped = t.clipped || r.stderr.includes("output byte-truncated");
+			return { text: `${clipped ? "[output truncated]\n" : ""}${t.text || "(no output)"}`, structured: { log: t.text, truncated: clipped } };
+		}
+		case "wait": {
+			// MCP clients time tool calls out after a few minutes; past that, poll with repeated waits.
+			const secs = int(timeout, "timeout", 60, 0, 600);
+			const n = int(lines, "lines", 20, 0, MAX_LINES);
+			const j = await jobsJson(vm, ["wait", id(), "--timeout", String(secs), "--output", String(n), "--exit0"], { signal, timeoutMs: (secs + 60) * 1000 });
+			const { argv: _a, log: _l, output, ...rec } = j;
+			const out = output ? boundedText(Buffer.from(output)).text : "";
+			const tail = out ? `\n--- last ${n} lines ---\n${out}` : "";
+			return { text: `${JSON.stringify(rec)}${tail}`, structured: { ...rec, ...(output != null ? { output: out } : {}) }, isError: j.state === "lost" || (j.state === "exited" && j.exit_code !== 0) };
+		}
+		case "kill": {
+			const g = int(grace, "grace", 5, 0, 60);
+			const { argv: _a, log: _l, ...j } = await jobsJson(vm, ["kill", id(), "--grace", String(g)], opts);
+			return { text: JSON.stringify(j), structured: j, isError: j.state === "running" };
+		}
+		default:
+			throw new Error(`unknown jobs action: ${action} (start | list | logs | wait | kill)`);
 	}
 }
+
+export const JOBS_DESCRIPTION =
+	"Background jobs in a VM for long commands (test suites, builds): tmux in the VM, so they survive disconnects and keep the real exit code. " +
+	"start {command, cwd?} runs a bash command line like vm_bash (cwd default ~/project; relative paths below it) → {id}. " +
+	"list → [{id, state: running|exited|lost, exit_code, started_at, ended_at, command, cwd, killed, leftover}]; leftover = it exited but left processes running. " +
+	"logs {job, lines?=200, stripAnsi?} → output tail (≤ 50KB). " +
+	"wait {job, timeout?=60 s (0–600; 0 = just check), lines?=20} → the job record (+ timed_out) and an output tail; a non-zero exit or a lost job is a tool error. " +
+	"kill {job, grace?=5} stops it, or what it left running (SIGTERM to its process group, SIGKILL after grace). " +
+	"Timeouts and cancelled calls never stop a job: start it, do other work, then wait again. Jobs have no ssh agent.";
 
 const JOB_RECORD = {
 	type: "object",
 	properties: {
 		id: { type: "string" },
-		state: { type: "string", enum: ["running", "completed", "lost"] },
+		state: { type: "string", enum: ["running", "exited", "lost"] },
+		command: { type: "string", description: "the command, shell-quoted, for display" },
+		cwd: { type: "string" },
 		started_at: { type: ["number", "null"], description: "Unix seconds" },
+		ended_at: { type: ["number", "null"], description: "Unix seconds; null unless exited" },
 		exit_code: { type: ["integer", "null"] },
+		killed: { type: "boolean", description: "stopped by kill" },
+		leftover: { type: "boolean", description: "exited, but processes it started are still running (kill stops them)" },
 	},
 };
-/** vm_jobs structuredContent: start → {id}; list → {jobs}; logs → {log, truncated}; wait → a job record (+timed_out). */
+/** vm_jobs structuredContent: start → {id, state, cwd}; list → {jobs}; logs → {log, truncated};
+ *  wait → a job record + timed_out (+ output: the output tail); kill → a job record. */
 export const JOBS_OUTPUT = {
 	type: "object",
 	properties: {
 		...JOB_RECORD.properties,
 		timed_out: { type: "boolean" },
+		output: { type: "string", description: "wait: the last lines of output, escapes removed" },
 		jobs: { type: "array", items: JOB_RECORD },
 		log: { type: "string" },
 		truncated: { type: "boolean" },
@@ -641,6 +705,17 @@ export const listShapes = () => boxeryJson(["shapes"]);
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
+
+/** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
+export const versions = () => boxeryJson(["version"]);
+
+export function formatVersions({ controller, host, behind }) {
+	const v = (x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
+	const upgrade = host?.name && host.name !== "legacy" ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
+	const lines = [`controller: ${v(controller)}`, host ? `host ${host.name}: ${v(host)} (${host.install} install)` : "host: unknown (it predates boxery-host version)"];
+	if (behind) lines.push(`The host is older than the controller. Tell the user; they can upgrade it with: ${host ? upgrade : "a manual update (git pull or npm update -g boxery-vm, then boxery-host init) on the host"}`);
+	return lines.join("\n");
+}
 
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;

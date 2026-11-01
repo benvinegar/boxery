@@ -93,7 +93,7 @@ const infoMcp = (t) => ({
 	outputSchema: { ...t.outputSchema, properties: { ...t.outputSchema.properties, host: { type: "string" }, hosts: { type: "array", items: { type: "object" } } } },
 	async run(_vm, a, { host, current }) {
 		if (a.action === "hosts") return hostsResult(host);
-		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})` });
+		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})`, hostName: host.name });
 		return a.action === "list" ? { ...r, structured: { ...r.structured, host: host.name } } : r;
 	},
 });
