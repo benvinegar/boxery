@@ -9,6 +9,8 @@ export BOXERY_CONF=$tmp/conf BOXERY_BACKEND=cloud-hypervisor BOXERY_CH_DIR=$tmp/
 export BOXERY_CH_FIRMWARE=$tmp/fw/hypervisor-fw HOME=$tmp/home CALLS=$tmp/calls.log UNITS=$tmp/units
 mkdir -p "$tmp/bin" "$BOXERY_CONF" "$BOXERY_CH_DIR" "$HOME" "$UNITS" "$tmp/fw"
 touch "$BOXERY_CH_FIRMWARE" "$CALLS"
+# the stuck worker: sleep under a path of our own, so pgrep can't see other tests' sleeps
+export STUCK=$tmp/bin/stuck; ln -s "$(command -v sleep)" "$STUCK"
 echo "ssh-ed25519 AAAAtest mgmt" >"$BOXERY_CONF/mgmt_ed25519.pub"; touch "$BOXERY_CONF/mgmt_ed25519"
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" >"$tmp/bin/$1"; chmod +x "$tmp/bin/$1"; }
@@ -24,7 +26,7 @@ stub ip 'echo "ip $*" >>"$CALLS"; [[ "$1 $2" == "link show" ]] && exit 1; exit 0
 stub sysctl 'echo "sysctl $*" >>"$CALLS"'
 stub nft 'echo "nft $*" >>"$CALLS"; [[ "$1 $2" == "-f -" ]] && cat >'"$tmp"'/nft.rules; exit 0'
 stub systemctl 'echo "systemctl $*" >>"$CALLS"; u=${3:-}
-case $2 in show-environment) [[ -z ${FAIL_SYSTEMD:-} ]] ;; start) [[ -z ${FAIL_START:-} ]] || exit 1; [[ -z ${SLOW_START:-} ]] || sleep 60; touch "$UNITS/$u" ;; stop) rm -f "$UNITS/$u" ;; is-active) [[ -f "$UNITS/${4:-}" ]] ;; esac'
+case $2 in show-environment) [[ -z ${FAIL_SYSTEMD:-} ]] ;; start) [[ -z ${FAIL_START:-} ]] || exit 1; [[ -z ${SLOW_START:-} ]] || "$STUCK" 60; touch "$UNITS/$u" ;; stop) rm -f "$UNITS/$u" ;; is-active) [[ -f "$UNITS/${4:-}" ]] ;; esac'
 # GNU cp flags the backend uses; BSD cp (macOS) lacks them
 stub cp '[[ -z ${FAIL_CP:-} ]] || exit 1; a=(); for x in "$@"; do case $x in --reflink=*|--sparse=*) ;; *) a+=("$x") ;; esac; done; exec /bin/cp "${a[@]}"'
 stub flock 'exit 0'   # util-linux; not on macOS
@@ -178,12 +180,12 @@ rec backend_recover_capture rc1 rc1@z running && ! called "resume" && [[ -d $V/r
 # --- a create killed mid-way is recovered through backend_cleanup_new (docs/lifecycle.md)
 : >"$CALLS"
 SLOW_START=1 "$H" new crash >/dev/null 2>&1 & cli=$!
-for _ in $(seq 200); do pgrep -f 'sleep 60' >/dev/null && break; sleep 0.05; done
+for _ in $(seq 200); do pgrep -f "$STUCK" >/dev/null && break; sleep 0.05; done
 crash_slot=$(cat "$V/crash/slot" 2>/dev/null) || true
 kill -9 "$cli" 2>/dev/null; wait "$cli" 2>/dev/null || true   # 137
 "$H" reconcile >/dev/null 2>&1
 [[ -n $crash_slot && ! -d $V/crash ]] && called "ip link del bxch$crash_slot" && jq -e 'has("crash") | not' "$BOXERY_CONF/tokens.json" >/dev/null && ok "reconcile recovers an interrupted create: dir, TAP and token gone" || bad "crash recovery: slot=$crash_slot $(ls "$V")"
-pgrep -f 'sleep 60' >/dev/null && { bad "abandoned worker still running"; pkill -f 'sleep 60'; } || ok "abandoned worker group stopped"
+pgrep -f "$STUCK" >/dev/null && { bad "abandoned worker still running"; pkill -f "$STUCK"; } || ok "abandoned worker group stopped"
 
 # --- helpers (sourced)
 die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
