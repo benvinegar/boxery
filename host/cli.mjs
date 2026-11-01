@@ -14,7 +14,7 @@ import { revert, snap, snapRm, snapsLines } from "./images.mjs";
 import { edgeSet, poolAdd, poolLs, poolRm } from "./pool.mjs";
 import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { createRuntime } from "./runtime.mjs";
-import { addKey, buildBase, init } from "./setup.mjs";
+import { addKey, buildBase, init, profiles } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
 import { vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, print, readFd, table, validName } from "./util.mjs";
@@ -22,7 +22,10 @@ import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
 
 const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for coding agents (backend: ${backend})
 
-  init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
+  init [--backend libvirt|lima|cloud-hypervisor|exe|boat]  install proxy services + backend setup, symlinks
+  --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
+                            state, proxy port and services. Create it with: --profile NAME init --backend B
+  profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
   version [--json]          this install's version, commit and kind (git or npm)
   upgrade [--check] [--ref REF] [--wait S] [--reinit]
                             update this install (git pull --ff-only, or npm), re-run init for every
@@ -113,7 +116,7 @@ function proxyLog(rt, [n = "30"]) {
 // ---------------------------------------------------------------- dispatch
 const lifecycle = (command) => (rt, args) => runLifecycle(rt, command, args);
 const COMMANDS = {
-	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey,
+	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
 	ls, list: ls, shapes, snaps, images, ip,
 	pool: (rt, [sub = "ls", ...args]) => (sub === "ls" ? poolLs(rt, args) : fail(POOL_USAGE)),
 	"proxy-log": proxyLog,

@@ -8,7 +8,7 @@
  *   vm_jobs                                                 background command jobs (start / list / logs / wait / kill)
  *   vm_screenshot  vm_click  vm_type  vm_key  vm_scroll    computer use on the VM desktop
  *   vm_browser                                              Playwright → Chrome on the VM desktop
- *   vm_manage                                               list / new / fork / rm / start / stop / resize / snap / snaps / snap-rm / revert / images / use / grants / shapes
+ *   vm_manage                                               list / new / fork / rm / start / stop / resize / snap / snaps / snap-rm / revert / images / use / grants / shapes / build-base
  *   vm_lease                                                acquire / renew / release / list pool leases
  *
  * The same tools are available to any MCP client (Claude Code, Cursor, …) via mcp/boxery-mcp.mjs.

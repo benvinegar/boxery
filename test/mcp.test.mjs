@@ -142,7 +142,7 @@ describe("stdio", () => {
 			const { host, ...props } = t.inputSchema.properties;
 			assert.ok(host, `${t.name} takes host`);
 			if (t.name === "vm_manage") {
-				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts", "host"]);
+				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts", "host", "host_add", "host_rm"]);
 				continue;
 			}
 			if (t.name === "vm_info") {

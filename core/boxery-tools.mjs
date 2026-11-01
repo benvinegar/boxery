@@ -17,7 +17,7 @@ const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot 
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
-export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes"];
+export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes", "build-base"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
 export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "version"];
 
@@ -203,6 +203,7 @@ export const TOOLS = [
 			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
 			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
 			"`grants` shows what the VM may access from the user's machine (only the user can change grants). " +
+			"`build-base` builds the host's desktop base image (~3 min), which desktop VMs are created from; a new host needs it once (headless VMs don't). The host refuses while VMs depend on the current base. " +
 			"For lookups (list, shapes, grants, snaps) prefer vm_info, which is read-only.",
 		parameters: {
 			type: "object",

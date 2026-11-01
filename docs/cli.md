@@ -13,6 +13,8 @@
 ```bash
 boxery host add laptop local
 boxery host add hornet you@hornet
+boxery host add exe local --backend exe     # a second backend on that machine: own profile, proxy port, services
+boxery host add exe2 local --profile exe    # an existing profile on that machine
 boxery host add existing --config-dir "$HOME/.boxery-other"
 boxery host ls
 boxery host show hornet
@@ -31,6 +33,7 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 boxery setup you@my-host                     # or: setup local   [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
+boxery build-base                            # the host's desktop base image (one time, ~3 min)
 boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
 boxery ls [--json]                           # VMs, with their shape and grants
 boxery start demo | stop demo
@@ -154,7 +157,11 @@ boxery upgrade-host [--check] [--ref REF]    # update boxery on the host (see In
 ## `boxery-host` (the VM host)
 
 ```
-init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
+init [--backend libvirt|lima|cloud-hypervisor|exe|boat]
+                                install proxy, vsock bridge, reaper services + backend setup, symlinks
+--profile NAME COMMAND...       run in profile NAME (~/.config/boxery-NAME): a second backend on this host.
+                                --profile NAME init --backend B creates it with a free proxy port and its own services
+profiles [--json]               every profile on this host: name, backend, proxyPort, proxyUnit, conf
 version [--json]                this install's version, commit and kind (git | npm)
 upgrade [--check] [--ref REF] [--wait S] [--reinit]
                                 update this install, re-run init for each profile using it, check, roll back on failure
