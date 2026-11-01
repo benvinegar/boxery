@@ -55,16 +55,18 @@ async function lsJson(rt) {
 	const nz = (v) => (v === "" ? null : v);
 	return (await rt.vms.list()).map((vm) => {
 		const sz = sizes[vm.name];
-		return { name: vm.name, state: nz(vm.state), addr: nz(vm.addr), disk: nz(vm.disk), lease: lease[vm.name] ?? null,
+		return { name: vm.name, state: nz(vm.state), addr: nz(vm.addr), disk: nz(vm.disk), tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null,
 			shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null, desktop: kinds[vm.name] !== "headless" };
 	});
 }
+// A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
+const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.addr ?? "-"));
 async function ls(rt, [arg]) {
 	const vms = await lsJson(rt);
 	if (arg === "--json") return print(jsonArray(vms));
 	if (arg) fail("usage: ls [--json]");
 	print(table([16, 10, 16, 10, 10, 9], [["NAME", "STATE", "ADDR", "DISK", "SHAPE", "KIND", "LEASE"],
-		...vms.map((v) => [v.name, v.state ?? "-", v.addr ?? "-", v.disk ?? "-", v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
+		...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), v.disk ?? "-", v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
 }
 
 function shapes(rt, [arg]) {

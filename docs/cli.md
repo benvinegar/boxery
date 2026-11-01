@@ -180,6 +180,7 @@ VMs on the host, plus the grants this machine has given each one.
 | `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima; `paused` on exe.dev) |
 | `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
 | `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
+| `tunnel` | string \| null | exe.dev only: the host's ssh tunnel to the VM, which carries its ssh endpoint and LLM proxy: `up`, `connecting` (retrying; is the host online?) or `down` (`boxery-host start NAME`). `null` on other backends. A running VM shows `addr: null` while its tunnel isn't `up` |
 | `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}` (see `pool ls`) |
 | `shape` | string \| null | shape the VM was created with, `custom` if size flags overrode it, `null` for VMs created before shapes |
 | `cpus` | number \| null | vCPUs the VM was created with (`null` if unknown) |
@@ -274,7 +275,7 @@ Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `created
 
 #### `boxery-host ls --json`
 
-Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines and the lease store.
+Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `addr`, `disk`, `tunnel`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines and the lease store.
 
 #### `boxery-host snaps NAME --json`
 

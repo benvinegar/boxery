@@ -96,6 +96,15 @@ test("formatVms / formatGrants render the --json shapes", () => {
 	assert.match(lines[1], /^a1 +running +10\.0\.0\.2 +large +headless +- +-$/);
 	assert.match(lines[2], /^pool-1 +running +- +- +desktop +LEASED +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts)");
 	assert.equal(core.formatVms([]), "(no VMs)");
+	const exe = [
+		{ name: "e1", state: "running", addr: null, tunnel: "connecting", grants: [] },
+		{ name: "e2", state: "paused", addr: null, tunnel: "down", grants: [] },
+		{ name: "e3", state: "running", addr: "127.0.0.1:22401", tunnel: "up", grants: [] },
+	];
+	const el = core.formatVms(exe).split("\n");
+	assert.match(el[1], /^e1 +running +tunnel connecting /, "a running exe.dev VM without its tunnel says so");
+	assert.match(el[2], /^e2 +paused +- /, "a stopped VM's tunnel is down by design");
+	assert.match(el[3], /^e3 +running +127\.0\.0\.1:22401 /);
 	assert.equal(core.formatGrants("a1", []), "no grants for a1");
 	assert.match(core.formatGrants("a1", [{ kind: "env", var: "T", cmd: "op read x" }]), /env:T +\(from: op read x\)/);
 });

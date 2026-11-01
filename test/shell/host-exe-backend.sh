@@ -26,7 +26,7 @@ case $host in
 exe.dev) echo "Warning: Permanently added 'exe.dev' (RSA) to the list of known hosts." >&2; exec fake-exe "$@" ;;   # first-contact noise on stderr
 vm.exe.xyz) vm=${user#vm+} ;;
 *.exe.xyz) vm=${host%.exe.xyz} ;;
-*) exit 0 ;;
+*) [ -z "${GUEST_DOWN:-}" ] || exit 255; exit 0 ;;
 esac
 d=$EXE_STATE/$vm
 [ -d "$d" ] && [ "$(cat "$d/status")" = running ] || exit 255
@@ -87,8 +87,9 @@ disable) rm -f "$UNITS/enabled.$4" "$UNITS/$4" ;;
 start | restart) [[ -z ${FAIL_TUNNEL:-} ]] || exit 1; touch "$UNITS/$3" ;;
 stop) rm -f "$UNITS/$3" ;;
 is-active) [[ -f "$UNITS/$4" ]] ;;
+is-enabled) [[ -f "$UNITS/enabled.$4" ]] ;;
 esac'
-stub nc 'echo "nc $*" >>"$CALLS"'
+stub nc 'echo "nc $*" >>"$CALLS"; [[ -z ${NC_DOWN:-} ]]'
 # Generations (exe_vm_new) from a counter, so runs are reproducible.
 stub openssl "[[ \"\$*\" == 'rand -hex 3' ]] || exec $(command -v openssl) \"\$@\"
 "'n=$(($(cat "$UNITS/gen" 2>/dev/null || echo 0) + 1)); echo $n >"$UNITS/gen"; printf "%06x\n" $n'
@@ -201,6 +202,28 @@ called "exe.dev resize $(V v1) --memory=2GB" && ! called "exe.dev restart" && [[
 expect "start after a resize" "$H" start v1
 called "exe.dev restart $(V v1)" && ! called "exe.dev resume" && [[ ! -f $E/v1/resized ]] && ok "start after a resize restarts (resume would keep the old size)" || bad "start resized: $(cat "$CALLS")"
 expect "resize back to 4 GB" "$H" resize v1 --mem 4096
+
+# --- the tunnel is down or reconnecting (host asleep or offline): say so and name the fix (#42)
+UV=boxery-exe-bxtest-v-v1.service
+jq -e 'map(select(.name == "v1"))[0].tunnel == "up"' <<<"$(lsj)" >/dev/null && ok "ls --json: tunnel up" || bad "tunnel: $(lsj)"
+rm -f "$UNITS/$UV"   # enabled, between restarts: ssh can't reach exe.dev
+lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .addr == null and .tunnel == "connecting"' >/dev/null && ok "ls --json: reconnecting tunnel, no addr" || bad "ls: $(lsj)"
+"$H" ls | grep -E '^v1 +running +tunnel connecting ' >/dev/null && ok "ls shows the tunnel state in place of the address" || bad "ls: $("$H" ls)"
+e=$("$H" connect v1 2>&1) && bad "connect through a reconnecting tunnel succeeded" ||
+	{ [[ $e == *"isn't connected to exe.dev"* && $e == *"no LLM proxy"* && $e == *"ssh exe.dev whoami"* && $e == *"journalctl --user -u ${UV%.service}"* && $e == *"boxery-host start v1"* ]] && ok "connect: explains a reconnecting tunnel, where its log is, and the fix" || bad "connect: $e"; }
+touch "$UNITS/$UV"
+NC_DOWN=1 lsj | jq -e 'map(select(.name == "v1"))[0].tunnel == "connecting"' >/dev/null && ok "unit active but its -L end closed: connecting" || bad "nc down: $(NC_DOWN=1 lsj)"
+e=$(NC_DOWN=1 BOXERY_EXE_TUNNEL_WAIT=1 "$H" start v1 2>&1) && bad "start succeeded without a tunnel" ||
+	{ [[ $e == *"timed out after 1s: the ssh tunnel to v1 isn't connected"* && $e != *"waiting for ssh"* ]] && ok "start: a tunnel that never connects is reported as such, not as an ssh timeout" || bad "start: $e"; }
+rm -f "$UNITS/$UV" "$UNITS/enabled.$UV"   # unit removed by hand
+lsj | jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .tunnel == "down"' >/dev/null && "$H" ls | grep -E '^v1 +running +tunnel down ' >/dev/null && ok "ls: running VM without a tunnel shows tunnel down" || bad "ls: $("$H" ls)"
+e=$("$H" ip v1 2>&1) && bad "ip without a tunnel succeeded" || { [[ $e == *"its ssh tunnel isn't running"* && $e == *"Fix: boxery-host start v1"* ]] && ok "ip: no tunnel → names the fix" || bad "ip: $e"; }
+# The hook the Node side asks while it waits for ssh (rt.waitSsh): 2 = no tunnel, give up at once.
+rc=0; e=$("$ROOT/host/backend.sh" backend_endpoint_problem v1 2>&1) || rc=$?
+((rc == 2)) && [[ $e == *"Fix: boxery-host start v1"* ]] && ok "endpoint problem: no tunnel is fatal (2) and names the fix" || bad "endpoint problem: rc=$rc $e"
+"$ROOT/host/backend.sh" __functions | grep -qx backend_endpoint_problem && ok "backend.sh exposes backend_endpoint_problem" || bad "__functions"
+expect "start brings the tunnel back" "$H" start v1
+e=$("$ROOT/host/backend.sh" backend_endpoint_problem v1 2>&1) && [[ -z $e ]] && ok "endpoint problem: tunnel up → nothing, 0" || bad "endpoint problem after start: $e"
 
 # --- images: snapshots
 echo v1-work >"$S/$(V v1)/data"
@@ -323,6 +346,11 @@ stub launchctl 'echo "launchctl $*" >>"$CALLS"; case $1 in print) [[ -f $UNITS/l
 PL=$HOME/Library/LaunchAgents/dev.boxery-exe-bxtest-v-v3.plist
 grep -F "<string>dev.boxery-exe-bxtest-v-v3</string>" "$PL" >/dev/null && grep -F "<string>$E/v3/tunnel.sh</string>" "$PL" >/dev/null && grep -F '<key>KeepAlive</key><true/>' "$PL" >/dev/null && ok "launchd: agent runs tunnel.sh, kept alive" || bad "plist: $(cat "$PL" 2>/dev/null)"
 called "launchctl bootstrap gui/$(id -u) $PL" && ok "launchd: bootstrapped in the user's GUI domain" || bad "bootstrap"
+[[ $(BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_state v3) == up ]] && ok "launchd: loaded and connected = up" || bad "launchd state"
+echo "ssh: Could not resolve hostname x.exe.xyz" >"$E/v3/tunnel.log"
+e=$(BOXERY_EXE_SUPERVISOR=launchd; export NC_DOWN=1; . "$ROOT/host/backends/exe.sh"; backend_endpoint_problem v3) && bad "launchd: no problem reported" ||
+	{ [[ $e == *"(last error: ssh: Could not resolve hostname x.exe.xyz)"* && $e == *"log: $E/v3/tunnel.log"* ]] && ok "launchd: a reconnecting tunnel quotes its last error and log" || bad "launchd problem: $e"; }
 (BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_stop v3; ! exe_tunnel_active v3) && [[ ! -f $PL ]] && ok "launchd: stop boots it out and removes it from LaunchAgents" || bad "launchd stop"
+[[ $(BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_state v3) == down ]] && ok "launchd: booted out = down" || bad "launchd down"
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

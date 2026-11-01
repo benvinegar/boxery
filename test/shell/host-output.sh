@@ -85,8 +85,8 @@ EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
+{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
+{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
 ]
 EOF
 run ls --json; same "ls --json (one element per line)" out 0
@@ -133,8 +133,8 @@ run ip a1; same "ip" out 0
 rm -f "$BOXERY_CONF/vm-shapes/a1.json"; rm -rf "$BOXERY_CONF/vm-shapes"
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","lease":{"state":"FREE","holder":null,"expires_at":null},"shape":null,"cpus":null,"mem":null,"desktop":true},
-{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
+{"name":"a1","state":"running","addr":"127.0.0.1:22000","disk":"1GiB","tunnel":null,"lease":{"state":"FREE","holder":null,"expires_at":null},"shape":null,"cpus":null,"mem":null,"desktop":true},
+{"name":"b2","state":"shut off","addr":"127.0.0.1:22001","disk":"1GiB","tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
 ]
 EOF
 run ls --json; same "ls --json: pool lease object, nulls for VMs without a size record" out 0
@@ -176,7 +176,7 @@ EOF
 same "new --headless logs the layers it installs" err 0
 run ls --json
 grep -F '"name":"h3"' "$tmp/out" >"$tmp/h3.json" || true
-echo '{"name":"h3","state":"running","addr":"127.0.0.1:22002","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
+echo '{"name":"h3","state":"running","addr":"127.0.0.1:22002","disk":"1GiB","tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
 same "ls --json: a headless VM has desktop false" h3.json 0
 run ls
 grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true

@@ -49,13 +49,18 @@ export function createGuest({ conf, env = process.env }) {
 		registeredKeys,
 		/** Pet VMs accept the host and every registered controller. */
 		petKeys: () => [...new Set([hostPubkey(), ...registeredKeys()])].filter(Boolean).sort(),
-		/** Wait until sshd answers. tries × 2 s (BOXERY_SSH_WAIT_TRIES, default 180 = 6 min). */
-		async waitSsh(ep, tries = Number(env.BOXERY_SSH_WAIT_TRIES || 180)) {
+		/** Wait until sshd answers. tries × 2 s (BOXERY_SSH_WAIT_TRIES, default 180 = 6 min). problem: async
+		 *  () => null | {fatal, message}, asked after each failed try: give up at once when it is fatal (there
+		 *  is no way in), and say why on a timeout. */
+		async waitSsh(ep, tries = Number(env.BOXERY_SSH_WAIT_TRIES || 180), problem = async () => null) {
+			let why = null;
 			for (let i = 0; i < tries; i++) {
 				if (await run(ep, "true", { quiet: true }) === 0) return;
+				why = await problem();
+				if (why?.fatal) throw new Error(why.message);
 				if (i < tries - 1) await sleep(2000);
 			}
-			throw new Error(`timed out waiting for ssh on ${ep.host}:${ep.port}`);
+			throw new Error(`timed out waiting for ssh on ${ep.host}:${ep.port}${why?.message ? `: ${why.message}` : ""}`);
 		},
 		/** authorized_keys in the guest := exactly these keys. */
 		async setKeys(ep, keys) {

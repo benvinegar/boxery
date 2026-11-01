@@ -81,7 +81,11 @@ boxery-host build-base               # ~3 min on an exeuntu VM, then kept paused
 boxery setup local                   # or: boxery setup you@this-host
 ```
 
-VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs); raise `BOXERY_EXE_MAX_CPUS` / `BOXERY_EXE_MAX_MEM` on bigger plans. `stop` pauses a VM. Each VM is reached through an ssh tunnel the host keeps open, so the host must stay up. Layout, security notes and what's still unverified: [backends → exe](../host/backends/README.md#exe-experimental).
+VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs); raise `BOXERY_EXE_MAX_CPUS` / `BOXERY_EXE_MAX_MEM` on bigger plans. `stop` pauses a VM. Layout, security notes and what's still unverified: [backends → exe](../host/backends/README.md#exe-experimental).
+
+**Run the host on an always-on machine.** The VMs are in the cloud, but the host keeps one ssh tunnel per VM open to exe.dev, and that tunnel carries both the VM's ssh endpoint and the agents' only route to the LLM proxy. When the host sleeps or goes offline, every running agent loses its LLM in the middle of a task, and no controller can reach the VMs. The VMs keep running and the tunnels reconnect by themselves (within seconds) once the host is back. So put `boxery-host --backend exe` on a machine that stays up, such as a home server, a small Linux VPS or a desktop that doesn't sleep, and use your laptop as a controller only (`boxery setup you@that-host`). This keeps the security model: provider credentials stay on that machine and never enter a VM. On a Linux host, turn on linger (`sudo loginctl enable-linger "$USER"`, as above) so the tunnels, which are systemd user units, keep running when you're logged out. If you do run the host on a Mac, keep it awake while agents work (for example `caffeinate -s` on AC power).
+
+`boxery-host ls` shows a running VM whose tunnel isn't connected as `tunnel connecting` (it is retrying) or `tunnel down` (it isn't running; `boxery-host start NAME` brings it back) in place of its address. Commands that need the VM say the same thing rather than waiting for ssh to time out.
 
 Backend details: [host/backends/README.md](../host/backends/README.md).
 

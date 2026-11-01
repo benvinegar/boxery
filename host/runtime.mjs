@@ -23,6 +23,8 @@ export function createRuntime(env = process.env) {
 		log,
 		vms: createBackend(config.env),
 		guest: createGuest(config),
+		/** Wait for NAME's sshd at EP, asking the backend why it can't be reached (exe: its tunnel). */
+		waitSsh: (name, ep, tries) => rt.guest.waitSsh(ep, tries, () => rt.vms.endpointProblem(name)),
 		db: () => (db ??= leases.open(path.join(config.conf, "leases.db"))),
 		close: () => db?.close(),
 		shapes: () => loadShapes(config.root, config.conf),

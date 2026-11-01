@@ -64,8 +64,8 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.deepEqual(await b.list(), []);
 	fakeVm("a1"); fakeVm("b2", { state: "shut off", port: 22001, size: "4 8192 40" });
 	assert.deepEqual(await b.list(), [
-		{ name: "a1", state: "running", addr: "127.0.0.1:22000", disk: "1GiB" },
-		{ name: "b2", state: "shut off", addr: "127.0.0.1:22001", disk: "1GiB" },
+		{ name: "a1", state: "running", addr: "127.0.0.1:22000", disk: "1GiB", tunnel: "" },
+		{ name: "b2", state: "shut off", addr: "127.0.0.1:22001", disk: "1GiB", tunnel: "" },
 	]);
 	assert.equal(await b.exists("a1"), true);
 	assert.equal(await b.exists("zz"), false);
@@ -79,6 +79,7 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.equal(await b.imageExists("a1@on"), false);
 	assert.equal(await b.has("backend_resize"), true);
 	assert.equal(await b.has("backend_legacy_revert"), false);
+	assert.equal(await b.endpointProblem("a1"), null, "no backend_endpoint_problem: nothing known to be wrong");
 	assert.equal(await b.guestProxyUpstream(), "TCP:fake-gateway:8088");
 });
 
@@ -105,6 +106,12 @@ test("guest: ssh argv, stdin for keys, wait retries, host key creation", async (
 	assert.equal(await guest.run(ep, "echo hi"), 0);
 	const failing = createGuest({ conf, env: { ...env, SSH_FAIL: "1" } });
 	assert.equal(await failing.run(ep, "true"), 255);
-	await assert.rejects(failing.waitSsh(ep, 1), /timed out waiting for ssh on 10\.0\.0\.5:2222/);
+	await assert.rejects(failing.waitSsh(ep, 1), /timed out waiting for ssh on 10\.0\.0\.5:2222$/);
+	// The backend's endpoint problem: fatal gives up at once, otherwise it is added to the timeout.
+	let asked = 0;
+	const t0 = Date.now();
+	await assert.rejects(failing.waitSsh(ep, 30, async () => (asked++, { fatal: true, message: "no tunnel. Fix: boxery-host start a1" })), /^Error: no tunnel\. Fix: boxery-host start a1$/);
+	assert.equal(asked, 1); assert.ok(Date.now() - t0 < 5000, "a fatal problem doesn't wait out the tries");
+	await assert.rejects(failing.waitSsh(ep, 1, async () => ({ fatal: false, message: "reconnecting" })), /timed out waiting for ssh on 10\.0\.0\.5:2222: reconnecting$/);
 	await assert.rejects(failing.setKeys(ep, ["k"]), /could not set ssh keys/);
 });
