@@ -28,6 +28,19 @@ beforeEach(() => {
 	for (const n of ["p1", "p2", "p3"]) L.add(db, n);
 });
 
+it("opening an existing lease store migrates incarnation fencing without losing leases", () => {
+	const c = L.claim(db, "existing-holder", 600, KEY);
+	L.commit(db, c.name, c.gen);
+	db.exec("ALTER TABLE vms DROP COLUMN epoch"); // schema before lifecycle coordination
+	db.close(); db = L.open(file);
+	const r = L.get(db, c.name);
+	assert.equal(r.state, "LEASED");
+	assert.equal(r.lease_id, c.lease_id);
+	assert.equal(r.holder, "existing-holder");
+	assert.match(r.epoch, /^[0-9a-f]{32}$/);
+	assert.equal(L.list(db).length, 3);
+});
+
 it("claim → commit → renew → release → finish: the happy path", () => {
 	const c = L.claim(db, "ben@laptop/s1", 600, KEY);
 	assert.equal(c.name, "p1");
@@ -105,6 +118,42 @@ it("stale RESETTING (crashed reset) is retried; BROKEN is never handed out", () 
 	assert.ok(L.finish(db, d.name, d.gen, "BROKEN"));
 	const names = [1, 2, 3].map(() => L.claim(db, "h", 600, KEY)?.name ?? null);
 	assert.ok(!names.includes("p1"), "BROKEN VM was claimed");
+});
+
+it("observed reset candidates are revalidated after renewal and pool reincarnation", () => {
+	const c = L.claim(db, "h", 600, KEY);
+	L.commit(db, c.name, c.gen);
+	at(T0 + 601);
+	const [observed] = L.candidates(db);
+	assert.equal(observed.state, "LEASED", "observation does not change state");
+	// A renewal that won before the reaper obtained its lock changes the deadline, not generation.
+	at(T0 + 500);
+	L.renew(db, c.lease_id, 900);
+	at(T0 + 601);
+	assert.deepEqual(L.due(db, observed.name, observed.gen, observed.epoch), []);
+	L.remove(db, c.name, true);
+	L.add(db, c.name);
+	const replacement = L.get(db, c.name);
+	assert.notEqual(replacement.epoch, observed.epoch);
+	// Even a matching numeric generation from a removed/re-added row is not the same VM epoch.
+	db.prepare("UPDATE vms SET state='RESETTING', gen=?, updated_at=0 WHERE name=?").run(observed.gen, c.name);
+	assert.deepEqual(L.due(db, observed.name, observed.gen, observed.epoch), []);
+});
+
+it("claims skip resource-locked VMs even after reset commits FREE", () => {
+	db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES('p1', 'reset-in-progress')").run();
+	assert.equal(L.claim(db, "h", 600, KEY).name, "p2");
+	db.prepare("DELETE FROM operation_locks WHERE resource='p1'").run();
+	assert.equal(L.claim(db, "h", 600, KEY).name, "p1");
+});
+
+it("a delayed acquire cannot commit an expired or pre-reboot lease", () => {
+	const c = L.claim(db, "h", 600, KEY);
+	at(T0 + 600);
+	assert.equal(L.commit(db, c.name, c.gen), false);
+	at(T0);
+	process.env.BOXERY_BOOT_ID = "boot-2";
+	assert.equal(L.commit(db, c.name, c.gen), false);
 });
 
 it("remove refuses leased VMs unless forced", () => {

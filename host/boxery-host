@@ -52,26 +52,18 @@ load_backend() {
 }
 ensure_tokens() { mkdir -p "$CONF"; chmod 700 "$CONF"; [[ -f $CONF/tokens.json ]] || echo '{}' >"$CONF/tokens.json"; chmod 600 "$CONF/tokens.json"; }
 
-# Serialize read-modify-write of tokens.json across concurrent new/rm (portable: mkdir is atomic).
-with_tokens_lock() {
-	local lock=$CONF/.tokens.lock i
-	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "tokens.json is locked ($lock); remove it if no boxery-host is running"; done
-	local rc=0; "$@" || rc=$?
-	rmdir "$lock"
-	return $rc
-}
-_token_jq() { # jq filter args...
-	ensure_tokens
-	local tmp; tmp=$(mktemp "$CONF/.tokens.XXXX")
-	jq "$@" "$CONF/tokens.json" >"$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF/tokens.json"
-}
-token_set() { with_tokens_lock _token_jq --arg n "$1" --arg s "$2" '.[$n]=$s'; }
-token_del() { with_tokens_lock _token_jq --arg n "$1" 'del(.[$n])'; }
+# Node owns the short token read/modify/rename transaction; no mkdir lock survives a crash.
+operations() { BOXERY_BACKEND=$BACKEND node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" "$1" "$CONF" "${@:2}"; }
+token_set() { operations token set "$1" "$2"; }
+token_del() { operations token del "$1"; }
+intent() { operations intent "$@"; }
+intent_done() { operations 'done' "$1"; }
 
 # Per-VM identity as cloud-config user-data (keys, proxy token, agent configs). Backend-agnostic.
 # shellcheck disable=SC2034  # pi_models/pi_settings/oc_config are read indirectly via ${!var}
 boxery_seed() { # NAME → path of a user-data file
-	local name=$1 tmp; tmp=$(mktemp -d)
+	local name=$1 tmp=$CONF/work/$BOXERY_OPERATION_ID/$1
+	mkdir -p "$tmp"; chmod 700 "$CONF/work" "$CONF/work/$BOXERY_OPERATION_ID" "$tmp"
 	local secret
 	secret=$(openssl rand -hex 24) && [[ ${#secret} -eq 48 ]] || die "could not generate a proxy token (is openssl installed?)"
 	token_set "$name" "$secret"
@@ -182,20 +174,43 @@ pet_set_keys() { # NAME
 		vm_ssh_cmd "$h" "$p" 'umask 077; mkdir -p ~/.ssh && cat >~/.ssh/authorized_keys.boxery && mv ~/.ssh/authorized_keys.boxery ~/.ssh/authorized_keys'
 }
 
+# A stopped VM cannot receive keys. Defer that step until start; a running-but-unreachable
+# guest is an error, not a successful permission update.
+restore_pet_access() {
+	local inventory state; inventory=$(backend_list) || die "cannot inspect VM for pet access"
+	state=$(awk -F '\t' -v n="$1" '$1 == n {print $2}' <<<"$inventory")
+	case $state in
+	running|idle) pet_set_keys "$1" || die "could not restore pet access to $1" ;;
+	esac
+}
+
 # RESETTING(gen) → reimage from the clean image → FREE (or BROKEN if anything fails).
-lease_reset() { # NAME GEN
-	local name=$1 gen=$2 ok=0 ep h p
+lease_matches() { # NAME GEN EPOCH STATE: fail closed after taking the lifecycle lock
+	local r; r=$(leases get "$1") || die "lease store error"
+	jq -e --argjson gen "$2" --arg epoch "$3" --arg state "$4" '.gen == $gen and .epoch == $epoch and .state == $state' <<<"$r" >/dev/null
+}
+lease_reset() { with_vm_lock "$1" _lease_reset "$@"; }
+_lease_reset() { # NAME GEN EPOCH (lock held through finish, readiness and key installation)
+	local name=$1 gen=$2 epoch=$3 ok=0 ep h p action
+	lease_matches "$name" "$gen" "$epoch" RESETTING || { log "$name: stale reset skipped"; return 0; }
+	action=$(intent reset "$name" "$gen" "$epoch")
 	edge_clear "$name"   # the next holder must not inherit this holder's credential routes
 	# Every backend step runs in a subshell: backends `die` (exit) on failure, and a failed reset must
 	# still reach the BROKEN transition below instead of leaving the row stuck in RESETTING.
-	if ( with_vm_lock "$name" restore_vm "$name" "$POOL_SNAP" ) 2>/dev/null; then
+	if ( restore_vm "$name" "$POOL_SNAP" ) 2>/dev/null; then
 		ep=$( backend_wait_endpoint "$name" ) && h=${ep% *} && p=${ep#* } &&
 			( BOXERY_SSH_WAIT_TRIES=${BOXERY_SSH_WAIT_TRIES:-45} wait_ssh "$h" "$p" ) 2>/dev/null &&
 			vm_ssh_cmd "$h" "$p" "sudo date -u -s @$(date -u +%s) >/dev/null 2>&1; true" &&
 			( lease_set_keys "$name" ) && ok=1
 	fi
-	if ((ok)); then leases finish "$name" "$gen" FREE >/dev/null && log "$name reset → FREE"
-	else leases finish "$name" "$gen" BROKEN >/dev/null; log "$name reset FAILED → BROKEN (fix it, then: boxery-host pool rm $name && boxery-host pool add $name)"; fi
+	if ((ok)); then
+		leases finish "$name" "$gen" FREE >/dev/null || die "$name: reset commit failed"
+		log "$name reset → FREE"
+	else
+		leases finish "$name" "$gen" BROKEN >/dev/null || die "$name: failed-reset commit failed"
+		log "$name reset FAILED → BROKEN (fix it, then: boxery-host pool rm $name && boxery-host pool add $name)"
+	fi
+	intent_done "$action"
 }
 
 cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
@@ -205,7 +220,8 @@ cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 		valid_name "${1:-}"; backend_exists "$1" || die "no such vm: $1"
 		is_pool "$1" && die "$1 is already in the pool"
 		backend_ssh_endpoint "$1" >/dev/null   # must be running
-		local ep h p; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+		local ep h p action; ep=$(backend_ssh_endpoint "$1"); h=${ep% *}; p=${ep#* }
+		action=$(intent pool-add "$1")
 		# The clean snapshot must not carry a previous user's pushed grants (tmpfs) or keys.
 		vm_ssh_cmd "$h" "$p" 'rm -rf "/run/user/$(id -u)/boxery"' || true
 		lease_set_keys "$1" || die "could not lock down ssh keys on $1"
@@ -216,15 +232,21 @@ cmd_pool() { # add NAME | rm NAME [--force] | ls [--json]
 		vm_ssh_cmd "$h" "$p" 'sync' || true
 		if image_exists "$1@$POOL_SNAP"; then backend_image_rm "$1@$POOL_SNAP"; fi
 		if declare -F backend_legacy_snap_rm >/dev/null; then backend_legacy_snap_rm "$1" "$POOL_SNAP" || true; fi
-		with_vm_lock "$1" backend_capture "$1" "$1@$POOL_SNAP"
+		capture_vm "$1" "$1@$POOL_SNAP"
 		leases add "$1" >/dev/null
+		intent_done "$action"
 		log "$1 added to the pool (only lease holders can reach it now)" ;;
 	rm)
 		valid_name "${1:-}"
+		local row action; row=$(leases get "$1")
+		[[ $row != null ]] || die "$1 is not a pool VM"
+		[[ ${2:-} == --force ]] || jq -e '.state == "FREE" or .state == "BROKEN"' <<<"$row" >/dev/null || die "$1 is active; release it first (or --force)"
+		action=$(intent pool-rm "$1")
 		leases remove "$1" ${2:+"$2"} >/dev/null
 		# back to a pet: registered controller keys may log in again
-		if backend_ssh_endpoint "$1" >/dev/null 2>&1; then pet_set_keys "$1" || true; fi
-		if image_exists "$1@$POOL_SNAP"; then backend_image_rm "$1@$POOL_SNAP" || true; fi
+		restore_pet_access "$1"
+		backend_cleanup_image "$1@$POOL_SNAP"
+		intent_done "$action"
 		log "$1 removed from the pool" ;;
 	ls)
 		local j; j=$(pool_json) || die "lease store error"
@@ -257,14 +279,18 @@ cmd_acquire() { # --holder H [--ttl SECS] [--wait SECS]   (lease public key on s
 	done
 	local name gen lease exp
 	name=$(jq -r .name <<<"$claim"); gen=$(jq -r .gen <<<"$claim"); lease=$(jq -r .lease_id <<<"$claim"); exp=$(jq -r .expires_at <<<"$claim")
-	# Any failure from here on: give the VM back (reset), never leave it ACQUIRING.
-	ACQ_NAME=$name ACQ_GEN=$gen ACQ_DONE=0
-	trap 'if [[ $ACQ_DONE != 1 ]] && r=$(leases begin-reset-name "$ACQ_NAME" "$ACQ_GEN" 2>/dev/null); then lease_reset "$ACQ_NAME" "$(jq -r .gen <<<"$r")"; fi' EXIT
-	lease_set_keys "$name" "$pub" || die "could not install the lease key on $name"
-	leases commit "$name" "$gen" >/dev/null || { ACQ_DONE=1; die "lease on $name was taken over while acquiring (expired?)"; }
-	ACQ_DONE=1
+	with_vm_lock "$name" _lease_acquire "$name" "$gen" "$(jq -r .epoch <<<"$claim")" "$pub"
+
 	log "$name leased to $holder until $(date -d "@$exp" 2>/dev/null || date -r "$exp")"
 	echo "$name $lease $exp"
+}
+
+_lease_acquire() { # NAME GEN EPOCH PUBKEY
+	lease_matches "$1" "$2" "$3" ACQUIRING || die "lease on $1 changed while waiting for its lock"
+	local action; action=$(intent acquire "$1" "$2" "$3")
+	lease_set_keys "$1" "$4" || die "could not install the lease key on $1"
+	leases commit "$1" "$2" >/dev/null || die "lease on $1 was fenced"
+	intent_done "$action"
 }
 
 cmd_renew() { # LEASE_ID [--ttl SECS] → "NAME EXPIRES_AT"
@@ -275,16 +301,99 @@ cmd_renew() { # LEASE_ID [--ttl SECS] → "NAME EXPIRES_AT"
 
 cmd_release() { # LEASE_ID
 	local id=${1:-}; [[ $id =~ ^l-[0-9a-f]{32}$ ]] || die "invalid lease id"
-	local r; r=$(leases begin-reset "$id") || exit 2
-	lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")"
+	local r; r=$(leases find "$id") || exit 2
+	[[ $r != null ]] || die "unknown or inactive lease"
+	with_vm_lock "$(jq -r .name <<<"$r")" _lease_release "$id"
+}
+_lease_release() {
+	local r; r=$(leases begin-reset "$1") || return 2
+	_lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
+}
+_reap_candidate() { # NAME GEN EPOCH: deadline and generation are checked after locking
+	local rows r; rows=$(leases due "$@")
+	r=$(jq -c '.[0] // empty' <<<"$rows")
+	[[ -n $r ]] || return 0
+	log "reaping $1 ($(jq -r .reason <<<"$r"))"
+	_lease_reset "$1" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
+}
+cmd_reap() {
+	operations reconcile "$0"
+	local rows; rows=$(leases candidates) || return 1
+	jq -c '.[]' <<<"$rows" | while read -r r; do
+		with_vm_lock "$(jq -r .name <<<"$r")" _reap_candidate "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")" "$(jq -r .epoch <<<"$r")"
+	done
+	_reconcile_drift
 }
 
-cmd_reap() { # reset every expired / orphaned / pre-reboot lease
-	local rows; rows=$(leases due) || return 1
-	jq -c '.[]' <<<"$rows" | while read -r r; do
-		log "reaping $(jq -r .name <<<"$r") ($(jq -r .reason <<<"$r"))"
-		lease_reset "$(jq -r .name <<<"$r")" "$(jq -r .gen <<<"$r")"
-	done
+# Durable intent handlers run under the original operation's complete lock set. Only artifacts
+# named by that journal are removed: an unfamiliar VM or snapshot is never guessed to be garbage.
+capture_vm() { # NAME IMAGE
+	local state action
+	state=$(backend_list | awk -F '\t' -v n="$1" '$1 == n {print $2}')
+	action=$(intent capture "$1" "$2" "$state")
+	backend_capture "$1" "$2"
+	intent_done "$action"
+}
+recover_operation() {
+	local entries entry id kind data name gen epoch r
+	entries=$(operations intents)
+	while IFS= read -r entry; do
+		id=$(jq -r .id <<<"$entry"); kind=$(jq -r .kind <<<"$entry"); data=$(jq -c .data <<<"$entry")
+		name=$(jq -r '.[0]' <<<"$data")
+		case $kind in
+		create)
+			backend_cleanup_new "$name"
+			token_del "$name"; edge_clear "$name" ;;
+		remove)
+			backend_cleanup_new "$name"
+			# rm can have crashed between deleting the VM and deleting its images.
+			cleanup_vm_images "$name"
+			token_del "$name"; edge_clear "$name" ;;
+		capture) backend_recover_capture "$name" "$(jq -r '.[1]' <<<"$data")" "$(jq -r '.[2]' <<<"$data")" ;;
+		fork-image) backend_cleanup_image "$name" ;;
+		snapshot-remove) _delete_snapshot "$name" "$(jq -r '.[1]' <<<"$data")" ;;
+		revert) _revert "$name" "$(jq -r '.[1]' <<<"$data")" ;;
+		acquire)
+			gen=$(jq -r '.[1]' <<<"$data"); epoch=$(jq -r '.[2]' <<<"$data")
+			if lease_matches "$name" "$gen" "$epoch" ACQUIRING; then
+				r=$(leases begin-reset-name "$name" "$gen")
+				_lease_reset "$name" "$(jq -r .gen <<<"$r")" "$epoch"
+			fi ;;
+		reset) _lease_reset "$name" "$(jq -r '.[1]' <<<"$data")" "$(jq -r '.[2]' <<<"$data")" ;;
+		pool-add)
+			if ! is_pool "$name"; then
+				backend_cleanup_image "$name@$POOL_SNAP"
+				pet_set_keys "$name"
+			fi ;;
+		pool-rm)
+			if is_pool "$name"; then leases remove "$name" --force >/dev/null; fi
+			restore_pet_access "$name"
+			backend_cleanup_image "$name@$POOL_SNAP" ;;
+		*) die "unknown recovery intent: $kind" ;;
+		esac
+		intent_done "$id"
+	done < <(jq -c '.[]' <<<"$entries")
+}
+_reconcile_vm() {
+	local inventory row
+	inventory=$(backend_list) || die "cannot read backend inventory; refusing drift repair"
+	if ! awk -F '\t' -v n="$1" '$1 == n { found=1 } END { exit !found }' <<<"$inventory"; then
+		row=$(leases get "$1") || return 1
+		if [[ $row != null ]]; then leases missing "$1" >/dev/null; log "$1 missing from backend → BROKEN"; fi
+		token_del "$1"; edge_clear "$1"
+	fi
+}
+_reconcile_drift() {
+	local inventory rows tokens names name
+	inventory=$(backend_list) || die "cannot read backend inventory; refusing drift repair"
+	rows=$(leases list) || return 1
+	tokens='{}'; [[ ! -f $CONF/tokens.json ]] || tokens=$(cat "$CONF/tokens.json")
+	names=$( { printf '%s\n' "$inventory" | cut -f1; jq -r '.[].name' <<<"$rows"; jq -r 'keys[]' <<<"$tokens"; } | sort -u)
+	while IFS= read -r name; do
+		[[ -n $name ]] || continue
+		valid_name "$name"
+		with_vm_lock "$name" _reconcile_vm "$name"
+	done <<<"$names"
 }
 
 # ---------------------------------------------------------------- commands
@@ -378,7 +487,7 @@ start_reaper() {
 proxy_bind() { if declare -F backend_proxy_bind >/dev/null; then backend_proxy_bind; else echo 127.0.0.1; fi; }
 
 cmd_init() {
-	need jq; need node; need nc; need openssl
+	need jq; need node; need nc; need openssl; need ps
 	node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null || die "node $(node --version) lacks node:sqlite; need Node >= 22.13"
 	backend_check
 	ensure_tokens
@@ -416,21 +525,12 @@ cmd_add_key() { # pubkey on stdin
 
 cmd_build_base() { backend_check; backend_build_base; }
 
-# Per-VM lock for operations that read or replace a VM's disk (snap, fork, revert, pool reset, rm).
-# Runs CMD in a subshell (backends `die` = exit) and always releases the lock. A lock whose owner
-# died is taken over.
-with_vm_lock() { # NAME cmd...
-	local l=$CONF/locks/$1 i rc=0; mkdir -p "$CONF/locks"
-	for i in $(seq 1200); do
-		mkdir "$l" 2>/dev/null && break
-		if [[ -f $l/pid ]] && ! kill -0 "$(cat "$l/pid" 2>/dev/null)" 2>/dev/null; then rm -rf "$l"; continue; fi
-		((i == 1200)) && die "$1 is busy (lock $l)"
-		sleep 0.5
-	done
-	echo $$ >"$l/pid"
-	shift; ( "$@" ) || rc=$?
-	rm -rf "$l"
-	return $rc
+# All conflicting resources are held through the whole operation, not individual backend calls.
+with_vm_lock() { # NAME function args...
+	local name=$1; shift
+	case ${BOXERY_LOCKS:-} in *":$name:"*) ( "$@" ) ;;
+	*) operations run "$name" "$0" "$@" ;;
+	esac
 }
 
 cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
@@ -450,12 +550,8 @@ cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 	backend_exists "$name" && die "$name already exists"
 	backend_has_base || die "no base image; run: boxery-host build-base"
 	[[ -z $from ]] || image_exists "$from" || die "no such image: $from (boxery-host images)"
-	local userdata; userdata=$(boxery_seed "$name")
-	# If anything below fails (including die → exit), revoke the token minted for this VM and drop
-	# the half-created VM. EXIT, not ERR: die exits without firing ERR. Globals, not locals: the trap
-	# runs after this function's scope is gone.
-	NEW_NAME=$name NEW_DIR=$(dirname "$userdata") NEW_DONE=0
-	trap 'if [[ $NEW_DONE != 1 ]]; then token_del "$NEW_NAME" 2>/dev/null || true; if backend_exists "$NEW_NAME"; then backend_rm "$NEW_NAME" 2>/dev/null || true; fi; fi; rm -rf "$NEW_DIR"' EXIT
+	local action userdata; action=$(intent create "$name")
+	userdata=$(boxery_seed "$name")
 	backend_new "$name" "$cpus" "$mem" "$disk" "$userdata" "$from"
 	local ep host port; ep=$(backend_wait_endpoint "$name"); host=${ep% *}; port=${ep#* }
 	log "$name reachable at $host:$port; waiting for ssh + cloud-init"
@@ -470,7 +566,7 @@ cmd_new() { # NAME [--cpus N --mem MiB --disk GiB] [--from IMAGE]
 	fi
 	vm_ssh_cmd "$host" "$port" 'for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1' ||
 		log "warning: noVNC not answering yet"
-	NEW_DONE=1
+	intent_done "$action"
 	log "$name ready"
 	echo "$name $host:$port"
 }
@@ -495,21 +591,34 @@ cmd_connect() {
 	exec nc "${ep% *}" "${ep#* }"
 }
 
-cmd_start() { valid_name "$1"; backend_start "$1"; local ep; ep=$(backend_wait_endpoint "$1"); wait_ssh "${ep% *}" "${ep#* }"; log "$1 started"; }
+cmd_start() {
+	valid_name "$1"; backend_start "$1"
+	local ep; ep=$(backend_wait_endpoint "$1"); wait_ssh "${ep% *}" "${ep#* }"
+	if ! is_pool "$1"; then pet_set_keys "$1"; fi
+	log "$1 started"
+}
 cmd_stop() { valid_name "$1"; backend_stop "$1"; log "$1 shutting down"; }
 
+cleanup_vm_images() {
+	local images image; images=$(backend_images) || return 1
+	while IFS= read -r image; do
+		[[ -z $image ]] || backend_image_rm "$image" || return 1
+	done < <(printf '%s\n' "$images" | cut -f1 | grep "^$1@" || true)
+}
 _rm() {
 	backend_rm "$1"
-	# Not @fork-* images: a fork in progress may be booting VMs from one (it removes it when done).
-	local i; for i in $(backend_images | cut -f1 | grep "^$1@" | grep -v "^$1@fork-" || true); do backend_image_rm "$i" || log "warning: could not remove image $i"; done
+	# Forks and image readers hold this source's lock until all copies are independent.
+	cleanup_vm_images "$1"
 }
 cmd_rm() {
 	valid_name "$1"
 	is_pool "$1" && die "$1 is a pool VM; run: boxery-host pool rm $1 (after its lease ends)"
 	backend_exists "$1" || die "no such vm: $1"
-	with_vm_lock "$1" _rm "$1"
+	local action; action=$(intent remove "$1")
+	_rm "$1"
 	token_del "$1"
 	edge_clear "$1"
+	intent_done "$action"
 	log "$1 removed with its snapshots (proxy token revoked)"
 }
 
@@ -523,7 +632,7 @@ cmd_snap() { # NAME [LABEL]
 	valid_name "$1"; local s=${2:-snap-$(date +%Y%m%d-%H%M%S)}; valid_snap "$s"
 	backend_exists "$1" || die "no such vm: $1"
 	image_exists "$1@$s" && die "snapshot $1@$s exists (boxery-host snap-rm $1 $s)"
-	with_vm_lock "$1" backend_capture "$1" "$1@$s"
+	capture_vm "$1" "$1@$s"
 	log "snapshot $1@$s"
 }
 snaps_lines() { # NAME → LABEL<TAB>CREATED<TAB>SIZE (pool clean state and in-flight fork images included)
@@ -538,10 +647,20 @@ cmd_snaps() { # NAME [--json]
 cmd_snap_rm() { # NAME LABEL
 	valid_name "$1"; valid_snap "${2:-}"
 	[[ $2 != "$POOL_SNAP" ]] || ! is_pool "$1" || die "$1@$2 is the pool's clean state"
-	if image_exists "$1@$2"; then backend_image_rm "$1@$2"
-	elif declare -F backend_legacy_snap_rm >/dev/null && backend_legacy_snap_rm "$1" "$2"; then :
-	else die "no snapshot $1@$2"; fi
+	snaps_lines "$1" | cut -f1 | grep -xF "$2" >/dev/null || die "no snapshot $1@$2"
+	local action; action=$(intent snapshot-remove "$1" "$2")
+	_delete_snapshot "$1" "$2"
+	intent_done "$action"
 	log "removed snapshot $1@$2"
+}
+_delete_snapshot() { # idempotent replay of a previously validated removal
+	local images legacy; images=$(backend_images) || die "cannot inspect images during removal"
+	if printf '%s\n' "$images" | cut -f1 | grep -xF "$1@$2" >/dev/null; then
+		backend_image_rm "$1@$2"
+	elif declare -F backend_legacy_snaps >/dev/null; then
+		legacy=$(backend_legacy_snaps "$1") || die "cannot inspect legacy snapshots"
+		if grep -xF "$2" <<<"$legacy" >/dev/null; then backend_legacy_snap_rm "$1" "$2"; fi
+	fi
 }
 cmd_images() { printf '%-40s %-20s %s\n' IMAGE CREATED SIZE; backend_images | while IFS=$'\t' read -r i c z; do printf '%-40s %-20s %s\n' "$i" "$c" "$z"; done; }
 
@@ -556,7 +675,10 @@ cmd_revert() {
 	valid_name "$1"; [[ -n ${2:-} ]] || die "usage: revert NAME SNAP"; valid_snap "$2"
 	backend_exists "$1" || die "no such vm: $1"
 	is_pool "$1" && die "$1 is a pool VM; it is reset on release"
-	with_vm_lock "$1" _revert "$1" "$2"
+	snaps_lines "$1" | cut -f1 | grep -xF "$2" >/dev/null || die "no snapshot $2 for $1"
+	local action; action=$(intent revert "$1" "$2")
+	_revert "$1" "$2"
+	intent_done "$action"
 	log "$1 reverted to $2"
 }
 
@@ -608,17 +730,18 @@ cmd_fork() {
 		[[ $(printf '%s\n' "${dsts[@]}" | grep -cxF "$d") == 1 ]] || die "duplicate fork name $d"
 	done
 	local img; img="$src@fork-$(date +%Y%m%d%H%M%S)-$(openssl rand -hex 3)"
-	FORK_IMG=$img
-	trap 'if image_exists "$FORK_IMG"; then backend_image_rm "$FORK_IMG" || log "warning: could not remove $FORK_IMG"; fi' EXIT
+	local cleanup; cleanup=$(intent fork-image "$img")
 	local t0=$SECONDS
-	with_vm_lock "$src" backend_capture "$src" "$img"
+	capture_vm "$src" "$img"
 	log "captured $src in $((SECONDS - t0))s; booting ${#dsts[*]} fork(s)"
 	# Boot the forks in parallel; print results in argument order.
-	local out; out=$(mktemp -d) rc=0
+	local out=$CONF/work/$BOXERY_OPERATION_ID/fork-output rc=0; mkdir -p "$out"
 	for d in "${dsts[@]}"; do ( cmd_new "$d" ${flags[@]+"${flags[@]}"} --from "$img" >"$out/$d" ) & done
 	wait
 	for d in "${dsts[@]}"; do if [[ -s $out/$d ]]; then cat "$out/$d"; else rc=1; log "fork $d failed"; fi; done
 	rm -rf "$out"
+	backend_image_rm "$img"
+	intent_done "$cleanup"
 	log "forked $src → ${dsts[*]} in $((SECONDS - t0))s"
 	return $rc
 }
@@ -647,12 +770,23 @@ usage() {
 
 		  pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
 		  acquire --holder H [--ttl S] [--wait S]    lease a FREE pool VM (lease ssh pubkey on stdin)
-		  renew LEASE [--ttl S] | release LEASE | reap
+		  renew LEASE [--ttl S] | release LEASE | reap | reconcile
 	EOF
 }
 
 load_backend
 c=${1:-help}; shift || true
+case $c in
+__dispatch) c=$1; shift ;;
+__call) "$@"; exit ;;
+__recover) recover_operation; exit ;;
+new|fork|start|stop|rm|delete|snap|snap-rm|revert|edge-set)
+	BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@" ;;
+pool)
+	if [[ ${1:-} == add || ${1:-} == rm ]]; then
+		BOXERY_BACKEND=$BACKEND exec node --disable-warning=ExperimentalWarning "$ROOT/host/boxery-operations.mjs" dispatch "$CONF" "$0" "$c" "$@"
+	fi ;;
+esac
 case $c in
 init)
 	if [[ ${1:-} == --backend ]]; then BACKEND=$2; load_backend; fi
@@ -679,7 +813,7 @@ pool) cmd_pool "$@" ;;
 acquire) cmd_acquire "$@" ;;
 renew) cmd_renew "$@" ;;
 release) cmd_release "$@" ;;
-reap) cmd_reap ;;
+reap | reconcile) cmd_reap ;;
 help | -h | --help) usage ;;
 *) usage; exit 1 ;;
 esac

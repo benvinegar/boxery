@@ -9,6 +9,8 @@ NET=${BOXERY_NET:-default}
 BASE_VOL=${BOXERY_BASE_VOL:-boxery-base.qcow2}
 BASE_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 PREFIX=${BOXERY_DOMAIN_PREFIX:-boxery-}   # libvirt domain prefix; user-facing names omit it
+# Pin effective defaults in operation journals, even if host.env changes before recovery.
+export BOXERY_POOL=$POOL BOXERY_POOL_DIR=$POOL_DIR BOXERY_BASE_VOL=$BASE_VOL BOXERY_DOMAIN_PREFIX=$PREFIX BOXERY_NET=$NET
 dom() { echo "$PREFIX$1"; }
 exists() { virsh dominfo "$(dom "$1")" >/dev/null 2>&1; }
 
@@ -164,7 +166,8 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [IMAGE]
 }
 
 backend_list() { # → lines: NAME<TAB>STATE<TAB>ADDR<TAB>DISK
-	virsh list --all --name | grep "^$PREFIX" | while read -r d; do
+	local domains; domains=$(virsh list --all --name) || die "cannot list libvirt domains"
+	printf '%s\n' "$domains" | awk -v p="$PREFIX" 'index($0,p) == 1' | while read -r d; do
 		local n=${d#"$PREFIX"}
 		printf '%s\t%s\t%s\t%s\n' "$n" "$(virsh domstate "$d" | head -1)" "$(vm_ip "$n")" \
 			"$(virsh vol-info --pool "$POOL" "$d.qcow2" 2>/dev/null | awk '/Allocation/{print $2$3}')"
@@ -190,6 +193,37 @@ backend_rm() {
 	virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null
 	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null 2>&1 || true
 	virsh vol-delete --pool "$POOL" "$d-seed.iso" >/dev/null 2>&1 || true
+}
+
+# Recovery must handle a create killed before a domain exists (volumes may already exist).
+backend_cleanup_new() {
+	virsh list --all --name >/dev/null || die "cannot inspect libvirt during recovery"
+	virsh pool-refresh "$POOL" >/dev/null || die "cannot inspect storage pool during recovery"
+	local d v; d=$(dom "$1")
+	if exists "$1"; then backend_rm "$1"; fi
+	for v in "$d.qcow2" "$d-seed.iso"; do
+		if virsh vol-info --pool "$POOL" "$v" >/dev/null 2>&1; then
+			virsh vol-delete --pool "$POOL" "$v" >/dev/null || die "could not clean $v"
+		fi
+	done
+}
+backend_cleanup_image() {
+	virsh pool-refresh "$POOL" >/dev/null || die "cannot inspect storage pool during recovery"
+	if virsh vol-info --pool "$POOL" "$(vol "$1")" >/dev/null 2>&1; then backend_image_rm "$1"; fi
+}
+backend_recover_capture() { # NAME IMAGE ORIGINAL_STATE
+	local d job state; d=$(dom "$1")
+	virsh list --all --name >/dev/null || die "cannot inspect libvirt during recovery"
+	if exists "$1"; then
+		state=$(virsh domstate "$d")
+		if [[ $state == running || $state == paused ]]; then
+			job=$(virsh blockjob "$d" vda --info --raw) || die "cannot inspect $1's block job"
+			[[ -z $job ]] || virsh blockjob "$d" vda --abort >/dev/null || die "cannot stop $1's block job"
+			virsh domfsthaw "$d" >/dev/null 2>&1 || true
+			if [[ $3 != running && $3 != paused && $state == paused ]]; then virsh destroy "$d" >/dev/null; fi
+		fi
+	fi
+	backend_cleanup_image "$2"
 }
 
 # ---------------------------------------------------------------- images
@@ -234,9 +268,14 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 	virsh vol-info --pool "$POOL" "$(vol "$img")" >/dev/null 2>&1 || die "no such image: $img"
 	local legacy; legacy=$(legacy_snaps "$name" | tr '\n' ' ')
 	[[ -z $legacy ]] || die "$name has snapshots from an older boxery ($legacy); revert to or delete them first (boxery-host snap-rm $name SNAP)"
-	local bytes ib; bytes=$(vol_bytes "$name"); ib=$(vol_bytes "$img"); if ((ib > bytes)); then bytes=$ib; fi
+	local bytes ib; ib=$(vol_bytes "$img"); bytes=$ib
+	if virsh vol-info --pool "$POOL" "$d.qcow2" >/dev/null 2>&1; then bytes=$(vol_bytes "$name"); fi
+	if ((ib > bytes)); then bytes=$ib; fi
 	virsh destroy "$d" >/dev/null 2>&1 || true
-	virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null || die "could not remove $name's disk"
+	# A retry may follow a crash between deleting the old disk and creating its replacement.
+	if virsh vol-info --pool "$POOL" "$d.qcow2" >/dev/null 2>&1; then
+		virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null || die "could not remove $name's disk"
+	fi
 	new_overlay "$d.qcow2" "$bytes" "$(vol "$img")" || die "could not create $name's disk from $img"
 	virsh start "$d" >/dev/null || die "could not start $name"
 	pull_to_base "$name"

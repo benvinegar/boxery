@@ -120,8 +120,10 @@ proxy-log [N]
 
 pool add NAME | rm NAME [--force] | ls [--json]
 acquire --holder H [--ttl S] [--wait S]    (lease ssh pubkey on stdin)
-renew LEASE [--ttl S] | release LEASE | reap
+renew LEASE [--ttl S] | release LEASE | reap | reconcile
 ```
+
+`reconcile` (also performed by `reap`) recovers abandoned lifecycle operations and checks inventory drift. Conflicting VM mutations are serialized through readiness/key installation, not just disk operations. See [Lifecycle coordination and recovery](lifecycle.md) for crash behavior, backend responsibilities and upgrade precautions.
 
 ## JSON output
 

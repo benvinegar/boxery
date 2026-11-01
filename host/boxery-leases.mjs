@@ -70,7 +70,24 @@ export function open(file) {
 			holder TEXT, pubkey TEXT,
 			acquired_at INTEGER, expires_at INTEGER, boot_id TEXT,
 			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS operations (
+			id TEXT PRIMARY KEY, command TEXT NOT NULL, resources TEXT NOT NULL, env TEXT NOT NULL,
+			owner INTEGER NOT NULL, owner_start TEXT NOT NULL, boot TEXT NOT NULL,
+			child INTEGER, child_start TEXT, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS operation_locks (resource TEXT PRIMARY KEY, operation_id TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS operation_intents (
+			seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+			operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
 		);`));
+	// Old installations predate incarnation fencing. Serialize the migration with other openers.
+	tx(db, () => {
+		if (!db.prepare("PRAGMA table_info(vms)").all().some((c) => c.name === "epoch")) {
+			db.exec("ALTER TABLE vms ADD COLUMN epoch TEXT");
+			db.exec("UPDATE vms SET epoch=lower(hex(randomblob(16))) WHERE epoch IS NULL");
+		}
+	});
 	return db;
 }
 
@@ -87,7 +104,7 @@ function tx(db, fn) {
 }
 
 export function add(db, name) {
-	db.prepare("INSERT INTO vms (name, state, gen, updated_at) VALUES (?, 'FREE', 0, ?)").run(name, now());
+	db.prepare("INSERT INTO vms (name, state, gen, updated_at, epoch) VALUES (?, 'FREE', 0, ?, ?)").run(name, now(), randomBytes(16).toString("hex"));
 	return get(db, name);
 }
 
@@ -120,22 +137,24 @@ export function claim(db, holder, ttl, pubkey) {
 	const t = now();
 	const exp = t + clampTtl(ttl);
 	return tx(db, () => {
-		const r = db.prepare("SELECT name, gen FROM vms WHERE state = 'FREE' ORDER BY updated_at, name LIMIT 1").get();
+		const r = db.prepare(`SELECT name, gen, epoch FROM vms WHERE state = 'FREE'
+			AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE resource=vms.name)
+			ORDER BY updated_at, name LIMIT 1`).get();
 		if (!r) return null;
 		const lease = `l-${randomBytes(16).toString("hex")}`;
 		db.prepare(
 			`UPDATE vms SET state='ACQUIRING', gen=gen+1, lease_id=?, holder=?, pubkey=?, acquired_at=?, expires_at=?, boot_id=?, updated_at=?
 			 WHERE name=? AND gen=? AND state='FREE'`,
 		).run(lease, holder, pubkey, t, exp, bootId(), t, r.name, r.gen);
-		return { name: r.name, gen: r.gen + 1, lease_id: lease, expires_at: exp };
+		return { name: r.name, gen: r.gen + 1, epoch: r.epoch, lease_id: lease, expires_at: exp };
 	});
 }
 
 /** ACQUIRING(gen) → LEASED. False if someone else moved the row on (e.g. the reaper). */
 export function commit(db, name, gen) {
 	const r = db
-		.prepare("UPDATE vms SET state='LEASED', gen=gen+1, updated_at=? WHERE name=? AND gen=? AND state='ACQUIRING'")
-		.run(now(), name, Number(gen));
+		.prepare("UPDATE vms SET state='LEASED', gen=gen+1, updated_at=? WHERE name=? AND gen=? AND state='ACQUIRING' AND expires_at>? AND boot_id=?")
+		.run(now(), name, Number(gen), now(), bootId());
 	return r.changes === 1;
 }
 
@@ -163,10 +182,10 @@ const toResetting = (db, name, gen) =>
 /** Release: LEASED/ACQUIRING with this lease → RESETTING. The lease id stops working immediately. */
 export function beginReset(db, leaseId) {
 	return tx(db, () => {
-		const r = db.prepare("SELECT name, gen, state FROM vms WHERE lease_id = ?").get(leaseId);
+		const r = db.prepare("SELECT name, gen, state, epoch FROM vms WHERE lease_id = ?").get(leaseId);
 		if (!r || !["LEASED", "ACQUIRING"].includes(r.state)) throw new Error("unknown or inactive lease");
 		toResetting(db, r.name, r.gen);
-		return { name: r.name, gen: r.gen + 1 };
+		return { name: r.name, gen: r.gen + 1, epoch: r.epoch };
 	});
 }
 
@@ -176,22 +195,30 @@ export function beginResetName(db, name, gen) {
 		const r = get(db, name);
 		if (!r || r.gen !== Number(gen) || r.state !== "ACQUIRING") throw new Error("fenced: row changed");
 		toResetting(db, name, r.gen);
-		return { name, gen: r.gen + 1 };
+		return { name, gen: r.gen + 1, epoch: r.epoch };
 	});
 }
 
-/** Rows that need a reset, claimed for it (moved to RESETTING with a fresh generation). */
-export function due(db) {
-	const t = now();
-	const boot = bootId();
+function resetReason(r) {
+	if (r.state === "LEASED" && r.expires_at <= now()) return "expired";
+	if (r.state === "LEASED" && r.boot_id !== bootId()) return "host rebooted";
+	if (["ACQUIRING", "RESETTING"].includes(r.state) && r.updated_at < now() - STALE_SECS) return `stale ${r.state}`;
+	return null;
+}
+
+/** Observation only. The host takes the VM lock before claiming a candidate for reset. */
+export function candidates(db) {
+	return db.prepare("SELECT * FROM vms").all().filter(resetReason);
+}
+
+/** Claim resets. With a candidate, revalidate its generation, incarnation AND deadline under lock. */
+export function due(db, name, gen, epoch) {
 	return tx(db, () => {
 		const out = [];
-		for (const r of db.prepare("SELECT * FROM vms").all()) {
-			let reason = null;
-			if (r.state === "LEASED" && r.expires_at <= t) reason = "expired";
-			else if (r.state === "LEASED" && r.boot_id !== boot) reason = "host rebooted";
-			else if (["ACQUIRING", "RESETTING"].includes(r.state) && r.updated_at < t - STALE_SECS) reason = `stale ${r.state}`;
-			if (reason && toResetting(db, r.name, r.gen)) out.push({ name: r.name, gen: r.gen + 1, reason });
+		for (const r of candidates(db)) {
+			if (name != null && (r.name !== name || r.gen !== Number(gen) || r.epoch !== epoch)) continue;
+			const reason = resetReason(r);
+			if (reason && toResetting(db, r.name, r.gen)) out.push({ name: r.name, gen: r.gen + 1, epoch: r.epoch, reason });
 		}
 		return out;
 	});
@@ -220,13 +247,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 			case "add": out(add(db, a[0])); break;
 			case "remove": out(remove(db, a[0], a[1] === "--force")); break;
 			case "get": out(get(db, a[0])); break;
+			case "find": out(db.prepare("SELECT * FROM vms WHERE lease_id=?").get(a[0]) ?? null); break;
+			case "candidates": out(candidates(db)); break;
+			case "missing":
+				db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
+					pubkey=NULL, acquired_at=NULL, expires_at=NULL, boot_id=NULL, updated_at=?
+					WHERE name=? AND state!='BROKEN'`).run(now(), a[0]);
+				out(get(db, a[0])); break;
 			case "list": out(list(db)); break;
 			case "claim": out(claim(db, a[0], a[1], a[2])); break;
 			case "commit": if (!commit(db, a[0], a[1])) process.exit(3); out({ ok: true }); break;
 			case "renew": out(renew(db, a[0], a[1])); break;
 			case "begin-reset": out(beginReset(db, a[0])); break;
 			case "begin-reset-name": out(beginResetName(db, a[0], a[1])); break;
-			case "due": out(due(db)); break;
+			case "due": out(due(db, ...a)); break;
 			case "finish": if (!finish(db, a[0], a[1], a[2])) process.exit(3); out({ ok: true }); break;
 			default: throw new Error(`unknown op ${op}`);
 		}

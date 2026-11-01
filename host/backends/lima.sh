@@ -18,9 +18,10 @@ LIMA_BASE=${LIMA_PREFIX}base
 LIMA_GATEWAY=${BOXERY_LIMA_GATEWAY:-192.168.5.2}
 LIMA_VMTYPE=${BOXERY_LIMA_VMTYPE:-$([[ $(uname) == Darwin ]] && echo vz || echo qemu)}
 LIMA_ARCH=${BOXERY_LIMA_ARCH:-default}
+export BOXERY_LIMA_PREFIX=$LIMA_PREFIX BOXERY_LIMA_GATEWAY=$LIMA_GATEWAY BOXERY_LIMA_VMTYPE=$LIMA_VMTYPE BOXERY_LIMA_ARCH=$LIMA_ARCH
 linst() { echo "$LIMA_PREFIX$1"; }
 lima_json() { limactl list --format json 2>/dev/null | jq -c "select(.name == \"$1\")"; }
-lima_exists_inst() { [[ -n $(lima_json "$1") ]]; }
+lima_exists_inst() { local j; j=$(lima_json "$1") || die "cannot inspect Lima instances"; [[ -n $j ]]; }
 # Image instance name: a hash, since image names contain '@' (not allowed by Lima) and can be long.
 img_inst() { local h; h=$(printf '%s' "$1" | { shasum 2>/dev/null || sha1sum; } | cut -c1-16); echo "${LIMA_PREFIX}img.$h"; }
 lima_dir() { echo "${LIMA_HOME:-$HOME/.lima}/$1"; }
@@ -190,6 +191,21 @@ backend_start() { limactl start "$(linst "$1")" --timeout 10m >/dev/null 2>&1 ||
 backend_stop() { limactl stop "$(linst "$1")" >/dev/null 2>&1 || die "limactl stop failed"; }
 backend_rm() { backend_exists "$1" || die "no such vm: $1"; limactl delete --force "$(linst "$1")" >/dev/null 2>&1; }
 
+backend_cleanup_new() {
+	local i; i=$(linst "$1")
+	if lima_exists_inst "$i"; then limactl delete --force "$i" >/dev/null 2>&1 || die "could not clean $1"; fi
+	if lima_exists_inst "$i.new"; then limactl delete --force "$i.new" >/dev/null 2>&1 || die "could not clean $1.new"; fi
+}
+backend_cleanup_image() {
+	local im; im=$(img_inst "$1")
+	# A clone killed before boxery-image was written is not in backend_images, but is still ours.
+	if lima_exists_inst "$im"; then limactl delete --force "$im" >/dev/null 2>&1 || die "could not clean image $1"; fi
+}
+backend_recover_capture() {
+	backend_cleanup_image "$2"
+	if [[ $3 == running ]] && backend_exists "$1"; then backend_start "$1"; fi
+}
+
 # ---------------------------------------------------------------- images
 backend_capture() { # NAME IMAGE
 	local i im was; i=$(linst "$1"); im=$(img_inst "$2")
@@ -216,7 +232,14 @@ backend_image_rm() { local im; im=$(img_inst "$1"); lima_exists_inst "$im" || di
 backend_reimage() { # NAME IMAGE: replace the instance with a clone of the image (same name and size); ends running
 	local i im tmp j; i=$(linst "$1"); im=$(img_inst "$2"); tmp="$i.new"
 	lima_exists_inst "$im" || die "no such image: $2"
-	j=$(lima_json "$i"); [[ -n $j ]] || die "no such vm: $1"
+	j=$(lima_json "$i")
+	if [[ -z $j ]] && lima_exists_inst "$tmp"; then
+		# Recovery after the old instance was deleted but before its replacement was renamed.
+		limactl rename --tty=false "$tmp" "$i" >/dev/null 2>&1 || die "could not recover $1.new"
+		limactl start "$i" --timeout 10m >/dev/null 2>&1 || die "could not start recovered $1"
+		return
+	fi
+	[[ -n $j ]] || die "no such vm: $1"
 	limactl delete --force "$tmp" >/dev/null 2>&1 || true
 	# Clone first, swap after: a failed clone leaves the VM as it was.
 	limactl clone --tty=false "$im" "$tmp" --cpus "$(jq -r .cpus <<<"$j")" --memory "$(jq -r '.memory / 1073741824 | floor' <<<"$j")" \

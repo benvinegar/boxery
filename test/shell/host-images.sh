@@ -105,8 +105,12 @@ echo "== concurrency: snapshots of one VM are serialized"
 "$H" new c1 >/dev/null 2>&1
 for i in 1 2 3 4; do ("$H" snap c1 "k$i" >/dev/null 2>&1 || true) & done; wait
 (( $("$H" snaps c1 | wc -l) == 4 )) && ok "4 parallel snaps → 4 images" || bad "snaps: $("$H" snaps c1 | tr '\n' ' ')"
-[[ ! -d $BOXERY_CONF/locks/c1 ]] && ok "lock released" || bad "lock left behind"
-mkdir -p "$BOXERY_CONF/locks/c1"; echo 999999 >"$BOXERY_CONF/locks/c1/pid"
-"$H" snap c1 k5 >/dev/null 2>&1 && ok "a dead owner's lock is taken over" || bad "stale lock blocks"
+remaining=$(node --disable-warning=ExperimentalWarning --input-type=module -e '
+import { DatabaseSync } from "node:sqlite";
+const db = new DatabaseSync(process.argv[1]);
+console.log(db.prepare("SELECT count(*) AS n FROM operation_locks").get().n);
+' "$BOXERY_CONF/leases.db")
+[[ $remaining == 0 ]] && ok "lifecycle locks released" || bad "lock left behind"
+# Actual dead-owner/process-group recovery is exercised by test/operations.test.mjs.
 
 echo; echo "passed: $pass  failed: $fail"; ((fail == 0))
