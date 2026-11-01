@@ -76,9 +76,15 @@ if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
 	check "git ls-remote https://github.com/$repo via the edge" "$A" run "$VM" bash -c "git ls-remote https://github.com/$repo HEAD | grep -q HEAD"
 	check "GitHub API via \$BOXERY_EDGE" "$A" run "$VM" bash -c 'bash -lc "curl -sf \"\$BOXERY_EDGE/api.github.com/user\" | grep -q login"'
 	check "read-only grant blocks writes" "$A" run "$VM" bash -c 'bash -lc "test \$(curl -s -o /dev/null -w %{http_code} -X POST \"\$BOXERY_EDGE/api.github.com/user/repos\" -d {}) = 403"'
-	check "token is nowhere in the VM" bash -c "gh auth token | '$A' run '$VM' 'T=\$(cat); ! grep -rqsF -e \"\$T\" /run/user/\$(id -u) ~ 2>/dev/null && ! env | grep -qF -e \"\$T\"'"
+	check "token is nowhere in the VM" bash -c "gh auth token | '$A' run '$VM' bash -c 'T=\$(cat); ! grep -rqsF -e \"\$T\" /run/user/\$(id -u) ~ 2>/dev/null && ! env | grep -qF -e \"\$T\"'"
+	# Revocation is checked at the proxy: the VM's edge URL from before must now be refused. (A public
+	# repo stays readable without credentials, so git can only show it for a private one.)
+	edge=$("$A" run "$VM" bash -lc 'echo "$BOXERY_EDGE"')
 	"$A" revoke "$VM" github >/dev/null 2>&1
-	check "revoke cuts access" "$A" run "$VM" bash -c "! git ls-remote https://github.com/$repo HEAD >/dev/null 2>&1"
+	check "revoke cuts access (the VM's edge URL gets 403)" "$A" run "$VM" bash -c "test \$(curl -s -o /dev/null -w %{http_code} '$edge/api.github.com/user') = 403"
+	if [[ -n ${BOXERY_E2E_PRIVATE_REPO:-} ]]; then
+		check "revoke cuts git access to $repo" "$A" run "$VM" bash -c "! git ls-remote https://github.com/$repo HEAD >/dev/null 2>&1"
+	fi
 else
 	echo "  - gh not logged in on this machine; skipping"
 fi
