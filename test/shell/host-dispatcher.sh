@@ -101,7 +101,14 @@ r=$(restarts); out=$("$H" resize rz --cpus 2 --disk 20 2>&1) && [[ $(restarts) =
 "$H" start rz >/dev/null 2>&1
 if BOXERY_FAKE_FAIL_RESIZE=1 "$H" resize rz --cpus 8 >/dev/null 2>&1; then bad "failed resize reported success"; else ok "a failed resize exits non-zero"; fi
 [[ $(sz) == "2 2048 20" && $(cat "$BOXERY_FAKE_DIR/rz/state") == running ]] && ok "...and leaves the VM running at its old size" || bad "after failure: $(sz) $(cat "$BOXERY_FAKE_DIR/rz/state")"
-[[ ! -e $BOXERY_CONF/locks/rz ]] && ok "...and releases the VM lock" || bad "lock left behind"
+"$H" resize rz --cpus 3 >/dev/null 2>&1 && [[ $(sz) == "3 2048 20" ]] && "$H" resize rz --cpus 2 >/dev/null 2>&1 \
+	&& ok "...and releases the VM's operation lock (the next resize runs)" || bad "resize after a failure: $(sz)"
+# Lima's limactl start leaves a hostagent daemon behind; the supervisor must not wait for it (fd 3)
+t0=$(date +%s); BOXERY_FAKE_DAEMON=20 "$H" resize rz --cpus 3 >/dev/null 2>&1; t1=$(date +%s)
+"$H" stop rz >/dev/null 2>&1; BOXERY_FAKE_DAEMON=20 "$H" start rz >/dev/null 2>&1; t2=$(date +%s)
+((t1 - t0 < 10 && t2 - t1 < 10)) && [[ $(sz) == "3 2048 20" ]] && ok "resize and start do not wait for a daemon they leave behind" \
+	|| bad "operations waited for a daemon: resize $((t1 - t0))s, start $((t2 - t1))s"
+"$H" resize rz --cpus 2 >/dev/null 2>&1
 for args in "rz" "rz --cpus" "rz --cpus 0" "rz --cpus x" "rz --mem 256" "rz --disk -1" "rz --bogus 1" "rz extra --cpus 2" "--cpus 2" "nosuchvm --cpus 2" "Bad --cpus 2"; do
 	read -r -a argv <<<"$args"; expect_fail "resize rejects: $args" "$H" resize "${argv[@]}"
 done
