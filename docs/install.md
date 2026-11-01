@@ -4,7 +4,7 @@
 
 boxery has two halves:
 
-- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended) or a Mac with Lima.
+- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev (experimental).
 - **The controller** is the `boxery` CLI on your laptop. It's bash + ssh, and it's what the pi extension and the MCP server call.
 
 They can be the same machine.
@@ -12,6 +12,7 @@ They can be the same machine.
 - [Linux host (libvirt/KVM)](#linux-host-libvirtkvm)
 - [macOS host (Lima)](#macos-host-lima)
 - [Linux host (Cloud Hypervisor, experimental)](#linux-host-cloud-hypervisor-experimental)
+- [exe.dev (experimental)](#exedev-experimental)
 - [Laptop / controller](#laptop--controller)
 - [LLM providers for in-VM agents](#llm-providers-for-in-vm-agents)
 - [Verify](#verify)
@@ -67,6 +68,20 @@ sudo setcap cap_net_admin+ep "$(command -v cloud-hypervisor)"
 ./host/boxery-host init --backend cloud-hypervisor
 ./host/boxery-host build-base
 ```
+
+## exe.dev (experimental)
+
+No KVM at all: run the VMs on [exe.dev](https://exe.dev) and the host (proxy, leases, tunnels) on any Linux box or Mac with ssh. You need an exe.dev account whose ssh key this machine offers first. If `ssh exe.dev whoami` says "Please complete registration", run `ssh exe.dev` in a terminal and enter your account's email to add the key.
+
+```bash
+ssh exe.dev whoami
+npm install -g boxery-vm
+boxery-host init --backend exe       # BOXERY_EXE_KEY=~/.ssh/id_exe to use a dedicated key
+boxery-host build-base               # ~10 min on an exeuntu VM, then kept paused as the base
+boxery setup local                   # or: boxery setup you@this-host
+```
+
+VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs); raise `BOXERY_EXE_MAX_CPUS` / `BOXERY_EXE_MAX_MEM` on bigger plans. `stop` pauses a VM. Each VM is reached through an ssh tunnel the host keeps open, so the host must stay up. Layout, security notes and what's still unverified: [backends → exe](../host/backends/README.md#exe-experimental).
 
 Backend details: [host/backends/README.md](../host/backends/README.md).
 

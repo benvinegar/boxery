@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # boxery-host: manage Ubuntu desktop VMs for coding agents.
-# Runs on the VM host (Linux with libvirt, or macOS/Linux with Lima). The controller (`boxery`)
-# calls it over ssh, or directly when the controller runs on the host itself (HOST=local).
+# Runs on the VM host (Linux with libvirt, macOS/Linux with Lima, or anywhere with ssh for exe.dev). The
+# controller (`boxery`) calls it over ssh, or directly when the controller runs on the host itself (HOST=local).
 # VM-platform specifics live in host/backends/<backend>.sh (see host/backends/README.md).
 set -euo pipefail
 
@@ -12,7 +12,7 @@ export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}   # used by backends
 # Settings persisted by `init` (backend, proxy port/unit). Explicit env vars win over the file.
 if [ -f "$CONF/host.env" ]; then
 	while IFS='=' read -r k v; do
-		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_LIMA_PREFIX | BOXERY_CH_DIR | BOXERY_CH_NET | BOXERY_CH_DNS | BOXERY_CH_FIRMWARE | BOXERY_CH_SUDO) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_LIMA_PREFIX | BOXERY_CH_DIR | BOXERY_CH_NET | BOXERY_CH_DNS | BOXERY_CH_FIRMWARE | BOXERY_CH_SUDO | BOXERY_EXE_DIR | BOXERY_EXE_PREFIX | BOXERY_EXE_KEY | BOXERY_EXE_PORT_BASE | BOXERY_EXE_GUEST_PORT | BOXERY_EXE_EGRESS | BOXERY_EXE_POOL | BOXERY_EXE_MAX_CPUS | BOXERY_EXE_MAX_MEM) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
 	done <"$CONF/host.env"
 fi
 PROXY_PORT=${BOXERY_PROXY_PORT:-8088}
@@ -502,7 +502,7 @@ cmd_init() {
 	chmod 600 "$CONF/proxy.env"
 	{
 		printf 'BOXERY_BACKEND=%s\nBOXERY_PROXY_PORT=%s\nBOXERY_PROXY_UNIT=%s\n' "$BACKEND" "$PROXY_PORT" "$PROXY_UNIT"
-		for k in BOXERY_POOL BOXERY_POOL_DIR BOXERY_BASE_VOL BOXERY_DOMAIN_PREFIX BOXERY_LIMA_PREFIX BOXERY_CH_DIR BOXERY_CH_NET BOXERY_CH_DNS BOXERY_CH_FIRMWARE; do [ -z "${!k:-}" ] || printf '%s=%s\n' "$k" "${!k}"; done
+		for k in BOXERY_POOL BOXERY_POOL_DIR BOXERY_BASE_VOL BOXERY_DOMAIN_PREFIX BOXERY_LIMA_PREFIX BOXERY_CH_DIR BOXERY_CH_NET BOXERY_CH_DNS BOXERY_CH_FIRMWARE BOXERY_EXE_DIR BOXERY_EXE_PREFIX BOXERY_EXE_KEY BOXERY_EXE_PORT_BASE BOXERY_EXE_GUEST_PORT BOXERY_EXE_EGRESS BOXERY_EXE_POOL BOXERY_EXE_MAX_CPUS BOXERY_EXE_MAX_MEM; do [ -z "${!k:-}" ] || printf '%s=%s\n' "$k" "${!k}"; done
 		[ -z "${BOXERY_CH_SUDO+x}" ] || printf 'BOXERY_CH_SUDO=%s\n' "$BOXERY_CH_SUDO"   # "" (run as root) is a real value
 	} >"$CONF/host.env"
 	backend_init
@@ -756,7 +756,7 @@ usage() {
 	cat <<-EOF
 		boxery-host — Ubuntu desktop VMs for coding agents (backend: $BACKEND)
 
-		  init [--backend libvirt|lima|cloud-hypervisor]  install proxy services + backend setup, symlinks
+		  init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
 		  build-base                build the golden desktop image (one-time)
 		  add-key < key.pub         authorize a controller's ssh key for new VMs
 		  new NAME [--cpus N --mem MiB --disk GiB]

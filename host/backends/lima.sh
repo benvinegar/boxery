@@ -84,41 +84,7 @@ backend_build_base() {
 # over ssh. Lima owns the instance's own cloud-init seed, so we replay ours as root.
 lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	local f=$1 mode=$2
-	node -e '
-		const fs = require("fs");
-		const yaml = fs.readFileSync(process.argv[1], "utf8");
-		// minimal cloud-config reader: write_files (path/owner/permissions/encoding/content) and runcmd lines
-		const files = []; let cur = null, inContent = false, indent = 0;
-		const lines = yaml.split("\n");
-		let section = "";
-		for (const line of lines) {
-			if (/^[a-z_]+:/.test(line)) { section = line.split(":")[0]; if (cur) { files.push(cur); cur = null; } inContent = false; continue; }
-			if (section !== "write_files") continue;
-			const m = line.match(/^  - path: (.*)$/);
-			if (m) { if (cur) files.push(cur); cur = { path: m[1].trim(), content: "" }; inContent = false; continue; }
-			if (!cur) continue;
-			if (inContent) {
-				if (line.trim() === "" ) { cur.content += "\n"; continue; }
-				const ind = line.match(/^ */)[0].length;
-				if (ind >= indent) { cur.content += line.slice(indent) + "\n"; continue; }
-				inContent = false;
-			}
-			const kv = line.match(/^    ([a-z]+): ?(.*)$/);
-			if (kv) {
-				if (kv[1] === "content" && kv[2].trim() === "|") { inContent = true; indent = 6; continue; }
-				cur[kv[1]] = kv[2].replace(/^"(.*)"$/, "$1");
-			}
-		}
-		if (cur) files.push(cur);
-		let sh = "set -e\n";
-		for (const f of files) {
-			const data = f.encoding === "b64" ? f.content.trim() : Buffer.from(f.content).toString("base64");
-			sh += `mkdir -p "$(dirname ${JSON.stringify(f.path)})"; echo ${data.replace(/\s/g, "")} | base64 -d > ${JSON.stringify(f.path)}\n`;
-			if (f.permissions) sh += `chmod ${f.permissions} ${JSON.stringify(f.path)}\n`;
-			if (f.owner) sh += `chown ${f.owner} ${JSON.stringify(f.path)} 2>/dev/null || true\n`;
-		}
-		process.stdout.write(sh);
-	' "$f" >"$f.files.sh"
+	node "$ROOT/host/cloudconfig-sh.mjs" "$f" >"$f.files.sh" || return 1
 	if [[ $mode == build ]]; then
 		# The build script disables cloud-init re-runs, linger etc. exactly as in the libvirt builder.
 		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo bash -s' <"$f.files.sh" || return 1

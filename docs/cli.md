@@ -154,7 +154,7 @@ VMs on the host, plus the grants this machine has given each one.
 | Field | Type | |
 |---|---|---|
 | `name` | string | VM name |
-| `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima) |
+| `state` | string \| null | backend state: `running`, `shut off`, … (as reported by libvirt/Lima; `paused` on exe.dev) |
 | `addr` | string \| null | address the host reaches the VM at (`IP` for libvirt, `127.0.0.1:PORT` for Lima) |
 | `disk` | string \| null | disk usage, human readable (e.g. `2.1GiB`) |
 | `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}` (see `pool ls`) |
