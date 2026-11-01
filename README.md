@@ -1,8 +1,8 @@
 <h1 align="center">boxery</h1>
 
 <p align="center">
-  <strong>VMs for your agents, on any backend.</strong><br>
-  A control plane that gives coding agents full Linux desktop VMs over MCP: on your Mac, on a KVM box you run, or in the cloud. Every backend gets the same tools, and your credentials stay on the control plane.
+  <strong>Self-serve VMs for any coding agent, on any host.</strong><br>
+  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux VMs on your Mac, your own server, or the cloud. A control plane you run keeps your credentials, grants and leases.
 </p>
 
 <p align="center">
