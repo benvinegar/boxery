@@ -11,19 +11,17 @@
 //   FREE ──claim──▶ ACQUIRING ──commit──▶ LEASED ──release / expiry / host reboot──▶ RESETTING ──finish──▶ FREE
 //                       └──────────── failed key install / stale ─────────────────────▶ RESETTING ──finish──▶ BROKEN
 //
-// CLI (used by host/boxery-host; prints JSON):
-//   node boxery-leases.mjs DB add NAME | remove NAME [--force] | get NAME | list
-//   node boxery-leases.mjs DB claim HOLDER TTL PUBKEY        → {name,gen,lease_id,expires_at} | null
-//   node boxery-leases.mjs DB commit NAME GEN                → ACQUIRING(gen) → LEASED; exit 3 if fenced
-//   node boxery-leases.mjs DB renew LEASE_ID TTL             → {name,expires_at}
-//   node boxery-leases.mjs DB begin-reset LEASE_ID           → {name,gen}   (release)
+// Also the host's shared store primitives: the SQLite schema (leases + operation journal, see
+// boxery-operations.mjs), BEGIN IMMEDIATE transactions, VM names and boot/process identity.
+//
+// CLI (used by host/boxery-host; prints JSON). Lease transitions themselves run in-process
+// (boxery-lifecycle.mjs); the shell only inspects and edits pool membership:
+//   node boxery-leases.mjs DB add NAME | remove NAME [--force] | get NAME | list | missing NAME
 //   node boxery-leases.mjs DB begin-reset-name NAME GEN      → {name,gen}   (after a failed acquire; fenced)
-//   node boxery-leases.mjs DB due                            → [{name,gen,reason}], already moved to RESETTING
-//   node boxery-leases.mjs DB finish NAME GEN FREE|BROKEN    → exit 3 if fenced
 // Env (tests): BOXERY_NOW (epoch seconds), BOXERY_BOOT_ID.
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import os from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
 export const TTL_MIN = 60;
@@ -31,14 +29,46 @@ export const TTL_MAX = 8 * 3600;
 export const STALE_SECS = 300; // an ACQUIRING/RESETTING row older than this is assumed abandoned
 
 export const now = () => Number(process.env.BOXERY_NOW ?? Math.floor(Date.now() / 1000));
-export function bootId() {
-	if (process.env.BOXERY_BOOT_ID) return process.env.BOXERY_BOOT_ID;
-	try {
-		return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); // Linux
-	} catch {
-		return `boot-${Math.round((Date.now() / 1000 - os.uptime()) / 60)}`; // macOS: boot time, minute precision
+export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
+
+// Linux exposes precise kernel start ticks; macOS uses ps lstart in a fixed locale/timezone.
+// Zombies no longer execute side effects. Inspection errors other than "not found" fail closed.
+export const PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
+export function identity(pid) {
+	if (process.platform === "linux") {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+			if (["Z", "X"].includes(fields[0])) return null;
+			if (!/^\d+$/.test(fields[19] ?? "")) throw new Error("malformed process start time");
+			return `linux:${fields[19]}`;
+		} catch (e) {
+			if (["ENOENT", "ESRCH"].includes(e.code)) return null;
+			throw e;
+		}
 	}
+	const r = spawnSync("ps", ["-p", String(pid), "-o", "stat=", "-o", "lstart="], { encoding: "utf8", env: PS_ENV });
+	if (r.error || (r.status !== 0 && r.status !== 1) || (r.status === 1 && r.stderr?.trim())) throw new Error(`cannot inspect process ${pid}`);
+	const s = r.stdout?.trim();
+	if (r.status !== 0 || !s || s.startsWith("Z")) return null;
+	return s.replace(/^\S+\s+/, "");
 }
+
+// The machine's boot identity. Linux: the kernel's boot_id. macOS: launchd's start time, which
+// (unlike now - uptime) does not move when the wall clock is stepped.
+let machineBoot;
+export function machineBootId() {
+	if (machineBoot) return machineBoot;
+	try { machineBoot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); }
+	catch (e) {
+		if (e.code !== "ENOENT") throw e;
+		machineBoot = identity(1);
+		if (!machineBoot) throw new Error("cannot determine host boot identity");
+	}
+	return machineBoot;
+}
+/** Lease fencing: a lease taken before a reboot is void. Tests fake reboots with BOXERY_BOOT_ID. */
+export const bootId = () => process.env.BOXERY_BOOT_ID || machineBootId();
 const clampTtl = (t) => Math.max(TTL_MIN, Math.min(TTL_MAX, Math.floor(Number(t) || 1800)));
 const HOLDER = /^[A-Za-z0-9._@:/+-]{1,128}$/;
 const PUBKEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]{20,} ?[^\n]{0,200}$/;
@@ -91,7 +121,7 @@ export function open(file) {
 	return db;
 }
 
-function tx(db, fn) {
+export function tx(db, fn) {
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const r = fn();
@@ -251,21 +281,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 			case "add": out(add(db, a[0])); break;
 			case "remove": out(remove(db, a[0], a[1] === "--force")); break;
 			case "get": out(get(db, a[0])); break;
-			case "find": out(find(db, a[0])); break;
-			case "candidates": out(candidates(db)); break;
 			case "missing":
 				db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
 					pubkey=NULL, acquired_at=NULL, expires_at=NULL, boot_id=NULL, updated_at=?
 					WHERE name=? AND state!='BROKEN'`).run(now(), a[0]);
 				out(get(db, a[0])); break;
 			case "list": out(list(db)); break;
-			case "claim": out(claim(db, a[0], a[1], a[2])); break;
-			case "commit": if (!commit(db, a[0], a[1])) process.exit(3); out({ ok: true }); break;
-			case "renew": out(renew(db, a[0], a[1])); break;
-			case "begin-reset": out(beginReset(db, a[0])); break;
 			case "begin-reset-name": out(beginResetName(db, a[0], a[1])); break;
-			case "due": out(due(db, ...a)); break;
-			case "finish": if (!finish(db, a[0], a[1], a[2])) process.exit(3); out({ ok: true }); break;
 			default: throw new Error(`unknown op ${op}`);
 		}
 	} catch (e) {

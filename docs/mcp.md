@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-`mcp/boxery-mcp.mjs` exposes the [pi extension](pi-extension.md)'s `vm_*` tools, plus `vm_jobs` for background commands, to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). The extension and the MCP server share `core/boxery-core.mjs`.
+`mcp/boxery-mcp.mjs` exposes the same `vm_*` tools as the [pi extension](pi-extension.md) to any MCP client: Claude Code, Cursor, opencode, pi, and others. It has no dependencies. It needs Node ≥ 20 and a configured controller (`boxery setup`). Both are built from one tool table, `core/boxery-tools.mjs`, so their tool names, descriptions and schemas match; MCP adds an optional `host` argument and the `hosts`/`host` actions of `vm_manage`.
 
 There are two ways to run it:
 

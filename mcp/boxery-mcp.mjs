@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
+import { manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS } from "../core/boxery-tools.mjs";
 
 const VERSION = (() => {
 	try {
@@ -42,186 +43,48 @@ const log = (...a) => process.stderr.write(`[boxery-mcp] ${a.join(" ")}\n`);
 
 // ---------------------------------------------------------------- tools
 
+// Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
+// vm_manage gains hosts/host because the session's host is MCP state.
 const hostProp = { host: { type: "string", description: "Registered host alias (default: session host; legacy selects the root profile)" } };
-const vmProp = { ...hostProp, vm: { type: "string", description: "VM name (default: the current VM)" } };
-const shotProp = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
-const where = "in an boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
-const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, ...vmProp }, required });
-
-const TOOLS = [
-	{
-		name: "vm_bash",
-		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd /home/agent/project. Use rg / fdfind / ls for searching. Output keeps the last ${core.MAX_LINES} lines / ${core.MAX_BYTES / 1024}KB.`,
-		inputSchema: obj({ command: { type: "string" }, timeout: { type: "number", description: "Seconds (default 120)" } }, ["command"]),
-		annotations: { title: "VM bash", destructiveHint: true, openWorldHint: true },
-		run: (vm, a, x) => core.bashTool(vm, a, x),
-	},
-	{
-		name: "vm_jobs",
-		description: "Detached command jobs in a VM. start runs a bash command in tmux (survives disconnects), returning a job ID; list returns state/start time/exit code; logs returns a bounded output tail; wait observes completion, returning exit_code or timed_out:true. Timeout/cancellation never kills the job. Jobs lost to VM reboot or tmux termination have state lost. Optional host/vm default to the session selection.",
-		inputSchema: obj({
-			action: { type: "string", enum: ["start", "list", "logs", "wait"] },
-			command: { type: "string", description: "start: bash command, like vm_bash" },
-			cwd: { type: "string", description: "start: working directory (default ~/project; relative paths below it)" },
-			job: { type: "string", description: "logs/wait: ID returned by start" },
-			lines: { type: "integer", minimum: 0, maximum: core.MAX_LINES, description: "logs: last N lines (default 200)" },
-			stripAnsi: { type: "boolean", description: "logs: strip terminal escape codes" },
-			timeout: { type: "integer", minimum: 1, maximum: 3600, description: "wait: seconds to observe (default 120)" },
-		}, ["action"]),
-		annotations: { title: "VM jobs", destructiveHint: true, openWorldHint: true },
-		run: (vm, a, x) => core.jobsTool(vm, a, x),
-	},
-	{
-		name: "vm_read",
-		description: `Read a file ${where} Images come back as images. offset/limit are 1-based line numbers.`,
-		inputSchema: obj({ path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, ["path"]),
-		annotations: { title: "VM read", readOnlyHint: true },
-		run: (vm, a) => core.readTool(vm, a),
-	},
-	{
-		name: "vm_write",
-		description: `Create or overwrite a file ${where} Parent directories are created.`,
-		inputSchema: obj({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
-		annotations: { title: "VM write", destructiveHint: true },
-		run: (vm, a) => core.writeTool(vm, a),
-	},
-	{
-		name: "vm_edit",
-		description: `Edit a file ${where} Exact-text replacement: each edits[].oldText must match exactly once in the original file; edits must not overlap.`,
-		inputSchema: obj(
-			{
-				path: { type: "string" },
-				edits: {
-					type: "array",
-					items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } }, required: ["oldText", "newText"] },
-				},
+const withHost = (schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
+const manageMcp = (t) => ({
+	...t,
+	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, "hosts", "host"].join(" | "))} ` +
+		"`hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
+	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...MANAGE_ACTIONS, "hosts", "host"] } } },
+	run(_vm, a, { session, host, current }) {
+		if (a.action === "hosts")
+			return { text: core.registeredHosts().map((h) => `${h.name}${h.name === host.name ? " *" : ""}\t${h.dir}`).join("\n") };
+		if (a.action === "host") {
+			if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
+			session.host = host;
+			session.current = null;
+			session.currentHost = null;
+			return { text: `current host: ${host.name}; no current VM` };
+		}
+		const adopt = (name) => { session.current = name; session.host = session.currentHost = host; };
+		return manageAction(a, {
+			current,
+			listNote: ` (host: ${host.name})`,
+			async use(name) {
+				await core.ensureVm(name);
+				await core.boxeryCli(["grants", name, "apply", "--quiet"], 120_000).catch(() => {});
+				adopt(name);
 			},
-			["path", "edits"],
-		),
-		annotations: { title: "VM edit", destructiveHint: true },
-		run: (vm, a) => core.editTool(vm, a),
+			adopt,
+			clear() { session.current = null; session.currentHost = null; },
+			removed(name) { if (session.current === name && sameHost(session.currentHost, host)) this.clear(); },
+		});
 	},
-	{
-		name: "vm_copy",
-		description:
-			"Copy a file or directory between the machine running this server and a VM, or between VMs. Locations: `HOST/NAME:/path`, `local:/path` (server machine), `NAME:/path` (session host), or a bare path (= current VM). Directories copy recursively.",
-		inputSchema: obj({ from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
-		annotations: { title: "VM copy", destructiveHint: true },
-		noVm: true,
-		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, signal: x.signal }),
-	},
-	{
-		name: "vm_screenshot",
-		description: "Screenshot of a VM's desktop (DISPLAY=:1).",
-		inputSchema: obj({}),
-		annotations: { title: "VM screenshot", readOnlyHint: true },
-		run: (vm) => core.screenshot(vm),
-	},
-	{
-		name: "vm_click",
-		description: "Click at (x, y), in screenshot pixels, on a VM's desktop.",
-		inputSchema: obj(
-			{ x: { type: "number" }, y: { type: "number" }, button: { type: "string", description: "left (default), right or middle" }, double: { type: "boolean" }, ...shotProp },
-			["x", "y"],
-		),
-		annotations: { title: "VM click", destructiveHint: true },
-		run: (vm, a) => core.click(vm, a),
-	},
-	{
-		name: "vm_type",
-		description: "Type text into the focused window on a VM's desktop.",
-		inputSchema: obj({ text: { type: "string" }, ...shotProp }, ["text"]),
-		annotations: { title: "VM type", destructiveHint: true },
-		run: (vm, a) => core.typeText(vm, a),
-	},
-	{
-		name: "vm_key",
-		description: 'Press keys on a VM\'s desktop, xdotool syntax, space-separated: "Return", "ctrl+l", "ctrl+shift+t", "Escape".',
-		inputSchema: obj({ keys: { type: "string" }, ...shotProp }, ["keys"]),
-		annotations: { title: "VM key", destructiveHint: true },
-		run: (vm, a) => core.pressKeys(vm, a),
-	},
-	{
-		name: "vm_scroll",
-		description: "Scroll at (x, y), in screenshot pixels, on a VM's desktop.",
-		inputSchema: obj(
-			{ x: { type: "number" }, y: { type: "number" }, direction: { type: "string", enum: ["up", "down", "left", "right"] }, amount: { type: "number" }, ...shotProp },
-			["x", "y", "direction"],
-		),
-		annotations: { title: "VM scroll" },
-		run: (vm, a) => core.scroll(vm, a),
-	},
-	{
-		name: "vm_browser",
-		description:
-			"Drive Google Chrome on a VM's desktop with Playwright (the user can watch it). `code` is the body of an async function receiving (page, context, browser); its return value comes back as JSON. " +
-			"Chrome starts if needed and keeps state between calls. Example: `await page.goto('https://example.com'); return await page.title();`",
-		inputSchema: obj({ code: { type: "string" }, screenshot: { type: "boolean", description: "Also return a page screenshot (default false)" }, timeout: { type: "number" } }, ["code"]),
-		annotations: { title: "VM browser", destructiveHint: true, openWorldHint: true },
-		run: (vm, a, x) => core.browser(vm, a, x),
-	},
-	{
-		name: "vm_manage",
-		description:
-			"Manage boxery VMs (Ubuntu desktop VMs on the user's VM host). action: list | new | fork | rm | snap | snaps | revert | use | none | grants | shapes | hosts | host. " +
-			"`shapes` lists the VM sizes (cpus/mem/disk) the host offers; pass `shape` to `new`/`fork` when a task needs more (or less) than the default. " +
-			"`fork` copies VM `name` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
-			"`use` makes NAME the current VM (default for all vm_* tools; created if missing); `none` clears it; `new` creates a VM (with use=true also selects it); " +
-			"`grants` shows what the VM may access from the user's machine (only the user can change grants). `hosts` lists registered targets; `host` selects a session host via host:NAME and clears the current VM. Registration and credentials remain user-controlled.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				...hostProp,
-				action: { type: "string", enum: ["list", "new", "fork", "rm", "snap", "snaps", "revert", "use", "none", "grants", "shapes", "hosts", "host"] },
-				name: { type: "string" },
-				snapshot: { type: "string" },
-				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
-				use: { type: "boolean" },
-				shape: { type: "string", description: "for new/fork: VM size by name (see action:'shapes'); default: the host's default shape (fork: the source's size)" },
-			},
-			required: ["action"],
-		},
-		annotations: { title: "VM manage", destructiveHint: true },
-		noVm: true,
-		async run(_vm, a, { session, host, current }) {
-			switch (a.action) {
-				case "hosts":
-					return { text: core.registeredHosts().map((h) => `${h.name}${h.name === host.name ? " *" : ""}\t${h.dir}`).join("\n") };
-				case "host":
-					if (a.host == null) throw new Error("host selection requires host:NAME (or legacy)");
-					session.host = host;
-					session.current = null;
-					session.currentHost = null;
-					return { text: `current host: ${host.name}; no current VM` };
-				case "use":
-					await core.ensureVm(core.assertName(a.name));
-					await core.boxeryCli(["grants", a.name, "apply", "--quiet"], 120_000).catch(() => {});
-					session.current = a.name;
-					session.host = session.currentHost = host;
-					return { text: `current VM: ${a.name}` };
-				case "none":
-					session.current = null;
-					session.currentHost = null;
-					return { text: "no current VM" };
-				case "list":
-					return { text: `${await core.manage(a)}\ncurrent: ${current ?? "(none)"} (host: ${host.name})` };
-				case "new": {
-					const name = a.name ? core.assertName(a.name) : core.newName();
-					const out = await core.manage({ ...a, name });
-					if (a.use) { session.current = name; session.host = session.currentHost = host; }
-					return { text: `${out}${a.use ? `\ncurrent VM: ${name}` : ""}` };
-				}
-				case "rm": {
-					const out = await core.manage(a);
-					if (session.current === a.name && sameHost(session.currentHost, host)) { session.current = null; session.currentHost = null; }
-					return { text: out };
-				}
-				default:
-					return { text: await core.manage(a) };
-			}
-		},
-	},
-];
+});
+const TOOLS = SHARED_TOOLS.map((t) => (t.name === "vm_manage" ? manageMcp(t) : t)).map((t) => ({
+	name: t.name,
+	description: t.description,
+	inputSchema: withHost(t.parameters),
+	annotations: { title: t.title, ...t.annotations },
+	noVm: t.noVm,
+	run: t.run,
+}));
 const sameHost = (a, b) => a?.name === b?.name && a?.dir === b?.dir;
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));
 
