@@ -70,6 +70,7 @@ case "$*" in
 "ls --json") echo '[{"name":"fakevm","state":"running","addr":"10.0.0.2","disk":"1GiB","lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
+"version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"legacy","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G","legacy":false}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
 *) echo "stub boxery $*" ;;
@@ -367,6 +368,10 @@ describe("protocol features", () => {
 		assert.match(snaps.content[0].text, /^s1\t2026-10-01T00:00:00Z\t1\.2G$/);
 		assert.equal(snaps.structuredContent.snapshots[0].name, "s1");
 		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
+		const version = await c.tool("vm_info", { action: "version" });
+		assert.equal(version.structuredContent.behind, true);
+		assert.equal(version.structuredContent.host.version, "0.7.0");
+		assert.match(version.content[0].text, /older than the controller.*boxery upgrade-host/s, "tells the agent to hand the upgrade to the user");
 		assert.equal((await c.tool("vm_info", { action: "snaps", name: "Bad;Name" })).isError, true);
 		assert.equal((await c.tool("vm_info", { action: "grants", name: ["fakevm"] })).isError, true, "names must be strings, not arrays that coerce");
 	});

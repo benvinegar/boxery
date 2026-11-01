@@ -891,6 +891,93 @@ cmd_sessions() { # NAME [--json]
 	esac
 }
 
+# ---------------------------------------------------------------- versions
+# This controller's version: package.json next to it (bin symlinks resolved), plus git describe in a checkout.
+controller_root() {
+	local script=${BASH_SOURCE[0]} dir
+	while [ -L "$script" ]; do
+		dir=$(cd -P "$(dirname "$script")" && pwd)
+		script=$(readlink "$script")
+		case $script in /*) ;; *) script=$dir/$script ;; esac
+	done
+	cd -P "$(dirname "$script")/.." && pwd
+}
+controller_version() { # → VERSION<TAB>DESCRIBE (DESCRIBE empty outside a git checkout)
+	local root v d=""
+	root=$(controller_root)
+	v=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$root/package.json" 2>/dev/null | head -1)
+	if [ -e "$root/.git" ] && command -v git >/dev/null 2>&1; then d=$(git -C "$root" describe --tags --always 2>/dev/null) || d=""; fi
+	printf '%s\t%s\n' "${v:-unknown}" "$d"
+}
+# The host's `version --json` → VERSION<TAB>DESCRIBE<TAB>INSTALL. Fails on hosts that predate the command.
+host_version() {
+	local j v d i
+	j=$(h version --json 2>/dev/null) || return 1
+	case $j in '{"version":"'*) ;; *) return 1 ;; esac
+	v=${j#*\"version\":\"}; v=${v%%\"*}
+	d=""; case $j in *'"describe":"'*) d=${j#*\"describe\":\"}; d=${d%%\"*} ;; esac
+	i=${j#*\"install\":\"}; i=${i%%\"*}
+	printf '%s\t%s\t%s\n' "$v" "$d" "$i"
+}
+# version_lt A B: is release A older than B? (MAJOR.MINOR.PATCH; anything after is ignored)
+version_lt() {
+	local a b i x y
+	a=$(printf '%s' "$1" | sed 's/^v//; s/[^0-9.].*//'); b=$(printf '%s' "$2" | sed 's/^v//; s/[^0-9.].*//')
+	for i in 1 2 3; do
+		x=$(printf '%s' "$a" | cut -d. -f"$i"); y=$(printf '%s' "$b" | cut -d. -f"$i")
+		x=${x:-0}; y=${y:-0}
+		[ "$x" -eq "$y" ] || { [ "$x" -lt "$y" ]; return; }
+	done
+	return 1
+}
+# git describe → commits since its tag (v0.7.0-15-gabc → 15; a bare tag → 0; unknown → empty)
+describe_ahead() { case $1 in v*-*-g*) local r=${1%-g*}; printf '%s\n' "${r##*-}" ;; v*) echo 0 ;; esac; }
+# skew_note CTL_VERSION CTL_DESCRIBE HOST_VERSION HOST_DESCRIBE → a note when the host is behind, else nothing.
+skew_note() {
+	local behind="" ca ha
+	if version_lt "$3" "$1"; then behind=1
+	elif [ "$3" = "$1" ] && [ -n "$2" ] && [ -n "$4" ]; then
+		ca=$(describe_ahead "$2"); ha=$(describe_ahead "$4")
+		[ -n "$ca" ] && [ -n "$ha" ] && [ "${2%%-*}" = "${4%%-*}" ] && [ "$ha" -lt "$ca" ] && behind=1
+	fi
+	[ -n "$behind" ] || return 0
+	printf 'host %s is older than this controller (%s); upgrade it: %s\n' "${4:-$3}" "${2:-$1}" "$(upgrade_hint)"
+}
+upgrade_hint() { if [ "${selected:-legacy}" = legacy ]; then echo "boxery upgrade-host"; else echo "boxery --host $selected upgrade-host"; fi; }
+
+cmd_version() { # [--json]
+	local cv cd hv="" hd="" hi="" note="" line
+	line=$(controller_version); cv=${line%%"$TAB"*}; cd=${line#*"$TAB"}
+	if [ -n "$HOST" ]; then
+		if line=$(host_version); then
+			hv=${line%%"$TAB"*}; line=${line#*"$TAB"}; hd=${line%%"$TAB"*}; hi=${line#*"$TAB"}
+			note=$(skew_note "$cv" "$cd" "$hv" "$hd")
+		else note="host predates 'boxery-host version'; upgrade it by hand (git pull or npm update -g boxery-vm, then boxery-host init), after that: $(upgrade_hint)"; fi
+	fi
+	if [ "${1:-}" = --json ]; then
+		printf '{"controller":{"version":%s,"describe":%s},"host":%s,"behind":%s}\n' "$(json_text "$cv")" "$(json_str_or_null "$cd")" \
+			"$(if [ -n "$hv" ]; then printf '{"name":%s,"version":%s,"describe":%s,"install":%s}' "$(json_text "${selected:-legacy}")" "$(json_text "$hv")" "$(json_str_or_null "$hd")" "$(json_text "$hi")"; else printf null; fi)" \
+			"$(if [ -n "$note" ]; then printf true; else printf false; fi)"
+		return
+	fi
+	[ -z "${1:-}" ] || die "usage: boxery version [--json]"
+	printf 'controller  %s%s\n' "$cv" "${cd:+ ($cd)}"
+	if [ -n "$hv" ]; then printf 'host        %s%s  %s install  [%s]\n' "$hv" "${hd:+ ($hd)}" "$hi" "${selected:-legacy}"
+	elif [ -n "$HOST" ]; then printf 'host        unknown  [%s]\n' "${selected:-legacy}"; fi
+	if [ -n "$note" ]; then warn "$note"; fi
+	return 0
+}
+
+# Upgrade the selected host's boxery install. Runs there (over ssh, or here for local), where it waits
+# for in-flight operations, re-runs init for each profile and rolls back if the checks fail.
+cmd_upgrade_host() { # [--check] [--ref REF] [--wait S] [--reinit]
+	need_host
+	if ! host_version >/dev/null; then
+		die "the boxery on $HOST predates 'upgrade'. Upgrade it once by hand: on $HOST, git pull --ff-only in the checkout (or npm update -g boxery-vm), then boxery-host init for each profile"
+	fi
+	h upgrade "$@"
+}
+
 cmd_prompt() { # NAME "prompt" — fire-and-forget pi task in a detached tmux window, logged to ~/project/.boxery/
 	name=$1; shift; prompt="$*"
 	[ -n "$prompt" ] || die "usage: boxery prompt NAME \"task...\""
@@ -952,6 +1039,10 @@ usage() {
 		grants NAME [apply | --json]    show grants / push them again
 		agent-forward NAME on|off       same as grant/revoke NAME ssh-agent
 		proxy-log [N]                   recent LLM + edge (http: grant) requests on the host
+		version [--json]                controller and host versions; warns when the host is behind
+		upgrade-host [--check] [--ref REF] [--wait S]
+		                                update boxery on the host and restart its services (waits for
+		                                in-flight VM operations; rolls back if checks fail)
 
 		--json on ls, snaps, sessions, leases, grants, jobs prints JSON (fields: docs/cli.md)
 
@@ -979,6 +1070,8 @@ if [ "${1:-}" = --host ]; then
 fi
 cmd=${1:-help}; [ $# -gt 0 ] && shift
 if [ "$cmd" = host ]; then [ -z "$explicit" ] || die "--host does not apply to host management"; cmd_host "$@"; exit; fi
+# Internal (tests): __skew CTL_VERSION CTL_DESCRIBE HOST_VERSION HOST_DESCRIBE [HOST_NAME]
+if [ "$cmd" = __skew ]; then selected=${5:-legacy}; skew_note "$1" "$2" "$3" "$4"; exit; fi
 select_profile "$explicit"
 migrate_legacy_agent_forward
 case $cmd in
@@ -1001,6 +1094,8 @@ shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: b
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
+version) cmd_version "$@" ;;
+upgrade-host) cmd_upgrade_host "$@" ;;
 ssh) need_host; n=$1; shift; if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi; vm_ssh -t "$n.boxery" "$@" ;;
 run) need_host; cmd_run "$@" ;;
 jobs) need_host; cmd_jobs "$@" ;;

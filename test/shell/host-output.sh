@@ -51,6 +51,10 @@ cat >"$tmp/expected" <<'EOF'
 boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
 
   init [--backend libvirt|lima|cloud-hypervisor|exe]  install proxy services + backend setup, symlinks
+  version [--json]          this install's version, commit and kind (git or npm)
+  upgrade [--check] [--ref REF] [--wait S] [--reinit]
+                            update this install (git pull --ff-only, or npm), re-run init for every
+                            profile using it and check them; waits for in-flight operations, rolls back on failure
   build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
   new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]

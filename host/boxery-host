@@ -19,4 +19,6 @@ if [ -z "$node" ] && [ -f "$conf/host.env" ]; then node=$(sed -n 's/^BOXERY_NODE
 if [ -z "$node" ] || [ ! -x "$node" ]; then
 	node=$(command -v node) || { echo "boxery-host: node not found (need Node >= 22.13; run boxery-host init with it on PATH)" >&2; exit 1; }
 fi
+# version/upgrade load no host modules, so they work on any Node (and the upgrade replaces the code on disk).
+case ${1:-} in version | upgrade) exec "$node" --disable-warning=ExperimentalWarning "$ROOT/host/boxery-upgrade.mjs" "$@" ;; esac
 exec "$node" --disable-warning=ExperimentalWarning "$ROOT/host/boxery-host.mjs" "$@"

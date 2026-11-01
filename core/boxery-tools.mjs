@@ -19,7 +19,7 @@ const obj = (properties, required = []) => ({ type: "object", properties: { ...p
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["list", "new", "fork", "rm", "start", "stop", "resize", "snap", "snaps", "snap-rm", "revert", "images", "use", "none", "grants", "shapes"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
-export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps"];
+export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "version"];
 
 const INFO_OUTPUT = {
 	type: "object",
@@ -31,6 +31,9 @@ const INFO_OUTPUT = {
 		name: { type: "string", description: "grants/snaps: the VM" },
 		grants: { type: "array", items: { type: "object" } },
 		snapshots: { type: "array", items: { type: "object" } },
+		controller: { type: "object", description: "version: this controller's {version, describe}" },
+		host: { anyOf: [{ type: "object" }, { type: "string" }, { type: "null" }], description: "version: the host's {name, version, describe, install} (null if it predates versions)" },
+		behind: { type: "boolean", description: "version: the host is older than the controller" },
 	},
 };
 
@@ -227,7 +230,8 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
-			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `name` may access from the user's machine; `snaps` the snapshots of VM `name`. " +
+			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `name` may access from the user's machine; `snaps` the snapshots of VM `name`; " +
+			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
 			"`name` defaults to the current VM.",
 		parameters: {
 			type: "object",
@@ -263,8 +267,11 @@ export const TOOLS = [
 	},
 ];
 
-/** vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output. */
-export async function infoAction(a, { current, listNote } = {}) {
+/**
+ * vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output;
+ * ctx.hostName names the host (MCP routes named hosts through the controller as its legacy profile).
+ */
+export async function infoAction(a, { current, listNote, hostName } = {}) {
 	const vmName = () => {
 		const name = a.name ?? current;
 		if (!name) throw new Error("No VM given and no current VM. Pass `name`.");
@@ -288,6 +295,11 @@ export async function infoAction(a, { current, listNote } = {}) {
 			const name = vmName();
 			const snapshots = await core.listSnaps(name);
 			return { text: core.formatSnaps(name, snapshots), structured: { name, snapshots } };
+		}
+		case "version": {
+			const v = await core.versions();
+			if (hostName && v.host) v.host = { ...v.host, name: hostName };
+			return { text: core.formatVersions(v), structured: v };
 		}
 		default:
 			throw new Error(`unknown action ${a.action}`);

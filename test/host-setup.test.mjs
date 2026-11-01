@@ -1,7 +1,10 @@
 // host/setup.mjs: host.env and the proxy/reaper service definitions written by `init` (no SQLite).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hostEnv, serviceFiles } from "../host/setup.mjs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { hostEnv, servicePath, serviceFiles } from "../host/setup.mjs";
 
 const config = { conf: "/h/.config/boxery", root: "/opt/boxery", proxyPort: "8088", proxyUnit: "boxery-proxy", reaperUnit: "boxery-reaper", backend: "libvirt" };
 
@@ -12,7 +15,7 @@ test("host.env: backend, proxy, node, and only the settings that are set", () =>
 });
 
 test("systemd user units on Linux", () => {
-	const files = serviceFiles(config, { node: "/n/bin/node", bind: "0.0.0.0", home: "/h", platform: "linux" });
+	const files = serviceFiles(config, { node: "/n/bin/node", bind: "0.0.0.0", home: "/h", platform: "linux", searchPath: "" });
 	assert.deepEqual(Object.keys(files), ["/h/.config/systemd/user/boxery-proxy.service", "/h/.config/systemd/user/boxery-reaper.service", "/h/.config/systemd/user/boxery-reaper.timer"]);
 	const proxy = files["/h/.config/systemd/user/boxery-proxy.service"];
 	assert.match(proxy, /^ExecStart=\/n\/bin\/node \/opt\/boxery\/proxy\/boxery-proxy\.mjs$/m);
@@ -33,4 +36,18 @@ test("launchd agents on macOS", () => {
 	const reaper = files["/h/Library/LaunchAgents/dev.boxery-reaper.plist"];
 	assert.ok(reaper.includes("<string>/opt/boxery/host/boxery-host</string><string>reap</string>"));
 	assert.ok(reaper.includes("<key>StartInterval</key><integer>60</integer>"));
+});
+
+test("the reaper's PATH finds the backend's tools where they are (limactl in ~/.local/bin)", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "boxery-setup-"));
+	try {
+		const local = path.join(dir, ".local/bin"), other = path.join(dir, "other");
+		mkdirSync(local, { recursive: true }); mkdirSync(other);
+		for (const f of [path.join(local, "limactl"), path.join(other, "jq")]) { writeFileSync(f, "#!/bin/sh\n"); chmodSync(f, 0o755); }
+		writeFileSync(path.join(other, "socat"), ""); // not executable: ignored
+		const p = servicePath("/n/bin/node", "/usr/bin:/bin", `relative:${other}:${local}`);
+		assert.equal(p, `/n/bin:${other}:${local}:/usr/bin:/bin`);
+		const files = serviceFiles(config, { node: "/n/bin/node", bind: "127.0.0.1", home: "/h", platform: "linux", searchPath: local });
+		assert.match(files["/h/.config/systemd/user/boxery-reaper.service"], new RegExp(`PATH=/n/bin:${local}:/usr/local/bin:`));
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

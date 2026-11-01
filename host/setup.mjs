@@ -58,9 +58,25 @@ const plist = (label, args, env, extra, log) => `<?xml version="1.0" encoding="U
 </dict></plist>
 `;
 
+// Tools the reaper's backend calls may need. Services don't get the login shell's PATH, so the reaper's
+// PATH names where they are now (nvm, ~/.local/bin, Homebrew…): Lima's limactl is often in ~/.local/bin.
+const SERVICE_TOOLS = ["node", "jq", "nc", "ssh", "ssh-keygen", "ps", "socat", "limactl", "virsh", "virt-install", "qemu-img", "cloud-localds", "cloud-hypervisor"];
+/** The reaper's PATH: node's directory, the directories of SERVICE_TOOLS on `searchPath`, then `system`. */
+export function servicePath(node, system, searchPath = process.env.PATH ?? "") {
+	const dirs = [path.dirname(node)];
+	for (const tool of SERVICE_TOOLS) {
+		const dir = searchPath.split(":").find((d) => {
+			if (!d.startsWith("/")) return false;
+			try { accessSync(path.join(d, tool), constants.X_OK); return true; } catch { return false; }
+		});
+		if (dir) dirs.push(dir);
+	}
+	return [...new Set([...dirs, ...system.split(":")])].join(":");
+}
+
 /** {file: contents} for this platform. bind: the proxy's listen address (backend_proxy_bind or loopback). */
-export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, backend }, { node, bind, home = homedir(), platform = process.platform }) {
-	const pathEnv = (extra) => `${path.dirname(node)}:/usr/local/bin:${extra}`;
+export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, backend }, { node, bind, home = homedir(), platform = process.platform, searchPath }) {
+	const pathEnv = (extra) => servicePath(node, `/usr/local/bin:${extra}`, searchPath);
 	if (platform === "darwin") {
 		const agents = path.join(home, "Library/LaunchAgents"), logs = path.join(home, "Library/Logs");
 		return {

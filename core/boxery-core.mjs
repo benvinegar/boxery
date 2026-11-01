@@ -642,6 +642,17 @@ export const listShapes = () => boxeryJson(["shapes"]);
 /** Snapshots of VM NAME: [{name, created, size, legacy}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
 
+/** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
+export const versions = () => boxeryJson(["version"]);
+
+export function formatVersions({ controller, host, behind }) {
+	const v = (x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
+	const upgrade = host?.name && host.name !== "legacy" ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
+	const lines = [`controller: ${v(controller)}`, host ? `host ${host.name}: ${v(host)} (${host.install} install)` : "host: unknown (it predates boxery-host version)"];
+	if (behind) lines.push(`The host is older than the controller. Tell the user; they can upgrade it with: ${host ? upgrade : "a manual update (git pull or npm update -g boxery-vm, then boxery-host init) on the host"}`);
+	return lines.join("\n");
+}
+
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
 	return snaps.map((s) => `${s.name}\t${s.legacy ? "(legacy)" : (s.created ?? "-")}\t${s.size ?? "-"}`).join("\n");
