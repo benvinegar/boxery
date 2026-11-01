@@ -56,7 +56,8 @@ async function marker(file) {
 test("MCP signal reaches staged guest; cancellation before/after rename reports error, not success", { timeout: 15000 }, async () => {
 	for (const phase of ["stage", "renamed"]) {
 		const target = destination("alpha", phase), ready = path.join(dir, phase); writeFileSync(target, "before");
-		const pause = `const timer=setInterval(()=>{},1000); await fs.writeFile(${JSON.stringify(ready)},'ready'); await new Promise(resolve=>{for(const s of ['SIGTERM','SIGHUP','SIGINT'])process.once(s,resolve)}); clearInterval(timer);`;
+		// Listen before announcing: the marker exists once writeFile opens it, so a cancel can land before writeFile resolves.
+		const pause = `const timer=setInterval(()=>{},1000); const signalled=new Promise(resolve=>{for(const s of ['SIGTERM','SIGHUP','SIGINT'])process.once(s,resolve)}); await fs.writeFile(${JSON.stringify(ready)},'ready'); await signalled; clearInterval(timer);`;
 		const injection = phase === "stage" ? `const open=fs.open; fs.open=async(...a)=>{const f=await open(...a); f.sync=async()=>{${pause}}; return f;};` :
 			`const rename=fs.rename; fs.rename=async(...a)=>{await rename(...a); ${pause}};`;
 		const p = spawn(process.execPath, [new URL("../mcp/boxery-mcp.mjs", import.meta.url).pathname, "--vm", "fakevm"], { env: { ...env, EDIT_INJECT: injection }, stdio: ["pipe", "pipe", "pipe"] });
