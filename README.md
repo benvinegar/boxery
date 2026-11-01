@@ -21,7 +21,10 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.svg">
+    <img src="docs/hero-light.svg" alt="Coding agents on your laptop (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud" width="680">
+  </picture>
 </p>
 
 ---
@@ -154,6 +157,11 @@ Every integration exposes the same tools:
 | `vm_view` | MCP Apps clients only: a live view of the desktop in the chat, which you can take control of ([details](docs/mcp.md#live-desktop-view)) |
 
 Every tool takes an optional `vm`, so one agent can fan work out across several VMs. MCP tools also accept `host` to route across [named hosts](docs/hosts.md) from one server.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760"><br>
+  <sub>A VM's desktop, watched over noVNC while a laptop agent drives Chrome with <code>vm_browser</code>.</sub>
+</p>
 
 ## How it works
 
