@@ -224,11 +224,12 @@ exe_tunnel_state() {
 	if exe_tunnel_active "$1" && nc -z 127.0.0.1 "$(exe_port "$1")" >/dev/null 2>&1; then echo up; else echo connecting; fi
 }
 exe_tunnel_log() { # NAME → where the tunnel's ssh errors go
-	if [[ $EXE_SUPERVISOR == launchd ]]; then echo "$(exe_dir "$1")/tunnel.log"; else echo "journalctl --user -u $(exe_unit "$1")"; fi
+	if [[ $EXE_SUPERVISOR == launchd ]]; then echo "$(exe_dir "$1")/tunnel.log"; else echo "journalctl --user -u $(exe_unit "$1") _COMM=ssh"; fi
 }
 exe_tunnel_last_error() {
 	if [[ $EXE_SUPERVISOR == launchd ]]; then tail -n 1 "$(exe_dir "$1")/tunnel.log" 2>/dev/null
-	else journalctl --user -u "$(exe_unit "$1")" -n 1 -o cat --no-pager 2>/dev/null; fi
+	# _COMM=ssh: ssh's own stderr (tunnel.sh execs ssh), not systemd's "Scheduled restart job" lines
+	else journalctl --user -u "$(exe_unit "$1")" _COMM=ssh -n 1 -o cat --no-pager 2>/dev/null; fi
 }
 exe_tunnel_remove() {
 	exe_tunnel_stop "$1"
@@ -518,7 +519,8 @@ backend_ssh_endpoint() {
 }
 # The tunnel's local end is up. ssh readiness (through it) is the dispatcher's wait_ssh.
 backend_wait_endpoint() {
-	local rc msg
+	local rc msg=""
+	[[ $EXE_TUNNEL_WAIT =~ ^[1-9][0-9]*$ ]] || die "BOXERY_EXE_TUNNEL_WAIT must be a number of seconds >= 1 (got '$EXE_TUNNEL_WAIT')"
 	[[ -f $(exe_dir "$1")/slot ]] || die "no such vm: $1"
 	for _ in $(seq "$EXE_TUNNEL_WAIT"); do
 		rc=0; msg=$(backend_endpoint_problem "$1") || rc=$?

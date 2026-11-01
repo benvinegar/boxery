@@ -77,18 +77,29 @@ boxery sessions demo [--json]                # list tmux sessions
 
 ### Background command jobs
 
+For commands that take a while (a test suite, a build). The job runs in the VM, detached from your ssh connection, so a dropped connection or a sleeping laptop doesn't stop it, and its real exit code is kept.
+
 ```bash
 job=$(boxery run --bg demo --cwd app pnpm test)   # prints just the job ID
-boxery jobs demo [--json]                        # state, start time, exit code
-boxery logs demo "$job" [-f] [--strip-ansi] [--lines 200] [--bytes 51200]
-boxery wait demo "$job"                          # exits with the command's real status
+boxery jobs demo [--json]                        # state, exit code, start time, command
+boxery logs demo "$job" [-f] [--strip-ansi] [--lines 200] [--bytes N]
+boxery wait demo "$job" [--timeout S] [--json]   # exits with the command's real status
+boxery kill demo "$job" [--grace S] [--json]     # SIGTERM its process group, SIGKILL after S s (default 5)
+boxery jobs demo --prune [--older-than 7d]       # delete finished jobs and their logs (default: all)
 ```
 
-`run demo --bg …` also works. Background commands keep the same exact-argv and `--cwd` rules as foreground `run`; use `bash -c '…'` for shell syntax. They run in detached tmux sessions with login-shell setup and no stdin, surviving SSH disconnects and laptop sleep. Combined stdout/stderr goes to `~/.boxery/jobs/ID.log` in the VM, with the exit code atomically recorded in `ID.exit`. Logs default to the last 200 lines; `-f` follows until completion, and `--strip-ansi` removes terminal escapes incrementally, including newline-free progress updates. ANSI stripping requires Perl in the guest (available by default on macOS and Ubuntu); other job operations require only bash and tmux. `wait --timeout SEC` stops observing after that many seconds (exit 124), without stopping the job; no timeout means wait indefinitely.
+`run demo --bg …` also works.
 
-Optional `logs --bytes N` (1–999999999) clips each raw snapshot to its last N bytes **before** line selection and ANSI filtering, emitting a truncation notice on stderr when bytes were clipped. With `-f`, the same bound applies to each subsequent update, not the total stream. Without `--bytes`, CLI logs have no byte cap. A byte cut can start partway through a line, UTF-8 character or escape sequence; MCP requests a 50KB raw tail, drops any incomplete leading UTF-8 character, and caps the decoded response body to 50KB of UTF-8 (plus the truncation marker), keeping a character-safe suffix if invalid input expands during decoding. Startup returns the ID only after the detached runner publishes metadata; failed login setup or readiness taking over 10 seconds fails launch and cleans up the session.
+- **The command** follows the same rules as foreground `run`: exact arguments, `--cwd`, and `bash -c '…'` for shell syntax. It runs in a login shell (profile and grants loaded) with no stdin, and stdout and stderr go to `~/.boxery/jobs/ID.log` in the VM.
+- **States** are `running`, `exited` (any exit code, including failures) or `lost`. `lost` means the job stopped without recording an exit code: the VM restarted, or it was killed outside boxery. Closing or killing the job's tmux session doesn't stop it; use `kill`.
+- **Left-over processes:** a job can exit while something it started keeps running (`server & tests`). It then shows as `exited+` in `boxery jobs` (`"leftover": true` in JSON); `kill` stops those processes, and `--prune` keeps the job until they're gone.
+- **`wait`** exits with the job's exit code, `124` if `--timeout` passes first (the job keeps running) and `125` if the job is `lost`. Without `--timeout` it waits as long as the job runs. If the connection drops while waiting, it reconnects (within `--timeout`); a VM that can't be reached at all fails at once. boxery's own errors exit `1`, `2` (usage) or `3` (unknown job). A job can exit with any of these codes too, so scripts that need to tell them apart should use `--json` and read `state`, `exit_code` and `timed_out`.
+- **`logs`** shows the last 200 lines by default; `-f` follows until the job ends. `--strip-ansi` removes colours and other terminal escapes as they stream, including in newline-free progress output. `--bytes N` clips each read to its last N bytes before lines are selected, with a notice on stderr when it does. A cut can start partway through a line or UTF-8 character.
+- **`kill`** signals the job's process group, including whatever it left running after it exited. Processes that start their own group (`setsid`, daemons) aren't part of it.
+- **No ssh agent in jobs:** a forwarded agent ([`ssh-agent` grant](grants.md)) only lasts as long as the ssh session that started the job, so `git push` over ssh fails in a job. Use an [`http:`/`github` grant](grants.md) (HTTPS) instead.
+- **Storage:** logs and records stay in `~/.boxery/jobs/` until pruned or the VM is reset, and a fork gets a copy. They may contain secrets the command printed.
 
-States are `running`, `completed` (including failed commands), or `lost` (the tmux session disappeared without recording an exit code, e.g. after a VM reboot). Waiting on a lost job fails rather than hanging. Jobs do not survive VM shutdown/revert/reset; logs and metadata remain on disk until removed or the VM is reset. They may contain secrets printed by the command.
+How it works: the job logic lives in `core/boxery-jobs.ts`, which the controller pipes over ssh on every call and the VM's Node runs with built-in type stripping (Node ≥ 22.18; every boxery image has it). Each job is kept alive by a small bash runner, `core/boxery-job-runner.sh`, sent along with `start`. Nothing is installed in the VM, so it always runs your controller's version. Agents get the same through the `vm_jobs` tool ([MCP](mcp.md#background-jobs), [pi](pi-extension.md)).
 
 ### Desktop and ports
 
@@ -125,12 +136,17 @@ See [Shared pool & leases](pool.md).
 
 ```bash
 boxery proxy-log [N]                         # which VM called which LLM provider
+boxery version [--json]                      # controller + host versions; warns when the host is behind
+boxery upgrade-host [--check] [--ref REF]    # update boxery on the host (see Install → Upgrading)
 ```
 
 ## `boxery-host` (the VM host)
 
 ```
 init [--backend libvirt|lima]   install proxy, vsock bridge, reaper services + backend setup, symlinks
+version [--json]                this install's version, commit and kind (git | npm)
+upgrade [--check] [--ref REF] [--wait S] [--reinit]
+                                update this install, re-run init for each profile using it, check, roll back on failure
 build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
 new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
@@ -252,14 +268,28 @@ tmux sessions in the VM (agents started by `attach` / `prompt`).
 
 #### `boxery jobs NAME --json`
 
+Background jobs in the VM (started by `run --bg` or `vm_jobs`), oldest first.
+
 ```json
 [
-{"id":"job-a1b2c3D4E5F6","state":"running","started_at":1793460000,"exit_code":null},
-{"id":"job-ABCdef123456","state":"completed","started_at":1793460100,"exit_code":7}
+{"id":"job-20261101-120000-a1b2c3","state":"exited","command":"pnpm test","argv":["pnpm","test"],"cwd":"/home/agent/project/app","started_at":1793460000,"ended_at":1793460371,"exit_code":1,"killed":false,"log":"/home/agent/.boxery/jobs/job-20261101-120000-a1b2c3.log"}
 ]
 ```
 
-`started_at` is Unix epoch seconds. `exit_code` is the command's numeric exit status for completed jobs, otherwise `null`. A `lost` job has no known exit code. IDs are scoped to their VM and host.
+| Field | Type | |
+|---|---|---|
+| `id` | string | `job-` + the VM's local time + a random suffix. Scoped to the VM and host. |
+| `state` | string | `running`, `exited` or `lost` |
+| `command` | string | `argv` as a shell-quoted line, for display |
+| `argv` | array | the arguments, exactly as given |
+| `cwd` | string | absolute working directory |
+| `started_at`, `ended_at` | number \| null | Unix epoch seconds. `ended_at` is `null` unless `exited`. |
+| `exit_code` | number \| null | `null` unless `exited`. A signal shows as 128 + signal (143 = SIGTERM). |
+| `killed` | boolean | stopped by `kill` |
+| `leftover` | boolean | `exited`, but processes it started are still running (`kill` stops them) |
+| `log` | string | log path in the VM |
+
+`wait NAME JOB --json` prints one such object plus `timed_out` (boolean), whenever the VM answered (the exit status is as without `--json`). `kill NAME JOB --json` prints one object. `jobs NAME --prune --json` prints the removed IDs.
 
 #### `boxery snaps NAME --json`
 

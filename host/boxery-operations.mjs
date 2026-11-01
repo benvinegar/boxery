@@ -119,6 +119,11 @@ async function recover(db, op, conf) {
 	finish(db, op.id, conf);
 }
 
+// The host-wide resource: held by `boxery-host upgrade` while it replaces code and services.
+// It conflicts with every operation, and every operation conflicts with it.
+export const ALL = "*";
+export const conflictsWith = (held, wanted) => held.includes(ALL) || wanted.includes(ALL) || held.some((n) => wanted.includes(n));
+
 // Claim all resources atomically, including fork source/destinations and image readers.
 // Recovery takes ownership of the OLD operation and its complete lock set before doing work.
 async function acquire(db, wanted, command, env, conf, reconcile = false) {
@@ -126,7 +131,7 @@ async function acquire(db, wanted, command, env, conf, reconcile = false) {
 	for (;;) {
 		const result = transaction(db, () => {
 			const rows = db.prepare("SELECT * FROM operations ORDER BY created_at, id").all();
-			const conflicts = reconcile ? rows : rows.filter((r) => JSON.parse(r.resources).some((n) => wanted.includes(n)));
+			const conflicts = reconcile ? rows : rows.filter((r) => conflictsWith(JSON.parse(r.resources), wanted));
 			const abandoned = conflicts.find((r) => !alive(r));
 			if (abandoned) {
 				stopAbandoned(abandoned);
@@ -145,6 +150,53 @@ async function acquire(db, wanted, command, env, conf, reconcile = false) {
 		if (result.done) return null;
 		if (result.operation) return result.operation;
 		await sleep(50);
+	}
+}
+
+/**
+ * Hold the host-wide lock of profile CONF in this process (used by `boxery-host upgrade`).
+ * The lock row is published first, so operations that start from now on wait behind it; then this
+ * waits (until `deadline`, ms since epoch) for the operations already in flight to finish, recovering
+ * any that were abandoned. Returns null on timeout, having withdrawn the lock. If the holder dies,
+ * the next operation reclaims the lock as abandoned (it has no intents to replay).
+ */
+export async function holdExclusive(conf, deadline) {
+	conf = path.resolve(conf);
+	const db = open(path.join(conf, "leases.db"));
+	const owner = process.pid, ownerStart = identity(owner);
+	let id = null;
+	try {
+		for (;;) {
+			const result = transaction(db, () => {
+				const others = db.prepare("SELECT * FROM operations WHERE id IS NOT ? ORDER BY created_at, id").all(id);
+				const abandoned = others.find((r) => !alive(r));
+				if (abandoned) {
+					stopAbandoned(abandoned);
+					db.prepare("UPDATE operations SET owner=?, owner_start=?, boot=?, child=NULL, child_start=NULL WHERE id=?").run(owner, ownerStart, BOOT, abandoned.id);
+					return { recovery: row(db, abandoned.id) };
+				}
+				if (id == null) {
+					if (others.some((r) => JSON.parse(r.resources).includes(ALL))) return {}; // another upgrade
+					id = randomUUID();
+					db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES(?,?,?,?,?,?,?,?)")
+						.run(id, "upgrade", JSON.stringify([ALL]), JSON.stringify({ BOXERY_CONF: conf }), owner, ownerStart, BOOT, Date.now());
+					db.prepare("INSERT INTO operation_locks(resource, operation_id) VALUES(?,?)").run(ALL, id);
+					return {};
+				}
+				return { drained: others.length === 0 };
+			});
+			if (result.recovery) { await recover(db, result.recovery, conf); continue; }
+			if (result.drained) {
+				const held = id;
+				return { release() { finish(db, held, conf); db.close(); } };
+			}
+			if (Date.now() > deadline) { if (id) finish(db, id, conf); db.close(); return null; }
+			await sleep(50);
+		}
+	} catch (e) {
+		if (id) finish(db, id, conf);
+		db.close();
+		throw e;
 	}
 }
 

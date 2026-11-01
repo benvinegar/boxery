@@ -1,8 +1,8 @@
 #!/bin/bash
 # boxery layer 2/3, dev tools and agents: git, build tools, node 22, pi, opencode, ripgrep. Runs as root,
 # idempotent. Keeps what the starting image already ships (exeuntu has most of it): a package is only
-# installed when missing, node only when there's no node >= 22, and an agent CLI only when the agent
-# user can't run the one that's there.
+# installed when missing, node only when the one there can't run boxery's job helper (type stripping:
+# 22.18+ / 23.6+), and an agent CLI only when the agent user can't run the one that's there.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 # shellcheck source=/dev/null
@@ -13,8 +13,9 @@ pkgs git jq ripgrep fd-find build-essential python3 python3-venv zip unzip ca-ce
 # What the agent user gets in a login shell, without anything from root's environment.
 as_agent() { sudo -u agent -H env -i HOME=/home/agent PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$@"; }
 
-# Node 22 LTS
-if ! v=$(as_agent node --version 2>/dev/null) || [ "$(echo "$v" | sed 's/^v\([0-9]*\).*/\1/')" -lt 22 ]; then
+# Node 22 LTS. Probe the capability, not the version: background jobs (core/boxery-jobs.ts) run under
+# Node's type stripping, which a node 22.0-22.17 or 23.0-23.5 can't do.
+if ! as_agent node --experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript -e '' >/dev/null 2>&1; then
 	ARCH=$(dpkg --print-architecture)   # amd64 | arm64
 	NODE_ARCH=$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)
 	NODE_TGZ=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | awk -v a="linux-$NODE_ARCH.tar.xz" '$2 ~ a"$"{print $2}')

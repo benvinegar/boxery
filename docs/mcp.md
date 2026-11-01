@@ -92,13 +92,19 @@ Use `vm_jobs` for long commands instead of holding a `vm_bash` call open:
 ```json
 {"action":"start","command":"pnpm test","cwd":"app"}
 {"action":"list"}
-{"action":"logs","job":"job-a1b2c3D4E5F6","lines":200,"stripAnsi":true}
-{"action":"wait","job":"job-a1b2c3D4E5F6","timeout":30}
+{"action":"logs","job":"job-20261101-120000-a1b2c3","lines":200,"stripAnsi":true}
+{"action":"wait","job":"job-20261101-120000-a1b2c3","timeout":60}
+{"action":"kill","job":"job-20261101-120000-a1b2c3"}
 ```
 
-Every call accepts optional `host` and `vm`, using the session selection by default. `start` accepts shell syntax like `vm_bash` and returns `{"id":"job-…"}`. Jobs run in detached tmux sessions and survive client disconnects. `cwd` defaults to `~/project` (home if absent); relative directories are below `~/project`.
+Every call accepts optional `host` and `vm`, using the session selection by default. These are the same jobs as `boxery run --bg` ([CLI](cli.md#background-command-jobs)).
 
-`list` returns JSON records with `id`, `state`, `started_at` (Unix seconds) and `exit_code` (number or null). `wait` returns one such record; failed commands and `lost` jobs are tool errors. Timeout returns a still-running record with `timed_out:true`, not a tool error. Waiting defaults to 120 seconds (1–3600 allowed); cancellation and timeout only stop observation, never the job. `logs` returns a bounded tail (default 200 lines, at most 2000 lines/50KB), without following indefinitely. The guest caps the raw byte tail before selecting lines or stripping ANSI, so even a huge newline-free log transfers at most 50KB. A `[output truncated]` notice means that the raw byte cap or the decoded response-body cap clipped the snapshot; incomplete leading UTF-8 characters are dropped. Invalid UTF-8 may expand during decoding, so the response also keeps only a character-safe 50KB UTF-8 suffix (excluding the marker). Optional ANSI stripping requires Perl in the guest. Logs stay in the VM at `~/.boxery/jobs/ID.log`; commands may print secrets there. See [CLI jobs](cli.md#background-command-jobs) for lifecycle details.
+- **`start`** takes a shell command line like `vm_bash`, and returns `{"id", "state", "cwd"}`. `cwd` defaults to `~/project` (home if it's missing); relative directories are below `~/project`.
+- **`list`** returns the job records (fields as in [`boxery jobs --json`](cli.md#boxery-jobs-name---json), without `argv` and `log`).
+- **`wait`** returns the record, plus `timed_out`, then the last `lines` (default 20) lines of output with escapes removed (in `structuredContent`: `output`). The text is the record's JSON on its first line, then `--- last N lines ---` and the output. A non-zero exit or a `lost` job is a tool error; a timeout isn't. `timeout` defaults to 60 seconds (0–600; 0 checks once), because many MCP clients give up on a tool call after a few minutes. For longer jobs, call `wait` again.
+- **`logs`** returns a bounded tail: default 200 lines, at most 2000 lines and 50KB. The VM clips raw bytes before selecting lines or removing escapes, so even a huge log without newlines moves at most 50KB. `[output truncated]` means the tail was clipped. Incomplete leading UTF-8 characters are dropped, and invalid UTF-8 is cut to a 50KB character-safe suffix.
+- **`kill`** sends SIGTERM to the job's process group, then SIGKILL after `grace` seconds (default 5). That includes processes a job left running after it exited (`leftover: true` in its record).
+- **Cancelling** or timing out a call only stops observing, never the job. When the ssh connection closes cleanly (cancellation, Ctrl-C), the VM side of an abandoned `wait` exits within about 2 seconds. A connection that dies silently (a sleeping laptop, a dropped network) is only noticed when ssh's keepalive gives up.
 
 ## Pool leases
 
