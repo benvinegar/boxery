@@ -196,7 +196,7 @@ The control plane runs on any Linux box or Mac, including your laptop. It owns e
 
 ## Status
 
-boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap-re-ordered-after-review) lists what's next: profiles, network isolation, per-VM budgets.
+boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap) lists what's next: profiles, network isolation, per-VM budgets.
 
 ## Contributing
 
