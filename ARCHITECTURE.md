@@ -178,7 +178,7 @@ Inside the VM, everything listens on localhost (noVNC, CDP, the proxy bridge). T
 
 ## Capacity and scale
 
-boxery is one control plane per host, and scale is bounded by the hypervisor: CPU, RAM and disk. For example, a 32-core / 125 GB host fits about 10 warm 8 GB app VMs with room left for the host. Overlays start at about 150 MB and grow with use.
+boxery is one control plane per host, and scale is bounded by the hypervisor: CPU, RAM and disk. For example, a 32-core / 125 GB host fits about 10 warm 8 GB app VMs with room left for the host. Overlays start at about 150 MB and grow with use. On libvirt, space the guest frees is returned to the host (discard), so it isn't copied into snapshots and forks either.
 
 Nothing in boxery's own state limits that: lock transactions are short, the proxy reads `tokens.json` per request, and each tool call reuses a ControlMaster. The cost to watch is per-call latency on lifecycle commands, which cross Node → Bash controller → ssh → Bash → Node ([#74](https://github.com/benvinegar/boxery/issues/74)). Named hosts route calls to hosts you pick; nothing schedules VMs across hosts.
 
