@@ -83,6 +83,7 @@ test("guidance mentions the current VM and the local/VM split", () => {
 	assert.match(g, /"demo"/);
 	assert.match(g, /vm_bash/);
 	assert.match(g, /LOCAL machine/);
+	assert.match(g, /oom_kill/);
 	assert.match(core.guidance(null), /vm_manage/);
 });
 
