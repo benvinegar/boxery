@@ -167,3 +167,67 @@ it("concurrent claims from separate processes never share a VM", async () => {
 	assert.equal(got.length, 8, "exactly 8 of 12 claims succeed");
 	assert.equal(new Set(got).size, 8, "no VM handed out twice");
 });
+
+// Schema version (PRAGMA user_version) and the copy `boxery-host upgrade` takes and restores.
+const raw = async (f) => new (await import("node:sqlite")).DatabaseSync(f);
+const columns = (d, t) => d.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+const tables = (d) => d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((r) => r.name);
+const TABLES = ["operation_intents", "operation_locks", "operations", "vms"];
+
+it("a new store records the schema version", () => {
+	assert.equal(L.schemaVersion(db), L.SCHEMA_VERSION);
+	assert.deepEqual(tables(db), TABLES);
+});
+
+it("a store from before versioning (user_version 0) migrates without losing rows", () => {
+	const c = L.claim(db, "h", 600, KEY);
+	L.commit(db, c.name, c.gen);
+	db.exec("PRAGMA user_version = 0");
+	db.close();
+	db = L.open(file);
+	assert.equal(L.schemaVersion(db), L.SCHEMA_VERSION);
+	assert.equal(L.get(db, c.name).state, "LEASED");
+	assert.equal(L.renew(db, c.lease_id, 600).name, c.name);
+});
+
+it("a store newer than the code is refused with a clear error and left as it is", async () => {
+	db.close();
+	const d = await raw(file);
+	d.exec(`PRAGMA user_version = ${L.SCHEMA_VERSION + 1}; ALTER TABLE vms ADD COLUMN zone TEXT`);
+	d.close();
+	assert.throws(() => L.open(file), new RegExp(`schema version ${L.SCHEMA_VERSION + 1}, newer than this boxery understands \\(${L.SCHEMA_VERSION}\\).*Upgrad`));
+	const after = await raw(file);
+	assert.equal(L.schemaVersion(after), L.SCHEMA_VERSION + 1, "not downgraded or rewritten");
+	assert.ok(columns(after, "vms").includes("zone"));
+	after.close();
+});
+
+it("backup + restore: schema, rows and version come back; generations move past the newer store's", () => {
+	const c = L.claim(db, "h", 600, KEY);
+	L.commit(db, c.name, c.gen);
+	const copy = `${file}.copy`;
+	L.backup(db, copy, (d) => d.prepare("DELETE FROM vms WHERE name='p3'").run());
+	const other = L.open(file); // another process's connection, open across the restore
+	// What a newer release might do on open (a column, a table, a higher version), then a claim.
+	db.exec(`ALTER TABLE vms ADD COLUMN zone TEXT; CREATE TABLE extras (x); INSERT INTO extras VALUES (1); PRAGMA user_version = ${L.SCHEMA_VERSION + 1}`);
+	const late = L.claim(db, "late", 600, KEY);
+	let inside = false;
+	L.restore(db, copy, () => { try { db.exec("BEGIN"); db.exec("ROLLBACK"); } catch { inside = true; } }); // no nesting
+	assert.ok(inside, "then() runs inside the restore's transaction");
+	assert.equal(L.schemaVersion(db), L.SCHEMA_VERSION);
+	assert.deepEqual(tables(db), TABLES);
+	assert.ok(!columns(db, "vms").includes("zone"));
+	assert.equal(L.get(db, "p3"), null, "the edited copy is what comes back");
+	assert.equal(L.get(other, c.name).holder, "h", "other connections see the restored rows");
+	assert.equal(L.get(other, late.name).state, "FREE", "the late claim is undone");
+	assert.equal(L.commit(other, late.name, late.gen), false, "and fenced");
+	const again = L.claim(other, "again", 600, KEY);
+	assert.equal(again.name, late.name);
+	assert.ok(again.gen > late.gen, "its generation is never reissued");
+	assert.equal(L.renew(other, c.lease_id, 600).name, c.name, "a lease from before the copy survives");
+	assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'").get(), "AUTOINCREMENT bookkeeping restored");
+	other.close();
+	db.close();
+	db = L.open(file);
+	assert.equal(L.schemaVersion(db), L.SCHEMA_VERSION);
+});

@@ -91,9 +91,10 @@ In HTTP mode "local" means the machine running MCP: grant values come from that 
 | Where | What | Notes |
 |---|---|---|
 | `~/.boxery/` (controller) | `host-registry/`, `default-host`, and per host `profiles/NAME/`: `config`, `ssh_config`, `grants/` (names and paths only, never values), `leases/` (lease records + per-lease ssh keys), ControlMaster sockets | Per host profile; every host is registered by name |
-| `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases | SQLite, short `BEGIN IMMEDIATE` transactions |
+| `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases | SQLite, short `BEGIN IMMEDIATE` transactions; schema version in `user_version` |
 | | `tokens.json` (VM → proxy secret; a leased pool VM's carries its lease id), `edge/NAME.json` (HTTP grant headers, stamped with the lease on a pool VM), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
 | | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `vm-kind/`, `work/OP/` (seeds, removed after the operation) | |
+| | `pre-upgrade/`: `leases.db`, `tokens.json`, `edge/`, `vm-shapes/`, `vm-kind/` as they were before the last `upgrade` | Restored if the upgrade rolls back; kept for recovery by hand ([install](docs/install.md#upgrading)) |
 | Hypervisor | VMs, images (`VM@LABEL`), seeds | Owned by the backend |
 | Guest | `~/.boxery/token`, agent configs, `/run/user/UID/boxery/` (pushed grants, tmpfs) | Token rotates on every new VM and every lease; grants are gone on reset or reboot |
 

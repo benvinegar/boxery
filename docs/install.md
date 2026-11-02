@@ -182,7 +182,24 @@ It then re-runs `init` for **every profile whose services run that install**. Fo
 
 Before changing anything, it waits for VM operations already in flight in each profile to finish, up to `--wait` seconds (600 by default). It exits with code 75 if they don't finish in time, and nothing changes. New operations wait behind the upgrade (see [lifecycle](lifecycle.md)).
 
-After `init`, it checks every profile the way its services run. `boxery-host ls` must work with the reaper's `PATH`, and the LLM proxy must answer `/healthz`. If any check fails, the code goes back to the previous version and `init` runs again.
+After `init`, it checks every profile the way its services run. `boxery-host ls` must work with the reaper's `PATH`, the lease store must open (`boxery-host pool ls`), and the LLM proxy must answer `/healthz`. If any check fails, the code goes back to the previous version, each profile's state goes back to its pre-upgrade copy, and `init` runs again.
+
+**The pre-upgrade copy.** Before it changes the code, `upgrade` saves each profile's state in `$BOXERY_CONF/pre-upgrade/` (`~/.config/boxery/pre-upgrade/` for the default profile). It holds a consistent copy of `leases.db`, made with `VACUUM INTO` while no operation runs, plus `tokens.json`, `edge/`, `vm-shapes/` and `vm-kind/`. A rollback restores all of it, because the new version may have migrated the lease store or rewritten those files. The database is restored in place, so processes that have it open see the old contents. Leases taken before the upgrade carry on. A claim made during the upgrade is undone, and its client gets an error and can retry.
+
+The copy stays after a successful upgrade, until the next upgrade replaces it. It is the way back if the new version turns out to be broken in a way the checks didn't catch. For each profile, with no boxery command running:
+
+```bash
+systemctl --user stop boxery-proxy boxery-reaper.timer    # macOS: launchctl bootout gui/$(id -u)/dev.boxery-proxy (and dev.boxery-reaper)
+# put the previous version back: git checkout <old commit>, or npm install -g boxery-vm@<old version>
+cd ~/.config/boxery                                        # or the profile's BOXERY_CONF
+rm -f leases.db-wal leases.db-shm && cp pre-upgrade/leases.db leases.db
+cp pre-upgrade/tokens.json . && for d in edge vm-shapes vm-kind; do rm -rf "$d"; [ ! -d "pre-upgrade/$d" ] || cp -R "pre-upgrade/$d" .; done
+boxery-host init                                           # restarts the services
+```
+
+Anything recorded since the upgrade is lost: leases, new VMs' tokens and sizes, edge grants. Restore soon after the upgrade, and recreate what you need.
+
+The lease store records its schema version. A boxery older than the store refuses to open it, with an error that says so, rather than misreading it. So `--ref` to a release older than the store's schema fails its checks and rolls back. Releases from before the version was recorded don't check it.
 
 Hosts installed before `upgrade` existed need one manual update, on the host:
 

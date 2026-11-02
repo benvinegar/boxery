@@ -3,7 +3,8 @@
 # backend, a stub systemctl and a real LLM proxy. HOME is a temp dir: service files, profiles and
 # ~/.local/bin stay inside it. Covers: no-op when current, fast-forward + re-init of every profile using
 # the install, refusing a dirty checkout, waiting for in-flight operations (and timing out cleanly), and
-# rolling back when the new version fails its checks. Also: init's service PATH finds the backend's tools.
+# rolling back when the new version fails its checks, with the lease store it migrated and the state files
+# it rewrote restored from pre-upgrade/. Also: init's service PATH finds the backend's tools.
 set -euo pipefail
 node --disable-warning=ExperimentalWarning -e 'require("node:sqlite")' 2>/dev/null || { echo "SKIP: node:sqlite unavailable (need Node >= 22.13)"; exit 0; }
 [[ $(uname) == Linux ]] || { echo "SKIP: systemd-unit layout (launchd parsing is covered by test/upgrade.test.mjs)"; exit 0; }
@@ -91,15 +92,44 @@ if wait "$up"; then ok "upgrade completes once the operation finishes"; else bad
 ! grep -q "Failed\|bus" "$tmp/up.log" && grep -q "restart boxery-proxy.service" "$tmp/systemctl.log" && grep -q "restart boxery-proxy-two.service" "$tmp/systemctl.log" && ok "re-ran init for both profiles (services restarted)" || bad "systemctl: $(cat "$tmp/systemctl.log")"
 grep -q "proxy healthy on :$port" "$tmp/up.log" && grep -q "$p2: .* VMs" "$tmp/up.log" && ok "checked each profile after init" || bad "checks: $(cat "$tmp/up.log")"
 jq -e '.busy and .held' "$p1/tokens.json" >/dev/null && ok "in-flight operation finished normally" || bad "tokens: $(cat "$p1/tokens.json")"
-[[ $(node --disable-warning=ExperimentalWarning -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);console.log(d.prepare("SELECT count(*) n FROM operations").get().n+d.prepare("SELECT count(*) n FROM operation_locks").get().n)' "$p1/leases.db") == 0 ]] && ok "upgrade lock released" || bad "locks left behind"
+# sql DB QUERY → the rows as JSON
+sql() { node --disable-warning=ExperimentalWarning -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);console.log(JSON.stringify(d.prepare(process.argv[2]).all()))' "$@"; }
+[[ $(sql "$p1/leases.db" "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM operation_locks) n") == '[{"n":0}]' ]] && ok "upgrade lock released" || bad "locks left behind"
+pre=$p1/pre-upgrade
+[[ -f $pre/leases.db && -f $pre/tokens.json && $(stat -c %a "$pre") == 700 && $(sql "$pre/leases.db" "SELECT count(*) n FROM operation_locks") == '[{"n":0}]' ]] &&
+	ok "kept the state from before the upgrade in pre-upgrade/ (0700, without the upgrade's lock)" || bad "pre-upgrade: $(ls -la "$pre" 2>&1)"
 
-# A broken release: init succeeds but the new host can't list VMs → roll back to the previous commit.
-sed -i 's/^async function ls(rt, \[arg\]) {$/async function ls(rt, [arg]) { fail("broken release");/' "$tmp/origin/host/cli.mjs"
-grep -q 'broken release' "$tmp/origin/host/cli.mjs" || bad "test setup: could not break ls"
+# A pool VM with a live lease, to come through the rollback below.
+K1="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIleasekeyoneleasekeyone holder1"
+"$H" pool add busy >/dev/null 2>&1 || bad "pool add"
+out=$(echo "$K1" | "$H" acquire --holder alice --ttl 600 2>/dev/null) || bad "acquire: $out"
+set -- $out; lease=$2
+tokens=$(cat "$p1/tokens.json") gen=$(sql "$p1/leases.db" "SELECT gen FROM vms WHERE name='busy'" | jq '.[0].gen')
+
+# A broken release: init succeeds, then the new host migrates the lease store (schema version 2: a
+# column and a table), rewrites tokens.json and adds an edge grant, but can't list VMs → roll back.
+edit() { node -e 'const fs=require("fs");const [f,a,b]=process.argv.slice(1);const s=fs.readFileSync(f,"utf8");if(!s.includes(a))process.exit(1);fs.writeFileSync(f,s.replace(a,()=>b))' "$@" || bad "test setup: could not edit $1"; }
+edit "$tmp/origin/host/cli.mjs" 'async function ls(rt, [arg]) {' 'async function ls(rt, [arg]) { rt.db(); const fs = await import("node:fs"); fs.writeFileSync(`${rt.conf}/tokens.json`, "{\"v2\":true}"); fs.mkdirSync(`${rt.conf}/edge`, { recursive: true }); fs.writeFileSync(`${rt.conf}/edge/v2.json`, "{}"); fs.writeFileSync(`${rt.conf}/broken.ran`, ""); fail("broken release");'
+edit "$tmp/origin/host/boxery-leases.mjs" 'export const SCHEMA_VERSION = 1;' 'export const SCHEMA_VERSION = 2;'
+edit "$tmp/origin/host/boxery-leases.mjs" '	if (v < 1) db.exec(SCHEMA_V1);' '	if (v < 1) db.exec(SCHEMA_V1); if (v < 2) db.exec("ALTER TABLE vms ADD COLUMN zone TEXT; CREATE TABLE broken_release (x)");'
 og commit -qam broken; og tag v0.7.2
 rc=0; out=$("$H" upgrade 2>&1) || rc=$?
 [[ $rc != 0 ]] && grep -q "rolled back" <<<"$out" && [[ $(ig rev-parse HEAD) == "$v2" ]] && ok "failed checks roll back to the previous commit" || bad "rollback rc=$rc HEAD=$(ig rev-parse HEAD): $out"
+[[ -e $p1/broken.ran ]] && grep -q "$p1: restored the lease store" <<<"$out" && ok "the new code migrated the store; the rollback restored each profile's state" || bad "restore: $out"
+[[ $(sql "$p1/leases.db" "PRAGMA user_version") == '[{"user_version":1}]' &&
+	$(sql "$p1/leases.db" "SELECT count(*) n FROM sqlite_master WHERE name='broken_release'") == '[{"n":0}]' &&
+	$(sql "$p1/leases.db" "SELECT count(*) n FROM pragma_table_info('vms') WHERE name='zone'") == '[{"n":0}]' ]] &&
+	ok "leases.db is back at the old schema (version 1, no new column or table)" || bad "schema: $(sql "$p1/leases.db" "SELECT name, sql FROM sqlite_master")"
+[[ $(sql "$p1/leases.db" "SELECT state, holder, lease_id FROM vms WHERE name='busy'" | jq -c '.[0]') == "{\"state\":\"LEASED\",\"holder\":\"alice\",\"lease_id\":\"$lease\"}" &&
+	$(sql "$p1/leases.db" "SELECT gen FROM vms WHERE name='busy'" | jq '.[0].gen') -gt $gen ]] &&
+	ok "the lease survived; its generation moved on" || bad "lease row: $(sql "$p1/leases.db" "SELECT * FROM vms")"
+[[ $(cat "$p1/tokens.json") == "$tokens" && ! -e $p1/edge/v2.json ]] && ok "tokens.json and edge/ restored" || bad "state files: $(cat "$p1/tokens.json"); $(ls "$p1/edge" 2>&1)"
+[[ $(sql "$p1/leases.db" "SELECT (SELECT count(*) FROM operations) + (SELECT count(*) FROM operation_locks) n") == '[{"n":0}]' ]] && ok "upgrade lock released after the rollback" || bad "locks after rollback"
 "$H" ls --json >/dev/null 2>&1 && ok "host works after the rollback" || bad "ls after rollback"
+"$H" renew "$lease" --ttl 900 >/dev/null 2>&1 && "$H" release "$lease" >/dev/null 2>&1 && [[ $("$H" pool ls --json | jq -r '.[] | select(.name == "busy") | .state') == free ]] &&
+	ok "the lease renews and releases (the VM resets) after the rollback" || bad "renew/release: $("$H" pool ls 2>&1)"
+out=$(echo "$K1" | "$H" acquire --holder bob --ttl 600 2>/dev/null) && set -- $out && [[ $1 == busy ]] && "$H" release "$2" >/dev/null 2>&1 &&
+	ok "and the pool leases again" || bad "acquire after rollback: $out"
 [[ $(ig symbolic-ref --short HEAD) == master ]] && ok "still on master after rollback" || bad "branch"
 
 # A pinned ref (detached) and back.
