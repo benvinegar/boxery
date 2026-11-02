@@ -53,6 +53,17 @@ Your agent keeps running where it already runs, with your model login and your s
 
 It works with every MCP-capable coding agent, including **Claude Code**, **Codex**, Cursor and opencode, and has a native [pi](https://pi.dev) extension. You can also run agents *inside* the VMs, where they keep working while your laptop sleeps.
 
+## Getting started
+
+Give this prompt to your agent:
+
+```text
+Read github.com/modem-dev/boxery and set up boxery on this machine.
+Then spin up a VM with `boxery new demo` and open its desktop.
+```
+
+To do it by hand instead, see the [Quick start](#quick-start).
+
 ## Where the VMs run
 
 boxery has two parts: the **[boxery host](#the-boxery-host)**, a machine you run that keeps your credentials, grants and leases, and the **VMs** your agent drives. The host can run the VMs itself if it has a hypervisor, or drive VMs in the cloud. Pick where you want the VMs to run:
