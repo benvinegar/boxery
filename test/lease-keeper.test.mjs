@@ -62,7 +62,7 @@ test("acquire validates, parses NAME LEASE_ID and renews on a heartbeat while al
 test("a failed heartbeat forgets the lease and reports it lost", async () => {
 	reset();
 	const lost = [];
-	const k = new core.LeaseKeeper({ everyMs: () => 30, onLost: (l, e) => lost.push([l.name, e.message]) });
+	const k = new core.LeaseKeeper({ everyMs: () => 30, onLost: (l, e) => lost.push([l.name, /** @type {Error} */ (e).message]) });
 	await k.acquire({ ttl: 600 });
 	writeFileSync(failRenew, "");
 	try {
@@ -89,7 +89,7 @@ test("renew with a new ttl keeps it; a failed renew loses the lease; releaseAll 
 	assert.equal(k.list().length, 0);
 
 	await k.acquire({});
-	assert.match(log().at(-1), /^acquire --ttl 1800 --wait 60$/);
+	assert.match(/** @type {string} */ (log().at(-1)), /^acquire --ttl 1800 --wait 60$/);
 	await k.releaseAll();
 	assert.equal(log().at(-1), "release l-0123456789abcdef0123456789abcdef");
 	assert.equal(k.list().length, 0);

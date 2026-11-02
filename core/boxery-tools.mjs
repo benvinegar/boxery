@@ -12,15 +12,29 @@
 // vm_manage and vm_lease have no `run`: "current VM" and held leases are front-end session state.
 // Each front-end calls manageAction() / leaseAction() with its own session hooks.
 import * as core from "./boxery-core.mjs";
+/** @import { Approve, LocalConfinement, ManageArgs, Progress, ToolResult } from "./boxery-core.mjs" */
+/** A JSON Schema fragment. @typedef {{ type?: string | string[], description?: string, enum?: readonly string[], properties?: Record<string, JsonSchema>, items?: JsonSchema, required?: string[], anyOf?: JsonSchema[], minimum?: number, maximum?: number }} JsonSchema */
+/** A tool's input schema: always an object with named properties. @typedef {JsonSchema & { type: "object", properties: Record<string, JsonSchema>, required: string[] }} ObjectSchema */
+/** MCP tool annotations (hints). @typedef {{ title?: string, readOnlyHint?: boolean, destructiveHint?: boolean, idempotentHint?: boolean, openWorldHint?: boolean }} ToolAnnotations */
+/** What every front-end passes run (see the header). @typedef {{ signal?: AbortSignal, current?: string | null, localCwd?: string, localCopy?: LocalConfinement | false, progress?: Progress, approve?: Approve }} ToolContext */
+/**
+ * One TOOLS entry (see the header). A front-end may extend the context (X); noVm tools ignore `vm` (front-ends pass null).
+ * @template [X=ToolContext]
+ * @typedef {{ name: string, title: string, description: string, engine?: "bash" | "read" | "write" | "edit", noVm?: boolean, parameters: ObjectSchema,
+ *   outputSchema?: JsonSchema, annotations: ToolAnnotations, run?: (vm: string, args: any, ctx: X) => Promise<ToolResult> }} Tool
+ */
+/** vm_manage's front-end session (see manageAction). @typedef {{ use: (name: string) => Promise<void>, adopt: (name: string) => void, clear: () => void, removing?: (name: string) => Promise<void> | void, removed?: (name: string) => void, keeper?: core.LeaseKeeper, progress?: Progress }} ManageSession */
+/** vm_lease's front-end session (see leaseAction). @typedef {{ keeper: core.LeaseKeeper, current?: string | null, adopt: (name: string) => void, clear: () => void }} LeaseSession */
 
 const where = "in a boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
 export const VM_PARAM = { type: "string", description: "VM name (default: the current VM)" };
 const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
+/** @param {Record<string, JsonSchema>} properties @param {string[]} [required] @returns {ObjectSchema} */
 const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base"];
-const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
+const SIZE = (/** @type {string} */ unit, /** @type {number} */ min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
 export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version"];
 
 const INFO_OUTPUT = {
@@ -46,6 +60,7 @@ const INFO_OUTPUT = {
 	},
 };
 
+/** @type {Tool[]} */
 export const TOOLS = [
 	{
 		name: "vm_bash",
@@ -301,6 +316,7 @@ export const TOOLS = [
 /**
  * vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output;
  * ctx.hostName names the host in version output.
+ * @param {{ action?: string, vm?: string | null }} a @param {{ current?: string | null, listNote?: string, hostName?: string }} [ctx] @returns {Promise<ToolResult>}
  */
 export async function infoAction(a, { current, listNote, hostName } = {}) {
 	const target = () => {
@@ -349,6 +365,7 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
  *   s.removing?(name)    before rm (may throw to refuse); s.removed?(name) after it
  *   s.keeper?            the session's core.LeaseKeeper: leased VMs cannot be removed
  *   s.progress?(message) status lines from long controller operations (MCP progress)
+ * @param {ManageArgs & { action: string }} a @param {ManageSession} s @returns {Promise<ToolResult>}
  */
 export async function manageAction(a, s) {
 	switch (a.action) {
@@ -383,6 +400,7 @@ export async function manageAction(a, s) {
 /**
  * vm_lease, given a front-end session: s.keeper (core.LeaseKeeper), s.current (the current VM name
  * or null), and s.adopt(name) and s.clear() as for manageAction.
+ * @param {{ action?: string, vm?: string | null, ttl?: number | null, wait?: number | null, use?: boolean }} a @param {LeaseSession} s @returns {Promise<ToolResult>}
  */
 export async function leaseAction(a, s) {
 	const target = () => core.assertName(a.vm ?? s.current ?? "");

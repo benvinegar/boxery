@@ -2,12 +2,16 @@
 import fs from "node:fs/promises";
 import { constants as C } from "node:fs";
 import path from "node:path";
+/** @import { BigIntStats } from "node:fs" */
+/** @typedef {{ path: string, edits: { oldText?: string, newText?: string | null }[] }} EditRequest */
+/** @typedef {(original: string, edits: EditRequest["edits"]) => string} ApplyEdits */
 
 const MAX = 16 * 1024 * 1024;
-const version = (s) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.uid, s.gid, s.nlink].join(":");
-const identity = (s) => `${s.dev}:${s.ino}`;
+const version = (/** @type {BigIntStats} */ s) => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs, s.mode, s.uid, s.gid, s.nlink].join(":");
+const identity = (/** @type {BigIntStats} */ s) => `${s.dev}:${s.ino}`;
 const conflict = () => { throw new Error("edit conflict: file or resolved path changed; reread and retry"); };
 
+/** @param {string} target */
 async function observe(target) {
 	if (!(await fs.lstat(target)).isFile()) throw new Error("not a regular file");
 	// O_RDWR respects ordinary write permissions; NONBLOCK rejects a raced-in FIFO.
@@ -32,6 +36,7 @@ async function observe(target) {
 	} finally { await file.close(); }
 }
 
+/** @param {EditRequest} request @param {ApplyEdits} applyEdits @param {() => void} [check] */
 export async function atomicEdit(request, applyEdits, check = () => {}) {
 	let temp;
 	try {
@@ -65,6 +70,7 @@ export async function atomicEdit(request, applyEdits, check = () => {}) {
 	}
 }
 
+/** @param {ApplyEdits} applyEdits */
 export async function main(applyEdits) {
 	let interrupted = false;
 	const stop = () => { interrupted = true; };
@@ -81,7 +87,7 @@ export async function main(applyEdits) {
 		const result = await atomicEdit(JSON.parse(Buffer.concat(chunks).toString("utf8")), applyEdits, check);
 		console.log(JSON.stringify(result));
 	} catch (error) {
-		console.error(`vm_edit: ${error.message}`);
+		console.error(`vm_edit: ${/** @type {Error} */ (error).message}`);
 		process.exitCode = 1;
 	} finally {
 		for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) process.off(sig, stop);

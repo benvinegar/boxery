@@ -19,8 +19,13 @@ import { vmKinds } from "./kinds.mjs";
 import { addVmShape, vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, print, readFd, table, validName } from "./util.mjs";
 import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
+/** @import { LeaseListEntry } from "./boxery-leases.mjs" */
+/** @import { Runtime } from "./runtime.mjs" */
+/** @import { ShapeRecord } from "./shapes.mjs" */
 
-const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for coding agents (backend: ${backend})
+/** A boxery-host command: the runtime and the arguments after the command name. @typedef {(rt: Runtime, args: string[]) => unknown} Command */
+
+const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf }) => `boxery-host — Ubuntu desktop VMs for coding agents (backend: ${backend})
 
   init [--backend libvirt|lima|cloud-hypervisor|exe|boat]  install proxy services + backend setup, symlinks
   --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
@@ -55,9 +60,10 @@ const POOL_USAGE = "usage: pool add NAME | rm NAME [--force] | ls [--json]";
 
 // ---------------------------------------------------------------- listings
 const GIB = 1024 ** 3;
-const gib = (bytes) => (bytes == null ? null : Math.round((bytes / GIB) * 100) / 100);
+const gib = (/** @type {number | null} */ bytes) => (bytes == null ? null : Math.round((bytes / GIB) * 100) / 100);
 /** A size record for a VM that has none (made before shapes, or outside boxery): ask the backend, and
- *  keep the answer as a custom size so later listings don't. null if the backend can't tell. */
+ *  keep the answer as a custom size so later listings don't. null if the backend can't tell.
+ *  @param {Runtime} rt @param {string} name */
 async function backfillSize(rt, name) {
 	try {
 		if (!await rt.vms.has("backend_size")) return null;
@@ -68,15 +74,17 @@ async function backfillSize(rt, name) {
 	} catch { return null; } // one VM's size must not break the listing
 }
 /** The `ls --json` objects (docs/cli.md). Lease states are lowercase here, like VM states; the lease
- *  store's own states (FREE, LEASED, …) stay internal. */
+ *  store's own states (FREE, LEASED, …) stay internal.
+ *  @param {Runtime} rt */
 async function lsJson(rt) {
+	/** @type {LeaseListEntry[]} */
 	let pool = [];
 	try { pool = leases.list(rt.db()); } catch { /* listing VMs must not depend on the lease store */ }
 	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state.toLowerCase(), holder: r.holder, expires_at: r.expires_at }]));
-	const sizes = vmShapes(rt.conf), kinds = vmKinds(rt.conf);
+	const sizes = /** @type {Record<string, ShapeRecord | null>} */ (vmShapes(rt.conf)), kinds = vmKinds(rt.conf);
 	const vms = await rt.vms.list();
 	await Promise.all(vms.filter((vm) => !sizes[vm.name]).map(async (vm) => { sizes[vm.name] = await backfillSize(rt, vm.name); }));
-	const nz = (v) => (v === "" ? null : v);
+	const nz = (/** @type {string} */ v) => (v === "" ? null : v);
 	return vms.map((vm) => {
 		const sz = sizes[vm.name];
 		return { name: vm.name, state: nz(vm.state), ssh_addr: nz(vm.ssh), disk_size: gib(vm.diskBytes) ?? sz?.disk ?? null, disk_used: gib(vm.diskUsedBytes),
@@ -84,11 +92,13 @@ async function lsJson(rt) {
 			desktop: kinds[vm.name] !== "headless" };
 	});
 }
+/** @typedef {Awaited<ReturnType<typeof lsJson>>[number]} LsEntry */
 // A running VM whose tunnel isn't up (exe.dev) shows why instead of an address.
-const fmtSsh = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? "-"));
+const fmtSsh = (/** @type {LsEntry} */ v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? "-"));
 // USED/SIZE in GiB ("0.5/40GiB"), or only the size when the backend can't tell what's used.
-const fmtDisk = (v) => (v.disk_size == null && v.disk_used == null ? "-"
+const fmtDisk = (/** @type {LsEntry} */ v) => (v.disk_size == null && v.disk_used == null ? "-"
 	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
+/** @param {Runtime} rt @param {string[]} args */
 async function ls(rt, [arg]) {
 	const vms = await lsJson(rt);
 	if (arg === "--json") return print(jsonArray(vms));
@@ -97,6 +107,7 @@ async function ls(rt, [arg]) {
 		...vms.map((v) => [v.name, v.state ?? "-", fmtSsh(v), fmtDisk(v), v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 function shapes(rt, [arg]) {
 	const s = rt.shapes();
 	if (arg === "--json") return print(JSON.stringify(s));
@@ -105,6 +116,7 @@ function shapes(rt, [arg]) {
 		...Object.entries(s.shapes).map(([n, v]) => [n + (n === s.default ? " *" : ""), v.cpus, v.mem, v.disk])]));
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 async function snaps(rt, [name, arg]) {
 	validName(name);
 	if (arg === "--json") {
@@ -115,6 +127,7 @@ async function snaps(rt, [name, arg]) {
 	for (const l of await snapsLines(rt, name)) print(l.join("\t"));
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 async function images(rt, [arg]) {
 	const imgs = await rt.vms.images();
 	if (arg === "--json") return print(jsonArray(imgs.map((i) => ({ image: i.image, created: i.created || null, size: i.size && i.size !== "-" ? i.size : null }))));
@@ -122,14 +135,16 @@ async function images(rt, [arg]) {
 	print(table([40, 20], [["IMAGE", "CREATED", "SIZE"], ...imgs.map((i) => [i.image, i.created, i.size])]));
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 async function ip(rt, [name]) {
 	print((await rt.vms.sshEndpoint(validName(name))).host);
 }
 
+/** @param {Runtime} rt @param {string[]} args @returns {Promise<void>} */
 function proxyLog(rt, [n = "30"]) {
-	const [cmd, args] = process.platform === "darwin"
-		? ["tail", ["-n", n, path.join(process.env.HOME, "Library/Logs", `${rt.proxyUnit}.log`)]]
-		: ["journalctl", ["--user", "-u", rt.proxyUnit, "-n", n, "--no-pager", "-o", "cat"]];
+	const [cmd, args] = /** @type {[string, string[]]} */ (process.platform === "darwin"
+		? ["tail", ["-n", n, path.join(/** @type {string} */ (process.env.HOME), "Library/Logs", `${rt.proxyUnit}.log`)]]
+		: ["journalctl", ["--user", "-u", rt.proxyUnit, "-n", n, "--no-pager", "-o", "cat"]]);
 	return new Promise((resolve, reject) => {
 		spawn(cmd, args, { stdio: "inherit" }).on("error", reject).on("close", (code) => {
 			if (code === 0) resolve(); else reject(Object.assign(new Error(`${cmd} failed`), { exitCode: code ?? 1, reported: true }));
@@ -138,7 +153,9 @@ function proxyLog(rt, [n = "30"]) {
 }
 
 // ---------------------------------------------------------------- dispatch
+/** @param {string} command @returns {Command} */
 const lifecycle = (command) => (rt, args) => runLifecycle(rt, command, args);
+/** @type {Record<string, Command>} */
 const COMMANDS = {
 	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
 	ls, list: ls, shapes, snaps, images, ip,
@@ -149,11 +166,13 @@ const COMMANDS = {
 	reap: lifecycle("reap"), reconcile: lifecycle("reconcile"),
 };
 // Run in a supervised worker holding the VMs named by boxery-operations.mjs resources().
+/** @type {Record<string, Command>} */
 const MUTATING = {
 	new: newVm, fork, start, stop, resize, rm, delete: rm, snap, "snap-rm": snapRm, revert, "edge-set": edgeSet,
 	pool: (rt, [sub, ...args]) => (sub === "add" ? poolAdd(rt, args) : sub === "rm" ? poolRm(rt, args) : fail(POOL_USAGE)),
 };
 // Held-lock callbacks: the lease runtime and drift repair run these under a VM's lock (`__call`).
+/** @type {Record<string, Command>} */
 const CALLBACKS = {
 	_lease_acquire: lifecycle("install-held"),
 	_lease_release: lifecycle("release-held"),
@@ -162,7 +181,7 @@ const CALLBACKS = {
 	lease_reset: lifecycle("reset"), // takes the lock itself
 	_reconcile_vm: (rt, [name]) => reconcileVm(rt, name),
 };
-const supervised = (command, args) => Object.hasOwn(MUTATING, command) && (command !== "pool" || ["add", "rm"].includes(args[0]));
+const supervised = (/** @type {string} */ command, /** @type {string[]} */ args) => Object.hasOwn(MUTATING, command) && (command !== "pool" || ["add", "rm"].includes(args[0]));
 
 // A worker does nothing until its supervisor has committed the worker's identity (fd 3 gets a line).
 // A supervisor that dies first closes the pipe without authorizing side effects.
@@ -173,6 +192,7 @@ function awaitGate() {
 	if (!line.includes("\n")) fail("worker was not authorized to start");
 }
 
+/** @param {string[]} argv */
 async function main(argv) {
 	let [command = "help", ...args] = argv;
 	if (command === "__worker") { awaitGate(); [command = "", ...args] = args; }

@@ -1,15 +1,22 @@
 {
-  // Type-checks the code that runs under Node's built-in type stripping (no build step).
-  // `npm run typecheck` (needs: npm i --no-save typescript@5.9.3 @types/node@22; erasableSyntaxOnly is 5.8+)
+  // Type-checks without a build step. The .mjs files are plain JavaScript typed with JSDoc comments
+  // (checkJs), so Node runs them as-is, including from node_modules after `npm i -g boxery-vm`.
+  // core/*.ts is the exception: it is piped into the VM and run under Node's type stripping, so it is
+  // never loaded from node_modules; keep it to erasable syntax (erasableSyntaxOnly).
+  // Tests: test/tsconfig.json. `npm run typecheck` runs both
+  // (needs: npm i --no-save typescript@5.9.3 @types/node@22; erasableSyntaxOnly is 5.8+)
   "compilerOptions": {
     "strict": true,
     "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
     "target": "es2023",
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
     "types": ["node"]
   },
-  "files": ["core/boxery-jobs.ts"]
+  "include": ["controller/*.mjs", "core/*.mjs", "core/*.ts", "host/*.mjs", "mcp/*.mjs", "proxy/*.mjs"]
 }

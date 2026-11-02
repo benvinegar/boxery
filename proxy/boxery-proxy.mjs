@@ -17,6 +17,11 @@ import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+/** @import { IncomingMessage, ServerResponse } from "node:http" */
+/** @import { ReadableStream as NodeReadableStream } from "node:stream/web" */
+
+/** An authenticated VM: its name, its pool lease (null for a pet), and how the log names it. @typedef {{ vm: string, lease: string | null, tag: string }} Who */
+/** @typedef {{ base: string, auth(h: Headers): Promise<void> }} Route */
 
 const CONF = process.env.BOXERY_CONF ?? path.join(os.homedir(), ".config/boxery");
 const TOKENS = path.join(CONF, "tokens.json");
@@ -36,6 +41,7 @@ function loadEnvFile() {
 }
 loadEnvFile();
 
+/** tokens.json: NAME → "secret" | {secret, lease} (parsed JSON, unchecked). @returns {Record<string, any>} */
 function readTokens() {
 	try {
 		return JSON.parse(fs.readFileSync(TOKENS, "utf8"));
@@ -44,16 +50,18 @@ function readTokens() {
 	}
 }
 
+/** @param {string} s @returns {any} */
 function b64urlJson(s) {
 	return JSON.parse(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
 }
 
-const sha256 = (s) => createHash("sha256").update(s).digest();
+const sha256 = (/** @type {string} */ s) => createHash("sha256").update(s).digest();
 /** Constant-time string compare: equal-length digests, so neither the length nor the content leaks through timing. */
-const secretEquals = (got, want) => typeof got === "string" && typeof want === "string" && timingSafeEqual(sha256(got), sha256(want));
+const secretEquals = (/** @type {unknown} */ got, /** @type {unknown} */ want) => typeof got === "string" && typeof want === "string" && timingSafeEqual(sha256(got), sha256(want));
 
 /** "name:secret" → {vm, lease, tag} if it matches tokens.json, else null. A tokens.json entry is the
- * pet's "secret", or {secret, lease} for a pool VM: that token lives exactly as long as the lease. */
+ * pet's "secret", or {secret, lease} for a pool VM: that token lives exactly as long as the lease.
+ * @param {unknown} cred @returns {Who | null} */
 function vmForCred(cred) {
 	if (typeof cred !== "string") return null;
 	const i = cred.indexOf(":");
@@ -68,9 +76,9 @@ function vmForCred(cred) {
 	return { vm: name, lease, tag: lease ? `${name}/${lease}` : name }; // tag: who, in the log
 }
 
-/** Returns {vm, lease, tag} for a valid token, else null. */
+/** Returns {vm, lease, tag} for a valid token, else null. @param {IncomingMessage} req */
 function authenticate(req) {
-	let raw = req.headers["x-api-key"] ?? "";
+	let raw = /** @type {string} */ (req.headers["x-api-key"] ?? ""); // node joins repeated custom headers
 	const authz = req.headers.authorization ?? "";
 	if (authz.toLowerCase().startsWith("bearer ")) raw = authz.slice(7).trim();
 	if (!raw) return null;
@@ -88,7 +96,9 @@ function authenticate(req) {
 }
 
 // ---- Codex OAuth (shared with host pi's auth.json) ----
+/** @type {Promise<any> | null} */
 let refreshing = null;
+/** pi's openai-codex credentials (parsed auth.json), refreshed when they are about to expire. @returns {Promise<any>} */
 async function codexCreds() {
 	const auth = JSON.parse(fs.readFileSync(PI_AUTH, "utf8"));
 	const c = auth["openai-codex"];
@@ -118,6 +128,7 @@ const HOP = new Set(["host", "connection", "keep-alive", "transfer-encoding", "u
 
 // Per-route allowlist of [METHOD, path regex] (path = after the route prefix). Requests outside it are
 // rejected before credentials are attached: VMs get inference, not account administration.
+/** @type {Record<string, Array<[string, RegExp]>>} */
 const ALLOW = {
 	chatgpt: [["POST", /^\/backend-api\/codex\/responses$/]],
 	openai: [
@@ -135,6 +146,7 @@ const ALLOW = {
 		["GET", /^\/api\/(tags|version)$/],
 	],
 };
+/** @param {string} route @param {string | undefined} method @param {string} p */
 export const allowed = (route, method, p) => (ALLOW[route] ?? []).some(([m, re]) => m === method && re.test(p));
 
 const LIMITS = {
@@ -142,8 +154,10 @@ const LIMITS = {
 	perVm: Number(process.env.BOXERY_PROXY_MAX_CONCURRENT ?? 8), // concurrent requests per VM
 	maxMs: Number(process.env.BOXERY_PROXY_MAX_MS ?? 30 * 60_000), // wall time per request
 };
+/** @type {Map<string, number>} */
 const active = new Map(); // vm → in-flight count
 
+/** @type {Record<string, Route>} */
 const routes = {
 	chatgpt: {
 		base: "https://chatgpt.com",
@@ -176,6 +190,7 @@ const routes = {
 	},
 };
 
+/** @param {...unknown} a */
 function log(...a) {
 	console.log(new Date().toISOString(), ...a);
 }
@@ -187,9 +202,10 @@ const server = http.createServer((req, res) => {
 		res.end();
 	});
 });
+/** @param {IncomingMessage} req @param {ServerResponse} res */
 async function handle(req, res) {
 	const started = Date.now();
-	const url = new URL(req.url, "http://x");
+	const url = new URL(/** @type {string} */ (req.url), "http://x");
 	if (url.pathname === "/healthz") return res.end("ok\n");
 	const [, routeName, ...rest] = url.pathname.split("/");
 	if (routeName === "edge") return handleEdge(req, res, url, rest, started);
@@ -236,7 +252,7 @@ async function handle(req, res) {
 		h.delete("chatgpt-account-id");
 		await route.auth(h);
 		const target = `${route.base}${subpath}${url.search}`;
-		const hasBody = !["GET", "HEAD"].includes(req.method);
+		const hasBody = !["GET", "HEAD"].includes(/** @type {string} */ (req.method));
 		let seen = 0;
 		const body = hasBody
 			? Readable.toWeb(
@@ -251,18 +267,20 @@ async function handle(req, res) {
 					),
 				)
 			: undefined;
-		const up = await fetch(target, { method: req.method, headers: h, body, duplex: hasBody ? "half" : undefined, redirect: "manual", signal: ac.signal });
+		// RequestInit's types lack `duplex` (required by Node's fetch for a streamed body).
+		const up = await fetch(target, /** @type {RequestInit} */ ({ method: req.method, headers: h, body, duplex: hasBody ? "half" : undefined, redirect: "manual", signal: ac.signal }));
+		/** @type {Record<string, string>} */
 		const outHeaders = {};
 		up.headers.forEach((v, k) => {
 			if (!HOP.has(k) && k !== "content-encoding") outHeaders[k] = v;
 		});
 		res.writeHead(up.status, outHeaders);
 		// pipeline respects backpressure from slow guests and tears down both sides on error/abort
-		if (up.body) await pipeline(Readable.fromWeb(up.body), res);
+		if (up.body) await pipeline(Readable.fromWeb(/** @type {NodeReadableStream} */ (up.body)), res);
 		else res.end();
 		done = true;
 		log(who.tag, req.method, routeName, subpath, up.status, `${Date.now() - started}ms`);
-	} catch (e) {
+	} catch (/** @type {any} */ e) {
 		const msg = ac.signal.aborted ? String(ac.signal.reason?.message ?? "aborted") : e.message;
 		// Clients often close a stream once they have the final event; that's not an error.
 		log(who.tag, msg === "client disconnected" ? "closed-by-client" : "ERROR", req.method, routeName, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
@@ -284,7 +302,8 @@ const EDGE_MAX_BODY = Number(process.env.BOXERY_PROXY_EDGE_MAX_BODY ?? 1024 * 10
 export const EDGE_HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
 const EDGE_STRIP = new Set(["authorization", "proxy-authorization", "cookie", "x-api-key"]);
 
-/** VM's routes, if they were set for this token's lease (a pool VM's routes carry the lease id). */
+/** VM's routes, if they were set for this token's lease (a pool VM's routes carry the lease id).
+ *  @param {string} vm @param {string | null} lease @returns {Record<string, any>} HOST → {headers, readonly} (unchecked JSON) */
 function edgeRoutes(vm, lease) {
 	try {
 		const j = JSON.parse(fs.readFileSync(path.join(EDGE_DIR, `${vm}.json`), "utf8"));
@@ -295,16 +314,19 @@ function edgeRoutes(vm, lease) {
 	}
 }
 
-/** Read-only routes allow fetching (incl. git clone/fetch) but nothing that changes state. */
+/** Read-only routes allow fetching (incl. git clone/fetch) but nothing that changes state.
+ *  @param {string | undefined} method @param {string} p @param {string} search */
 export function edgeReadAllowed(method, p, search) {
 	if (method === "GET" || method === "HEAD") return !/[?&]service=git-receive-pack(&|$)/.test(search);
 	return method === "POST" && p.endsWith("/git-upload-pack");
 }
 
+/** @param {IncomingMessage} req @param {ServerResponse} res @param {URL} url @param {string[]} rest @param {number} started */
 async function handleEdge(req, res, url, rest, started) {
 	const [rawTok, host, ...tail] = rest;
 	const who = vmForCred(decodeURIComponent(rawTok ?? ""));
-	const { vm, lease } = who ?? {};
+	const { vm, lease } = /** @type {Who} */ (who ?? {}); // used only once `who` is known
+	/** @param {number} code @param {string} msg */
 	const fail = (code, msg) => {
 		res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ error: msg }) + "\n");
 		log(who?.tag ?? "-", "EDGE", code, req.method, host && EDGE_HOST_RE.test(host) ? host : "?", msg);
@@ -336,7 +358,7 @@ async function handleEdge(req, res, url, rest, started) {
 		}
 		for (const [k, v] of inject) h.set(k, v);
 		const target = `${EDGE_UPSTREAM ?? `https://${host}`}${subpath}${url.search}`;
-		const hasBody = !["GET", "HEAD"].includes(req.method);
+		const hasBody = !["GET", "HEAD"].includes(/** @type {string} */ (req.method));
 		let seen = 0;
 		const body = hasBody
 			? Readable.toWeb(
@@ -351,7 +373,9 @@ async function handleEdge(req, res, url, rest, started) {
 					),
 				)
 			: undefined;
-		const up = await fetch(target, { method: req.method, headers: h, body, duplex: hasBody ? "half" : undefined, redirect: "manual", signal: ac.signal });
+		// RequestInit's types lack `duplex` (required by Node's fetch for a streamed body).
+		const up = await fetch(target, /** @type {RequestInit} */ ({ method: req.method, headers: h, body, duplex: hasBody ? "half" : undefined, redirect: "manual", signal: ac.signal }));
+		/** @type {Record<string, string>} */
 		const outHeaders = {};
 		up.headers.forEach((v, k) => {
 			if (!HOP.has(k) && k !== "content-encoding" && k !== "set-cookie") outHeaders[k] = v;
@@ -368,11 +392,11 @@ async function handleEdge(req, res, url, rest, started) {
 			} catch {}
 		}
 		res.writeHead(up.status, outHeaders);
-		if (up.body && req.method !== "HEAD") await pipeline(Readable.fromWeb(up.body), res);
+		if (up.body && req.method !== "HEAD") await pipeline(Readable.fromWeb(/** @type {NodeReadableStream} */ (up.body)), res);
 		else res.end();
 		done = true;
 		log(who.tag, "EDGE", req.method, host, subpath, up.status, `${Date.now() - started}ms`);
-	} catch (e) {
+	} catch (/** @type {any} */ e) {
 		const msg = ac.signal.aborted ? String(ac.signal.reason?.message ?? "aborted") : e.message;
 		log(who.tag, msg === "client disconnected" ? "closed-by-client" : "ERROR", "EDGE", req.method, host, subpath, `${Date.now() - started}ms`, msg === "client disconnected" ? "" : msg);
 		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });

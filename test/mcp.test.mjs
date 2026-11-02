@@ -87,7 +87,7 @@ exit 0
 	);
 	chmodSync(path.join(bin, "ssh"), 0o755);
 	chmodSync(path.join(bin, "boxery"), 0o755);
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") };
+	env = /** @type {NodeJS.ProcessEnv} */ ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") });
 	env.VMROOT = vmroot;
 });
 
@@ -109,6 +109,7 @@ function client(args = [], extraEnv = {}) {
 		}
 	});
 	const requests = [];
+	/** @type {{ onRequest: ((msg: any) => any) | null, lastId?: number }} */
 	const self = { onRequest: null };
 	async function answer(msg) {
 		requests.push(msg);
@@ -157,11 +158,11 @@ describe("stdio", () => {
 			const { host, ...props } = t.inputSchema.properties;
 			assert.ok(host, `${t.name} takes host`);
 			if (t.name === "vm_manage") {
-				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "host", "host_add", "host_rm"]);
+				assert.deepEqual(props.action.enum, [.../** @type {readonly string[]} */ (shared.parameters.properties.action.enum), "host", "host_add", "host_rm"]);
 				continue;
 			}
 			if (t.name === "vm_info") {
-				assert.deepEqual(props.action.enum, [...shared.parameters.properties.action.enum, "hosts"]);
+				assert.deepEqual(props.action.enum, [.../** @type {readonly string[]} */ (shared.parameters.properties.action.enum), "hosts"]);
 				continue;
 			}
 			assert.equal(t.description, shared.description, t.name);
@@ -338,7 +339,7 @@ describe("stdio", () => {
 		mkdirSync(path.join(env.VMROOT, "etc/boxery"), { recursive: true });
 		writeFileSync(path.join(env.VMROOT, "etc/boxery/headless"), "no desktop\n");
 		try {
-			for (const [tool, args] of [["vm_screenshot", {}], ["vm_click", { x: 1, y: 1 }], ["vm_type", { text: "x" }], ["vm_key", { keys: "Return" }], ["vm_scroll", { x: 1, y: 1, direction: "down" }], ["vm_browser", { code: "return 1" }], ["vm_view", {}], ["vm_view_frame", {}]]) {
+			for (const [tool, args] of /** @type {[string, object][]} */ ([["vm_screenshot", {}], ["vm_click", { x: 1, y: 1 }], ["vm_type", { text: "x" }], ["vm_key", { keys: "Return" }], ["vm_scroll", { x: 1, y: 1, direction: "down" }], ["vm_browser", { code: "return 1" }], ["vm_view", {}], ["vm_view_frame", {}]])) {
 				const r = await c.tool(tool, { vm: "fakevm", ...args });
 				assert.equal(r.isError, true, tool);
 				assert.match(r.content[0].text, /is headless .*no desktop/, tool);
@@ -755,6 +756,7 @@ describe("grant requests (vm_grant)", () => {
 	});
 
 	test("one prompt at a time per session; cancelling the call withdraws its prompt", { timeout: 15_000 }, async () => {
+		/** @type {any} */
 		let answerFirst;
 		c.onRequest = () => new Promise((r) => (answerFirst = r));
 		const first = c.call("tools/call", { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } });
@@ -873,8 +875,8 @@ describe("http", () => {
 		const sid = (await post({ ...init, params: { ...init.params, capabilities: { elicitation: {} } } }, auth)).headers.get("mcp-session-id");
 		const h = { ...auth, "mcp-session-id": sid };
 		const r = await post({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "git over ssh" } } }, h);
-		assert.match(r.headers.get("content-type"), /text\/event-stream/);
-		const reader = r.body.getReader();
+		assert.match(/** @type {string} */ (r.headers.get("content-type")), /text\/event-stream/);
+		const reader = /** @type {NonNullable<typeof r.body>} */ (r.body).getReader();
 		let buf = "";
 		const next = async () => {
 			for (;;) {
@@ -928,7 +930,7 @@ describe("http", () => {
 		const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "vm_write", arguments: { path: "utf8-split.txt", content } } }));
 		const split = body.indexOf(Buffer.from("🦀")) + 2; // inside the crab's four bytes
 		const reply = await new Promise((resolve, reject) => {
-			const req = http.request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers: { ...H, ...auth, "mcp-session-id": sid } }, (res) => {
+			const req = http.request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers: { ...H, ...auth, "mcp-session-id": /** @type {string} */ (sid) } }, (res) => {
 				let text = "";
 				res.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => resolve({ status: res.statusCode, text }));
 			});
@@ -947,14 +949,14 @@ describe("http", () => {
 		const sid = (await post(init, auth)).headers.get("mcp-session-id");
 		const r = await post({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo one; sleep 1.2; echo two" }, _meta: { progressToken: "p" } } }, { ...auth, "mcp-session-id": sid });
 		assert.equal(r.status, 200);
-		assert.match(r.headers.get("content-type"), /text\/event-stream/);
+		assert.match(/** @type {string} */ (r.headers.get("content-type")), /text\/event-stream/);
 		const events = (await r.text()).split("\n\n").filter(Boolean).map((e) => JSON.parse(e.replace(/^event: message\ndata: /, "")));
 		assert.deepEqual(events.filter((e) => e.method === "notifications/progress").map((e) => e.params.message), ["one", "two"]);
 		assert.match(events.at(-1).result.content[0].text, /one\ntwo/);
 		const asNotification = await post({ jsonrpc: "2.0", method: "tools/call", params: { name: "vm_bash", arguments: { command: "true" }, _meta: { progressToken: "n" } } }, { ...auth, "mcp-session-id": sid });
 		assert.equal(asNotification.status, 202, "a tools/call without id gets no stream");
 		const noSse = await post({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "vm_bash", arguments: { command: "echo x" }, _meta: { progressToken: "q" } } }, { ...auth, "mcp-session-id": sid, accept: "application/json" });
-		assert.match(noSse.headers.get("content-type"), /application\/json/);
+		assert.match(/** @type {string} */ (noSse.headers.get("content-type")), /application\/json/);
 		assert.match((await noSse.json()).result.content[0].text, /x/);
 	});
 });

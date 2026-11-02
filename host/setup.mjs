@@ -9,6 +9,10 @@ import { discover } from "./boxery-upgrade.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
 import { baseUserdata } from "./seed.mjs";
 import { fail, jsonArray, log, print, readFd, sleep, table } from "./util.mjs";
+/** @import { Config } from "./config.mjs" */
+/** @import { Runtime } from "./runtime.mjs" */
+
+/** An initialized profile on this host. @typedef {{ name: string, conf: string, backend: string, proxyPort: string, proxyUnit: string, env: Record<string, string> }} HostProfile */
 
 const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay on the host).
 # ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
@@ -16,11 +20,12 @@ const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay o
 #ANTHROPIC_API_KEY=
 `;
 
-const which = (cmd) => (process.env.PATH ?? "").split(":").some((d) => {
+const which = (/** @type {string} */ cmd) => (process.env.PATH ?? "").split(":").some((d) => {
 	try { accessSync(path.join(d || ".", cmd), constants.X_OK); return true; } catch { return false; }
 });
-const need = (cmd) => { if (!which(cmd)) fail(`missing dependency: ${cmd}`); };
+const need = (/** @type {string} */ cmd) => { if (!which(cmd)) fail(`missing dependency: ${cmd}`); };
 // quiet: discard stdout; silent: discard stderr too
+/** @param {string} cmd @param {string[]} args @param {{ quiet?: boolean, silent?: boolean, check?: boolean }} [opts] @returns {Promise<number | null>} */
 function run(cmd, args, { quiet = false, silent = false, check = true } = {}) {
 	return new Promise((resolve, reject) => {
 		spawn(cmd, args, { stdio: ["ignore", quiet || silent ? "ignore" : 2, silent ? "ignore" : 2] }).on("error", reject).on("close", (code) => {
@@ -28,12 +33,14 @@ function run(cmd, args, { quiet = false, silent = false, check = true } = {}) {
 		});
 	});
 }
+/** @param {string} file @param {string} text */
 function writeSecret(file, text) {
 	writeFileSync(file, text, { mode: 0o600 });
 	chmodSync(file, 0o600);
 }
 
-/** host.env: the settings later commands use when the environment doesn't set them. */
+/** host.env: the settings later commands use when the environment doesn't set them.
+ * @param {Pick<Config, "backend" | "proxyPort" | "proxyUnit" | "env">} config @param {string} node */
 export function hostEnv(config, node) {
 	const { env } = config;
 	const lines = [`BOXERY_BACKEND=${config.backend}`, `BOXERY_PROXY_PORT=${config.proxyPort}`, `BOXERY_PROXY_UNIT=${config.proxyUnit}`,
@@ -51,20 +58,23 @@ export function hostEnv(config, node) {
 // service names. `--profile NAME` ones live in ~/.config/boxery-NAME; others are found from the
 // services they installed.
 
-const readEnvFile = (file) => {
+const readEnvFile = (/** @type {string} */ file) => {
+	/** @type {Record<string, string>} */
 	const env = {};
 	let text = "";
-	try { text = readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+	try { text = readFileSync(file, "utf8"); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
 	for (const line of text.split("\n")) { const i = line.indexOf("="); if (i > 0) env[line.slice(0, i)] = line.slice(i + 1); }
 	return env;
 };
 
-/** Every initialized profile on this host: {name, conf, backend, proxyPort, proxyUnit}. */
+/** Every initialized profile on this host: {name, conf, backend, proxyPort, proxyUnit}.
+ * @param {{ home?: string, services?: ReturnType<typeof discover> }} [opts] */
 export function hostProfiles({ home = homedir(), services = discover() } = {}) {
 	const def = defaultConf(), parent = path.dirname(def);
 	const confs = new Set([def, ...services.profiles.keys(), ...services.others.map((o) => o.conf)]);
 	try { for (const d of readdirSync(parent)) if (/^boxery-[a-z][a-z0-9-]{0,30}$/.test(d)) confs.add(path.join(parent, d)); }
-	catch (e) { if (e.code !== "ENOENT") throw e; }
+	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
+	/** @type {HostProfile[]} */
 	const out = [];
 	for (const conf of [...confs].sort()) {
 		if (!existsSync(path.join(conf, "host.env"))) continue;
@@ -79,6 +89,7 @@ export function hostProfiles({ home = homedir(), services = discover() } = {}) {
 // The settings that say where a backend keeps its VMs. Two profiles of one backend with the same
 // values would manage the same VMs (and ports) under two lease stores. Backends not listed (fake, a
 // new one) aren't checked.
+/** @type {Record<string, RegExp>} */
 const NAMESPACE = {
 	libvirt: /^(BOXERY_(POOL|POOL_DIR|BASE_VOL|DOMAIN_PREFIX|NET)|LIBVIRT_DEFAULT_URI)$/,
 	lima: /^(LIMA_HOME|BOXERY_LIMA_PREFIX)$/,
@@ -86,14 +97,17 @@ const NAMESPACE = {
 	exe: /^BOXERY_EXE_(DIR|PORT_BASE)$/,
 	boat: /^BOXERY_BOAT_(DIR|PORT_BASE)$/,
 };
+/** @param {string} backend @param {Record<string, string | undefined>} env */
 const namespace = (backend, env) => JSON.stringify(HOST_ENV.filter((k) => NAMESPACE[backend]?.test(k)).map((k) => env[k] || ""));
 
+/** @param {number} port @returns {Promise<boolean>} */
 const portFree = (port) => new Promise((resolve) => {
 	const srv = createServer().once("error", () => resolve(false));
 	srv.listen(Number(port), "127.0.0.1", () => srv.close(() => resolve(true)));
 });
 
 /** Fail if this profile would share a proxy port, service names or backend VMs with another one. */
+/** @param {Runtime} rt @param {HostProfile[]} others */
 function checkProfiles(rt, others) {
 	const hint = rt.profile ? "" : " (a second profile on one host: boxery-host --profile NAME init --backend B)";
 	for (const o of others) {
@@ -108,12 +122,14 @@ function checkProfiles(rt, others) {
 }
 
 /** A named profile's first init picks a proxy port no other profile uses and nothing listens on. */
+/** @param {HostProfile[]} others */
 async function pickProxyPort(others) {
 	const taken = new Set(["8088", ...others.map((o) => o.proxyPort)]);
 	for (let p = 8089; p < 8189; p++) if (!taken.has(String(p)) && await portFree(p)) return String(p);
 	return fail("no free proxy port in 8089-8188; set BOXERY_PROXY_PORT");
 }
 
+/** @param {unknown} _rt @param {string[]} args */
 export function profiles(_rt, [arg]) {
 	const list = hostProfiles().map(({ env: _env, ...p }) => p);
 	if (arg === "--json") return print(jsonArray(list));
@@ -123,6 +139,7 @@ export function profiles(_rt, [arg]) {
 
 // ---------------------------------------------------------------- services
 // The LLM proxy and the lease reaper: systemd user units on Linux, launchd agents on macOS.
+/** @param {string} label @param {string[]} args @param {Record<string, string>} env @param {string} extra @param {string} log */
 const plist = (label, args, env, extra, log) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -138,7 +155,8 @@ const plist = (label, args, env, extra, log) => `<?xml version="1.0" encoding="U
 // Tools the reaper's backend calls may need. Services don't get the login shell's PATH, so the reaper's
 // PATH names where they are now (nvm, ~/.local/bin, Homebrew…): Lima's limactl is often in ~/.local/bin.
 const SERVICE_TOOLS = ["node", "jq", "nc", "ssh", "ssh-keygen", "ps", "socat", "limactl", "virsh", "virt-install", "qemu-img", "cloud-localds", "cloud-hypervisor"];
-/** The reaper's PATH: node's directory, the directories of SERVICE_TOOLS on `searchPath`, then `system`. */
+/** The reaper's PATH: node's directory, the directories of SERVICE_TOOLS on `searchPath`, then `system`.
+ * @param {string} node @param {string} system */
 export function servicePath(node, system, searchPath = process.env.PATH ?? "") {
 	const dirs = [path.dirname(node)];
 	for (const tool of SERVICE_TOOLS) {
@@ -151,9 +169,12 @@ export function servicePath(node, system, searchPath = process.env.PATH ?? "") {
 	return [...new Set([...dirs, ...system.split(":")])].join(":");
 }
 
-/** {file: contents} for this platform. bind: the proxy's listen address (backend_proxy_bind or loopback). */
+/** {file: contents} for this platform. bind: the proxy's listen address (backend_proxy_bind or loopback).
+ * @param {Pick<Config, "conf" | "root" | "proxyPort" | "proxyUnit" | "reaperUnit" | "backend">} config
+ * @param {{ node: string, bind: string, home?: string, platform?: NodeJS.Platform, searchPath?: string }} opts
+ * @returns {Record<string, string>} */
 export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, backend }, { node, bind, home = homedir(), platform = process.platform, searchPath }) {
-	const pathEnv = (extra) => servicePath(node, `/usr/local/bin:${extra}`, searchPath);
+	const pathEnv = (/** @type {string} */ extra) => servicePath(node, `/usr/local/bin:${extra}`, searchPath);
 	if (platform === "darwin") {
 		const agents = path.join(home, "Library/LaunchAgents"), logs = path.join(home, "Library/Logs");
 		return {
@@ -196,6 +217,7 @@ WantedBy=timers.target
 	};
 }
 
+/** @param {Runtime} rt @param {{ reaper: boolean }} opts */
 async function startServices(rt, { reaper }) {
 	const bind = await rt.vms.has("backend_proxy_bind") ? (await rt.vms.call("backend_proxy_bind", [], { capture: true })).trim() : "127.0.0.1";
 	const files = serviceFiles(rt, { node: process.execPath, bind });
@@ -206,7 +228,7 @@ async function startServices(rt, { reaper }) {
 	}
 	if (process.platform === "darwin") {
 		mkdirSync(path.join(homedir(), "Library/Logs"), { recursive: true });
-		const uid = process.getuid();
+		const uid = /** @type {() => number} */ (process.getuid)();
 		for (const unit of [rt.proxyUnit, ...(reaper ? [rt.reaperUnit] : [])]) {
 			await run("launchctl", ["bootout", `gui/${uid}/dev.${unit}`], { silent: true, check: false }); // not loaded yet is fine
 			await run("launchctl", ["bootstrap", `gui/${uid}`, path.join(homedir(), "Library/LaunchAgents", `dev.${unit}.plist`)]);
@@ -223,6 +245,7 @@ async function startServices(rt, { reaper }) {
 }
 
 // ---------------------------------------------------------------- commands
+/** @param {Runtime} rt */
 export async function init(rt) {
 	const others = hostProfiles().filter((p) => path.resolve(p.conf) !== rt.conf);
 	if (rt.profile && !rt.env.BOXERY_PROXY_PORT) {
@@ -235,6 +258,7 @@ export async function init(rt) {
 	return initProfile(rt, others);
 }
 
+/** @param {Runtime} rt @param {HostProfile[]} others */
 async function initProfile(rt, others) {
 	// Only a profile's first init: re-running init (or an upgrade) never fails over an existing setup.
 	if (!existsSync(path.join(rt.conf, "host.env"))) checkProfiles(rt, others);
@@ -258,7 +282,7 @@ async function initProfile(rt, others) {
 	if (!process.env.BOXERY_CONF) {
 		for (const [link, target] of [["boxery-host", "host/boxery-host"], ["boxery", "controller/boxery"]]) {
 			const file = path.join(homedir(), ".local/bin", link);
-			try { unlinkSync(file); } catch (e) { if (e.code !== "ENOENT") throw e; }
+			try { unlinkSync(file); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
 			symlinkSync(path.join(rt.root, target), file);
 		}
 	}
@@ -267,6 +291,7 @@ async function initProfile(rt, others) {
 	log(`init done. Next: boxery-host ${rt.profile ? `--profile ${rt.profile} ` : ""}build-base`);
 }
 
+/** @param {Runtime} rt */
 export async function buildBase(rt) {
 	await rt.vms.call("backend_check");
 	// The desktop build's cloud-config: image/base-user-data.yaml with the layers filled in.
@@ -277,14 +302,14 @@ export async function buildBase(rt) {
 	await rt.vms.call("backend_build_base", [], { extraEnv: { BASE_USERDATA: file } });
 }
 
-/** Authorize a controller's ssh key (stdin) for VMs created from now on. */
+/** Authorize a controller's ssh key (stdin) for VMs created from now on. @param {Runtime} rt */
 export function addKey(rt) {
 	const key = readFd(0).replace(/\n+$/, "");
 	if (!key.startsWith("ssh-") && !key.startsWith("ecdsa-")) fail("expected an ssh public key on stdin");
 	mkdirSync(rt.conf, { recursive: true });
 	const file = path.join(rt.conf, "authorized_keys");
 	let text = "";
-	try { text = readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+	try { text = readFileSync(file, "utf8"); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
 	if (!text.split("\n").includes(key)) text += `${text && !text.endsWith("\n") ? "\n" : ""}${key}\n`;
 	writeFileSync(file, text);
 	log(`key registered (${text.split("\n").length - 1} total)`);

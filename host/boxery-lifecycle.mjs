@@ -9,20 +9,25 @@ import { LeaseWorkflows } from "./lease-workflows.mjs";
 import { setLeaseKeys } from "./pool.mjs";
 import { reconcileDrift } from "./recovery.mjs";
 import { issueToken } from "./seed.mjs";
+/** @import { Runtime } from "./runtime.mjs" */
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** @typedef {"get" | "find" | "claim" | "commit" | "beginReset" | "finish" | "candidates" | "due" | "renew"} StoreMethod */
+/** boxery-leases.mjs bound to one database. @typedef {{ [K in StoreMethod]: (typeof leases)[K] extends (db: any, ...a: infer A) => infer R ? (...a: A) => R : never }} Store */
+
+const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
-const nameOf = (name) => {
+const nameOf = (/** @type {string} */ name) => {
 	if (!leases.VALID_NAME.test(name ?? "")) throw new Error(`invalid name '${name ?? ""}' (use [a-z][a-z0-9-]*)`);
 	return name;
 };
-const leaseOf = (id) => {
+const leaseOf = (/** @type {string} */ id) => {
 	if (!/^l-[0-9a-f]{32}$/.test(id ?? "")) throw new Error("invalid lease id");
 	return id;
 };
 
+/** @template {Record<string, string | number>} T @param {string[]} args @param {T} defaults @param {Record<string, keyof T & string>} flags @returns {T} */
 export function parseOptions(args, defaults, flags) {
-	const result = { ...defaults };
+	const result = /** @type {Record<string, string | number>} */ ({ ...defaults });
 	for (let i = 0; i < args.length; i++) {
 		if (!Object.hasOwn(flags, args[i])) throw new Error(`unknown flag ${args[i]}`);
 		const key = flags[args[i]];
@@ -31,9 +36,10 @@ export function parseOptions(args, defaults, flags) {
 		if (key !== "holder" && !/^\d+$/.test(value)) throw new Error(`${args[i - 1]} must be a number`);
 		result[key] = key === "holder" ? value : Number(value);
 	}
-	return result;
+	return /** @type {T} */ (result);
 }
 
+/** @returns {Promise<string>} */
 function publicKey() {
 	return new Promise((resolve, reject) => {
 		const input = createInterface({ input: process.stdin, terminal: false });
@@ -50,29 +56,33 @@ function publicKey() {
 }
 
 /** acquire | renew | release | reap | reconcile, and the held-lock entry points
- * (reset, install-held, release-held, reset-held, reap-held). rt: runtime.mjs */
+ * (reset, install-held, release-held, reset-held, reap-held). rt: runtime.mjs
+ * @param {Runtime} rt @param {string} command @param {string[]} args */
 export async function runLifecycle(rt, command, args) {
 	const db = rt.db();
-	const requireLock = (name) => rt.requireLock(nameOf(name));
+	const requireLock = (/** @type {string} */ name) => rt.requireLock(nameOf(name));
+	/** @param {string} name @param {string} callback @param {unknown[]} argv */
 	const lock = async (name, callback, argv) => {
 		const rc = await supervise({ conf: rt.conf, names: [nameOf(name)], command: callback, args: ["__call", callback, ...argv.map(String)], env: rt.operationEnv() });
 		// The worker reported its own error.
 		if (rc !== 0) throw Object.assign(new Error(`${callback} ${name} failed`), { exitCode: rc, reported: true });
 	};
-	const store = Object.fromEntries(["get", "find", "claim", "commit", "beginReset", "finish", "candidates", "due", "renew"]
-		.map((method) => [method, (...argv) => leases[method](db, ...argv)]));
+	const store = /** @type {Store} */ (Object.fromEntries(/** @type {StoreMethod[]} */ (["get", "find", "claim", "commit", "beginReset", "finish", "candidates", "due", "renew"])
+		.map((method) => [method, (/** @type {any[]} */ ...argv) => /** @type {(...a: any[]) => unknown} */ (leases[method])(db, ...argv)])));
 	const backend = {
-		clearEdge: async (name) => rt.clearEdge(nameOf(name)),
-		issueToken: (name, lease) => issueToken(rt, nameOf(name), leaseOf(lease)),
-		revokeToken: async (name) => rt.deleteToken(nameOf(name)),
-		restore: (name, label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
-		waitReady: async (name) => rt.waitSsh(nameOf(name), await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
+		clearEdge: async (/** @type {string} */ name) => rt.clearEdge(nameOf(name)),
+		issueToken: (/** @type {string} */ name, /** @type {string} */ lease) => issueToken(rt, nameOf(name), leaseOf(lease)),
+		revokeToken: async (/** @type {string} */ name) => rt.deleteToken(nameOf(name)),
+		restore: (/** @type {string} */ name, /** @type {string} */ label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
+		waitReady: async (/** @type {string} */ name) => rt.waitSsh(nameOf(name), await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
+		/** @param {string} name */
 		async stepClock(name) {
 			if (await rt.guest.run(await rt.vms.sshEndpoint(nameOf(name)), `sudo date -u -s @${now()} >/dev/null 2>&1; true`) !== 0) throw new Error(`${name}: could not reach the guest`);
 		},
-		setKeys: (name, pubkey) => setLeaseKeys(rt, nameOf(name), pubkey),
+		setKeys: (/** @type {string} */ name, /** @type {string | undefined} */ pubkey) => setLeaseKeys(rt, nameOf(name), pubkey),
 	};
-	const journal = { intent: (kind, data) => rt.intent(kind, ...data), done: (id) => rt.done(id) };
+	const journal = { intent: (/** @type {string} */ kind, /** @type {string[]} */ data) => rt.intent(kind, ...data), done: (/** @type {string} */ id) => rt.done(id) };
+	/** @type {LeaseWorkflows} */
 	let flows;
 	const reclaim = async () => {
 		await reconcileAbandoned(rt.conf);
@@ -99,16 +109,16 @@ export async function runLifecycle(rt, command, args) {
 		case "reset": // takes the VM's lock itself (private entry point `__call lease_reset`)
 			await lock(nameOf(args[0]), "_lease_reset", args); break;
 		case "install-held":
-			requireLock(args[0]); await flows.install(...args); break;
+			requireLock(args[0]); await flows.install(...(/** @type {Parameters<LeaseWorkflows["install"]>} */ (args))); break;
 		case "release-held": {
 			const row = store.find(leaseOf(args[0]));
 			if (!row) throw Object.assign(new Error("unknown or inactive lease"), { exitCode: 2 });
 			requireLock(row.name); await flows.releaseHeld(args[0]); break;
 		}
 		case "reset-held":
-			requireLock(args[0]); await flows.reset(...args); break;
+			requireLock(args[0]); await flows.reset(...(/** @type {Parameters<LeaseWorkflows["reset"]>} */ (args))); break;
 		case "reap-held":
-			requireLock(args[0]); await flows.reapHeld(...args); break;
+			requireLock(args[0]); await flows.reapHeld(...(/** @type {Parameters<LeaseWorkflows["reapHeld"]>} */ (args))); break;
 		default: throw new Error(`unknown lifecycle command: ${command}`);
 	}
 }

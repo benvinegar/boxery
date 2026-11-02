@@ -9,7 +9,7 @@ const args = process.argv.slice(2);
 const role = args[0] === "-cf" ? "source" : "destination";
 const endpoint = process.env.COPY_ENDPOINT ?? "local";
 const pgid = Number(spawnSync("ps", ["-p", String(process.pid), "-o", "pgid="], { encoding: "utf8" }).stdout.trim());
-const note = (data) => appendFileSync(process.env.COPY_LOG, JSON.stringify({ endpoint, role, pgid, ...data }) + "\n");
+const note = (data) => appendFileSync(/** @type {string} */ (process.env.COPY_LOG), JSON.stringify({ endpoint, role, pgid, ...data }) + "\n");
 note({ kind: "tar", pid: process.pid });
 if (process.env.COPY_IGNORE_TERM === endpoint && role === "source") {
 	process.on("SIGTERM", () => note({ kind: "term", pid: process.pid }));
@@ -18,15 +18,15 @@ if (process.env.COPY_IGNORE_TERM === endpoint && role === "source") {
 if (process.env.COPY_FAIL_DESTINATION === endpoint && role === "destination") {
 	process.stderr.write("injected consumer failure\n"); process.exit(9);
 }
-const child = spawn(process.env.REAL_TAR, args, { stdio: ["inherit", role === "source" ? "pipe" : "ignore", "inherit"] });
+const child = spawn(/** @type {string} */ (process.env.REAL_TAR), args, { stdio: ["inherit", role === "source" ? "pipe" : "ignore", "inherit"] });
 note({ kind: "tar-child", pid: child.pid });
 const exited = new Promise((resolve, reject) => { child.on("error", reject); child.on("close", (code) => resolve(code)); });
 try {
 	if (role === "source") {
 		if (process.env.COPY_SLOW_SOURCE === endpoint) {
 			const throttle = new Transform({ transform(chunk, _encoding, callback) { setTimeout(() => callback(null, chunk), 10); } });
-			await pipeline(child.stdout, throttle, process.stdout);
-		} else await pipeline(child.stdout, process.stdout);
+			await pipeline(/** @type {import("node:stream").Readable} */ (child.stdout), throttle, process.stdout);
+		} else await pipeline(/** @type {import("node:stream").Readable} */ (child.stdout), process.stdout);
 	}
 	const code = await exited;
 	if ((process.env.COPY_ORPHAN_SOURCE === endpoint && role === "source") || (process.env.COPY_ORPHAN_DESTINATION === endpoint && role === "destination")) {

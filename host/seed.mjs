@@ -3,16 +3,20 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+/** @import { Runtime } from "./runtime.mjs" */
+
+/** A tool-capable model of the host's Ollama. @typedef {{ id: string }} OllamaModel */
 
 // In the guest, socat always listens here and forwards to the host proxy.
 const PROXY = "http://127.0.0.1:8088";
 
-/** The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token. */
+/** The Codex client derives an account id from a JWT, so hand it an unsigned JWT that carries our token. @param {string} cred */
 export function fakeJwt(cred) {
-	const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+	const b = (/** @type {unknown} */ o) => Buffer.from(JSON.stringify(o)).toString("base64url");
 	return `${b({ alg: "none", typ: "JWT" })}.${b({ boxery: cred, "https://api.openai.com/auth": { chatgpt_account_id: "boxery" } })}.boxery`;
 }
 
+/** @param {string} cred @param {OllamaModel[]} [ollama] */
 export function piModels(cred, ollama = []) {
 	return { providers: {
 		"openai-codex": { baseUrl: `${PROXY}/chatgpt/backend-api`, apiKey: fakeJwt(cred) },
@@ -20,6 +24,7 @@ export function piModels(cred, ollama = []) {
 	} };
 }
 export const piSettings = () => ({ transport: "sse", defaultProvider: "openai-codex", defaultModel: "gpt-6.1-sol", defaultThinkingLevel: "medium" });
+/** @param {string} cred @param {OllamaModel[]} [ollama] */
 export function opencodeConfig(cred, ollama = []) {
 	const ids = ollama.map((m) => m.id);
 	const def = ids.includes("qwen3-coder:latest") ? "qwen3-coder:latest" : ids[0];
@@ -32,7 +37,8 @@ export function opencodeConfig(cred, ollama = []) {
 	};
 }
 
-/** Guest files (under the agent's home) that carry the proxy token CRED. */
+/** Guest files (under the agent's home) that carry the proxy token CRED.
+ *  @param {string} cred @param {OllamaModel[]} [ollama] @returns {Array<[string, string]>} */
 function credentialFiles(cred, ollama = []) {
 	return [
 		[".pi/agent/models.json", JSON.stringify(piModels(cred, ollama), null, 2)],
@@ -41,11 +47,12 @@ function credentialFiles(cred, ollama = []) {
 	];
 }
 
-/** Tool-capable models of the host's Ollama, if it runs ([] otherwise). */
+/** Tool-capable models of the host's Ollama, if it runs ([] otherwise). @returns {Promise<OllamaModel[]>} */
 export async function ollamaModels() {
 	try {
 		const r = await fetch("http://127.0.0.1:11434/api/tags", { signal: AbortSignal.timeout(3000) });
 		if (!r.ok) return [];
+		/** @type {{ models: Array<{ name: string, capabilities?: unknown }> }} */
 		const { models } = await r.json();
 		return models.filter((m) => Array.isArray(m.capabilities) && m.capabilities.includes("tools")).map((m) => ({ id: m.name }));
 	} catch { return []; }
@@ -55,7 +62,8 @@ export async function ollamaModels() {
 // plumbing (every VM) → devtools → desktop. The desktop base build applies all three; a headless VM boots
 // the backend's stock image and applies plumbing + devtools at first boot. Both carry every layer's file
 // and the runner (boxery-provision) as write_files entries: `layers`, from host/backend.sh __layer_files.
-/** The desktop build's cloud-config: image/base-user-data.yaml with the layers at its marker line. */
+/** The desktop build's cloud-config: image/base-user-data.yaml with the layers at its marker line.
+ *  @param {string} root @param {string[]} layers */
 export function baseUserdata(root, layers) {
 	return readFileSync(path.join(root, "image", "base-user-data.yaml"), "utf8").split("\n")
 		.flatMap((line) => (line === "  # @boxery-layers" ? layers : [line])).join("\n");
@@ -63,7 +71,8 @@ export function baseUserdata(root, layers) {
 
 /** The user-data text. keys: authorized keys; upstream: the backend's guest proxy upstream (socat address).
  * provision (headless VMs on the stock image): layers to apply at first boot, e.g. "plumbing devtools",
- * with layers: their write_files lines. */
+ * with layers: their write_files lines.
+ * @param {{ name: string, keys: string[], upstream: string, cred: string, ollama?: OllamaModel[], provision?: string, layers?: string[] }} opts */
 export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision = "", layers = [] }) {
 	const [models, opencode, token] = credentialFiles(cred, ollama);
 	const files = [models, [".pi/agent/settings.json", JSON.stringify(piSettings(), null, 2)], opencode, token];
@@ -101,9 +110,10 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 }
 
 /** Mint NAME's proxy token and write its user-data under the operation's private work directory.
- * Returns the file's path. The supervisor removes the directory when the operation ends. */
+ * Returns the file's path. The supervisor removes the directory when the operation ends.
+ * @param {Runtime} rt @param {string} name @param {string} [provision] */
 export async function writeSeed(rt, name, provision = "") {
-	const work = path.join(rt.conf, "work"), op = path.join(work, rt.operationId), dir = path.join(op, name);
+	const work = path.join(rt.conf, "work"), op = path.join(work, /** @type {string} */ (rt.operationId)), dir = path.join(op, name);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	for (const d of [work, op, dir]) chmodSync(d, 0o700);
 	const secret = randomBytes(24).toString("hex");
@@ -113,7 +123,8 @@ export async function writeSeed(rt, name, provision = "") {
 	return file;
 }
 
-/** Write proxy token SECRET into running VM NAME's guest: the token file and the agent configs. */
+/** Write proxy token SECRET into running VM NAME's guest: the token file and the agent configs.
+ *  @param {Runtime} rt @param {string} name @param {string} secret */
 export async function installToken(rt, name, secret) {
 	const script = ["set -e", "umask 077", ...credentialFiles(`${name}:${secret}`, await ollamaModels()).map(([f, content]) =>
 		`mkdir -p "$HOME/${path.dirname(f)}"; printf %s '${Buffer.from(content).toString("base64")}' | base64 -d >"$HOME/${f}.new"; mv "$HOME/${f}.new" "$HOME/${f}"`)];
@@ -122,7 +133,7 @@ export async function installToken(rt, name, secret) {
 
 /** Give running VM NAME a new proxy token: put it in the guest, and only then make it NAME's one valid
  * token. lease: bind it to that pool lease, so it dies with the lease and the proxy only honours edge
- * routes set for the same lease. */
+ * routes set for the same lease. @param {Runtime} rt @param {string} name @param {string} [lease] */
 export async function issueToken(rt, name, lease) {
 	const secret = randomBytes(24).toString("hex");
 	await installToken(rt, name, secret);

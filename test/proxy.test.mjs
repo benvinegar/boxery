@@ -12,6 +12,7 @@ let upstream, proxy, port, seen, conf;
 
 const listen = (srv) => new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv.address().port)));
 const jwt = (payload) => `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.x`;
+/** @param {string} p @param {{ method?: string, headers?: Record<string, any>, body?: string }} [opts] */
 async function req(p, { method = "GET", headers = {}, body } = {}) {
 	const r = await fetch(`http://127.0.0.1:${port}${p}`, { method, headers, body });
 	return { status: r.status, text: await r.text() };

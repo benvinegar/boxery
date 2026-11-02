@@ -12,17 +12,22 @@ import { deleteVmKind } from "./kinds.mjs";
 import { deleteVmShape } from "./shapes.mjs";
 import { fail, POOL_SNAP } from "./util.mjs";
 import { restorePetAccess, setPetKeys } from "./vms.mjs";
+/** @import { DatabaseSync } from "node:sqlite" */
+/** @import { Backend } from "./backend.mjs" */
+/** @import { Runtime } from "./runtime.mjs" */
 
+/** @param {DatabaseSync} db @param {string} name @param {string} gen @param {string} epoch @param {string} state */
 const leaseMatches = (db, name, gen, epoch, state) => {
 	const row = leases.get(db, name); // storage errors propagate; they are not "stale"
 	return row?.gen === Number(gen) && row.epoch === epoch && row.state === state;
 };
 
 /** Replay this worker's operation journal, newest intent first. Intent kinds and data are stable:
- * an operation written by an older boxery-host must still replay. */
+ * an operation written by an older boxery-host must still replay.
+ * @param {Runtime} rt */
 export async function replayIntents(rt) {
 	const db = rt.db();
-	for (const { id, kind, data } of actions(db, rt.operationId)) {
+	for (const { id, kind, data } of actions(db, /** @type {string} */ (rt.operationId))) {
 		const [name] = data;
 		switch (kind) {
 			case "create":
@@ -42,7 +47,7 @@ export async function replayIntents(rt) {
 				const [, gen, epoch] = data;
 				if (leaseMatches(db, name, gen, epoch, "ACQUIRING")) {
 					const r = leases.beginResetName(db, name, gen);
-					await runLifecycle(rt, "reset-held", [name, r.gen, epoch]);
+					await runLifecycle(rt, "reset-held", /** @type {string[]} */ ([name, r.gen, epoch])); // reset takes gen as a number or argv string
 				}
 				break;
 			}
@@ -66,13 +71,16 @@ export async function replayIntents(rt) {
 }
 
 // ---------------------------------------------------------------- drift
+/** @param {string} conf @returns {string[]} */
 function tokenNames(conf) {
 	try { return Object.keys(JSON.parse(readFileSync(path.join(conf, "tokens.json"), "utf8"))); }
 	catch { return []; } // an unreadable token file is not inventory; token updates report it
 }
 
-/** Check every VM boxery knows about (backend, pool, tokens) under that VM's lifecycle lock. */
+/** Check every VM boxery knows about (backend, pool, tokens) under that VM's lifecycle lock.
+ * @param {{ backend: Pick<Backend, "list">, db: DatabaseSync, conf: string, lock: (name: string, callback: string, argv: string[]) => Promise<unknown> }} opts */
 export async function reconcileDrift({ backend, db, conf, lock }) {
+	/** @type {{ name: string }[]} */
 	let inventory;
 	try { inventory = await backend.list(); }
 	catch { throw new Error("cannot read backend inventory; refusing drift repair"); }
@@ -83,7 +91,8 @@ export async function reconcileDrift({ backend, db, conf, lock }) {
 	}
 }
 
-/** Held-lock callback: a VM missing from the backend loses its pool lease (BROKEN), token and routes. */
+/** Held-lock callback: a VM missing from the backend loses its pool lease (BROKEN), token and routes.
+ * @param {Runtime} rt @param {string} name */
 export async function reconcileVm(rt, name) {
 	rt.requireLock(name);
 	let inventory;

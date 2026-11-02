@@ -13,9 +13,11 @@ const helper = readFileSync(new URL("../core/atomic-edit.mjs", import.meta.url),
 const source = `${helper}\nawait main(${applyEdits.toString()});`;
 const children = new Set(); let sequence = 0;
 after(() => { for (const p of children) { try { process.kill(-p.pid, "SIGTERM"); } catch {} } rmSync(dir, { recursive: true, force: true }); });
+/** @param {string | Buffer} [content] @param {number} [mode] */
 function file(content = "alpha beta", mode = 0o644) {
 	const name = path.join(dir, `file-${++sequence}`); writeFileSync(name, content, { mode }); return name;
 }
+/** @param {string} name @param {{ oldText: string, newText?: string }[]} [edits] @param {string} [injection] @param {boolean} [blocked] */
 function launch(name, edits = [{ oldText: "alpha", newText: "ALPHA" }], injection = "", blocked = false) {
 	const lock = path.join(dir, "edit.lock");
 	// Prove the second process encountered the held lock before releasing the first.
@@ -27,10 +29,10 @@ function launch(name, edits = [{ oldText: "alpha", newText: "ALPHA" }], injectio
 	let ready;
 	const reached = new Promise((resolve) => { ready = resolve; });
 	p.stdout.on("data", (d) => { stdout += d; }); p.stderr.on("data", (d) => { stderr += d; });
-	p.stdio[3].on("data", (d) => { markers += d; if (markers.includes("ready")) ready(); });
+	/** @type {import("node:stream").Readable} */ (p.stdio[3]).on("data", (d) => { markers += d; if (markers.includes("ready")) ready(); });
 	const result = new Promise((resolve) => p.on("close", (code) => { children.delete(p); resolve({ code, stdout, stderr }); }));
 	p.stdin.end(JSON.stringify({ path: name, edits }));
-	return { p, result, ready: () => Promise.race([reached, result.then((r) => assert.fail(`barrier not reached: ${r.stderr}`))]), release: () => p.stdio[4].end("go") };
+	return { p, result, ready: () => Promise.race([reached, result.then((r) => assert.fail(`barrier not reached: ${r.stderr}`))]), release: () => /** @type {import("node:stream").Writable} */ (p.stdio[4]).end("go") };
 }
 const barrier = `const {Socket}=await import('node:net'); const open=fs.open; fs.open=async(...a)=>{const f=await open(...a); const sync=f.sync.bind(f); f.sync=async()=>{await sync(); await new Promise(resolve=>{const input=new Socket({fd:4,readable:true,writable:false}); const stop=()=>{input.destroy();resolve()}; input.once('data',stop); for(const s of ['SIGTERM','SIGHUP','SIGINT']) process.once(s,stop); writeSync(3,'ready');});}; return f;};`;
 function intact(name, expected = "alpha beta") {
@@ -99,7 +101,7 @@ test("failed write/flush/rename preserve original and clean staging; subsequent 
 test("handled TERM/HUP/INT midstage never truncate destination and clean up", { timeout: 10000 }, async () => {
 	for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"]) {
 		const name = file(), pending = launch(name, undefined, barrier); await pending.ready();
-		process.kill(-pending.p.pid, sig); const r = await pending.result;
+		process.kill(-/** @type {number} */ (pending.p.pid), sig); const r = await pending.result;
 		assert.notEqual(r.code, 0); intact(name); await ok(launch(name));
 	}
 });

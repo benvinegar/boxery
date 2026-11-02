@@ -25,8 +25,11 @@ export const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BO
 
 export const defaultConf = () => path.join(homedir(), ".config/boxery");
 /** `boxery-host --profile NAME`: a second profile's state directory. */
-export const profileConf = (name) => `${defaultConf()}-${name}`;
+export const profileConf = (/** @type {string} */ name) => `${defaultConf()}-${name}`;
 
+/** @typedef {ReturnType<typeof loadConfig>} Config */
+
+/** @param {NodeJS.ProcessEnv} [env] */
 export function loadConfig(env = process.env) {
 	const conf = path.resolve(env.BOXERY_CONF || defaultConf());
 	// Set by `boxery-host --profile NAME` (together with BOXERY_CONF); ignored for any other directory.
@@ -34,7 +37,7 @@ export function loadConfig(env = process.env) {
 	const merged = { ...env };
 	let text = "";
 	try { text = readFileSync(path.join(conf, "host.env"), "utf8"); }
-	catch (e) { if (e.code !== "ENOENT") throw e; }
+	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
 	for (const line of text.split("\n")) {
 		const i = line.indexOf("=");
 		const [k, v] = i < 0 ? [line, ""] : [line.slice(0, i), line.slice(i + 1)];

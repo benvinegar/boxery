@@ -30,7 +30,7 @@ test("agent configs point at the guest-side proxy; Ollama only when it has tool 
 	assert.equal(JSON.parse(payload(plain, ".pi/agent/settings.json")).transport, "sse");
 	assert.equal(JSON.parse(payload(plain, ".config/opencode/opencode.json")).model, undefined);
 	const ollama = [{ id: "llama3:8b" }, { id: "qwen3-coder:latest" }];
-	assert.equal(piModels(cred, ollama).providers.ollama.apiKey, cred);
+	assert.equal(/** @type {{ apiKey: string }} */ (piModels(cred, ollama).providers.ollama).apiKey, cred);
 	const oc = opencodeConfig(cred, ollama);
 	assert.equal(oc.model, "boxery/qwen3-coder:latest");
 	assert.deepEqual(oc.provider.boxery.models, { "llama3:8b": { name: "llama3:8b" }, "qwen3-coder:latest": { name: "qwen3-coder:latest" } });
@@ -39,7 +39,7 @@ test("agent configs point at the guest-side proxy; Ollama only when it has tool 
 
 test("the Codex client gets an unsigned JWT that carries the VM's credential", () => {
 	const [h, p, sig] = fakeJwt(cred).split(".");
-	assert.deepEqual(JSON.parse(Buffer.from(h, "base64url")), { alg: "none", typ: "JWT" });
-	assert.equal(JSON.parse(Buffer.from(p, "base64url")).boxery, cred);
+	assert.deepEqual(JSON.parse(/** @type {any} */ (Buffer.from(h, "base64url"))), { alg: "none", typ: "JWT" });
+	assert.equal(JSON.parse(/** @type {any} */ (Buffer.from(p, "base64url"))).boxery, cred);
 	assert.equal(sig, "boxery");
 });

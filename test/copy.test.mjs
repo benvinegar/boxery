@@ -9,6 +9,8 @@ import { afterEach, beforeEach, test as nodeTest } from "node:test";
 const test = (name, fn) => nodeTest(name, { timeout: 45_000 }, fn);
 import { q } from "../core/shell.mjs";
 
+/** @typedef {import("node:child_process").ChildProcess & { stdout: import("node:stream").Readable, stderr: import("node:stream").Readable, result: Promise<any> }} WorkerChild */
+
 const FIXTURES = path.resolve(import.meta.dirname, "fixtures");
 let dir, env, children;
 const vmroot = (host = "alpha", vm = "vm") => path.join(dir, "vms", host, vm);
@@ -27,9 +29,9 @@ function alive(pid) {
 	} catch { return false; }
 }
 function worker(from, to, extra = {}, settings = {}) {
-	const child = spawn(process.execPath, [path.join(FIXTURES, "copy-worker.mjs"), from, to, JSON.stringify(settings)], {
+	const child = /** @type {WorkerChild} */ (spawn(process.execPath, [path.join(FIXTURES, "copy-worker.mjs"), from, to, JSON.stringify(settings)], {
 		env: { ...env, ...extra }, cwd: dir, stdio: ["ignore", "pipe", "pipe", "ipc"],
-	});
+	}));
 	children.push(child);
 	let out = "", err = "", inspection;
 	child.on("message", (message) => { inspection = message; });
@@ -58,7 +60,7 @@ async function copy(from, to, extra) {
 	return result;
 }
 function noStages() {
-	const staged = readdirSync(dir, { recursive: true }).filter((p) => path.basename(p).startsWith(".boxery-copy-"));
+	const staged = /** @type {string[]} */ (readdirSync(dir, { recursive: true })).filter((p) => path.basename(p).startsWith(".boxery-copy-"));
 	assert.deepEqual(staged, [], `staging directories remain: ${staged}`);
 }
 async function noTarJobs() {

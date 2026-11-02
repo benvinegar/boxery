@@ -10,16 +10,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { backup, identity, machineBootId, open, PS_ENV, restore as restoreStore, tx as transaction, VALID_NAME } from "./boxery-leases.mjs";
 import { SETTINGS } from "./config.mjs";
+/** @import { DatabaseSync } from "node:sqlite" */
+/** @import { Writable } from "node:stream" */
+
+/** A row of `operations`: one supervised command, its locks (`resources`, JSON) and journaled settings (`env`, JSON). @typedef {{ id: string, command: string, resources: string, env: string, owner: number, owner_start: string, boot: string, child: number | null, child_start: string | null, created_at: number }} OperationRow */
+/** A journaled intent (data decoded). @typedef {{ id: string, kind: string, data: string[] }} Intent */
+/** tokens.json entry: a pet's secret, or a pool VM's current lease's. @typedef {string | { secret: string, lease: string }} Token */
+/** holdExclusive(): the host-wide lock, held. @typedef {{ release(): void, snapshot(file: string): void, restore(file: string): void }} Hold */
 
 const HOST = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const assertName = (n) => { if (!VALID_NAME.test(n ?? "")) throw new Error(`invalid VM name: ${n}`); return n; };
+const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
+const assertName = (/** @type {string} */ n) => { if (!VALID_NAME.test(n ?? "")) throw new Error(`invalid VM name: ${n}`); return n; };
 // Unlike lease test clocks (BOXERY_BOOT_ID), process fencing must use the actual machine boot identity.
 const BOOT = machineBootId();
 export { identity };
-const alive = (r) => r.boot === BOOT && identity(r.owner) === r.owner_start;
+const alive = (/** @type {OperationRow} */ r) => r.boot === BOOT && identity(r.owner) === r.owner_start;
 
+/** @param {string} command @param {string[]} args */
 export function resources(command, args) {
+	/** @type {string[]} */
 	let names = [];
 	if (["new", "fork"].includes(command)) {
 		for (let i = 0; i < args.length; i++) {
@@ -38,26 +47,31 @@ export function resources(command, args) {
 	return [...new Set(names)].sort();
 }
 
-const row = (db, id) => db.prepare("SELECT * FROM operations WHERE id=?").get(id);
-export const actions = (db, id) => db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id).map((r) => ({ ...r, data: JSON.parse(r.data) }));
+/** @param {DatabaseSync} db @param {string} id */
+const row = (db, id) => /** @type {OperationRow | undefined} */ (db.prepare("SELECT * FROM operations WHERE id=?").get(id));
+/** @param {DatabaseSync} db @param {string} id @returns {Intent[]} */
+export const actions = (db, id) => /** @type {{ id: string, kind: string, data: string }[]} */ (db.prepare("SELECT id, kind, data FROM operation_intents WHERE operation_id=? ORDER BY seq DESC").all(id)).map((r) => ({ ...r, data: JSON.parse(r.data) }));
 
 // Used by workers (boxery-host.mjs and the lease runtime); ownership and storage stay here.
+/** @param {DatabaseSync} db @param {string | undefined} operationId @param {string} kind @param {string[]} data */
 export function recordIntent(db, operationId, kind, data) {
-	const op = row(db, operationId);
+	const op = row(db, /** @type {string} */ (operationId));
 	if (!op || !alive(op)) throw new Error("operation no longer owns its locks");
 	const id = randomUUID();
-	db.prepare("INSERT INTO operation_intents(id, operation_id, kind, data) VALUES(?,?,?,?)").run(id, operationId, kind, JSON.stringify(data));
+	db.prepare("INSERT INTO operation_intents(id, operation_id, kind, data) VALUES(?,?,?,?)").run(id, /** @type {string} */ (operationId), kind, JSON.stringify(data));
 	return id;
 }
+/** @param {DatabaseSync} db @param {string | undefined} operationId @param {string} intentId */
 export function completeIntent(db, operationId, intentId) {
-	db.prepare("DELETE FROM operation_intents WHERE id=? AND operation_id=?").run(intentId, operationId);
+	db.prepare("DELETE FROM operation_intents WHERE id=? AND operation_id=?").run(intentId, /** @type {string} */ (operationId));
 }
 
+/** @param {Pick<OperationRow, "child" | "child_start" | "boot">} r */
 function stopAbandoned(r) {
 	if (!r.child || r.boot !== BOOT) return;
 	const current = identity(r.child);
 	if (current && current !== r.child_start) return; // reused PID, not our worker
-	try { process.kill(-r.child, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; }
+	try { process.kill(-r.child, "SIGKILL"); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ESRCH") throw e; }
 	// A killed leader may leave descendants behind; don't release the resource until all
 	// non-zombie group members have exited. A timeout fails closed, retaining the journal.
 	for (let i = 0; i < 100; i++) {
@@ -69,7 +83,9 @@ function stopAbandoned(r) {
 	throw new Error(`worker group ${r.child} did not stop; recovery deferred`);
 }
 
+/** @param {DatabaseSync} db @param {OperationRow} op @param {string[]} args @returns {Promise<number>} */
 async function worker(db, op, args, recovery = false) {
+	/** @type {NodeJS.ProcessEnv} */
 	const env = { ...process.env, BOXERY_OPERATION_ID: op.id, BOXERY_LOCKS: `:${JSON.parse(op.resources).join(":")}:` };
 	for (const [key, value] of Object.entries(JSON.parse(op.env))) {
 		if (value == null) delete env[key];
@@ -81,27 +97,29 @@ async function worker(db, op, args, recovery = false) {
 		env, detached: true, stdio: [recovery ? "ignore" : "inherit", "inherit", "inherit", "pipe"],
 	});
 	// Install listeners before opening the gate (a fast child may exit immediately).
+	/** @type {Promise<number>} */
 	const ended = new Promise((resolve, reject) => {
 		child.once("error", reject);
 		child.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
 	});
-	child.stdio[3].on("error", () => {});
-	const start = identity(child.pid);
-	if (!start) { child.stdio[3].end(); await ended; throw new Error("worker exited before registration"); }
-	db.prepare("UPDATE operations SET child=?, child_start=? WHERE id=?").run(child.pid, start, op.id);
-	child.stdio[3].end("go\n");
-	const forward = (signal) => { try { process.kill(-child.pid, signal); } catch (e) { if (e.code !== "ESRCH") throw e; } };
+	/** @type {Writable} */ (child.stdio[3]).on("error", () => {});
+	const start = identity(/** @type {number} */ (child.pid));
+	if (!start) { /** @type {Writable} */ (child.stdio[3]).end(); await ended; throw new Error("worker exited before registration"); }
+	db.prepare("UPDATE operations SET child=?, child_start=? WHERE id=?").run(/** @type {number} */ (child.pid), start, op.id);
+	/** @type {Writable} */ (child.stdio[3]).end("go\n");
+	const forward = (/** @type {NodeJS.Signals} */ signal) => { try { process.kill(-(/** @type {number} */ (child.pid)), signal); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ESRCH") throw e; } };
 	const term = () => forward("SIGTERM"), interrupt = () => forward("SIGINT");
 	process.on("SIGTERM", term); process.on("SIGINT", interrupt);
 	try { return await ended; }
 	finally {
 		process.off("SIGTERM", term); process.off("SIGINT", interrupt);
 		// Never leave background backend commands running after a worker exits.
-		stopAbandoned({ ...op, child: child.pid, child_start: start });
+		stopAbandoned({ ...op, child: /** @type {number} */ (child.pid), child_start: start });
 		db.prepare("UPDATE operations SET child=NULL, child_start=NULL WHERE id=?").run(op.id);
 	}
 }
 
+/** @param {DatabaseSync} db @param {string} id @param {string} conf */
 function finish(db, id, conf) {
 	// Keep the journal until temporary seed/work files are gone too.
 	rmSync(path.join(conf, "work", id), { recursive: true, force: true });
@@ -111,6 +129,7 @@ function finish(db, id, conf) {
 		db.prepare("DELETE FROM operations WHERE id=?").run(id);
 	});
 }
+/** @param {DatabaseSync} db @param {OperationRow} op @param {string} conf */
 async function recover(db, op, conf) {
 	if (actions(db, op.id).length) {
 		process.stderr.write(`==> recovering abandoned ${op.command} (${op.id})\n`);
@@ -122,15 +141,17 @@ async function recover(db, op, conf) {
 // The host-wide resource: held by `boxery-host upgrade` while it replaces code and services.
 // It conflicts with every operation, and every operation conflicts with it.
 export const ALL = "*";
+/** @param {string[]} held @param {string[]} wanted */
 export const conflictsWith = (held, wanted) => held.includes(ALL) || wanted.includes(ALL) || held.some((n) => wanted.includes(n));
 
 // Claim all resources atomically, including fork source/destinations and image readers.
 // Recovery takes ownership of the OLD operation and its complete lock set before doing work.
+/** @param {DatabaseSync} db @param {string[]} wanted @param {string} command @param {Record<string, string | null>} env @param {string} conf @returns {Promise<OperationRow | null | undefined>} */
 async function acquire(db, wanted, command, env, conf, reconcile = false) {
-	const owner = process.pid, ownerStart = identity(owner);
+	const owner = process.pid, ownerStart = /** @type {string} */ (identity(owner));
 	for (;;) {
 		const result = transaction(db, () => {
-			const rows = db.prepare("SELECT * FROM operations ORDER BY created_at, id").all();
+			const rows = /** @type {OperationRow[]} */ (db.prepare("SELECT * FROM operations ORDER BY created_at, id").all());
 			const conflicts = reconcile ? rows : rows.filter((r) => conflictsWith(JSON.parse(r.resources), wanted));
 			const abandoned = conflicts.find((r) => !alive(r));
 			if (abandoned) {
@@ -160,12 +181,13 @@ async function acquire(db, wanted, command, env, conf, reconcile = false) {
  * any that were abandoned. Returns null on timeout, having withdrawn the lock. If the holder dies,
  * the next operation reclaims the lock as abandoned (it has no intents to replay).
  * While held, `snapshot(file)` copies the store and `restore(file)` puts that copy back (on rollback).
+ * @returns {Promise<Hold | null>}
  */
-export async function holdExclusive(conf, deadline) {
+export async function holdExclusive(/** @type {string} */ conf, /** @type {number} */ deadline) {
 	conf = path.resolve(conf);
 	const db = open(path.join(conf, "leases.db"));
-	const owner = process.pid, ownerStart = identity(owner), createdAt = Date.now();
-	let id = null;
+	const owner = process.pid, ownerStart = /** @type {string} */ (identity(owner)), createdAt = Date.now();
+	let id = /** @type {string | null} */ (null);
 	const publish = () => {
 		db.prepare("INSERT INTO operations(id, command, resources, env, owner, owner_start, boot, created_at) VALUES(?,?,?,?,?,?,?,?)")
 			.run(id, "upgrade", JSON.stringify([ALL]), JSON.stringify({ BOXERY_CONF: conf }), owner, ownerStart, BOOT, createdAt);
@@ -174,7 +196,7 @@ export async function holdExclusive(conf, deadline) {
 	try {
 		for (;;) {
 			const result = transaction(db, () => {
-				const others = db.prepare("SELECT * FROM operations WHERE id IS NOT ? ORDER BY created_at, id").all(id);
+				const others = /** @type {OperationRow[]} */ (db.prepare("SELECT * FROM operations WHERE id IS NOT ? ORDER BY created_at, id").all(id));
 				const abandoned = others.find((r) => !alive(r));
 				if (abandoned) {
 					stopAbandoned(abandoned);
@@ -191,16 +213,16 @@ export async function holdExclusive(conf, deadline) {
 			});
 			if (result.recovery) { await recover(db, result.recovery, conf); continue; }
 			if (result.drained) {
-				const held = id;
+				const held = /** @type {string} */ (id);
 				return {
 					release() { finish(db, held, conf); db.close(); },
 					/** Copy the store to FILE. The copy leaves out this hold: restored by hand, it is an idle host. */
-					snapshot: (file) => backup(db, file, (copy) => {
+					snapshot: (/** @type {string} */ file) => backup(db, file, (copy) => {
 						copy.prepare("DELETE FROM operation_locks WHERE operation_id=?").run(held);
 						copy.prepare("DELETE FROM operations WHERE id=?").run(held);
 					}),
 					/** Put the store back as FILE has it, still held by this process. */
-					restore: (file) => restoreStore(db, file, publish),
+					restore: (/** @type {string} */ file) => restoreStore(db, file, publish),
 				};
 			}
 			if (Date.now() > deadline) { if (id) finish(db, id, conf); db.close(); return null; }
@@ -214,7 +236,9 @@ export async function holdExclusive(conf, deadline) {
 }
 
 // Persist only backend routing settings (config.mjs SETTINGS), never arbitrary variables or credentials.
+/** @param {string} conf @param {NodeJS.ProcessEnv} env */
 const journaled = (conf, env) => ({ BOXERY_CONF: conf, ...Object.fromEntries(SETTINGS.map((k) => [k, env[k] ?? null])) });
+/** @param {string} conf */
 function openStore(conf) {
 	mkdirSync(conf, { recursive: true, mode: 0o700 });
 	return open(path.join(conf, "leases.db"));
@@ -222,11 +246,12 @@ function openStore(conf) {
 
 /** Run `boxery-host.mjs __worker ARGS…` holding NAMES (all of them, atomically) for its whole lifetime.
  * Recovers abandoned operations on those resources first. Resolves with the worker's exit status;
- * a worker that left intents behind is compensated under the same locks and reported as failed. */
+ * a worker that left intents behind is compensated under the same locks and reported as failed.
+ * @param {{ conf: string, names: string[], command: string, args: string[], env?: NodeJS.ProcessEnv }} opts */
 export async function supervise({ conf, names, command, args, env = process.env }) {
 	const db = openStore(conf);
 	try {
-		const op = await acquire(db, [...new Set(names)].sort(), command, journaled(conf, env), conf);
+		const op = /** @type {OperationRow} */ (await acquire(db, [...new Set(names)].sort(), command, journaled(conf, env), conf));
 		const rc = await worker(db, op, args);
 		if (actions(db, op.id).length) {
 			await recover(db, op, conf);
@@ -238,24 +263,27 @@ export async function supervise({ conf, names, command, args, env = process.env 
 }
 
 /** Recover every abandoned operation on this host; live operations are left alone. */
-export async function reconcileAbandoned(conf) {
+export async function reconcileAbandoned(/** @type {string} */ conf) {
 	const db = openStore(conf);
 	try { await acquire(db, [], "reconcile", {}, conf, true); } finally { db.close(); }
 }
 
-/** tokens.json[NAME]: "SECRET" (a pet), {secret, lease} (a pool VM's current lease), or undefined. */
+/** tokens.json[NAME]: "SECRET" (a pet), {secret, lease} (a pool VM's current lease), or undefined.
+ * @param {string} conf @param {string} name @returns {Token | undefined} */
 export function readToken(conf, name) {
 	try { return JSON.parse(readFileSync(path.join(conf, "tokens.json"), "utf8"))[name]; }
-	catch (e) { if (e.code === "ENOENT") return undefined; throw e; }
+	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return undefined; throw e; }
 }
 
-/** tokens.json[NAME] := VALUE (undefined deletes). A short transaction serializes read/modify/rename. */
+/** tokens.json[NAME] := VALUE (undefined deletes). A short transaction serializes read/modify/rename.
+ * @param {DatabaseSync} db @param {string} conf @param {string} name @param {Token | undefined} value */
 export function updateToken(db, conf, name, value) {
 	transaction(db, () => {
 		const file = path.join(conf, "tokens.json");
+		/** @type {Record<string, Token>} */
 		let tokens;
 		try { tokens = JSON.parse(readFileSync(file, "utf8")); }
-		catch (e) { if (e.code !== "ENOENT") throw e; tokens = {}; }
+		catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; tokens = {}; }
 		assertName(name);
 		if (value === undefined) delete tokens[name];
 		else tokens[name] = value;
