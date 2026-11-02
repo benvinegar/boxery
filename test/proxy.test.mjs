@@ -54,6 +54,10 @@ test("rejects missing, wrong and malformed tokens without crashing", async () =>
 	const cases = [
 		{},
 		{ authorization: "Bearer demo:wrong" },
+		{ authorization: "Bearer demo:s3cre" },
+		{ authorization: "Bearer demo:s3cretx" },
+		{ authorization: `Bearer demo:s3cret${"x".repeat(4096)}` },
+		{ authorization: "Bearer demo:" },
 		{ authorization: "Bearer nobody:s3cret" },
 		{ authorization: "Bearer :s3cret" },
 		{ authorization: `Bearer ${jwt({ boxery: {} })}` },

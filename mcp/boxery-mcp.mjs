@@ -4,14 +4,14 @@
 //
 //   boxery-mcp (or: npx boxery-vm) [--host NAME] [--vm NAME]   stdio (launched by the MCP client)
 //   boxery-mcp --http 127.0.0.1:8765 [--host NAME] [--vm NAME]   Streamable HTTP at /mcp
-//        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth),
+//        auth: bearer token from $BOXERY_MCP_TOKEN or --token-file (required unless --no-auth, loopback only),
 //              optional --allow-user a@b.c (checks Tailscale-User-Login from `tailscale serve`)
 //   --ui   offer vm_view (live desktop view) even to clients that don't advertise MCP Apps support
 //   --copy-root DIR   allow vm_copy local: paths only inside DIR (never boxery's config, ~/.ssh, ~/.pi)
 //
 // "local" (vm_copy) and grant sources are the machine this server runs on. Over HTTP that is the
 // control plane, so vm_copy local: endpoints are refused unless --copy-root confines them.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
@@ -481,6 +481,11 @@ function serveStdio() {
 
 // ---------------------------------------------------------------- Streamable HTTP transport
 
+const LOOPBACK = ["127.0.0.1", "::1", "localhost"];
+const sha256 = (s) => createHash("sha256").update(s).digest();
+/** Constant-time string compare: equal-length digests, so neither the length nor the content leaks through timing. */
+const secretEquals = (got, want) => typeof got === "string" && typeof want === "string" && timingSafeEqual(sha256(got), sha256(want));
+
 function serveHttp(listen) {
 	const [hostPart, portPart] = listen.includes(":") ? [listen.slice(0, listen.lastIndexOf(":")), listen.slice(listen.lastIndexOf(":") + 1)] : ["127.0.0.1", listen];
 	const token = TOKEN_FILE ? readFileSync(TOKEN_FILE, "utf8").trim() : process.env.BOXERY_MCP_TOKEN;
@@ -489,8 +494,12 @@ function serveHttp(listen) {
 		log("refusing to start: set BOXERY_MCP_TOKEN or --token-file (or --no-auth for local testing)");
 		process.exit(2);
 	}
+	if (noAuth && !LOOPBACK.includes(hostPart)) {
+		log("refusing to start: --no-auth serves every VM tool unauthenticated, so it only listens on loopback");
+		process.exit(2);
+	}
 	const allowUsers = argv.flatMap((a, i) => (a === "--allow-user" ? [argv[i + 1]] : []));
-	if (allowUsers.length && !["127.0.0.1", "::1", "localhost"].includes(hostPart)) {
+	if (allowUsers.length && !LOOPBACK.includes(hostPart)) {
 		log("refusing to start: --allow-user trusts the Tailscale-User-Login header, which is only safe when the server listens on loopback behind `tailscale serve`");
 		process.exit(2);
 	}
@@ -509,7 +518,7 @@ function serveHttp(listen) {
 			// DNS-rebinding guard: browsers send Origin; reject unknown ones.
 			const origin = req.headers.origin;
 			if (origin && !allowOrigins.includes(origin)) return send(403, { error: `origin not allowed: ${origin}` });
-			if (!noAuth && req.headers.authorization !== `Bearer ${token}`) return send(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
+			if (!noAuth && !secretEquals(req.headers.authorization, `Bearer ${token}`)) return send(401, { error: "unauthorized" }, { "www-authenticate": "Bearer" });
 			if (allowUsers.length) {
 				// Set by `tailscale serve` for requests from tailnet users (absent for tagged devices).
 				const who = req.headers["tailscale-user-login"];
