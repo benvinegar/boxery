@@ -134,21 +134,25 @@ class Hero:
     def draw(self):
         t = self.t
         self.text(44, 34, "Your machine", 13, t["label"], anchor="start")
-        self.add(f'<path d="M56 50 H624 A16 16 0 0 1 640 66 V284 A16 16 0 0 1 624 300 H258 A16 16 0 0 0 242 316 '
-                 f'V458 A16 16 0 0 1 226 474 H56 A16 16 0 0 1 40 458 V66 A16 16 0 0 1 56 50 Z" fill="none" '
+        self.add(f'<path d="M56 50 H624 A16 16 0 0 1 640 66 V322 A16 16 0 0 1 624 338 H258 A16 16 0 0 0 242 354 '
+                 f'V522 A16 16 0 0 1 226 538 H56 A16 16 0 0 1 40 522 V66 A16 16 0 0 1 56 50 Z" fill="none" '
                  f'stroke="{t["muted"]}" stroke-width="1" stroke-dasharray="5 4"/>')
 
-        for name, x, w, vb, icon in AGENTS:
-            self.slab(x, 74, w, 40, 6, t["agent"])
-            self.add(f'<svg x="{x + 15.9:g}" y="86" width="16" height="16" viewBox="{vb}" fill="{t["ink"]}">{icon}</svg>')
-            self.text(x + 37.9, 94, name, 14, t["ink"], 600, "start")
-            self.arrow(x + w / 2, 122, x + w / 2, 162)
+        # the agents: one card, their icons side by side
+        x0, y0 = 120, 64
+        self.slab(x0, y0, 440, 60, 6, t["agent"])
+        for i, (name, _, _, vb, icon) in enumerate(AGENTS):
+            self.add(f'<svg x="{x0 + 20 + i * 27:g}" y="{y0 + 21:g}" width="18" height="18" viewBox="{vb}" fill="{t["ink"]}">{icon}</svg>')
+        self.text(x0 + 168, y0 + 21, "Your coding agents", 14, t["ink"], 600, "start")
+        self.text(x0 + 168, y0 + 40, " · ".join(a[0] for a in AGENTS), 12, t["label"], anchor="start")
+        self.arrow(340, 132, 340, 170)
 
         # boxery: its four verbs, each drawn as what it does to a cube
-        self.slab(56, 166, 568, 112, 8, t["bar"])
-        self.text(340, 188, "boxery", 16, t["bar_title"], 600)
-        self.text(340, 208, "Run shells, code, Chrome and the full desktop inside VMs", 13, t["bar_text"])
-        e, by = 11, 250
+        y0 = 174
+        self.slab(56, y0, 568, 144, 8, t["bar"])
+        self.text(340, y0 + 28, "boxery", 16, t["bar_title"], 600)
+        self.text(340, y0 + 48, "Run shells, code, Chrome and the full desktop inside VMs", 13, t["bar_text"])
+        e, by = 11, y0 + 104
         for i, verb in enumerate(["spin up", "fork", "snapshot", "throw away"]):
             cx = 56 + 568 * (i + 0.5) / 4
             if verb == "spin up":
@@ -167,23 +171,23 @@ class Hero:
                 self.cube(cx - 22, by, e)
                 self.arrow(cx - 8, by - 11, cx + 6, by - 11)
                 self.gone(cx + 22, by, e)
-            self.text(cx, 268, verb, 12, t["bar_text"], 600)
+            self.text(cx, by + 22, verb, 12, t["bar_text"], 600)
 
         hosts = [
             ("Local", "VMs on this machine", 56, 170, ["demo", "web"]),
             ("Remote box", "any server you ssh to", 258, 176, ["ci-1", "ci-2", "ci-3"]),
             ("Cloud", "exe.dev · boat.dev · more", 450, 174, ["fix-a", "fix-b", "fix-c"]),
         ]
-        y0, e = 334, 14
+        y0, e = 374, 14
         for name, sub, x, w, vms in hosts:
             cx = x + w / 2
             cloud = name == "Cloud"
-            self.arrow(cx, 286, cx, y0 - 4)
-            self.slab(x, y0, w, 124, 8, t["host"], "4 3" if cloud else None)
-            self.text(cx, y0 + 22, name, 14, t["ink"], 600)
-            self.text(cx, y0 + 41, sub, 12, t["host_sub"])
+            self.arrow(cx, 326, cx, y0 - 4)
+            self.slab(x, y0, w, 148, 6, t["host"], "4 3" if cloud else None)
+            self.text(cx, y0 + 26, name, 14, t["ink"], 600)
+            self.text(cx, y0 + 46, sub, 12, t["host_sub"])
             step = 60 if len(vms) == 2 else 50
-            by = y0 + 99
+            by = y0 + 116
             xs = [cx + (i - (len(vms) - 1) / 2) * step for i in range(len(vms))]
             if name == "Remote box":  # ci-2 and ci-3 are forks of ci-1
                 for i, lift in ((1, 6), (2, 12)):
@@ -196,13 +200,13 @@ class Hero:
                     self.gone(vx, by, e)
                 else:
                     self.cube(vx, by, e)
-                self.text(vx, by + 14, vm, 12, t["vm_text"], opacity=0.55 if vm == "fix-c" else None)
+                self.text(vx, by + 16, vm, 12, t["vm_text"], opacity=0.55 if vm == "fix-c" else None)
 
     def svg(self):
         self.draw()
         m = self.t["muted"]
         return (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 490" width="680" height="490" role="img" aria-labelledby="t d">\n'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 556" width="680" height="556" role="img" aria-labelledby="t d">\n'
             f'<title id="t">{TITLE}</title>\n<desc id="d">{DESC}</desc>\n'
             '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
             f'<path d="M2 1L8 5L2 9" fill="none" stroke="{m}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>\n'
