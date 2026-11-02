@@ -6,8 +6,8 @@
 </h1>
 
 <p align="center">
-  <strong>Give your coding agent its own Linux computers, hosted anywhere.</strong><br>
-  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux desktop VMs on your own machine, a remote server, or the cloud. Your credentials stay on a host you run.
+  <strong>Dev environments your agents spin up themselves, on any provider (local, remote, and cloud).</strong><br>
+  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux desktop VMs, with the same tools on every backend. Your credentials stay on a host you run and never enter a VM.
 </p>
 
 <p align="center">
