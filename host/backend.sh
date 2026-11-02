@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one hypervisor backend function: host/backend.sh FUNCTION [ARG...]
 # Sources host/backends/$BOXERY_BACKEND.sh into the prelude below, which is everything a backend may use
-# from the host: die, log, need, wait_ssh, vm_ssh_cmd, ROOT, CACHE, PROXY_PORT, SSH_OPTS. FUNCTION must
+# from the host: die, log, need, wait_ssh, vm_ssh_cmd, ROOT, CACHE, PROXY_PORT, PROXY_UNIT, SSH_OPTS. FUNCTION must
 # be a backend contract function (host/backends/README.md). Arguments stay argv; nothing is evaluated.
 #   host/backend.sh __functions             contract functions this backend defines, one per line
 #   host/backend.sh __connect NAME [PORT]   stdio to the VM's sshd (the ssh ProxyCommand; never starts Node)
@@ -21,6 +21,30 @@ fi
 export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}
 # shellcheck disable=SC2034  # read by the sourced backend
 PROXY_PORT=${BOXERY_PROXY_PORT:-8088}
+# This profile's proxy unit (boxery-proxy, or boxery-proxy-NAME): a host-wide service a backend adds
+# (its guest → proxy bridge) is named after it, so two profiles of one backend never share one.
+# shellcheck disable=SC2034  # read by the sourced backend
+PROXY_UNIT=${BOXERY_PROXY_UNIT:-boxery-proxy}
+[[ $PROXY_UNIT =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]*$ ]] || { echo "boxery-host: invalid BOXERY_PROXY_UNIT '$PROXY_UNIT'" >&2; exit 1; }
+# The unit for host-wide service BASE in this profile: BASE for the default proxy unit (boxery-proxy),
+# BASE-SUFFIX for boxery-proxy-SUFFIX (boxery-vsock → boxery-vsock-iso), BASE-for-UNIT for any other name.
+# Before #117 every profile wrote its bridge to the shared unit BASE.service. If that file still serves
+# this profile (MATCH appears in it, e.g. its port), it's this profile's old bridge: stop and remove it,
+# or it would hold the port the per-profile unit needs. A default profile's init rewrites it later.
+retire_shared_unit() { # BASE MATCH
+	local f=$HOME/.config/systemd/user/$1.service
+	[[ $(profile_unit "$1") != "$1" && -f $f ]] && grep -qF -- "$2" "$f" || return 0
+	log "removing $1.service: it served this profile's proxy before bridges were per profile (#117)"
+	systemctl --user disable --now "$1.service" >/dev/null 2>&1 || true
+	rm -f "$f"
+}
+profile_unit() { # BASE
+	case $PROXY_UNIT in
+	boxery-proxy) echo "$1" ;;
+	boxery-proxy-*) echo "$1-${PROXY_UNIT#boxery-proxy-}" ;;
+	*) echo "$1-for-$PROXY_UNIT" ;;
+	esac
+}
 BACKEND=${BOXERY_BACKEND:-libvirt}
 SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="$CONF/mgmt_ed25519" -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=5)
 # ssh to VM NAME checks its pinned host key, like host/guest.mjs (host/hostkeys.mjs). A VM without one

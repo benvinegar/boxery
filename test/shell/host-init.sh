@@ -38,7 +38,7 @@ if [[ $(uname) == Darwin ]]; then
 else
 	u=$HOME/.config/systemd/user/boxery-proxy.service
 	grep -q "ExecStart=.* $ROOT/proxy/boxery-proxy.mjs" "$u" && grep -q 'Environment=BOXERY_PROXY_PORT=9999' "$u" && ok "proxy unit" || bad "unit: $(cat "$u" 2>&1)"
-	grep -q "systemctl --user enable --now boxery-proxy.service" "$CALLS" && ok "proxy unit enabled" || bad "calls: $(cat "$CALLS")"
+	grep -q "systemctl --user enable --now boxery-proxy.service boxery-fake-bridge.service" "$CALLS" && ok "proxy unit and the default profile's bridge enabled" || bad "calls: $(cat "$CALLS")"
 	[[ ! -e $HOME/.config/systemd/user/boxery-reaper.timer ]] && ok "BOXERY_NO_SERVICES: no reaper" || bad "reaper installed"
 fi
 echo "# my key" >"$BOXERY_CONF/proxy.env"
@@ -81,7 +81,10 @@ if [[ $(uname) == Darwin ]]; then
 else
 	grep -q "Environment=BOXERY_CONF=$pc" "$HOME/.config/systemd/user/boxery-proxy-two.service" && [[ -f $HOME/.config/systemd/user/boxery-reaper-two.timer ]] && ok "its own proxy and reaper units" || bad "units: $(ls "$HOME/.config/systemd/user")"
 fi
-grep -q 'boxery-proxy\.service\|dev\.boxery-proxy\.plist' "$CALLS" && bad "touched the other profile's proxy: $(cat "$CALLS")" || ok "leaves the other profile's services alone"
+grep -q 'boxery-proxy\.service\|dev\.boxery-proxy\.plist\|boxery-fake-bridge\.service' "$CALLS" && bad "touched the other profile's proxy: $(cat "$CALLS")" || ok "leaves the other profile's services alone"
+if [[ $(uname) != Darwin ]]; then
+	grep -q "systemctl --user enable --now boxery-proxy-two.service boxery-fake-bridge-two.service" "$CALLS" && ok "enables the backend's bridge under the profile's own name (#117)" || bad "bridge: $(grep enable "$CALLS")"
+fi
 BOXERY_FAKE_DIR=$tmp/vms-two "${P[@]}" init >/dev/null 2>&1 && [[ $(sed -n 's/^BOXERY_PROXY_PORT=//p' "$e") == "$port" ]] && ok "re-running init keeps its port" || bad "re-init: $(cat "$e")"
 out=$("${P[@]}" backend) && [[ $out == fake ]] && ok "--profile commands use that profile" || bad "backend: $out"
 out=$(env -u BOXERY_CONF "$H" profiles --json) && [[ $out == *'"name":"two"'*'"backend":"fake"'* && $out == *"\"conf\":\"$BOXERY_CONF\""* ]] && ok "profiles lists both" || bad "profiles: $out"

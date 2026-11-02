@@ -211,4 +211,31 @@ printf 'up\trunning\t192.0.2.10:22\t42949672960\t1116691456\ndown\tshut off\t\t\
 backend_list >"$tmp/list.got"
 diff -u "$tmp/list.want" "$tmp/list.got" >/dev/null && ok "backend_list: NAME STATE HOST:22 CAPACITY ALLOCATION (empty = unknown), only this host's domains" || bad "backend_list: $(sed -n l "$tmp/list.got")"
 
+# --- guest → proxy bridge: one unit per profile, named after its proxy unit (#117). Run through
+# host/backend.sh so the prelude (PROXY_PORT, PROXY_UNIT) is what a real init sees.
+bridge() { # PROXY_UNIT PORT → the unit name backend_proxy_services prints
+	HOME=$tmp/bh BOXERY_CONF=$tmp/bc BOXERY_BACKEND=libvirt BOXERY_PROXY_UNIT=$1 BOXERY_PROXY_PORT=$2 "$ROOT/host/backend.sh" backend_proxy_services
+}
+mkdir -p "$tmp/bh/.config/systemd/user" "$tmp/bc"
+U=$tmp/bh/.config/systemd/user
+[[ $(bridge boxery-proxy 8088) == boxery-vsock.service ]] && ok "default profile keeps boxery-vsock.service" || bad "default: $(bridge boxery-proxy 8088 2>&1)"
+[[ $(bridge boxery-proxy-iso 8090) == boxery-vsock-iso.service ]] && ok "profile iso → boxery-vsock-iso.service" || bad "iso: $(bridge boxery-proxy-iso 8090 2>&1)"
+[[ $(bridge boxery-proxy-two 8091) == boxery-vsock-two.service ]] || bad "two"
+grep -q 'VSOCK-LISTEN:8088,.* TCP:127.0.0.1:8088$' "$U/boxery-vsock.service" && grep -qx 'After=boxery-proxy.service' "$U/boxery-vsock.service" &&
+	grep -q 'VSOCK-LISTEN:8090,.* TCP:127.0.0.1:8090$' "$U/boxery-vsock-iso.service" && grep -qx 'After=boxery-proxy-iso.service' "$U/boxery-vsock-iso.service" &&
+	grep -q 'VSOCK-LISTEN:8091,' "$U/boxery-vsock-two.service" &&
+	ok "a later profile's init leaves the others' bridges on their own ports" || bad "bridges: $(grep -h ExecStart "$U"/*.service)"
+# Upgrading a host whose only libvirt profile is named: its old bridge is the shared unit, on its port.
+rm -f "$U"/*.service
+bridge boxery-proxy 8093 >/dev/null; mv "$U/boxery-vsock.service" "$U/old"; sed 's/8093/8094/g' "$U/old" >"$U/boxery-vsock.service"; rm "$U/old"
+mkdir -p "$tmp/sbin"; printf '#!/bin/sh\necho "systemctl $*" >>"%s"\n' "$LOG" >"$tmp/sbin/systemctl"; chmod +x "$tmp/sbin/systemctl"
+: >"$LOG"
+[[ $(PATH=$tmp/sbin:$PATH bridge boxery-proxy-solo 8094 2>/dev/null) == boxery-vsock-solo.service && ! -f $U/boxery-vsock.service ]] && grep -qx "systemctl --user disable --now boxery-vsock.service" "$LOG" &&
+	ok "upgrade: the profile's old shared bridge (same port) is stopped and removed" || bad "retire: $(ls "$U") $(cat "$LOG")"
+bridge boxery-proxy 8088 >/dev/null; : >"$LOG"
+PATH=$tmp/sbin:$PATH bridge boxery-proxy-solo 8094 >/dev/null 2>&1
+[[ -f $U/boxery-vsock.service ]] && grep -q 'VSOCK-LISTEN:8088,' "$U/boxery-vsock.service" && ! grep -q disable "$LOG" && ok "…but the default profile's own bridge is left alone" || bad "default bridge touched: $(cat "$LOG")"
+[[ $(bridge my-proxy 8095) == boxery-vsock-for-my-proxy.service ]] && grep -qx 'After=my-proxy.service' "$U/boxery-vsock-for-my-proxy.service" && ok "a custom BOXERY_PROXY_UNIT gets its own bridge too" || bad "custom: $(bridge my-proxy 8095 2>&1)"
+if bridge 'x;rm -rf /' 8095 >/dev/null 2>&1; then bad "unsafe BOXERY_PROXY_UNIT accepted"; else ok "unsafe BOXERY_PROXY_UNIT refused"; fi
+
 echo "passed: $pass  failed: $fail"; ((fail == 0))
