@@ -21,6 +21,7 @@ The host runs in Node. Bash remains where it fits: the entry point (`host/boxery
 | `host/boxery-operations.mjs` | Resource arbitration, worker supervision, durable intent storage, abandoned-operation recovery scheduling, token file transactions | Guest or lease workflow policy |
 | `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
 | `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
+| `host/hostkeys.mjs` | Each VM's pinned ssh host key: generation for the seed, the `host-keys/NAME` record, `known-hosts`/`pin`, pinning through trusted channels | Delivering the key to the guest (seed, backends) |
 | `host/runtime.mjs`, `host/config.mjs`, `host/shapes.mjs`, `host/util.mjs` | Per-command context (store, backend, journal, held locks), configuration, shapes, shared helpers | Side effects of their own |
 | `host/backends/*.sh` | Hypervisor-specific effects and idempotent recovery hooks | Pool ownership or lease transitions |
 

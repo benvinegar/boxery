@@ -23,6 +23,24 @@ Inside the VM, everything listens on localhost: the desktop (noVNC on `127.0.0.1
 
 The desktop also needs a password. websockify (noVNC) doesn't check the `Origin` header. While a `boxery desktop` tunnel is open, any process on your machine can reach it, and so can a web page in a browser that allows WebSockets to localhost. The VNC server therefore uses TigerVNC's `VncAuth` and never runs without a password. The password is 8 random letters and digits (VncAuth reads only 8 characters). It lives in `/run/user/UID/boxery-vnc/passwd`: tmpfs, mode `0600`, owned by the agent user, never on the VM's disk. `boxery-vnc.service` makes one before it starts the server, so a new VM is locked even if nobody opens its desktop. Each `boxery desktop` sets a new password and passes it to noVNC in the URL fragment, which isn't sent to the server or written to its logs ([details](cli.md#desktop-and-ports)). Computer use (`vm_screenshot`, `vm_click`, …, `vm_view`) talks to the X display directly over ssh, not to VNC, so the password doesn't affect it.
 
+## VM host keys
+
+Every ssh connection to a VM checks the VM's ssh host key: yours (`boxery ssh`, `run`, the agent tools, grant pushes, the ssh-agent forward) and the host's own (key and token installs, lease setup). boxery generates each VM's ed25519 host key on the host, puts it in the VM's seed (sshd presents only that key) and records the public half in `~/.config/boxery/host-keys/NAME`. Controllers fetch it from the host when they connect (`KnownHostsCommand … boxery-host known-hosts %H` in the generated `ssh_config`), and ssh runs with `StrictHostKeyChecking yes`. So a guest that answers on another VM's address gets nothing: not that VM's pushed grants, its ssh-agent forward or its proxy token.
+
+- **A new identity gets a new key.** `new`, `fork` and `new --from` each get a fresh key. `revert` and pool resets keep the VM's own key, because its images carry it. `rm` removes the record.
+- **boat.dev** VMs keep the platform's host key. boat reports it through its API, and boxery re-pins it whenever the VM may have moved to another machine (start, reimage).
+- **Re-pinning.** A VM made before boxery pinned keys, or whose record was lost, is refused with "Host key verification failed". Re-pin it:
+
+  ```bash
+  boxery pin NAME                # reads the key through a channel the guest network can't spoof:
+                                 # libvirt's guest agent, or Lima/exe/boat's loopback endpoint on the host
+  boxery pin NAME --from-guest   # if that isn't available: trust what NAME's ssh endpoint answers, once
+  ```
+
+  `boxery start NAME` also pins such a VM automatically through those channels. `--from-guest` is the trust-on-first-use fallback: use it only when nothing else on the VM network could be impersonating NAME. With libvirt's guest isolation ([#69](https://github.com/benvinegar/boxery/issues/69)) no other guest can.
+- **Older hosts.** A controller talking to a host from before this change keeps its old, unverified `ssh_config` and warns once a day until you run `boxery upgrade-host`. After that, the next command rewrites the config to verify keys.
+- **Out of scope.** The hop from your laptop to the host is your own ssh to it and uses your `known_hosts`. exe.dev's and boat.dev's admin channels pin those platforms' keys separately ([backends](../host/backends/README.md)).
+
 Guests run without swap, with core dumps disabled. Pushed grant files are `0400` and live on tmpfs.
 
 ## Credential proxy

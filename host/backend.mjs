@@ -9,7 +9,7 @@ const SCRIPT = fileURLToPath(new URL("./backend.sh", import.meta.url));
 const MAX_OUTPUT = 16 * 1024 * 1024;
 
 /** @typedef {{ capture?: boolean, quiet?: boolean, extraEnv?: NodeJS.ProcessEnv }} CallOptions */
-/** @typedef {{ host: string, port: string }} Endpoint */
+/** @typedef {{ host: string, port: string, name?: string }} Endpoint */
 /** @typedef {{ fatal: boolean, message: string }} EndpointProblem */
 /** @typedef {{ name: string, state: string, ssh: string, diskBytes: number | null, diskUsedBytes: number | null, tunnel: string }} BackendVm */
 /** @typedef {{ image: string, created: string, size: string }} BackendImage */
@@ -27,12 +27,13 @@ export class BackendError extends Error {
 const byteCount = (field) => (/^\d+$/.test(field) ? Number(field) : null);
 /** @param {string} text */
 const tsv = (text) => text.split("\n").filter((l) => l.length > 0).map((l) => l.split("\t"));
-/** @param {string} text @returns {Endpoint} */
-const endpoint = (text) => {
+// {host, port, name}: name is the VM, so guest ssh checks that VM's pinned host key (hostkeys.mjs).
+/** @param {string} text @param {string} name @returns {Endpoint} */
+const endpoint = (text, name) => {
 	const ep = text.trim();
 	const host = ep.slice(0, ep.lastIndexOf(" ")), port = ep.slice(ep.indexOf(" ") + 1);
 	if (!host || !port) throw new BackendError(`backend returned no ssh endpoint ("${ep}")`);
-	return { host, port };
+	return { host, port, name };
 };
 
 // capture: collect stdout (metadata) and return it; otherwise the backend's stdout goes to our stderr,
@@ -107,9 +108,9 @@ export function createBackend(env = process.env) {
 			catch (e) { if (e instanceof BackendError) return false; throw e; }
 		},
 		/** @param {string} name @param {CallOptions} [options] */
-		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options)),
+		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options), name),
 		/** @param {string} name @param {CallOptions} [options] */
-		waitEndpoint: async (name, options) => endpoint(await meta("backend_wait_endpoint", [name], options)),
+		waitEndpoint: async (name, options) => endpoint(await meta("backend_wait_endpoint", [name], options), name),
 		/** Why NAME's endpoint can't be reached (optional backend_endpoint_problem; local checks only):
 		 *  null when nothing is known to be wrong, else {fatal, message}. fatal: it won't recover without the fix.
 		 *  Advisory: if the check itself can't run, nothing is known (the caller keeps waiting as before).

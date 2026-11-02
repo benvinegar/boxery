@@ -22,15 +22,26 @@ export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}
 # shellcheck disable=SC2034  # read by the sourced backend
 PROXY_PORT=${BOXERY_PROXY_PORT:-8088}
 BACKEND=${BOXERY_BACKEND:-libvirt}
-SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="$CONF/mgmt_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
+SSH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="$CONF/mgmt_ed25519" -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=5)
+# ssh to VM NAME checks its pinned host key, like host/guest.mjs (host/hostkeys.mjs). A VM without one
+# is refused.
+host_key_opts() { # NAME
+	[[ $1 =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$1'"
+	printf '%s\n' -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$CONF/host-keys/$1" -o GlobalKnownHostsFile=/dev/null \
+		-o "HostKeyAlias=$1.boxery" -o CheckHostIP=no -o UpdateHostKeys=no
+}
 
 die() { echo "boxery-host: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
-vm_ssh_cmd() { local h=$1 p=$2; shift 2; ssh "${SSH_OPTS[@]}" -p "$p" "agent@$h" "$@"; }
-wait_ssh() { # HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 180 = 6 min)
-	for _ in $(seq "${BOXERY_SSH_WAIT_TRIES:-180}"); do ssh "${SSH_OPTS[@]}" -p "${2:-22}" "agent@$1" true 2>/dev/null && return; sleep 2; done
-	die "timed out waiting for ssh on $1:${2:-22}"
+vm_ssh_cmd() { # NAME HOST PORT CMD…   as agent in VM NAME at HOST:PORT
+	local n=$1 h=$2 p=$3 k=() l; shift 3
+	while IFS= read -r l; do k+=("$l"); done < <(host_key_opts "$n")
+	ssh "${SSH_OPTS[@]}" "${k[@]}" -p "$p" "agent@$h" "$@"
+}
+wait_ssh() { # NAME HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 180 = 6 min)
+	for _ in $(seq "${BOXERY_SSH_WAIT_TRIES:-180}"); do vm_ssh_cmd "$1" "$2" "${3:-22}" true 2>/dev/null && return; sleep 2; done
+	die "timed out waiting for ssh on $2:${3:-22}"
 }
 
 # image/layers: plumbing (every VM) → devtools → desktop, plus their runner. A headless VM's seed and the
@@ -55,7 +66,7 @@ f="$ROOT/host/backends/$BACKEND.sh"
 CONTRACT=" backend_check backend_init backend_proxy_services backend_proxy_bind guest_proxy_upstream backend_build_base
 	backend_has_base backend_exists backend_new backend_list backend_ssh_endpoint backend_wait_endpoint backend_start backend_stop
 	backend_rm backend_size backend_resize backend_capture backend_images backend_image_rm backend_reimage backend_cleanup_new
-	backend_cleanup_image backend_recover_capture backend_endpoint_problem "
+	backend_cleanup_image backend_recover_capture backend_endpoint_problem backend_host_key backend_platform_host_key "
 case ${1:-} in
 __layer_files) layer_files ;;
 __functions)
