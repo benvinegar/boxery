@@ -80,14 +80,23 @@ remote_tunnel_write() {
 	fi
 }
 remote_plist() { echo "$HOME/Library/LaunchAgents/dev.$(remote_unit "$1").plist"; }
+# (Re)load a launch agent. bootout returns before launchd has removed the job, and a bootstrap in that
+# window fails with "5: Input/output error": wait for it to go (5 s at most), and retry a failed bootstrap.
+remote_launchd_reload() { # LABEL PLIST
+	local domain i
+	domain="gui/$(id -u)"
+	launchctl bootout "$domain/$1" >/dev/null 2>&1 || true
+	for ((i = 0; i < 50; i++)); do launchctl print "$domain/$1" >/dev/null 2>&1 || break; sleep 0.1; done
+	for ((i = 1; i < 5; i++)); do launchctl bootstrap "$domain" "$2" 2>/dev/null && return; sleep 0.5; done
+	launchctl bootstrap "$domain" "$2"
+}
 # Started tunnels are enabled (systemd) or installed in LaunchAgents (launchd), so they come back after
 # a host reboot; remote VMs keep running while the host is down.
 remote_tunnel_start() {
 	if [[ $REMOTE_SUPERVISOR == launchd ]]; then
 		mkdir -p "$HOME/Library/LaunchAgents"
 		cp "$(remote_vm_dir "$1")/tunnel.plist" "$(remote_plist "$1")"
-		launchctl bootout "gui/$(id -u)/dev.$(remote_unit "$1")" >/dev/null 2>&1 || true
-		launchctl bootstrap "gui/$(id -u)" "$(remote_plist "$1")" || die "starting the tunnel to $1 failed"
+		remote_launchd_reload "dev.$(remote_unit "$1")" "$(remote_plist "$1")" || die "starting the tunnel to $1 failed"
 	else
 		systemctl --user enable "$(remote_unit "$1").service" >/dev/null 2>&1 || die "enabling the tunnel to $1 failed"
 		# restart, not start: reimage and start rewrite tunnel.sh for a running unit

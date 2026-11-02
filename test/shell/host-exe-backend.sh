@@ -386,5 +386,16 @@ e=$(BOXERY_EXE_SUPERVISOR=launchd; export NC_DOWN=1; . "$ROOT/host/backends/exe.
 	{ [[ $e == *"(last error: ssh: Could not resolve hostname x.exe.xyz)"* && $e == *"log: $E/v3/tunnel.log"* ]] && ok "launchd: a reconnecting tunnel quotes its last error and log" || bad "launchd problem: $e"; }
 (BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_stop v3; ! exe_tunnel_active v3) && [[ ! -f $PL ]] && ok "launchd: stop boots it out and removes it from LaunchAgents" || bad "launchd stop"
 [[ $(BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_state v3) == down ]] && ok "launchd: booted out = down" || bad "launchd down"
+# launchd still removing the old job: print finds it for 2 more calls, and the first 2 bootstraps fail
+stub launchctl 'echo "launchctl $*" >>"$CALLS"; n() { cat "$UNITS/$1" 2>/dev/null || echo 0; }
+case $1 in
+print) l=$(n linger); if ((l > 0)); then echo $((l - 1)) >"$UNITS/linger"; else [[ -f $UNITS/launchd ]]; fi ;;
+bootstrap) f=$(n fails); if ((f > 0)); then echo $((f - 1)) >"$UNITS/fails"; echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi; touch "$UNITS/launchd" ;;
+bootout) rm -f "$UNITS/launchd"; echo 2 >"$UNITS/linger" ;;
+esac'
+: >"$CALLS"; echo 2 >"$UNITS/fails"
+(BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_write v3 "$(exe_ls)"; exe_tunnel_start v3 2>/dev/null; exe_tunnel_active v3) &&
+	[[ $(grep -c '^launchctl bootstrap' "$CALLS") == 3 ]] && ok "launchd: start outlasts a job still being removed (waits, retries the bootstrap)" || bad "launchd race: $(cat "$CALLS")"
+(BOXERY_EXE_SUPERVISOR=launchd; . "$ROOT/host/backends/exe.sh"; exe_tunnel_stop v3); rm -f "$UNITS/linger" "$UNITS/fails"
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

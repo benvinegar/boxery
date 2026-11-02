@@ -7,9 +7,23 @@ H=$ROOT/host/boxery-host
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 export HOME=$tmp/home BOXERY_CONF=$tmp/conf BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_PROXY_PORT=9999 CALLS=$tmp/calls
 mkdir -p "$tmp/bin" "$HOME"; : >"$CALLS"
-for c in systemctl launchctl ssh-keygen; do
+for c in systemctl ssh-keygen; do
 	printf '#!/bin/sh\necho "%s $*" >>"$CALLS"\n' "$c" >"$tmp/bin/$c"; chmod +x "$tmp/bin/$c"
 done
+# launchctl stub: after a bootout the job stays visible to print for LAUNCHD_LINGER calls, and the first
+# LAUNCHD_BOOTSTRAP_FAILS bootstraps fail the way launchd does while it is still removing the job.
+cat >"$tmp/bin/launchctl" <<'STUB'
+#!/bin/sh
+echo "launchctl $*" >>"$CALLS"
+st=$CALLS.launchd
+case $1 in
+bootout) echo "${LAUNCHD_LINGER:-0}" >"$st.linger" ;;
+print) n=$(cat "$st.linger" 2>/dev/null || echo 0); [ "$n" -gt 0 ] || exit 113; echo $((n - 1)) >"$st.linger" ;;
+bootstrap) n=$(cat "$st.fails" 2>/dev/null || echo "${LAUNCHD_BOOTSTRAP_FAILS:-0}"); echo $((n > 0 ? n - 1 : 0)) >"$st.fails"
+	[ "$n" -eq 0 ] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; } ;;
+esac
+STUB
+chmod +x "$tmp/bin/launchctl"
 # ssh-keygen stub: write the key pair it was asked for
 printf '#!/bin/sh\necho "ssh-keygen $*" >>"$CALLS"; while [ $# -gt 1 ]; do shift; done; echo "ssh-ed25519 AAAAhost boxery-host" >"$1.pub"; : >"$1"\n' >"$tmp/bin/ssh-keygen"
 export PATH="$tmp/bin:$PATH"
@@ -47,6 +61,16 @@ BOXERY_NO_SERVICES=1 "$H" init >/dev/null 2>&1 && [[ $(cat "$BOXERY_CONF/proxy.e
 "$H" init >/dev/null 2>&1 || bad "init with services"
 if [[ $(uname) == Darwin ]]; then grep -q 'dev.boxery-reaper.plist' "$CALLS" && ok "reaper agent loaded" || bad "reaper: $(cat "$CALLS")"
 else grep -q 'enable --now boxery-reaper.timer' "$CALLS" && ok "reaper timer enabled" || bad "reaper: $(cat "$CALLS")"; fi
+if [[ $(uname) == Darwin ]]; then
+	: >"$CALLS"; rm -f "$CALLS".launchd.*
+	out=$(LAUNCHD_LINGER=3 LAUNCHD_BOOTSTRAP_FAILS=2 BOXERY_NO_SERVICES=1 "$H" init 2>&1) && ok "launchd: init outlasts a job still being removed" || bad "init: $out; calls: $(cat "$CALLS")"
+	[[ $(grep -c '^launchctl print' "$CALLS") == 4 ]] && ok "...waits until print no longer finds the old job" || bad "calls: $(cat "$CALLS")"
+	[[ $(grep -c '^launchctl bootstrap' "$CALLS") == 3 ]] && ok "...and retries the bootstrap until it takes" || bad "calls: $(cat "$CALLS")"
+	: >"$CALLS"; rm -f "$CALLS".launchd.*
+	out=$(LAUNCHD_BOOTSTRAP_FAILS=9 BOXERY_NO_SERVICES=1 "$H" init 2>&1) && bad "init succeeded though bootstrap kept failing" ||
+		{ [[ $out == *"Input/output error"* && $(grep -c '^launchctl bootstrap' "$CALLS") == 5 ]] && ok "launchd: a bootstrap that keeps failing fails init after 5 tries, with launchctl's error" || bad "out: $out; calls: $(cat "$CALLS")"; }
+	rm -f "$CALLS".launchd.*
+fi
 err=$("$H" init --backend nope 2>&1) && bad "init --backend nope succeeded" || { [[ $err == *"unknown backend 'nope'"* ]] && ok "init --backend rejects an unknown backend" || bad "error: $err"; }
 
 echo "== add-key"
