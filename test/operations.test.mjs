@@ -293,6 +293,58 @@ it("reset holds its lock through readiness and finish; stale callbacks cannot cl
 	cleanJournal();
 });
 
+it("a pool VM's proxy token lives exactly as long as a lease, and its grants belong to that lease", async () => {
+	const guestToken = () => readFileSync(path.join(vms, "pool", "home", ".boxery", "token"), "utf8");
+	const edge = () => JSON.parse(readFileSync(path.join(conf, "edge", "pool.json"), "utf8"));
+	const ROUTES = '{"api.example.com":{"headers":{"Authorization":"Bearer x"}}}';
+	await ok(["new", "pool"]);
+	const pet = token("pool"); assert.equal(typeof pet, "string");
+	await ok(["pool", "add", "pool"]);
+	assert.equal(token("pool"), undefined, "a free pool VM has no valid token");
+	assert.notEqual((await run(["edge-set", "pool"], {}, ROUTES).result).code, 0, "no grants without a lease");
+
+	const alice = (await ok(["acquire", "--holder", "alice"], {}, KEY)).split(" ")[1];
+	const first = token("pool");
+	assert.equal(first.lease, alice);
+	assert.notEqual(first.secret, pet);
+	assert.equal(guestToken(), `pool:${first.secret}`, "the guest holds the lease's token");
+	assert.match(readFileSync(path.join(vms, "pool", "home", ".config", "opencode", "opencode.json"), "utf8"), new RegExp(first.secret));
+	await ok(["edge-set", "pool", "--lease", alice], {}, ROUTES);
+	assert.equal(edge().lease, alice);
+	await ok(["release", alice]);
+	assert.equal(token("pool"), undefined, "release revokes the lease's token");
+	assert.equal(existsSync(path.join(conf, "edge", "pool.json")), false);
+
+	const bob = (await ok(["acquire", "--holder", "bob"], {}, KEY)).split(" ")[1];
+	assert.equal(token("pool").lease, bob);
+	assert.notEqual(token("pool").secret, first.secret, "every lease gets a new token");
+	await ok(["edge-set", "pool"], {}, ROUTES);
+	assert.equal(edge().lease, bob, "routes are stamped with the current lease");
+	for (const routes of [ROUTES, "{}"]) {
+		const stale = await run(["edge-set", "pool", "--lease", alice], {}, routes).result;
+		assert.notEqual(stale.code, 0); assert.match(stale.stderr, /not pool's current lease/);
+	}
+	assert.equal(edge().lease, bob, "a stale holder neither replaces nor clears the next holder's routes");
+	// A lease that began before tokens were per lease (host upgraded mid-lease): unstamped routes still match it.
+	writeFileSync(path.join(conf, "tokens.json"), JSON.stringify({ pool: "legacy" }));
+	await ok(["edge-set", "pool"], {}, ROUTES);
+	assert.equal(edge().lease, undefined);
+
+	await ok(["pool", "rm", "pool", "--force"]);
+	const back = token("pool");
+	assert.equal(typeof back, "string", "back to a pet: a token of its own");
+	assert.equal(guestToken(), `pool:${back}`);
+	assert.equal(existsSync(path.join(conf, "edge", "pool.json")), false, "the lease's routes leave with it");
+
+	// Leaving the pool while stopped: no token until the next start issues one.
+	await ok(["pool", "add", "pool"]); await ok(["stop", "pool"]);
+	await ok(["pool", "rm", "pool"]);
+	assert.equal(token("pool"), undefined);
+	await ok(["start", "pool"]);
+	assert.equal(guestToken(), `pool:${token("pool")}`);
+	cleanJournal();
+});
+
 it("reconcile retries a killed reset immediately rather than waiting for the stale timeout", async () => {
 	await ok(["new", "pool"]); await ok(["pool", "add", "pool"]);
 	const lease = (await ok(["acquire", "--holder", "alice"], {}, KEY)).split(" ")[1];

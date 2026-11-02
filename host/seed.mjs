@@ -32,6 +32,15 @@ export function opencodeConfig(cred, ollama = []) {
 	};
 }
 
+/** Guest files (under the agent's home) that carry the proxy token CRED. */
+function credentialFiles(cred, ollama = []) {
+	return [
+		[".pi/agent/models.json", JSON.stringify(piModels(cred, ollama), null, 2)],
+		[".config/opencode/opencode.json", JSON.stringify(opencodeConfig(cred, ollama), null, 2)],
+		[".boxery/token", cred],
+	];
+}
+
 /** Tool-capable models of the host's Ollama, if it runs ([] otherwise). */
 export async function ollamaModels() {
 	try {
@@ -56,12 +65,8 @@ export function baseUserdata(root, layers) {
  * provision (headless VMs on the stock image): layers to apply at first boot, e.g. "plumbing devtools",
  * with layers: their write_files lines. */
 export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision = "", layers = [] }) {
-	const files = [
-		[".pi/agent/models.json", JSON.stringify(piModels(cred, ollama), null, 2)],
-		[".pi/agent/settings.json", JSON.stringify(piSettings(), null, 2)],
-		[".config/opencode/opencode.json", JSON.stringify(opencodeConfig(cred, ollama), null, 2)],
-		[".boxery/token", cred],
-	];
+	const [models, opencode, token] = credentialFiles(cred, ollama);
+	const files = [models, [".pi/agent/settings.json", JSON.stringify(piSettings(), null, 2)], opencode, token];
 	return [
 		"#cloud-config",
 		`hostname: ${name}`,
@@ -106,4 +111,20 @@ export async function writeSeed(rt, name, provision = "") {
 	const file = path.join(dir, "user-data");
 	writeFileSync(file, cloudConfig({ name, keys: rt.guest.petKeys(), upstream: await rt.vms.guestProxyUpstream(), cred: `${name}:${secret}`, ollama: await ollamaModels(), provision, layers: provision ? await rt.vms.layerFiles() : [] }));
 	return file;
+}
+
+/** Write proxy token SECRET into running VM NAME's guest: the token file and the agent configs. */
+export async function installToken(rt, name, secret) {
+	const script = ["set -e", "umask 077", ...credentialFiles(`${name}:${secret}`, await ollamaModels()).map(([f, content]) =>
+		`mkdir -p "$HOME/${path.dirname(f)}"; printf %s '${Buffer.from(content).toString("base64")}' | base64 -d >"$HOME/${f}.new"; mv "$HOME/${f}.new" "$HOME/${f}"`)];
+	if (await rt.guest.run(await rt.vms.sshEndpoint(name), "bash -s", { input: `${script.join("\n")}\n` }) !== 0) throw new Error(`could not install a proxy token in ${name}`);
+}
+
+/** Give running VM NAME a new proxy token: put it in the guest, and only then make it NAME's one valid
+ * token. lease: bind it to that pool lease, so it dies with the lease and the proxy only honours edge
+ * routes set for the same lease. */
+export async function issueToken(rt, name, lease) {
+	const secret = randomBytes(24).toString("hex");
+	await installToken(rt, name, secret);
+	rt.setToken(name, lease ? { secret, lease } : secret);
 }

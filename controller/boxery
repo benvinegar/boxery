@@ -759,11 +759,13 @@ edge_routes_json() {
 
 edge_apply() { # NAME: push (or clear) the VM's edge routes on the host
 	m=$(edge_marker "$1")
+	# A leased VM's routes are for our lease only: the host refuses them once the lease has moved on.
+	lf=$(lease_by_name "$1"); lid=""; [ -z "$lf" ] || lid=$(sed -n 's/^id=//p' "$lf")
 	if [ -f "$(grant_file "$1")" ] && grep -q "^http$TAB" "$(grant_file "$1")"; then
-		edge_routes_json "$1" | h edge-set "$1" >/dev/null || { warn "could not set edge routes for $1 on the host"; return 1; }
+		edge_routes_json "$1" | h edge-set "$1" ${lid:+--lease "$lid"} >/dev/null || { warn "could not set edge routes for $1 on the host"; return 1; }
 		: >"$m"
 	elif [ -f "$m" ]; then
-		echo '{}' | h edge-set "$1" >/dev/null && rm -f "$m"
+		echo '{}' | h edge-set "$1" ${lid:+--lease "$lid"} >/dev/null && rm -f "$m"
 	fi
 }
 

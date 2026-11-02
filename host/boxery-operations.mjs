@@ -230,6 +230,12 @@ export async function reconcileAbandoned(conf) {
 	try { await acquire(db, [], "reconcile", {}, conf, true); } finally { db.close(); }
 }
 
+/** tokens.json[NAME]: "SECRET" (a pet), {secret, lease} (a pool VM's current lease), or undefined. */
+export function readToken(conf, name) {
+	try { return JSON.parse(readFileSync(path.join(conf, "tokens.json"), "utf8"))[name]; }
+	catch (e) { if (e.code === "ENOENT") return undefined; throw e; }
+}
+
 /** tokens.json[NAME] := VALUE (undefined deletes). A short transaction serializes read/modify/rename. */
 export function updateToken(db, conf, name, value) {
 	transaction(db, () => {
