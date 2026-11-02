@@ -45,7 +45,7 @@ CONTROL PLANE (Linux or macOS; may be the laptop itself)   │                  
         state: ~/.config/boxery/  leases.db (SQLite) · tokens.json · edge/ · authorized_keys · mgmt key
         reaper (systemd timer / launchd agent, every minute): recovery + lease expiry
   proxy/boxery-proxy.mjs on 127.0.0.1:8088
-        /chatgpt /openai /anthropic /ollama   allowlisted inference; the real credential is injected
+        /chatgpt /openai /anthropic /ollama   allowlisted inference for VMs with an llm: grant; the real credential is injected
         /edge/<token>/<host>/…                HTTP grants; granted headers are injected
                      ▲ libvirt, CH: vsock · Lima: user-net gateway · exe: ssh -R tunnel
 VM (Ubuntu 24.04; XFCE desktop unless --headless)
@@ -145,7 +145,7 @@ FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / 
 
 | Kind | Where it lives | How it gets there |
 |---|---|---|
-| LLM credentials | control plane only | `boxery-proxy`. A pet holds a per-VM token, minted at creation and revoked on `rm`; a pool VM holds one per lease |
+| LLM credentials | control plane only | `boxery-proxy`. A pet holds a per-VM token, minted at creation and revoked on `rm`; a pool VM holds one per lease. A VM can use only the providers it's granted (`boxery grant NAME llm:PROVIDER`, listed in `edge/NAME.json`; on a pool VM, bound to the lease). No grant, no LLM access |
 | HTTP API tokens (GitHub, npm, …) | control plane, `edge/NAME.json` | `boxery grant NAME http:HOST --cmd …` / `github`. Values are resolved on the controller, pushed to the host, and injected per request at `/edge/`. The guest reaches them via git `insteadOf` and npm registry config. On a pool VM, bound to the lease. Cleared on `rm` and lease reset |
 | `env:` / `file:` grants | VM tmpfs (`/run/user/UID/boxery`, files `0400`) | Pushed by the controller over ssh and reconciled on grant/revoke, new, start, revert, attach, ssh, and when pi selects the VM |
 | ssh agent | the laptop | Per-VM `ForwardAgent` while connected |

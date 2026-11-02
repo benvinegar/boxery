@@ -10,7 +10,7 @@ boxery is built for **one trusted owner running untrusted-ish agents**: the agen
 |---|---|
 | ✅ The internet | Through libvirt's NAT network (or Lima's user network) |
 | ✅ DNS and DHCP | From the host's network (libvirt's dnsmasq on the bridge address) |
-| ✅ LLM providers | Only through the host proxy, with a per-VM token |
+| ✅ LLM providers | Only the ones you grant (`llm:chatgpt`, …), through the host proxy, with a per-VM token |
 | ✅ What you [grant](grants.md) | ssh-agent, env vars, files: only while granted |
 | 🔒 `http:`/`github` grant secrets | never: the host proxy injects them per request; the VM can use but not read them |
 | ❌ Your real LLM keys / OAuth tokens | They stay on the host |
@@ -45,20 +45,20 @@ Guests run without swap, with core dumps disabled. Pushed grant files are `0400`
 
 ## Credential proxy
 
-VMs run agents that need LLM access, but they never get a real key.
+VMs run agents that need LLM access, but they never get a real key. A VM gets no LLM access at all until you grant it a provider: `boxery grant VM llm:chatgpt` (or `llm:openai`, `llm:anthropic`, `llm:ollama`). See [Grants](grants.md).
 
 ```
 VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy ──► chatgpt.com / OpenAI / Anthropic / ollama
-                    (per-VM token)                 checks token, swaps in real credential
+                    (per-VM token)                 checks token + llm: grant, swaps in real credential
 ```
 
-1. `boxery-host new` writes the agent configs into the VM:
+1. `boxery-host new` writes the agent configs into the VM. They only say *where* to send requests; they don't grant anything:
    - `~/.pi/agent/models.json` overrides `openai-codex.baseUrl` with `http://127.0.0.1:8088/chatgpt/backend-api`. Its `apiKey` is an **unsigned fake JWT** whose payload carries `{"boxery":"<vm>:<secret>"}`. It has to be JWT-shaped because pi derives the ChatGPT account id from the JWT. Ollama models are listed too.
    - `~/.config/opencode/opencode.json` gets a `boxery` OpenAI-compatible provider pointing at `/ollama/v1`.
 2. In the guest, `boxery-llm.service` forwards `127.0.0.1:8088` to the host: over vsock (CID 2) on libvirt, or the user-net gateway on Lima. The host needs no listening port on the VM network. Lima maps that gateway (`192.168.5.2`) to the host's loopback, so on macOS boxery starts each Lima instance under a sandbox that lets it reach only the proxy port there ([limits](#known-limits)).
 3. On the host, `boxery-vsock.service` hands the connection to `boxery-proxy` on `127.0.0.1:8088`.
-4. The proxy checks `<vm>:<secret>` against `~/.config/boxery/tokens.json`. It then strips the VM's auth and injects the real credential: the host pi's ChatGPT/Codex OAuth (refreshed automatically) or keys from `proxy.env`. Routes are allowlisted and size-limited. WebSocket upgrades are refused, so pi uses SSE.
-5. `boxery rm` revokes the token. `boxery proxy-log` shows which VM called which provider.
+4. The proxy checks `<vm>:<secret>` against `~/.config/boxery/tokens.json`, then checks that the VM holds an `llm:` grant for that provider (listed in `~/.config/boxery/edge/<vm>.json`, re-read on every request). No grant means 403, before any credential is attached. It then strips the VM's auth and injects the real credential: the host pi's ChatGPT/Codex OAuth (refreshed automatically) or keys from `proxy.env`. Routes are allowlisted and size-limited. WebSocket upgrades are refused, so pi uses SSE.
+5. `boxery revoke VM llm:X` takes effect on the next request. `boxery rm` and pool lease resets revoke the token and all grants. `boxery proxy-log` shows which VM called which provider.
 
 ## Known limits
 
@@ -72,7 +72,7 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
   - **Instances started outside boxery** (a plain `limactl start boxery-NAME`) and VMs that were already running when you upgraded aren't confined. Restart them with `boxery stop NAME && boxery start NAME`.
   - **Lima on Linux** has no Seatbelt. Its guests still reach the host's loopback; use libvirt or Cloud Hypervisor there.
   - A host-side HTTP proxy or DNS resolver on `127.0.0.1` is out of reach for Lima guests too. Confined qemu instances use slirp's DNS forwarder (`192.168.5.3`) instead of Lima's host resolver, which listens on loopback.
-- **Proxy spend.** A guest with root can read its own token and spend through the proxy. That's the same blast radius as handing it an API key, except the token is revocable per VM and logged. Per-VM budgets are planned.
+- **Proxy spend.** A guest with root can read its own token and spend through every provider it's been granted. That's the same blast radius as handing it an API key, except the token is revocable per VM and logged. Per-VM budgets are planned.
 - **Agents can ask for grants, not take them.** `vm_grant` adds a grant only after you approve a prompt that boxery shows and the agent can't answer. It can't ask for `http:` grants with a `--cmd`, files in `~/.ssh`, `~/.gnupg`, `~/.pi` or boxery's own config (the same set `vm_copy --copy-root` refuses), or `env:BOXERY_*` variables such as the HTTP MCP token ([Agents can ask](grants.md#agents-can-ask)). A requested file is stored by its real path, and an apply skips any granted file that has since been re-pointed through a symlink into one of those directories. A client hook or setting that auto-accepts MCP elicitations would also auto-accept these.
 - **HTTP MCP runs on the control plane.** `boxery-mcp --http` runs next to the credentials it protects, so its `vm_copy` refuses `local:` endpoints unless you start it with `--copy-root DIR`, which confines them to `DIR` and still refuses boxery's config, `~/.ssh`, `~/.gnupg` and `~/.pi` ([details](mcp.md#b-streamable-http-on-the-host-over-tailscale)). Anyone with the bearer token can drive every VM on that host; keep it on the tailnet behind `--allow-user`.
 - **Pushed grants are readable.** `env:`/`file:` values (and the ssh-agent while connected) can be used or read by whatever runs in the VM. Grant dev-scoped credentials only, and prefer `http:` grants, whose values stay on the host.

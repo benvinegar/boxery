@@ -40,6 +40,11 @@ if [[ $up =~ ^TCP:([0-9.]+):([0-9]+)$ && ${BASH_REMATCH[1]} != 127.* && $dest ==
 else
 	echo "  - loopback probe skipped (upstream ${up:-unknown}, host ${dest:-unknown})"
 fi
+code=$("$A" run "$VM" bash -c 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer $(cat ~/.boxery/token)" 127.0.0.1:8088/ollama/v1/models')
+[[ $code == 403 ]] && ok "no LLM access without an llm: grant" || bad "ungranted LLM route got $code"
+"$A" grant "$VM" llm:chatgpt llm:ollama >/dev/null
+code=$("$A" run "$VM" bash -c 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer $(cat ~/.boxery/token)" -H "content-type: application/json" -d "{}" 127.0.0.1:8088/anthropic/v1/messages')
+[[ $code == 403 ]] && ok "granting chatgpt/ollama doesn't open anthropic" || bad "ungranted anthropic got $code"
 
 echo "== pi (ChatGPT via host proxy)"
 r=$("$A" run "$VM" bash -c 'cd ~/project && timeout 180 pi -p "Reply with exactly: PI_OK" </dev/null 2>&1 | tail -1')

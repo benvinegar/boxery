@@ -138,6 +138,26 @@ if "$A" grant e1 env:X --readonly >/dev/null 2>&1; then bad "--readonly on env a
 ! grep -q 'github.com' "$gc" && ok "revoke removes the git rewrite" || bad "gitconfig still has github"
 "$A" revoke e1 all >/dev/null 2>&1; "$A" grants e1 apply --quiet >/dev/null 2>&1
 [[ ! -f $routes ]] && ok "revoke all clears the host routes" || bad "routes left: $(cat "$routes")"
+# --- llm: grants: the host proxy refuses every LLM route unless the VM's grants list the provider
+"$A" grant e1 llm:chatgpt llm:ollama >/dev/null 2>&1 && ok "grant llm:chatgpt llm:ollama" || bad "grant llm: $("$A" grant e1 llm:chatgpt 2>&1)"
+[[ $(jq -c '.llm' "$routes" 2>/dev/null) == '["chatgpt","ollama"]' && $(jq -c '.hosts' "$routes") == '{}' ]] && ok "llm grants reach the host's edge file (no http routes needed)" || bad "llm routes: $(cat "$routes" 2>/dev/null)"
+"$A" grants e1 --json | jq -e 'map(select(.kind == "llm") | .provider) == ["chatgpt", "ollama"]' >/dev/null && ok "grants --json lists llm grants" || bad "grants --json llm: $("$A" grants e1 --json)"
+"$A" grants e1 | grep -q 'llm:chatgpt' && "$A" ls | grep '^e1 ' | grep -q 'llm:chatgpt,llm:ollama' && ok "grants and ls show llm grants" || bad "llm in grants/ls"
+for badspec in llm: llm:gemini llm:ChatGPT "llm:chatgpt x"; do
+	if "$A" grant e1 "$badspec" >/dev/null 2>&1; then bad "accepted $badspec"; else ok "rejected $badspec"; fi
+done
+if "$A" grant e1 llm:openai --cmd 'echo k' >/dev/null 2>&1; then bad "llm grant with --cmd accepted"; else ok "llm grants take no --cmd (credential is on the host)"; fi
+"$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["chatgpt","ollama"]' && $(jq -r '.hosts | keys | join(",")' "$routes") == api.example.com ]] && ok "llm and http grants share the edge file" || bad "mixed: $(cat "$routes")"
+"$A" revoke e1 llm:chatgpt >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["ollama"]' ]] && ok "revoke llm:chatgpt" || bad "after revoke: $(cat "$routes")"
+"$A" revoke e1 http:api.example.com >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["ollama"]' && $(jq -c '.hosts' "$routes") == '{}' ]] && ok "revoking the last http grant keeps llm grants" || bad "after http revoke: $(cat "$routes" 2>/dev/null)"
+"$A" revoke e1 llm:ollama >/dev/null 2>&1
+[[ ! -f $routes ]] && ok "revoking the last llm grant clears the host file (no LLM access)" || bad "llm file left: $(cat "$routes")"
+"$A" new e2 --grant llm:anthropic >/dev/null 2>&1; [[ $(jq -c '.llm' "$BOXERY_CONF/edge/e2.json" 2>/dev/null) == '["anthropic"]' ]] && ok "new --grant llm:anthropic" || bad "new --grant llm: $(cat "$BOXERY_CONF/edge/e2.json" 2>/dev/null)"
+"$A" rm e2 >/dev/null 2>&1; [[ ! -f $BOXERY_CONF/edge/e2.json ]] && ok "rm clears llm grants" || bad "llm grants survived rm"
+
 "$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
 "$A" rm e1 >/dev/null 2>&1; [[ ! -f $routes ]] && ok "rm deletes edge routes" || bad "routes survived rm"
 
