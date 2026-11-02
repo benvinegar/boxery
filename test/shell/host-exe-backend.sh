@@ -322,7 +322,7 @@ FAIL_LS=1 expect_fail "ls fails when exe.dev is unreachable" "$H" ls --json
 FAIL_LS=1 expect_fail "images fails when exe.dev is unreachable" "$H" images
 
 # --- crash recovery hooks (sourced; README "Crash recovery contract"), idempotent
-rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }; PROXY_PORT=9999; ROOT=$ROOT
+rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; PROXY_PORT=9999; ROOT=$ROOT
 	# shellcheck source=/dev/null
 	. "$ROOT/host/backends/exe.sh"; "$@" ); }
 mkdir -p "$E/half" "$S/bxtest-v0000aa-half" "$S/bxtest-v0000bb-half"; echo 77 >"$E/half/slot"; echo running >"$S/bxtest-v0000aa-half/status"; echo running >"$S/bxtest-v0000bb-half/status"
@@ -352,7 +352,7 @@ kill -9 "$cli" 2>/dev/null; wait "$cli" 2>/dev/null || true
 pgrep -f 'sleep 60' >/dev/null && { bad "abandoned worker still running"; pkill -f 'sleep 60'; } || ok "abandoned worker group stopped"
 
 # --- helpers (sourced)
-die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }   # helpers that die run in ( subshells )
+die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
 PROXY_PORT=9999
 # shellcheck source=/dev/null
 . "$ROOT/host/backends/exe.sh"

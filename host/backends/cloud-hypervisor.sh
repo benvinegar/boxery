@@ -115,12 +115,12 @@ ch_net_down() { ch_root ip link del "$CH_TAP$1" 2>/dev/null || true; }
 # Lowest free slot (1..250); slot 0 is the base-image builder. Serialized: concurrent `new`s race here.
 ch_alloc_slot() { # NAME → slot (written to the VM dir)
 	local lock=$CH_DIR/.slot.lock i s used
-	for i in $(seq 300); do take_lock "$lock" && break; sleep 0.1; [[ $i == 300 ]] && die "slot lock held ($lock)"; done
+	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "slot lock held ($lock)"; done
 	used=" $(cat "$CH_DIR"/vms/*/slot 2>/dev/null | tr '\n' ' ') "
 	for ((s = 1; s <= CH_MAX_SLOT; s++)); do [[ $used == *" $s "* ]] || break; done
-	if ((s > CH_MAX_SLOT)); then rm -f "$lock"; die "no free network slots (max $CH_MAX_SLOT VMs)"; fi
+	if ((s > CH_MAX_SLOT)); then rmdir "$lock"; die "no free network slots (max $CH_MAX_SLOT VMs)"; fi
 	echo "$s" >"$(ch_dir "$1")/slot"
-	rm -f "$lock"
+	rmdir "$lock"
 	echo "$s"
 }
 
@@ -390,8 +390,7 @@ backend_cleanup_new() { # NAME: remove a VM whose create was interrupted, whatev
 	systemctl --user daemon-reload || die "systemctl --user daemon-reload failed during recovery"
 	[[ -z $slot ]] || ch_net_down "$slot"
 	rm -rf "$d" || die "could not remove $d"
-	# held only for milliseconds; a leftover means its holder died (a directory: boxery 0.9.0 and older)
-	rm -f "$CH_DIR/.slot.lock" 2>/dev/null || rmdir "$CH_DIR/.slot.lock" 2>/dev/null || true
+	rmdir "$CH_DIR/.slot.lock" 2>/dev/null || true   # held only for milliseconds; a leftover means its holder died
 }
 backend_cleanup_image() { rm -f "$(ch_image "$1")" "$(ch_image "$1").part" || die "could not remove image $1"; }
 backend_recover_capture() { # NAME IMAGE ORIGINAL_STATE: a capture died, maybe with NAME paused

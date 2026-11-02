@@ -58,9 +58,6 @@ host_key_opts() { # NAME
 die() { echo "boxery-host: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
-# Create lock file PATH or fail if it exists: bash's noclobber open is O_EXCL. Not `mkdir`: uutils
-# coreutils (Ubuntu 26.04's mkdir) lets several racing `mkdir DIR` all succeed. Release with rm -f.
-take_lock() { (set -C; : >"$1") 2>/dev/null; }
 vm_ssh_cmd() { # NAME HOST PORT CMD…   as agent in VM NAME at HOST:PORT
 	local n=$1 h=$2 p=$3 k=() l; shift 3
 	while IFS= read -r l; do k+=("$l"); done < <(host_key_opts "$n")
