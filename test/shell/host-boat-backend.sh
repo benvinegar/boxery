@@ -186,7 +186,7 @@ jq -se 'map(select(.name == "bxtest-build")) | last | .type == "default" and .tt
 [[ $(cat "$S/saved/bxtest-base/status") == ready && -n $bb && ! -d $S/sb/$bb ]] && ok "builder saved as the base, then deleted" || bad "base: $(ls "$S/saved") $(ls "$S/sb")"
 grep -F 'curl POST /sandboxes/'"$bb"'/sshkey {"key":"ssh-ed25519 ' "$CALLS" >/dev/null && ok "the host's admin key is authorized through the API" || bad "sshkey"
 [[ $(grep -c "curl POST /sandboxes/$bb/sshkey" "$CALLS") -ge 2 ]] && ok "the build poller re-pins a builder whose host key changed" || bad "no re-pin: $(grep -c "sshkey" "$CALLS")"
-die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }
+die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }
 PROXY_PORT=9999
 cp "$S/build-script" "$tmp/build.sh"   # the last build's script, as the builder received it
 bash -n "$tmp/build.sh" && ok "build script parses" || bad "build script syntax"
@@ -323,7 +323,7 @@ FAIL_API=1 expect_fail "images fails when boat is unreachable" "$H" images
 [[ $(IGNORE_NAME_FILTER=1 "$H" ls --json | jq -r 'map(.name) | sort | join(" ")') == "v3 v4 v5" ]] && ok "only this host's names count, whatever the API filter returns" || bad "unfiltered: $(IGNORE_NAME_FILTER=1 "$H" ls --json)"
 
 # --- crash recovery hooks (sourced; README "Crash recovery contract"), idempotent
-rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; PROXY_PORT=9999; ROOT=$ROOT
+rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }; PROXY_PORT=9999; ROOT=$ROOT
 	# shellcheck source=/dev/null
 	. "$ROOT/host/backends/boat.sh"; "$@" ); }
 mk() { mkdir "$S/sb/$1"; echo ready >"$S/sb/$1/state"; echo default >"$S/sb/$1/type"; echo "bxtest-vm-$2" >"$S/sb/$1/name"; echo '{}' >"$S/sb/$1/labels"; }

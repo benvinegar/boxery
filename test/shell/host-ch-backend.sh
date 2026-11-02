@@ -159,7 +159,7 @@ for i in 1 2 3 4 5 6; do "$H" new "p$i" >/dev/null 2>&1 & done; wait
 FAIL_SYSTEMD=1 expect_fail "ls fails when systemctl --user is unreachable" "$H" ls --json
 
 # --- crash recovery hooks (sourced; README "Crash recovery contract"), idempotent
-rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; PROXY_PORT=9999
+rec() { ( die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }; PROXY_PORT=9999
 	# shellcheck source=/dev/null
 	. "$ROOT/host/backends/cloud-hypervisor.sh"; "$@" ); }
 mkdir -p "$V/half"; echo 77 >"$V/half/slot"; touch "$HOME/.config/systemd/user/boxery-ch-half.service" "$UNITS/boxery-ch-half.service"
@@ -187,7 +187,7 @@ kill -9 "$cli" 2>/dev/null; wait "$cli" 2>/dev/null || true   # 137
 pgrep -f 'sleep 60' >/dev/null && { bad "abandoned worker still running"; pkill -f 'sleep 60'; } || ok "abandoned worker group stopped"
 
 # --- helpers (sourced)
-die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
+die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }; take_lock() { (set -C; : >"$1") 2>/dev/null; }   # helpers that die run in ( subshells )
 # shellcheck source=/dev/null
 . "$ROOT/host/backends/cloud-hypervisor.sh"
 [[ $(ch_mac 300) == 52:54:00:77:01:2c ]] && ok "MAC encodes the slot" || bad "mac: $(ch_mac 300)"

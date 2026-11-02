@@ -26,19 +26,20 @@ remote_port() { echo $((REMOTE_PORT_BASE + $(cat "$(remote_vm_dir "$1")/slot")))
 # Lowest free slot (1..REMOTE_MAX_SLOT), written to NAME's dir. Serialized: concurrent `new`s race here.
 remote_alloc_slot() { # NAME → slot
 	local lock=$REMOTE_DIR/.slot.lock i s used
-	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "slot lock held ($lock)"; done
+	for i in $(seq 300); do take_lock "$lock" && break; sleep 0.1; [[ $i == 300 ]] && die "slot lock held ($lock)"; done
 	used=" $(cat "$REMOTE_DIR"/vms/*/slot 2>/dev/null | tr '\n' ' ') "
 	for ((s = 1; s <= REMOTE_MAX_SLOT; s++)); do [[ $used == *" $s "* ]] || break; done
-	if ((s > REMOTE_MAX_SLOT)); then rmdir "$lock"; die "no free tunnel ports (max $REMOTE_MAX_SLOT VMs)"; fi
+	if ((s > REMOTE_MAX_SLOT)); then rm -f "$lock"; die "no free tunnel ports (max $REMOTE_MAX_SLOT VMs)"; fi
 	echo "$s" >"$(remote_vm_dir "$1")/slot"
-	rmdir "$lock"
+	rm -f "$lock"
 	echo "$s"
 }
 # The slot lock is held for milliseconds; one older than a minute belongs to a dead holder. A fresh one
 # may be a live `new`'s: leave it. (Crash recovery, backend_cleanup_new.)
 remote_clear_stale_slot_lock() {
 	local lock=$REMOTE_DIR/.slot.lock
-	if [[ -d $lock && -n $(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null) ]]; then rmdir "$lock" 2>/dev/null || true; fi
+	# (a directory: the mkdir lock of boxery 0.9.0 and older)
+	if [[ -e $lock && -n $(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null) ]]; then rm -f "$lock" 2>/dev/null || rmdir "$lock" 2>/dev/null || true; fi
 }
 
 # ---------------------------------------------------------------- tunnels (supervised ssh)
