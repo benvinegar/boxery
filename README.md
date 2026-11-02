@@ -114,6 +114,21 @@ Agents reach the **boxery host**, a machine you run, over ssh. The host holds yo
   </picture>
 </p>
 
+## Documentation
+
+| | |
+|---|---|
+| [Install](docs/install.md) | Hosts on every backend, laptop setup, LLM providers |
+| [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
+| [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
+| [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
+| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
+| [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
+| [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
+| [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
+| [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
+| [Architecture](ARCHITECTURE.md) | Design, roadmap, and failure modes |
+
 ## Status
 
 The exe.dev, boat.dev and Cloud Hypervisor backends are experimental. See the [roadmap](ARCHITECTURE.md#roadmap).
