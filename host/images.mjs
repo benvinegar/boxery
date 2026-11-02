@@ -4,6 +4,7 @@
 //   fork   = capture SRC → new VM(s) from it    pool   = reset to NAME@boxery-clean
 // Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
 import { installToken } from "./seed.mjs";
+import { assertUnreferenced } from "./templates.mjs";
 import { fail, log, POOL_SNAP, stamp, validName, validSnap } from "./util.mjs";
 
 /** Put VM NAME back to its image NAME@LABEL. */
@@ -51,6 +52,7 @@ export async function deleteSnapshot(rt, name, label) {
 
 export async function snapRm(rt, [name, label]) {
 	validName(name); validSnap(label);
+	assertUnreferenced(rt, (image) => image === `${name}@${label}`);
 	if (label === POOL_SNAP && rt.poolRow(name)) fail(`${name}@${label} is the pool's clean state`);
 	if (!(await snapsLines(rt, name)).some(([l]) => l === label)) fail(`no snapshot ${name}@${label}`);
 	const action = rt.intent("snapshot-remove", name, label);

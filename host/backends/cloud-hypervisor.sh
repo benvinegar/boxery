@@ -30,7 +30,18 @@ CH_DIR=${BOXERY_CH_DIR:-$HOME/.local/share/boxery/ch}
 CH_NET=${BOXERY_CH_NET:-10.77}                 # first two octets; slot S uses $CH_NET.S.0/24
 CH_DNS=${BOXERY_CH_DNS:-1.1.1.1 9.9.9.9}       # guests can't reach private resolvers (that's the point)
 CH_FIRMWARE=${BOXERY_CH_FIRMWARE:-$CH_DIR/firmware}
-CH_TAP=bxch                                    # TAP name prefix (≤ 15 chars total)
+CH_FAST=${BOXERY_CH_FAST:-0}                  # opt-in, clean RAM templates only
+CH_TEMPLATES=${BOXERY_CH_TEMPLATES:-$CH_DIR/templates}
+CH_NET_MODE=${BOXERY_CH_NET_MODE:-tap}        # passt explicitly selects a rootless user network
+# shellcheck disable=SC2153 # ROOT is supplied by host/backend.sh
+CH_RUNTIME=$ROOT/host/fast/runtime.py
+export BOXERY_CH_FAST=$CH_FAST BOXERY_CH_TEMPLATES=$CH_TEMPLATES BOXERY_CH_NET_MODE=$CH_NET_MODE
+export BOXERY_CH_PORT_BASE=${BOXERY_CH_PORT_BASE:-22000} BOXERY_CH_FIRMWARE=$CH_FIRMWARE
+CH_TAP=bxch                                    # legacy TAP prefix; new fast profiles are namespaced
+if [[ $CH_FAST == 1 || $CH_NET_MODE == passt ]]; then CH_TAP="bx$(printf %s "$CH_DIR" | sha256sum | cut -c1-8)"; fi
+CH_NFT_TABLE=boxery_ch
+[[ $CH_TAP == bxch ]] || CH_NFT_TABLE="boxery_ch_$CH_TAP"
+export BOXERY_CH_TAP_PREFIX=$CH_TAP
 CH_BASE=$CH_DIR/base.qcow2
 CH_STOCK=$CH_DIR/stock.qcow2   # the plain cloud image headless VMs boot (no build-base)
 ch_arch() { case $(uname -m) in aarch64 | arm64) echo arm64 ;; *) echo amd64 ;; esac; }
@@ -43,7 +54,14 @@ read -r -a CH_SUDO <<<"${BOXERY_CH_SUDO-sudo -n}"
 export BOXERY_CH_DIR=$CH_DIR BOXERY_CH_NET=$CH_NET BOXERY_CH_DNS=$CH_DNS BOXERY_CH_FIRMWARE=$CH_FIRMWARE BOXERY_CH_SUDO="${CH_SUDO[*]-}"
 
 ch_dir() { echo "$CH_DIR/vms/$1"; }
-ch_unit() { echo "boxery-ch-$1.service"; }
+ch_unit() {
+	local d; d=$(ch_dir "$1")
+	if [[ -f $d/unit-name ]]; then read -r REPLY <"$d/unit-name"; echo "$REPLY"
+	elif [[ -f $HOME/.config/systemd/user/boxery-ch-$1.service ]] && grep -Fxq "ExecStart=$d/launch.sh" "$HOME/.config/systemd/user/boxery-ch-$1.service"; then echo "boxery-ch-$1.service"
+	elif [[ $CH_FAST == 1 || $CH_NET_MODE == passt || -f $d/runtime.json ]]; then
+		printf 'boxery-ch-%s-%s.service\n' "$(printf %s "$CH_DIR" | cksum | awk '{print $1}')" "$1"
+	else echo "boxery-ch-$1.service"; fi
+}
 ch_slot() { cat "$(ch_dir "$1")/slot"; }
 ch_ip() { echo "$CH_NET.$(ch_slot "$1").2"; }
 ch_mac() { printf '52:54:00:77:%02x:%02x' $(($1 / 256)) $(($1 % 256)); }
@@ -53,14 +71,21 @@ ch_active() { systemctl --user is-active --quiet "$(ch_unit "$1")"; }
 ch_copy() { cp --reflink=auto --sparse=always "$1" "$2"; }   # instant on XFS/btrfs, a full copy elsewhere
 
 backend_check() {
-	need cloud-hypervisor; need ch-remote; need qemu-img; need cloud-localds; need ip; need nft; need socat; need curl; need jq
+	need cloud-hypervisor; need ch-remote; need qemu-img; need cloud-localds; need ip; need nft; need socat; need curl; need jq; need flock
 	local v; v=$(cloud-hypervisor --version 2>/dev/null | sed -n 's/.*v\([0-9][0-9]*\)\..*/\1/p')
 	[[ -n $v ]] && ((v >= CH_MIN_VERSION)) || die "need cloud-hypervisor v$CH_MIN_VERSION or newer (found: $(cloud-hypervisor --version 2>&1 | head -1)); older versions can't open qcow2 overlays or corrupt them in snapshots"
 	[[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm not accessible (add yourself to the kvm group)"
 	[[ $CH_DIR != *[[:space:],=]* ]] || die "BOXERY_CH_DIR must not contain spaces, commas or '=' (cloud-hypervisor option syntax)"
 	[[ $CH_NET =~ ^[0-9]{1,3}\.[0-9]{1,3}$ ]] || die "BOXERY_CH_NET must be two octets, e.g. 10.77"
-	[[ -f $CH_FIRMWARE ]] || die "no firmware at $CH_FIRMWARE; download hypervisor-fw (rust-hypervisor-firmware) or CLOUDHV.fd from the cloud-hypervisor GitHub releases and set BOXERY_CH_FIRMWARE"
-	if ((EUID != 0)); then
+	[[ -f $CH_FIRMWARE || -f ${BOXERY_CH_KERNEL:-} && -f ${BOXERY_CH_INITRAMFS:-} ]] || die "configure BOXERY_CH_FIRMWARE or BOXERY_CH_KERNEL + BOXERY_CH_INITRAMFS for cold boot/fallback"
+	[[ $CH_FAST == 0 || $CH_FAST == 1 ]] || die "BOXERY_CH_FAST must be 0 or 1"
+	[[ $CH_NET_MODE == tap || $CH_NET_MODE == passt ]] || die "BOXERY_CH_NET_MODE must be tap or passt"
+	if [[ $CH_FAST == 1 || $CH_NET_MODE == passt ]]; then need python3; fi
+	if [[ $CH_NET_MODE == passt ]]; then
+		log "passt is opt-in rootless networking; TAP's private/LAN egress filtering does not apply"
+		need "${BOXERY_CH_PASST:-passt}"
+		[[ ${BOXERY_CH_RESTORE_MODE:-copy} == copy ]] || die "passt requires eager RAM restore (BOXERY_CH_RESTORE_MODE=copy)"
+	elif ((EUID != 0)); then
 		getcap "$(command -v cloud-hypervisor)" 2>/dev/null | grep -q cap_net_admin ||
 			die "cloud-hypervisor needs cap_net_admin to open TAPs: sudo setcap cap_net_admin+ep $(command -v cloud-hypervisor)"
 		((${#CH_SUDO[@]} == 0)) || ch_root true || die "'${CH_SUDO[*]}' doesn't work; set up passwordless sudo or BOXERY_CH_SUDO"
@@ -71,7 +96,7 @@ backend_check() {
 # `nft flush ruleset`, and BOXERY_CH_NET may have changed.
 ch_nft_rules() {
 	cat <<-EOF
-		table inet boxery_ch {
+		table inet $CH_NFT_TABLE {
 		  set blocked4 {
 		    type ipv4_addr; flags interval
 		    elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 }
@@ -100,28 +125,49 @@ ch_nft_rules() {
 ch_firewall() {
 	ch_root sysctl -qw net.ipv4.ip_forward=1
 	# "table …; delete table …" first: one transaction that replaces the table whether or not it exists.
-	{ echo "table inet boxery_ch"; echo "delete table inet boxery_ch"; ch_nft_rules; } | ch_root nft -f - || die "loading nftables rules failed"
+	{ echo "table inet $CH_NFT_TABLE"; echo "delete table inet $CH_NFT_TABLE"; ch_nft_rules; } | ch_root nft -f - || die "loading nftables rules failed"
 }
 
-ch_net_up() { # SLOT
-	local tap=$CH_TAP$1
+ch_net_up() { # SLOT [persisted network mode]
+	[[ ${2:-$CH_NET_MODE} != passt ]] || return 0
+	local tap=${3:-$CH_TAP$1}
+	[[ $1 =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( $1 <= CH_MAX_SLOT )) || die "invalid network slot"
+	[[ $tap == "bxch$1" || $tap =~ ^bx[a-f0-9]{8}$1$ ]] || die "invalid managed TAP name"
+	local CH_TAP=${tap%"$1"} CH_NFT_TABLE=boxery_ch
+	[[ $CH_TAP == bxch ]] || CH_NFT_TABLE="boxery_ch_$CH_TAP"
 	ch_firewall
 	ch_root ip link show "$tap" >/dev/null 2>&1 || ch_root ip tuntap add dev "$tap" mode tap user "$(id -un)" || die "creating $tap failed"
 	ch_root ip addr replace "$CH_NET.$1.1/24" dev "$tap"
 	ch_root ip link set "$tap" up
 }
-ch_net_down() { ch_root ip link del "$CH_TAP$1" 2>/dev/null || true; }
+ch_net_down() {
+	[[ ${2:-$CH_NET_MODE} != passt ]] || return 0
+	local tap=${3:-$CH_TAP$1}
+	[[ $1 =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( $1 <= CH_MAX_SLOT )) || die "invalid network slot during cleanup"
+	[[ $tap == "bxch$1" || $tap =~ ^bx[a-f0-9]{8}$1$ ]] || die "invalid managed TAP name during cleanup"
+	ch_root ip link del "$tap" 2>/dev/null || true
+}
+ch_vm_tap() {
+	local d; d=$(ch_dir "$1")
+	if [[ -f $d/tap-name ]]; then read -r REPLY <"$d/tap-name"; echo "$REPLY"
+	elif [[ -f $d/launch.sh && ! -f $d/runtime.json ]]; then echo "bxch$(ch_slot "$1")"
+	else echo "$CH_TAP$(ch_slot "$1")"; fi
+}
+ch_vm_net_mode() { local d; d=$(ch_dir "$1"); if [[ -f $d/runtime.json ]]; then jq -r '.network.mode' "$d/runtime.json"; else echo "$CH_NET_MODE"; fi; }
 
 # Lowest free slot (1..250); slot 0 is the base-image builder. Serialized: concurrent `new`s race here.
-ch_alloc_slot() { # NAME → slot (written to the VM dir)
-	local lock=$CH_DIR/.slot.lock i s used
-	for i in $(seq 300); do mkdir "$lock" 2>/dev/null && break; sleep 0.1; [[ $i == 300 ]] && die "slot lock held ($lock)"; done
-	used=" $(cat "$CH_DIR"/vms/*/slot 2>/dev/null | tr '\n' ' ') "
-	for ((s = 1; s <= CH_MAX_SLOT; s++)); do [[ $used == *" $s "* ]] || break; done
-	if ((s > CH_MAX_SLOT)); then rmdir "$lock"; die "no free network slots (max $CH_MAX_SLOT VMs)"; fi
-	echo "$s" >"$(ch_dir "$1")/slot"
-	rmdir "$lock"
-	echo "$s"
+ch_alloc_slot() { # NAME → slot (written before releasing the kernel-owned lock)
+	# Never unlink this lock file: a recovery racing another allocator must not drop its lock.
+	(
+		flock -w 30 9 || die "could not lock the slot allocator"
+		local s used
+		used=" $(cat "$CH_DIR"/vms/*/slot 2>/dev/null | tr '\n' ' ' || true) "
+		for ((s = 1; s <= CH_MAX_SLOT; s++)); do [[ $used == *" $s "* ]] || break; done
+		((s <= CH_MAX_SLOT)) || die "no free network slots (max $CH_MAX_SLOT VMs)"
+		printf '%s\n' "$s" >"$(ch_dir "$1")/slot.new" || die "could not persist the allocated slot"
+		mv "$(ch_dir "$1")/slot.new" "$(ch_dir "$1")/slot" || die "could not publish the allocated slot"
+		echo "$s"
+	) 9>"$CH_DIR/.slots.lock"
 }
 
 ch_seed() { # OUT_ISO USERDATA INSTANCE_ID HOSTNAME SLOT
@@ -147,7 +193,10 @@ ch_seed() { # OUT_ISO USERDATA INSTANCE_ID HOSTNAME SLOT
 }
 
 ch_args() { # DIR SLOT CPUS MEM_MIB → cloud-hypervisor arguments for a cold boot, one per line
-	printf '%s\n' --api-socket "path=$1/api.sock" --firmware "$CH_FIRMWARE" \
+	printf '%s\n' --api-socket "path=$1/api.sock"
+	if [[ -f $CH_FIRMWARE ]]; then printf '%s\n' --firmware "$CH_FIRMWARE"
+	else printf '%s\n' --kernel "$BOXERY_CH_KERNEL" --initramfs "$BOXERY_CH_INITRAMFS" --cmdline 'root=LABEL=cloudimg-rootfs ro console=ttyS0 quiet'; fi
+	printf '%s\n' \
 		--cpus "boot=$3" --memory "size=$4M" \
 		--disk "path=$1/disk.qcow2,image_type=qcow2,backing_files=on" "path=$1/seed.iso,readonly=on,image_type=raw" \
 		--net "tap=$CH_TAP$2,mac=$(ch_mac "$2")" \
@@ -163,11 +212,16 @@ ch_write_launch() { # NAME SLOT CPUS MEM_MIB
 		echo 'set -euo pipefail'
 		printf 'cd %q\n' "$d"
 		echo 'rm -f api.sock vsock.sock'
-		printf 'exec %q' "$(command -v cloud-hypervisor)"
-		ch_args "$d" "$2" "$3" "$4" | while IFS= read -r a; do printf ' %q' "$a"; done
+		if [[ -f $d/runtime.json ]]; then
+			printf 'exec %q %q run %q' "$(command -v python3)" "$CH_RUNTIME" "$d"
+		else
+			printf 'exec %q' "$(command -v cloud-hypervisor)"
+			ch_args "$d" "$2" "$3" "$4" | while IFS= read -r a; do printf ' %q' "$a"; done
+		fi
 		echo
 	} >"$d/launch.sh"
 	chmod 755 "$d/launch.sh"
+	ch_unit "$1" >"$d/unit-name.new"; mv "$d/unit-name.new" "$d/unit-name"
 	mkdir -p "$HOME/.config/systemd/user"
 	cat >"$HOME/.config/systemd/user/$(ch_unit "$1")" <<-EOF
 		[Unit]
@@ -182,12 +236,15 @@ ch_write_launch() { # NAME SLOT CPUS MEM_MIB
 
 backend_init() {
 	mkdir -p "$CH_DIR/vms" "$CH_DIR/images"
-	ch_firewall
+	chmod 700 "$CH_DIR" "$CH_DIR/vms" "$CH_DIR/images"
+	[[ $CH_NET_MODE == passt ]] || ch_firewall
 }
 
 backend_proxy_services() {
 	mkdir -p "$CH_DIR"
-	cat >"$HOME/.config/systemd/user/boxery-ch-vsock.service" <<-EOF
+	local unit=boxery-ch-vsock
+	if [[ $CH_FAST == 1 || $CH_NET_MODE == passt ]]; then unit="boxery-ch-$(printf %s "$CH_DIR" | cksum | awk '{print $1}')-vsock"; fi
+	cat >"$HOME/.config/systemd/user/$unit.service" <<-EOF
 		[Unit]
 		Description=boxery: LLM proxy for cloud-hypervisor guests (hybrid vsock socket)
 		After=boxery-proxy.service
@@ -198,7 +255,7 @@ backend_proxy_services() {
 		[Install]
 		WantedBy=default.target
 	EOF
-	echo boxery-ch-vsock.service
+	echo "$unit.service"
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 
@@ -240,7 +297,12 @@ backend_build_base() {
 	ln -s "$part" "$b/disk.qcow2"
 	local args=() a
 	while IFS= read -r a; do args+=("$a"); done < <(ch_args "$b" 0 8 8192)
-	cloud-hypervisor "${args[@]}" >"$b/vmm.log" 2>&1 &
+	if [[ $CH_NET_MODE == passt ]]; then
+		python3 "$CH_RUNTIME" configure "$b" boxery-base-build 8 8192 20 0 "$BASE_USERDATA"
+		python3 "$CH_RUNTIME" run "$b" >"$b/vmm.log" 2>&1 &
+	else
+		cloud-hypervisor "${args[@]}" >"$b/vmm.log" 2>&1 &
+	fi
 	local pid=$! t=0
 	while kill -0 "$pid" 2>/dev/null; do   # base-user-data.yaml powers off when done; CH then exits
 		sleep 10; t=$((t + 10))
@@ -261,23 +323,48 @@ backend_build_base() {
 }
 
 backend_has_base() { [[ -f $CH_BASE ]]; }
+backend_template_status() {
+	[[ $1 != stock ]] || { echo on-demand; return; }
+	[[ $1 == base ]] || die "unknown template source"
+	if [[ -f $CH_BASE && -r $CH_BASE ]]; then echo ready; else echo missing; fi
+}
 backend_exists() { [[ -d $(ch_dir "$1") ]]; }
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d slot root=$CH_BASE; d=$(ch_dir "$1")
-	if [[ $from == stock ]]; then ch_stock_ensure; root=$CH_STOCK from=""
+	if [[ $from == stock ]]; then root=$CH_STOCK from=""
 	else [[ -z $from || -f $(ch_image "$from") ]] || die "no such image: $from"; fi
 	mkdir -p "$CH_DIR/vms"
-	mkdir "$d" || die "$name already exists"
+	mkdir -m 700 "$d" || die "$name already exists"
 	slot=$(ch_alloc_slot "$name")   # new slot → new TAP, MAC and IP; the seed has a new instance-id
+	printf '%s\n' "$CH_TAP$slot" >"$d/tap-name.new"; mv "$d/tap-name.new" "$d/tap-name"
 	log "creating $name (${cpus} vCPU, ${mem} MiB, ${disk} GiB overlay on ${from:-$root}, $CH_NET.$slot.2)"
-	if [[ -n $from ]]; then
+	local template="" image_meta="" kind=desktop rc=0
+	[[ ${6:-} != stock ]] || kind=headless
+	if [[ $CH_FAST == 1 && -z $from && ${7:-} != cold ]]; then
+		template=$(python3 "$CH_RUNTIME" match "$CH_TEMPLATES" "$kind" "$cpus" "$mem" "$disk" "$CH_NET_MODE") || rc=$?
+		((rc == 0 || rc == 3)) || die "invalid fast template (refusing cold fallback)"
+		[[ -n $template ]] || log "no matching fast template; cold boot fallback"
+	fi
+	[[ -n $template || ${6:-} != stock ]] || ch_stock_ensure
+	if [[ -n $template ]]; then
+		python3 "$CH_RUNTIME" configure "$d" "$name" "$cpus" "$mem" "$disk" "$slot" "$userdata" --template "$template"
+		log "restoring clean RAM template for $name"
+	elif [[ -n $from ]]; then
 		ch_copy "$(ch_image "$from")" "$d/disk.qcow2" || die "copying $from failed"
+		[[ ! -f $(ch_image "$from").fast.json ]] || image_meta="$(ch_image "$from").fast.json"
 		qemu-img resize -q "$d/disk.qcow2" "${disk}G" 2>/dev/null || true   # grow only; a bigger image keeps its size
 	else
 		qemu-img create -q -f qcow2 -F qcow2 -b "$root" "$d/disk.qcow2" "${disk}G" || die "qemu-img create failed"
 	fi
-	ch_seed "$d/seed.iso" "$userdata" "$name-$(date +%s)" "$name" "$slot"
+	if [[ -z $template ]]; then
+		if [[ -n $image_meta ]]; then
+			python3 "$CH_RUNTIME" configure "$d" "$name" "$cpus" "$mem" "$disk" "$slot" "$userdata" --image-meta "$image_meta"
+		else
+			ch_seed "$d/seed.iso" "$userdata" "$name-$(date +%s)" "$name" "$slot"
+			if [[ $CH_NET_MODE == passt ]]; then python3 "$CH_RUNTIME" configure "$d" "$name" "$cpus" "$mem" "$disk" "$slot" "$userdata"; fi
+		fi
+	fi
 	ln -sfn "$CH_DIR/proxy.sock" "$d/vsock.sock_$PROXY_PORT"
 	ch_write_launch "$name" "$slot" "$cpus" "$mem"
 	backend_start "$name"
@@ -290,7 +377,7 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USE
 	for d in "$CH_DIR"/vms/*/; do
 		[[ -f $d/slot ]] || continue
 		n=$(basename "$d") st="shut off" ssh="" size="" used="" disk=${d%/}/disk.qcow2
-		if ch_active "$n"; then st=running ssh="$(ch_ip "$n"):22"; fi
+		if ch_active "$n"; then st=running ssh="$(ch_endpoint "$n" | tr ' ' ':')"; fi
 		if [[ -f $disk ]]; then
 			# virtual size from the qcow2 header (-U: the running VMM may hold the image); used = the
 			# overlay's allocated blocks (its backing base/stock image is shared and not counted)
@@ -302,17 +389,26 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USE
 	done
 }
 
+ch_endpoint() {
+	local d; d=$(ch_dir "$1")
+	if [[ -f $d/runtime.json ]] && [[ $(jq -r '.network.mode' "$d/runtime.json") == passt ]]; then
+		printf '127.0.0.1 %s\n' "$(jq -r '.network.port' "$d/runtime.json")"
+	else echo "$(ch_ip "$1") 22"; fi
+}
 backend_ssh_endpoint() {
 	backend_exists "$1" || die "no such vm: $1"
 	ch_active "$1" || die "$1 is not running"
-	echo "$(ch_ip "$1") 22"
+	ch_endpoint "$1"
 }
 # The VM is booted. The API answers before boot (and briefly when boot then fails), so check the state.
 # ssh readiness is the dispatcher's wait_ssh.
 backend_wait_endpoint() {
 	local i
 	for i in $(seq 120); do
-		ch_remote "$1" info 2>/dev/null | jq -e '.state == "Running"' >/dev/null 2>&1 && { echo "$(ch_ip "$1") 22"; return; }
+		if ch_remote "$1" info 2>/dev/null | jq -e '.state == "Running"' >/dev/null 2>&1; then
+			local d; d=$(ch_dir "$1")
+			if [[ ! -f $d/fast.json || -f $d/ready ]]; then ch_endpoint "$1"; return; fi
+		fi
 		ch_active "$1" || ((i < 4)) || die "$1's VMM exited (journalctl --user -u $(ch_unit "$1"))"
 		sleep 0.5
 	done
@@ -321,7 +417,7 @@ backend_wait_endpoint() {
 
 backend_start() {
 	backend_exists "$1" || die "no such vm: $1"
-	ch_net_up "$(ch_slot "$1")"
+	ch_net_up "$(ch_slot "$1")" "$(ch_vm_net_mode "$1")" "$(ch_vm_tap "$1")"
 	ln -sfn "$CH_DIR/proxy.sock" "$(ch_dir "$1")/vsock.sock_$PROXY_PORT"
 	systemctl --user start "$(ch_unit "$1")" || die "starting $1 failed (journalctl --user -u $(ch_unit "$1"))"
 }
@@ -330,11 +426,11 @@ ch_kill() { systemctl --user stop "$(ch_unit "$1")" 2>/dev/null || true; }
 
 backend_rm() {
 	backend_exists "$1" || die "no such vm: $1"
-	local slot; slot=$(ch_slot "$1" 2>/dev/null) || slot=""
+	local slot mode tap=""; slot=$(ch_slot "$1" 2>/dev/null) || slot=""; mode=$(ch_vm_net_mode "$1"); [[ -z $slot ]] || tap=$(ch_vm_tap "$1")
 	ch_kill "$1"
 	rm -f "$HOME/.config/systemd/user/$(ch_unit "$1")"
 	systemctl --user daemon-reload 2>/dev/null || true
-	[[ -z $slot ]] || ch_net_down "$slot"
+	[[ -z $slot ]] || ch_net_down "$slot" "$mode" "$tap"
 	rm -rf "$(ch_dir "$1")"
 }
 
@@ -347,7 +443,8 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 	[[ ! -e $img ]] || die "image $2 exists"
 	mkdir -p "$CH_DIR/images"
 	if ch_active "$1"; then
-		vm_ssh_cmd "$(ch_ip "$1")" 22 sync >/dev/null 2>&1 || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
+		local ep; ep=$(ch_endpoint "$1")
+		vm_ssh_cmd "${ep% *}" "${ep#* }" sync >/dev/null 2>&1 || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
 		ch_remote "$1" pause >/dev/null || die "pausing $1 failed"
 		if ! ch_copy "$d/disk.qcow2" "$img.part"; then
 			ch_remote "$1" resume >/dev/null 2>&1; rm -f "$img.part"; die "copying $1's disk failed"
@@ -357,6 +454,7 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 		ch_copy "$d/disk.qcow2" "$img.part" || { rm -f "$img.part"; die "copying $1's disk failed"; }
 	fi
 	mv "$img.part" "$img"
+	if [[ -f $d/fast.json ]]; then cp "$d/fast.json" "$img.fast.json"; fi
 }
 
 backend_images() { # → IMAGE<TAB>CREATED<TAB>SIZE
@@ -366,7 +464,7 @@ backend_images() { # → IMAGE<TAB>CREATED<TAB>SIZE
 		printf '%s\t%s\t%sMiB\n' "$(basename "$f" .qcow2)" "$(date -r "$f" +%Y-%m-%dT%H:%M:%S)" "$(du -k "$f" | awk '{ printf "%d", $1 / 1024 }')"
 	done
 }
-backend_image_rm() { [[ -f $(ch_image "$1") ]] || die "no such image: $1"; rm -f "$(ch_image "$1")"; }
+backend_image_rm() { [[ -f $(ch_image "$1") ]] || die "no such image: $1"; rm -f "$(ch_image "$1")" "$(ch_image "$1").fast.json"; }
 
 backend_reimage() { # NAME IMAGE   (keeps slot, MAC, IP and seed; ends running)
 	backend_exists "$1" || die "no such vm: $1"
@@ -380,17 +478,17 @@ backend_reimage() { # NAME IMAGE   (keeps slot, MAC, IP and seed; ends running)
 
 # ---------------------------------------------------------------- crash recovery (README: idempotent)
 backend_cleanup_new() { # NAME: remove a VM whose create was interrupted, whatever got created
-	local d slot=""; d=$(ch_dir "$1")
+	local d slot="" mode tap=""; d=$(ch_dir "$1"); mode=$(ch_vm_net_mode "$1")
 	systemctl --user show-environment >/dev/null 2>&1 || die "cannot reach the systemd user manager during recovery"
-	[[ ! -f $d/slot ]] || slot=$(cat "$d/slot")
+	[[ ! -f $d/slot ]] || { slot=$(cat "$d/slot"); tap=$(ch_vm_tap "$1"); }
 	ch_kill "$1"
 	rm -f "$HOME/.config/systemd/user/$(ch_unit "$1")"
 	systemctl --user daemon-reload || die "systemctl --user daemon-reload failed during recovery"
-	[[ -z $slot ]] || ch_net_down "$slot"
+	[[ -z $slot ]] || ch_net_down "$slot" "$mode" "$tap"
 	rm -rf "$d" || die "could not remove $d"
-	rmdir "$CH_DIR/.slot.lock" 2>/dev/null || true   # held only for milliseconds; a leftover means its holder died
+	rmdir "$CH_DIR/.slot.lock" 2>/dev/null || true   # remove only an abandoned pre-flock directory, never .slots.lock
 }
-backend_cleanup_image() { rm -f "$(ch_image "$1")" "$(ch_image "$1").part" || die "could not remove image $1"; }
+backend_cleanup_image() { rm -f "$(ch_image "$1")" "$(ch_image "$1").part" "$(ch_image "$1").fast.json" || die "could not remove image $1"; }
 backend_recover_capture() { # NAME IMAGE ORIGINAL_STATE: a capture died, maybe with NAME paused
 	if backend_exists "$1" && ch_active "$1" && ch_remote "$1" info 2>/dev/null | jq -e '.state == "Paused"' >/dev/null 2>&1; then
 		ch_remote "$1" resume >/dev/null || die "could not resume $1 after an interrupted capture"

@@ -99,6 +99,18 @@ function checkProfiles(rt, others) {
 	for (const o of others) {
 		if (o.proxyPort === rt.proxyPort) fail(`proxy port ${rt.proxyPort} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_PORT${hint}`);
 		if (o.proxyUnit === rt.proxyUnit) fail(`service name ${rt.proxyUnit} is already used by profile ${o.name} (${o.conf}); set BOXERY_PROXY_UNIT${hint}`);
+		if (rt.backend === "cloud-hypervisor" && o.backend === rt.backend &&
+			path.resolve(rt.env.BOXERY_CH_DIR || path.join(homedir(), ".local/share/boxery/ch")) === path.resolve(o.env.BOXERY_CH_DIR || path.join(homedir(), ".local/share/boxery/ch"))) {
+			fail(`profile ${o.name} already uses this BOXERY_CH_DIR; profiles must not share VM storage`);
+		}
+		if (rt.backend === "cloud-hypervisor" && o.backend === rt.backend && (rt.env.BOXERY_CH_NET_MODE || "tap") === "tap" && (o.env.BOXERY_CH_NET_MODE || "tap") === "tap") {
+			if ((rt.env.BOXERY_CH_NET || "10.77") === (o.env.BOXERY_CH_NET || "10.77")) fail(`TAP subnet overlaps profile ${o.name}; choose a distinct BOXERY_CH_NET`);
+			if (rt.env.BOXERY_CH_FAST !== "1" && o.env.BOXERY_CH_FAST !== "1") fail("multiple legacy TAP profiles share interface names; enable fast-profile namespacing on the new profile");
+		}
+		if (rt.backend === "cloud-hypervisor" && o.backend === rt.backend && rt.env.BOXERY_CH_NET_MODE === "passt" && o.env.BOXERY_CH_NET_MODE === "passt") {
+			const a = Number(rt.env.BOXERY_CH_PORT_BASE || 22000), b = Number(o.env.BOXERY_CH_PORT_BASE || 22000);
+			if (Math.abs(a - b) < 251) fail(`passt forwarding ports overlap profile ${o.name}; choose a separate BOXERY_CH_PORT_BASE range`);
+		}
 		if (NAMESPACE[rt.backend] && o.backend === rt.backend && namespace(o.backend, o.env) === namespace(rt.backend, rt.env)) {
 			const keys = HOST_ENV.filter((k) => NAMESPACE[rt.backend].test(k));
 			fail(`profile ${o.name} (${o.conf}) already uses the ${rt.backend} backend with the same settings, so both would manage the same VMs; ` +
@@ -137,7 +149,7 @@ const plist = (label, args, env, extra, log) => `<?xml version="1.0" encoding="U
 
 // Tools the reaper's backend calls may need. Services don't get the login shell's PATH, so the reaper's
 // PATH names where they are now (nvm, ~/.local/bin, Homebrew…): Lima's limactl is often in ~/.local/bin.
-const SERVICE_TOOLS = ["node", "jq", "nc", "ssh", "ssh-keygen", "ps", "socat", "limactl", "virsh", "virt-install", "qemu-img", "cloud-localds", "cloud-hypervisor"];
+const SERVICE_TOOLS = ["node", "jq", "nc", "ssh", "ssh-keygen", "ps", "socat", "limactl", "virsh", "virt-install", "qemu-img", "cloud-localds", "cloud-hypervisor", "ch-remote", "python3", "passt"];
 /** The reaper's PATH: node's directory, the directories of SERVICE_TOOLS on `searchPath`, then `system`. */
 export function servicePath(node, system, searchPath = process.env.PATH ?? "") {
 	const dirs = [path.dirname(node)];

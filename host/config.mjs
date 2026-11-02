@@ -12,7 +12,8 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 // list): the proxy's and the backends' (host/backends/README.md).
 export const HOST_ENV = ["BOXERY_BACKEND", "BOXERY_PROXY_PORT", "BOXERY_PROXY_UNIT", "BOXERY_POOL", "BOXERY_POOL_DIR", "BOXERY_BASE_VOL",
 	"BOXERY_DOMAIN_PREFIX", "BOXERY_NET", "LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE",
-	"BOXERY_LIMA_ARCH", "BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO", "BOXERY_EXE_DIR",
+	"BOXERY_LIMA_ARCH", "BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO",
+	"BOXERY_CH_FAST", "BOXERY_CH_TEMPLATES", "BOXERY_CH_NET_MODE", "BOXERY_CH_PORT_BASE", "BOXERY_CH_PASST", "BOXERY_CH_RESTORE_MODE", "BOXERY_CH_KERNEL", "BOXERY_CH_INITRAMFS", "BOXERY_EXE_DIR",
 	"BOXERY_EXE_PREFIX", "BOXERY_EXE_KEY", "BOXERY_EXE_PORT_BASE", "BOXERY_EXE_GUEST_PORT", "BOXERY_EXE_EGRESS", "BOXERY_EXE_POOL",
 	"BOXERY_EXE_MAX_CPUS", "BOXERY_EXE_MAX_MEM", "BOXERY_BOAT_DIR", "BOXERY_BOAT_PREFIX", "BOXERY_BOAT_API", "BOXERY_BOAT_ORG",
 	"BOXERY_BOAT_PORT_BASE", "BOXERY_BOAT_GUEST_PORT", "BOXERY_BOAT_MAX_TYPE", "BOXERY_BOAT_TTL"];
@@ -21,7 +22,8 @@ export const HOST_ENV = ["BOXERY_BACKEND", "BOXERY_PROXY_PORT", "BOXERY_PROXY_UN
 // Never arbitrary environment variables or credentials.
 export const SETTINGS = ["BOXERY_BACKEND", "BOXERY_POOL", "BOXERY_POOL_DIR", "BOXERY_BASE_VOL", "BOXERY_DOMAIN_PREFIX", "BOXERY_NET",
 	"LIBVIRT_DEFAULT_URI", "LIMA_HOME", "BOXERY_LIMA_PREFIX", "BOXERY_LIMA_GATEWAY", "BOXERY_LIMA_VMTYPE", "BOXERY_LIMA_ARCH",
-	"BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
+	"BOXERY_CH_DIR", "BOXERY_CH_NET", "BOXERY_CH_DNS", "BOXERY_CH_FIRMWARE", "BOXERY_CH_SUDO",
+	"BOXERY_CH_FAST", "BOXERY_CH_TEMPLATES", "BOXERY_CH_NET_MODE", "BOXERY_CH_PORT_BASE", "BOXERY_CH_PASST", "BOXERY_CH_RESTORE_MODE", "BOXERY_CH_KERNEL", "BOXERY_CH_INITRAMFS", "BOXERY_FAKE_DIR", "BOXERY_PROXY_PORT"];
 
 export const defaultConf = () => path.join(homedir(), ".config/boxery");
 /** `boxery-host --profile NAME`: a second profile's state directory. */
@@ -40,13 +42,23 @@ export function loadConfig(env = process.env) {
 		const [k, v] = i < 0 ? [line, ""] : [line.slice(0, i), line.slice(i + 1)];
 		if (HOST_ENV.includes(k) && !merged[k]) merged[k] = v;
 	}
+	const backend = merged.BOXERY_BACKEND || "libvirt";
+	if (backend === "cloud-hypervisor") {
+		// Pin new routing/boot defaults in operation journals. A changed host.env must not
+		// turn an abandoned TAP create into passt cleanup (or change its restore mode).
+		merged.BOXERY_CH_FAST ||= "0";
+		merged.BOXERY_CH_NET_MODE ||= "tap";
+		merged.BOXERY_CH_PORT_BASE ||= "22000";
+		merged.BOXERY_CH_RESTORE_MODE ||= "copy";
+		merged.BOXERY_CH_TEMPLATES ||= path.join(merged.BOXERY_CH_DIR || path.join(homedir(), ".local/share/boxery/ch"), "templates");
+	}
 	const proxyUnit = merged.BOXERY_PROXY_UNIT || (profile ? `boxery-proxy-${profile}` : "boxery-proxy");
 	return {
 		conf,
 		profile,
 		root: ROOT,
 		env: merged,
-		backend: merged.BOXERY_BACKEND || "libvirt",
+		backend,
 		proxyPort: merged.BOXERY_PROXY_PORT || "8088",
 		proxyUnit,
 		reaperUnit: merged.BOXERY_REAPER_UNIT || proxyUnit.replace("proxy", "reaper"),

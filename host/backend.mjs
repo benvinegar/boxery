@@ -77,6 +77,13 @@ export function createBackend(env = process.env) {
 			try { await call("backend_has_base", [], { quiet: true }); return true; }
 			catch (e) { if (e instanceof BackendError) return false; throw e; }
 		},
+		/** Explicit status text on success: shell/API errors must never look like a missing source. */
+		async templateStatus(source) {
+			const { code, out } = await run(env, "backend_template_status", [source], { capture: true, status: true });
+			const state = out.trim();
+			if (code !== 0 || !["ready", "missing", "on-demand", "unready"].includes(state)) throw new BackendError(`cannot inspect ${source} template on ${env.BOXERY_BACKEND || "libvirt"}`);
+			return state;
+		},
 		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options)),
 		waitEndpoint: async (name, options) => endpoint(await meta("backend_wait_endpoint", [name], options)),
 		/** Why NAME's endpoint can't be reached (optional backend_endpoint_problem; local checks only):

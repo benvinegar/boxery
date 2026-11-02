@@ -242,6 +242,16 @@ backend_build_base() {
 	log "base image ready: exe.dev VM $base"
 }
 
+backend_template_status() {
+	[[ $1 != stock ]] || { echo on-demand; return; }
+	[[ $1 == base ]] || die "unknown template source"
+	[[ -n $EXE_PREFIX ]] || die "no exe.dev prefix; run init"
+	local j st; j=$(exe_ls) || die "cannot inspect exe.dev templates"
+	jq -e 'type == "object" and (.vms | type == "array")' <<<"$j" >/dev/null || die "invalid exe.dev template inventory"
+	st=$(jq -r --arg n "$(exe_base)" '.vms[] | select(.vm_name == $n) | .status' <<<"$j")
+	if [[ -z $st ]]; then echo missing
+	else case $st in running|stopped|paused) echo ready ;; *) echo unready ;; esac; fi
+}
 backend_has_base() {
 	[[ -n $EXE_PREFIX ]] || return 1
 	local j; j=$(exe_ls) || exit 1

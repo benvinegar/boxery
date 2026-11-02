@@ -24,7 +24,7 @@ export function resources(command, args) {
 	if (["new", "fork"].includes(command)) {
 		for (let i = 0; i < args.length; i++) {
 			if (["--cpus", "--mem", "--disk", "--shape"].includes(args[i])) { i++; continue; }
-			if (command === "new" && args[i] === "--headless") continue;
+			if (command === "new" && ["--headless", "--cold"].includes(args[i])) continue;
 			if (args[i] === "--from") {
 				const image = args[++i];
 				if (!/^[a-z][a-z0-9-]{0,30}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(image ?? "")) throw new Error("invalid image name");

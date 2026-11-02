@@ -30,7 +30,7 @@ const CLI_FOR_TOOL = {
 		new: "new", fork: "fork", rm: "rm", start: "start", stop: "stop", resize: "resize",
 		snap: "snap", "snap-rm": "snap-rm", revert: "revert", use: NO_CURRENT, none: NO_CURRENT, "build-base": "build-base",
 	},
-	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version" },
+	vm_info: { list: "ls", shapes: "shapes", templates: "templates", grants: "grants", snaps: "snaps", images: "images", version: "version" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
 	vm_grant: "grant", // the agent asks; the user approves in a prompt, then it runs boxery grant
 };

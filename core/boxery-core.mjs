@@ -910,6 +910,10 @@ export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 export const listShapes = () => boxeryJson(["shapes"]);
+export const listTemplates = () => boxeryJson(["templates"]);
+export function formatTemplates({ backend, templates }) {
+	return `Templates on ${backend}:\n${templates.map((t) => `${t.name}: ${t.kind ?? "unknown"}, ${t.status} (${t.image ?? t.source})`).join("\n") || "(none declared)"}`;
+}
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
@@ -1137,7 +1141,9 @@ export function needVm(a) {
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
 export async function manage(a, opts = {}) {
-	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
+	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless, cold, template } = a;
+	if (action === "new" && template && (from || headless)) throw new Error("template cannot be combined with from or headless");
+	if (template != null && !VALID_NAME.test(template)) throw new Error("invalid template name");
 	const need = () => needVm(a);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
@@ -1154,7 +1160,7 @@ export async function manage(a, opts = {}) {
 			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
 		case "new":
-			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
+			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : []), ...(cold ? ["--cold"] : []), ...(template ? ["--template", template] : [])], undefined, opts);
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":

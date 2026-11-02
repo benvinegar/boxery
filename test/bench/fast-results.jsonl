@@ -1,0 +1,35 @@
+{"context":"integrated CH v54, EDK2 ch-97eeb7b09, 2 vCPU, 2048 MiB, 20 GiB, eager restore, passt, warm tmpfs assets; includes controller/core through normal readiness"}
+{"phase":"fast desktop round 1","ok":true,"ms":1844}
+{"phase":"fast desktop round 2","ok":true,"ms":1947}
+{"phase":"fast desktop round 3","ok":true,"ms":1974}
+{"phase":"fast desktop round 4","ok":true,"ms":1835}
+{"phase":"fast desktop round 5","ok":true,"ms":2007}
+{"phase":"cold desktop round 1","ok":true,"ms":7210}
+{"phase":"cold desktop round 2","ok":true,"ms":7731}
+{"phase":"cold desktop round 3","ok":true,"ms":7649}
+{"phase":"cold desktop round 4","ok":true,"ms":7545}
+{"phase":"cold desktop round 5","ok":true,"ms":7518}
+{"phase":"fast desktop create via controller/core","ok":true,"ms":2333}
+{"phase":"shell, HTTPS, git and proxy authentication","ok":true,"ms":481}
+{"phase":"file read/write/edit/copy","ok":true,"ms":683}
+{"phase":"background jobs and restore incarnation","ok":true,"ms":343}
+{"phase":"fresh browser launch and real screenshot","ok":true,"ms":1219}
+{"phase":"dummy environment grant and revoke","ok":true,"ms":356}
+{"phase":"guest reboot and persisted data","ok":true,"ms":8149}
+{"phase":"headless fast creation and desktop refusal","ok":true,"ms":1928}
+{"phase":"explicit cold bypass through vm_manage","ok":true,"ms":7968}
+{"phase":"pool lease, snapshot and ordinary restart","ok":true,"ms":18061}
+{"phase":"interrupted-create journal recovery","ok":true,"ms":985}
+{"context":"additional final functional run, including explicit cached-identity checks; same templates and adapter"}
+{"phase":"fast desktop create via controller/core","ok":true,"ms":2087}
+{"phase":"shell, HTTPS, git and proxy authentication","ok":true,"ms":488}
+{"phase":"file read/write/edit/copy","ok":true,"ms":647}
+{"phase":"background jobs and restore incarnation","ok":true,"ms":346}
+{"phase":"two RAM clones: fresh identity, entropy and service caches","ok":true,"ms":2640}
+{"phase":"fresh browser launch and real screenshot","ok":true,"ms":1347}
+{"phase":"dummy environment grant and revoke","ok":true,"ms":318}
+{"phase":"guest reboot and persisted data","ok":true,"ms":8995}
+{"phase":"headless fast creation and desktop refusal","ok":true,"ms":2165}
+{"phase":"explicit cold bypass through vm_manage","ok":true,"ms":8487}
+{"phase":"pool lease, snapshot and ordinary restart","ok":true,"ms":18716}
+{"phase":"interrupted-create journal recovery","ok":true,"ms":1016}

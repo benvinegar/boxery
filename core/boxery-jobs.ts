@@ -89,7 +89,14 @@ const readText = (f: string): string | null => {
 		return null;
 	}
 };
-const bootId = (): string | null => readText("/proc/sys/kernel/random/boot_id")?.trim() || null;
+const bootId = (): string | null => {
+	const boot = readText("/proc/sys/kernel/random/boot_id")?.trim();
+	if (!boot) return null;
+	// RAM templates resume the same kernel boot. A host-assigned incarnation also fences jobs
+	// after a restore/reset; ordinary cold-boot guests without this marker retain the old format.
+	const incarnation = readText("/run/boxery/incarnation")?.trim();
+	return incarnation ? `${boot}:${incarnation}` : boot;
+};
 const shellQuote = (s: string): string => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
 function out(s: string | Buffer): void {

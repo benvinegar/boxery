@@ -1,0 +1,1 @@
+{"version":1,"imageTemplates":true,"builtins":{"desktop":{"kind":"desktop","source":"base"},"headless":{"kind":"headless","source":"stock"}}}

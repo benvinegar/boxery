@@ -21,7 +21,7 @@ const obj = (properties, required = []) => ({ type: "object", properties: { ...p
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base"];
 const SIZE = (unit, min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
-export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version"];
+export const INFO_ACTIONS = ["list", "shapes", "templates", "grants", "snaps", "images", "version"];
 
 const INFO_OUTPUT = {
 	type: "object",
@@ -30,6 +30,8 @@ const INFO_OUTPUT = {
 		current: { type: ["string", "null"], description: "list: the current VM" },
 		default: { type: "string", description: "shapes: the default shape" },
 		shapes: { type: "object", description: "shapes: {NAME: {cpus, mem (MiB), disk (GiB)}}" },
+		backend: { type: "string", description: "templates: the selected backend" },
+		templates: { type: "array", items: { type: "object" }, description: "templates: declared names, kind, source, ready boolean and status; on-demand is not a prepared artifact" },
 		vm: { type: "string", description: "grants/snaps: the VM" },
 		grants: { type: "array", items: { type: "object" } },
 		snapshots: { type: "array", items: { type: "object" } },
@@ -208,6 +210,7 @@ export const TOOLS = [
 			`Create, change and select boxery VMs (Ubuntu desktop VMs on the user's VM host). action: ${MANAGE_ACTIONS.join(" | ")}. ` +
 			"`vm` is the VM to act on (`new`: the new VM's name, default generated; `fork`: the source). " +
 			"`new` creates a VM (with use:true also selects it); pass `shape` (see vm_info shapes) or cpus/mem/disk when a task needs more (or less) than the default, and `from:'VM@SNAP'` to create it from an image (see vm_info images). " +
+			"`new` with `template:'NAME'` selects a backend/profile-declared template (see vm_info templates); it cannot be combined with from/headless and never silently substitutes another template. " +
 			"`new` with `headless:true` creates a VM without the desktop (shell, git, node, pi, opencode only; the computer-use tools and vm_browser refuse it): use it when a task needs no GUI or browser. A VM from an image or a fork keeps its source's kind. " +
 			"`fork` copies VM `vm` (running or not, ~10 s) into new VMs `to` (name or list; default one generated name) on the same host; each copy has the disk (not running processes) and its own identity. " +
 			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
@@ -221,7 +224,9 @@ export const TOOLS = [
 				vm: { type: "string", description: "the VM to act on; new: the new VM's name (default: generated); fork: the source VM" },
 				snapshot: { type: "string", description: "snapshot name for snap/revert/snap-rm" },
 				from: { type: "string", description: "for new: image to create the VM from, VM@SNAP (see vm_info images)" },
+				template: { type: "string", pattern: "^[a-z][a-z0-9-]{0,30}$", description: "for new: named template declared by the selected host/backend (vm_info templates); incompatible with from/headless" },
 				headless: { type: "boolean", description: "for new: no desktop (default false: XFCE desktop, Chrome, computer use)" },
+				cold: { type: "boolean", description: "for new: bypass Boxery RAM templates and use the backend's ordinary disk-boot path" },
 				to: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "for fork: new VM name(s)" },
 				use: { type: "boolean", description: "for new: also make it the current VM" },
 				shape: { type: "string", description: "for new/fork: VM size by name (see vm_info shapes); default: the host's default shape (fork: the source's size)" },
@@ -239,7 +244,7 @@ export const TOOLS = [
 		noVm: true,
 		description:
 			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
-			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (to ask for more, use vm_grant); `snaps` the snapshots of VM `vm`; `images` every snapshot on the host as VM@SNAP (what vm_manage new takes as `from`); " +
+			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `templates` the backend/profile templates and readiness (ready/missing/on-demand/unready); `grants` what VM `vm` may access from the user's machine (to ask for more, use vm_grant); `snaps` the snapshots of VM `vm`; `images` every snapshot on the host as VM@SNAP (what vm_manage new takes as `from`); " +
 			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
 			"`vm` defaults to the current VM.",
 		parameters: {
@@ -316,6 +321,10 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 		case "shapes": {
 			const shapes = await core.listShapes();
 			return { text: core.formatShapes(shapes), structured: shapes };
+		}
+		case "templates": {
+			const result = await core.listTemplates();
+			return { text: core.formatTemplates(result), structured: result };
 		}
 		case "grants": {
 			const vm = target();

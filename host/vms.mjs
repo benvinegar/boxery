@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { captureVm, cleanupVmImages } from "./images.mjs";
 import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
 import { issueToken, writeSeed } from "./seed.mjs";
+import { assertUnreferenced } from "./templates.mjs";
 import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
 import { fail, log, print, stamp, validImage, validName, validNum } from "./util.mjs";
 
@@ -29,12 +30,13 @@ async function mustRun(rt, ep, command) {
 }
 
 // ---------------------------------------------------------------- new
-/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless] */
+/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless] [--cold] */
 export function parseNewArgs(args) {
-	const o = { name: "", shape: "", cpus: "", mem: "", disk: "", from: "", headless: false };
+	const o = { name: "", shape: "", cpus: "", mem: "", disk: "", from: "", headless: false, cold: false };
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i], v = args[i + 1];
 		if (a === "--headless") o.headless = true;
+		else if (a === "--cold") o.cold = true;
 		else if (a === "--shape") { if (!SHAPE_NAME.test(v ?? "")) fail(`invalid shape name '${v ?? ""}'`); o.shape = v; i++; }
 		else if (["--cpus", "--mem", "--disk"].includes(a)) { o[a.slice(2)] = validNum(a, v); i++; }
 		else if (a === "--from") { o.from = validImage(v); i++; }
@@ -46,7 +48,7 @@ export function parseNewArgs(args) {
 }
 
 /** Create, boot and wait for NAME. Returns "NAME HOST:PORT". */
-export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless }) {
+export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless, cold }) {
 	validName(name);
 	// Size: the shape (the default shape if none), then explicit flags. Any flag makes it a custom size.
 	const shapes = rt.shapes();
@@ -77,8 +79,8 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 		finally { process.stderr.write(`[boxery-timing] ${JSON.stringify({ vm: name, stage, ms: Math.round(performance.now() - start), ok })}\n`); }
 	};
 	const action = rt.intent("create", name);
-	const userdata = await step("seed", () => writeSeed(rt, name, provision));
-	await step("backend-new", () => rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]));
+	const userdata = await step("seed", () => writeSeed(rt, name, provision, kind));
+	await step("backend-new", () => rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src, ...(cold ? ["cold"] : [])]));
 	setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
 	setVmKind(rt.conf, name, kind);
 	const ep = await step("endpoint", () => rt.vms.waitEndpoint(name));
@@ -173,6 +175,7 @@ export async function fork(rt, args) {
 // ---------------------------------------------------------------- rm, start, stop
 export async function rm(rt, [name]) {
 	validName(name);
+	assertUnreferenced(rt, (image) => image.startsWith(`${name}@`));
 	if (rt.poolRow(name)) fail(`${name} is a pool VM; run: boxery-host pool rm ${name} (after its lease ends)`);
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	const action = rt.intent("remove", name);

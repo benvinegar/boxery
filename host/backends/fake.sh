@@ -17,6 +17,11 @@ backend_proxy_services() { :; }
 guest_proxy_upstream() { echo "TCP:fake-gateway:$PROXY_PORT"; }
 backend_build_base() { mkdir -p "$FAKE"; touch "$FAKE/.base"; }
 backend_has_base() { [[ -f $FAKE/.base ]]; }
+backend_template_status() {
+	[[ $1 != stock ]] || { echo on-demand; return; }
+	[[ $1 == base ]] || die "unknown template source"
+	if [[ -f $FAKE/.base ]]; then echo ready; else echo missing; fi
+}
 backend_exists() { [[ -d $FAKE/$1 ]]; }
 # Each fake VM gets a unique "ssh port" so test ssh stubs can map a connection to its VM directory.
 fake_port() { cat "$FAKE/$1/port"; }
