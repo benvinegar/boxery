@@ -28,6 +28,10 @@
 </p>
 
 <p align="center">
+  <em><strong>Alpha software.</strong> Expect rough edges and breaking changes between releases. <a href="#status">Status →</a></em>
+</p>
+
+<p align="center">
   <a href="docs/install.md">Install</a> ·
   <a href="docs/mcp.md">MCP server</a> ·
   <a href="docs/pi-extension.md">pi extension</a> ·
