@@ -48,14 +48,15 @@
 
 ---
 
-Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for Ubuntu VMs, with a full desktop and a real Chrome or headless. It works with Claude Code, Codex, Cursor, opencode and any other MCP agent, and has a native [pi](https://pi.dev) extension.
+Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for Ubuntu VMs, with a full desktop and a real Chrome or headless.
 
 ## Why boxery
 
 - **Disposable VMs on demand.** A full desktop VM in about 13 s on libvirt, or a [headless](docs/cli.md#lifecycle) one with no desktop at all. Snapshot in about 1 s, throw it away when done.
+- **Built for agents.** Agents create, fork and drive VMs themselves over [MCP](docs/mcp.md): Claude Code, Codex, Cursor, opencode or any MCP client, plus a native [pi](docs/pi-extension.md) extension.
 - **Fork a running VM.** Copy a VM mid-task into several, try three fixes in parallel, keep the one that works.
 - **Real computer use.** Screenshots, clicks, typing and Playwright against Chrome, which you can watch live over noVNC.
-- **Same tools everywhere.** Your Mac, a Linux server, or the cloud (exe.dev, boat.dev), even [all at once](docs/hosts.md).
+- **Mix VM providers.** One MCP server drives your Mac, a Linux server and the cloud (exe.dev, boat.dev) [at once](docs/hosts.md), with the same tools on each.
 - **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
 
 ## Quick start
