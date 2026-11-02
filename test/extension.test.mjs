@@ -37,16 +37,18 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		});
 		const tools = new Map();
 		const entries = [];
+		const commands = new Map();
+		const handlers = new Map();
 		const pi = {
 			registerFlag() {},
-			registerCommand() {},
-			on() {},
+			registerCommand: (name, c) => commands.set(name, c),
+			on: (ev, h) => handlers.set(ev, h),
 			getFlag() {},
 			appendEntry: (type, data) => entries.push({ type, data }),
 			registerTool: (t) => tools.set(t.name, t),
 		};
 		(await import("../extension/index.ts")).default(pi);
-		return { tools, entries };
+		return { tools, entries, commands, handlers };
 	}
 
 	it("registers the shared tool table, with pi engines for bash/read/write/edit", async () => {
@@ -86,6 +88,31 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		const no = await grant.execute("2", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, ui(false));
 		assert.match(no.content[0].text, /^The user declined/);
 		await assert.rejects(grant.execute("3", { vm: "demo", spec: "ssh-agent", reason: "x" }, undefined, undefined, { hasUI: false, ui: {} }), /can't show the user an approval prompt[\s\S]*boxery --host test grant demo ssh-agent/);
+	});
+
+	it("llm: grants: vm_grant asks for them; /vm grant and /vm revoke pass them to the controller", async () => {
+		const { tools, commands, handlers } = await load();
+		const calls = () => readFileSync(CALLS, "utf8").trim().split("\n");
+		const asked = [];
+		const ui = { hasUI: true, ui: { confirm: async (_t, message) => (asked.push(message), true) } };
+		const r = await tools.get("vm_grant").execute("1", { vm: "demo", spec: "llm:chatgpt", reason: "pi got a 403 from the proxy" }, undefined, undefined, ui);
+		assert.match(r.content[0].text, /^The user approved: demo now has llm:chatgpt/);
+		assert.equal(calls().at(-1), "grant demo llm:chatgpt");
+		assert.match(asked[0], /llm:chatgpt: the VM host's chatgpt credential/);
+		await assert.rejects(tools.get("vm_grant").execute("2", { vm: "demo", spec: "llm:gemini", reason: "x" }, undefined, undefined, ui), /unknown LLM provider/);
+
+		const notes = [];
+		const ctx = { hasUI: true, ui: { notify: (m, lvl) => notes.push([m, lvl]) } };
+		// The current VM as a resumed session restores it (no ssh needed).
+		const { currentHost } = await import("../core/boxery-core.mjs");
+		const saved = { type: "custom", customType: "boxery-current", data: { vm: "demo", ephemeral: false, host: currentHost().name, configDir: currentHost().dir } };
+		await handlers.get("session_start")({ reason: "resume" }, { ...ctx, sessionManager: { getBranch: () => [saved] } });
+		await commands.get("vm").handler("grant llm:anthropic llm:ollama", ctx);
+		assert.equal(calls().at(-1), "grant demo llm:anthropic llm:ollama");
+		await commands.get("vm").handler("revoke llm:anthropic", ctx);
+		assert.equal(calls().at(-1), "revoke demo llm:anthropic");
+		await commands.get("vm").handler("grant", ctx);
+		assert.match(notes.at(-1)[0], /usage: \/vm grant llm:PROVIDER/);
 	});
 
 	it("vm_lease runs on the extension's lease keeper", async () => {

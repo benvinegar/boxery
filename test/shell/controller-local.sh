@@ -158,6 +158,25 @@ if "$A" grant e1 llm:openai --cmd 'echo k' >/dev/null 2>&1; then bad "llm grant 
 "$A" new e2 --grant llm:anthropic >/dev/null 2>&1; [[ $(jq -c '.llm' "$BOXERY_CONF/edge/e2.json" 2>/dev/null) == '["anthropic"]' ]] && ok "new --grant llm:anthropic" || bad "new --grant llm: $(cat "$BOXERY_CONF/edge/e2.json" 2>/dev/null)"
 "$A" rm e2 >/dev/null 2>&1; [[ ! -f $BOXERY_CONF/edge/e2.json ]] && ok "rm clears llm grants" || bad "llm grants survived rm"
 
+# Version skew: a controller with llm: grants against a host from before them. That host rejects the
+# {"hosts","llm"} payload: the grant is kept locally, the user is warned, and nothing on the host changes.
+if git -C "$ROOT" cat-file -e 2ee0cd7:host/pool.mjs 2>/dev/null; then
+	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/host" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
+	git -C "$ROOT" show 2ee0cd7:host/pool.mjs >"$old/host/pool.mjs"
+	HOME=$tmp/home "$A" host add old local --host-bin "$old/host/boxery-host" >/dev/null 2>&1
+	"$A" --host old grant e1 http:api.example.com --cmd 'echo v1' >/dev/null 2>&1
+	[[ $(jq -r '.hosts["api.example.com"].headers.Authorization' "$routes") == "Bearer v1" ]] && ok "old host: http grants still work" || bad "old host http: $(cat "$routes" 2>/dev/null)"
+	before=$(cat "$routes")
+	out=$("$A" --host old grant e1 llm:chatgpt http:api.example.com --cmd 'echo v2' 2>&1); rc=$?
+	[[ $rc == 0 && $out == *"could not set edge routes for e1 on the host"* ]] && ok "old host: llm grant warns, doesn't fail" || bad "old host: rc=$rc $out"
+	[[ $(cat "$routes") == "$before" ]] && ok "old host: edge file unchanged (no LLM access, and the http update waits)" || bad "old host changed routes: $(cat "$routes")"
+	"$A" --host old revoke e1 llm:chatgpt >/dev/null 2>&1
+	[[ $(jq -r '.hosts["api.example.com"].headers.Authorization' "$routes") == "Bearer v2" ]] && ok "old host: once no llm grant is left, the http update goes through" || bad "old host after revoke: $(cat "$routes")"
+	"$A" --host old revoke e1 all >/dev/null 2>&1
+	"$A" host rm old >/dev/null 2>&1 || true
+	"$A" revoke e1 all >/dev/null 2>&1
+else echo "  - pre-llm host/pool.mjs not in git history; skipping version-skew checks"; fi
+
 "$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
 "$A" rm e1 >/dev/null 2>&1; [[ ! -f $routes ]] && ok "rm deletes edge routes" || bad "routes survived rm"
 
@@ -184,11 +203,13 @@ else echo "  - node:sqlite unavailable; skipping lease checks"; fi
 
 # --- fork from the controller: forks are pets with their own grants (none, unless --grants)
 "$A" new fk >/dev/null 2>&1
-"$A" grant fk ssh-agent env:FROM_CMD --cmd 'echo computed' >/dev/null 2>&1
+"$A" grant fk ssh-agent env:FROM_CMD --cmd 'echo computed' llm:chatgpt >/dev/null 2>&1
 echo fork-me >"$tmp/vms/fk/home/project/f.txt"
 "$A" fork fk fk1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk1/home/project/f.txt" && ok "fork via controller" || bad "fork"
 [ ! -f "$P/grants/fk1" ] && ! grep -q '^Host fk1.boxery' "$P/ssh_config" && ok "fork does not inherit grants by default" || bad "grants leaked into fork"
+[[ -f $BOXERY_CONF/edge/fk.json && ! -f $BOXERY_CONF/edge/fk1.json ]] && ok "a fork gets no LLM access from its source" || bad "llm grant leaked into fork: $(cat "$BOXERY_CONF/edge/fk1.json" 2>/dev/null)"
 "$A" fork fk fk2 --grants >/dev/null 2>&1 && grep -q '^Host fk2.boxery' "$P/ssh_config" && grep -q '^env	FROM_CMD' "$P/grants/fk2" && ok "fork --grants copies the grant list" || bad "fork --grants"
+[[ $(jq -c .llm "$BOXERY_CONF/edge/fk2.json" 2>/dev/null) == '["chatgpt"]' ]] && ok "fork --grants: the copied llm grant reaches the host" || bad "fork --grants llm: $(cat "$BOXERY_CONF/edge/fk2.json" 2>/dev/null)"
 if "$A" fork fk 'x;id' >/dev/null 2>&1; then bad "invalid fork name accepted"; else ok "invalid fork name rejected"; fi
 "$A" snap fk s1 >/dev/null 2>&1; "$A" new fk3 --from fk@s1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk3/home/project/f.txt" && ok "new --from via controller" || bad "new --from"
 if "$A" new fk4 --from 'fk;id' >/dev/null 2>&1; then bad "bad --from accepted"; else ok "bad --from rejected"; fi

@@ -176,3 +176,36 @@ test("an LLM grant is per VM: another VM's token gets nothing", async () => {
 test("the grant check runs after authentication (no grant info leaks to bad tokens)", async () => {
 	assert.equal((await req("/ollama/v1/models", { headers: { authorization: "Bearer other:nope" } })).status, 401);
 });
+
+test("a pool VM's llm grants are bound to its lease: the next lease's token can't use them", async () => {
+	const L1 = `l-${"1".repeat(32)}`, L2 = `l-${"2".repeat(32)}`;
+	const tokens = (pool) => writeFileSync(path.join(conf, "tokens.json"), JSON.stringify({ demo: "s3cret", ...(pool ? { pool } : {}) }));
+	const grant = (fields) => writeFileSync(path.join(conf, "edge", "pool.json"), JSON.stringify({ hosts: {}, llm: ["ollama"], ...fields }));
+	const call = (secret) => req("/ollama/v1/models", { headers: { authorization: `Bearer pool:${secret}` } });
+	try {
+		tokens({ secret: "s1", lease: L1 });
+		grant({ lease: L1 });
+		assert.equal((await call("s1")).status, 200, "the lease that was granted");
+		// Lease L1 ends; L2 begins with a new token. L1's grant file is still there (say the reset hasn't run).
+		tokens({ secret: "s2", lease: L2 });
+		seen = undefined;
+		const r = await call("s2");
+		assert.equal(r.status, 403, "next lease inherits nothing");
+		assert.match(r.text, /llm:ollama is not granted/);
+		assert.equal(seen, undefined, "nothing reached upstream");
+		assert.equal((await call("s1")).status, 401, "the old lease's token is gone");
+		// A grant without a lease stamp (a pet's file) doesn't count for a leased token either.
+		grant({});
+		assert.equal((await call("s2")).status, 403);
+		// L2's own grant works.
+		grant({ lease: L2 });
+		assert.equal((await call("s2")).status, 200);
+		// And a pet's token never matches a lease-stamped file.
+		writeFileSync(path.join(conf, "edge", "demo.json"), JSON.stringify({ hosts: {}, llm: ["ollama"], lease: L2 }));
+		assert.equal((await req("/ollama/v1/models", { headers: { authorization: "Bearer demo:s3cret" } })).status, 403);
+	} finally {
+		tokens(undefined);
+		rmSync(path.join(conf, "edge", "pool.json"), { force: true });
+		grantLlm(ALL_LLM);
+	}
+});
