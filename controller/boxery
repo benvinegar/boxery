@@ -581,12 +581,23 @@ cmd_attach() { # NAME [pi|opencode|shell] [session]
 	vm_ssh -t "$name.boxery" "cd ~/project 2>/dev/null; tmux has-session -t '$sess' 2>/dev/null || tmux new-session -d -s '$sess' -c ~/project \"bash -lc '$run; exec bash -l'\"; exec tmux attach -t '$sess'"
 }
 
+# The VM's VNC server asks for a password (image/layers/desktop.sh): each session sets a fresh one and hands
+# it to noVNC in the URL fragment, which the browser never sends, so it stays out of logs. It replaces the
+# previous session's for new logins; connections already open stay.
 cmd_desktop() { # NAME [--no-open]
-	name=$1; noopen=${2:-}
-	[ "$(vm_ssh "$name.boxery" 'test -e /etc/boxery/headless && echo headless' 2>/dev/null)" != headless ] ||
-		die "$name is headless (boxery new --headless): it has no desktop"
+	need_vm "${1:-}"; name=$1; noopen=${2:-}; pw=""
+	local out setup='if test -e /etc/boxery/headless; then echo headless
+elif command -v boxery-vnc-password >/dev/null; then p=$(boxery-vnc-password --new) && echo "password $p"
+else echo nopassword; fi'
+	out=$(vm_ssh "$name.boxery" "$setup") || true
+	case $out in
+	headless) die "$name is headless (boxery new --headless): it has no desktop" ;;
+	"password "*) pw=${out#password }; case $pw in "" | *[!A-Za-z0-9]*) die "unexpected VNC password from $name" ;; esac ;;
+	nopassword) warn "$name's desktop has no VNC password: its image predates it, so while this tunnel is open any process on this machine (or a web page) can use it. Rebuild the desktop base (boxery build-base) and create the VM again." ;;
+	*) die "couldn't set up the desktop of $name (is it running? boxery ls)" ;;
+	esac
 	port=$(free_port 16080)
-	url="http://127.0.0.1:$port/vnc.html?autoconnect=1&resize=remote&reconnect=1"
+	url="http://127.0.0.1:$port/vnc.html?autoconnect=1&resize=remote&reconnect=1${pw:+#password=$pw}"
 	echo "==> desktop for $name at $url  (Ctrl-C to close the tunnel)"
 	[ "$noopen" = "--no-open" ] || (sleep 1.5; open_url "$url") &
 	exec ssh -F "$SSH_CONF" -N -o ControlMaster=no -o ControlPath=none -o ExitOnForwardFailure=yes -L "127.0.0.1:$port:127.0.0.1:6080" "$name.boxery"

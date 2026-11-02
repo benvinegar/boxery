@@ -50,7 +50,7 @@ CONTROL PLANE (Linux or macOS; may be the laptop itself)   │                  
                      ▲ libvirt, CH: vsock · Lima: user-net gateway · exe: ssh -R tunnel
 VM (Ubuntu 24.04; XFCE desktop unless --headless)
   user agent (passwordless sudo) · sshd · socat 127.0.0.1:8088 → proxy · tmux jobs
-  desktop on :1, noVNC 127.0.0.1:6080, Chrome CDP 127.0.0.1:9222 · grants on tmpfs /run/user/UID/boxery
+  desktop on :1, noVNC 127.0.0.1:6080 (VNC password), Chrome CDP 127.0.0.1:9222 · grants on tmpfs /run/user/UID/boxery
 ```
 
 ## Components
@@ -162,7 +162,7 @@ Per-VM proxy tokens are an acknowledged exception. They live in the VM's seed, d
 | Lima | TCP to the user-net gateway `192.168.5.2`, which maps to the **host's loopback** | Lima's user network. On macOS each instance runs under a Seatbelt profile (`sandbox-exec`): on the host's `127.0.0.1` its guest reaches only the proxy and its own ssh port. Services on the Mac's other addresses, and the LAN, stay reachable; Lima on Linux is unconfined ([#67](https://github.com/benvinegar/boxery/issues/67)) |
 | exe.dev | per-VM `ssh -R 127.0.0.1:18088:127.0.0.1:PORT` tunnel from the host | exe.dev's network; only the proxy port is forwarded back |
 
-Inside the VM, everything listens on localhost (noVNC, CDP, the proxy bridge). The desktop is reached only through an ssh tunnel (`boxery desktop`). VM ssh host keys aren't verified today ([#70](https://github.com/benvinegar/boxery/issues/70)). A default-deny egress mode is proposed in [#4](https://github.com/benvinegar/boxery/issues/4).
+Inside the VM, everything listens on localhost (noVNC, CDP, the proxy bridge). The desktop is reached only through an ssh tunnel (`boxery desktop`), and its VNC server needs a password: random, on tmpfs, new for each `boxery desktop` session, handed to noVNC in the URL fragment ([security](docs/security.md#what-a-vm-can-and-cant-reach)). Desktop VMs from a base built before that have none until the base is rebuilt. VM ssh host keys aren't verified today ([#70](https://github.com/benvinegar/boxery/issues/70)). A default-deny egress mode is proposed in [#4](https://github.com/benvinegar/boxery/issues/4).
 
 ## Failure modes
 
