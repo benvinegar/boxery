@@ -49,6 +49,28 @@ Your agent keeps running where it already runs, with your model login and your s
 
 It works with every MCP-capable coding agent, including **Claude Code**, **Codex**, Cursor and opencode, and has a native [pi](https://pi.dev) extension. You can also run agents *inside* the VMs, where they keep working while your laptop sleeps.
 
+## Getting started
+
+Paste this into Claude Code, Codex or any coding agent on the machine you want to use:
+
+```text
+Install boxery (https://github.com/benvinegar/boxery) on this machine and spin up a VM for me.
+
+1. Read https://raw.githubusercontent.com/benvinegar/boxery/master/docs/install.md
+2. Pick the backend for this machine: Lima on macOS, libvirt on Linux with /dev/kvm.
+   If neither fits, stop and ask me whether to use exe.dev or boat.dev.
+3. Install the prerequisites and `npm install -g boxery-vm`, then run
+   `boxery-host init` (with the right --backend) and `boxery-host build-base`,
+   then `boxery setup local`. Ask me before running anything with sudo.
+4. Create a VM with `boxery new demo`, run `uname -a` in it with `boxery run`,
+   and open its desktop with `boxery desktop demo`.
+5. Finally, connect yourself to boxery with `npx add-mcp boxery-vm`
+   (or `pi install npm:boxery-vm` if you are pi), and tell me to restart you
+   so the vm_* tools load.
+```
+
+`build-base` takes about 3 minutes. To do it by hand instead, see the [Quick start](#quick-start).
+
 ## Where the VMs run
 
 boxery has two parts: the **[boxery host](#the-boxery-host)**, a machine you run that keeps your credentials, grants and leases, and the **VMs** your agent drives. The host can run the VMs itself if it has a hypervisor, or drive VMs in the cloud. Pick where you want the VMs to run:
