@@ -48,7 +48,7 @@
 
 ---
 
-Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for Ubuntu VMs, with a full desktop and a real Chrome or headless.
+boxery gives your coding agent its own Linux VMs, locally or in the cloud. The agent stays on your machine with your login and setup; the VMs are where it works.
 
 ## Why boxery
 
@@ -58,6 +58,21 @@ Your agent keeps running where it already runs. boxery gives it **`vm_*` tools**
 - **Real computer use.** Screenshots, clicks, typing and Playwright against Chrome, which you can watch live over noVNC.
 - **Mix VM providers.** One MCP server drives your Mac, a Linux server and the cloud (exe.dev, boat.dev) [at once](docs/hosts.md), with the same tools on each.
 - **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
+
+## How it works
+
+- **On your machine**, the boxery MCP server (or pi extension) gives your agent the `vm_*` tools.
+- **The boxery host** is a machine you run: your Mac, a Linux box, or a small VPS for cloud VMs. The tools reach it over ssh. It holds your keys and grants, and creates, forks and wipes VMs.
+- **The VMs** are untrusted. They run anything, and hold only a revocable token that the host swaps for your real key.
+
+Your machine and the host can be the same one. [Security model →](docs/security.md)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/host-dark.svg">
+    <img src="docs/host-light.svg" alt="Coding agents on your machine reach the trusted boxery host over ssh. The host holds your real LLM keys and API tokens and runs the credential proxy, grants, leases and pool, and images and forks. It creates, forks and wipes untrusted VMs on Lima, libvirt, exe.dev or boat.dev, and each VM holds only a revocable token that the proxy swaps for your real key." width="680">
+  </picture>
+</p>
 
 ## Quick start
 
@@ -95,23 +110,12 @@ And ask: *"Clone my repo in a VM, start the dev server, and screenshot the homep
 | `vm_bash` `vm_read` `vm_write` `vm_edit` `vm_jobs` `vm_copy` | Shell, files and background jobs |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` `vm_browser` | Computer use and Playwright on the desktop |
 | `vm_manage` `vm_info` | Create, fork, snapshot, revert and remove VMs |
-| `vm_grant` `vm_lease` | Request access, or lease a VM from a shared pool |
+| `vm_grant` `vm_lease` | Ask you to grant access (GitHub, ssh-agent, env vars), or lease a VM from a shared pool |
 
 You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo`, `boxery desktop demo`.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/modem-dev/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
-</p>
-
-## How it works
-
-Agents reach the **boxery host**, a machine you run, over ssh. The host holds your keys and drives the VMs, which are treated as untrusted. [Security model →](docs/security.md)
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/host-dark.svg">
-    <img src="docs/host-light.svg" alt="Coding agents on your machine reach the trusted boxery host over ssh. The host holds your real LLM keys and API tokens and runs the credential proxy, grants, leases and pool, and images and forks. It creates, forks and wipes untrusted VMs on Lima, libvirt, exe.dev or boat.dev, and each VM holds only a revocable token that the proxy swaps for your real key." width="680">
-  </picture>
 </p>
 
 ## Documentation
