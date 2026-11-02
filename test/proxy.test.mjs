@@ -135,6 +135,7 @@ test("LLM routes are deny-by-default: no grant file, no llm list, or another pro
 	const h = { authorization: "Bearer demo:s3cret" };
 	const f = path.join(conf, "edge", "demo.json");
 	try {
+		/** @type {[string, () => void][]} */
 		const cases = [
 			["no edge file", () => rmSync(f, { force: true })],
 			["unreadable/garbage edge file", () => writeFileSync(f, "{not json")],

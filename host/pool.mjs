@@ -77,7 +77,8 @@ const RESERVED = new Set(["host", "content-length", "connection", "transfer-enco
 const isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 export const LLM_PROVIDERS = ["chatgpt", "openai", "anthropic", "ollama"];
 
-/** stdin → {hosts, llm}, or null if malformed. "hosts"/"llm" can't be route hosts (no dot), so the forms don't clash. */
+/** stdin → {hosts, llm}, or null if malformed. "hosts"/"llm" can't be route hosts (no dot), so the forms don't clash.
+ *  @param {unknown} j @returns {{ hosts: EdgeRoutes, llm: string[] } | null} */
 export function parseEdge(j) {
 	if (!isObject(j)) return null;
 	const keys = Object.keys(j);
