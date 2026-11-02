@@ -10,6 +10,7 @@
 // Auth from VM: "Authorization: Bearer <token>" or "x-api-key: <token>".
 // <token> is "name:secret" or a JWT-shaped string whose payload carries {"boxery":"name:secret"}
 // (the Codex client derives the account id from a JWT, so we hand it a fake one).
+import { createHash, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -47,6 +48,10 @@ function b64urlJson(s) {
 	return JSON.parse(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
 }
 
+const sha256 = (s) => createHash("sha256").update(s).digest();
+/** Constant-time string compare: equal-length digests, so neither the length nor the content leaks through timing. */
+const secretEquals = (got, want) => typeof got === "string" && typeof want === "string" && timingSafeEqual(sha256(got), sha256(want));
+
 /** "name:secret" → {vm, lease, tag} if it matches tokens.json, else null. A tokens.json entry is the
  * pet's "secret", or {secret, lease} for a pool VM: that token lives exactly as long as the lease. */
 function vmForCred(cred) {
@@ -58,7 +63,7 @@ function vmForCred(cred) {
 	const tokens = readTokens();
 	const entry = Object.hasOwn(tokens, name) ? tokens[name] : undefined;
 	const want = typeof entry === "string" ? entry : entry?.secret;
-	if (!secret || typeof want !== "string" || want !== secret) return null;
+	if (!secret || !want || !secretEquals(secret, want)) return null;
 	const lease = typeof entry?.lease === "string" ? entry.lease : null;
 	return { vm: name, lease, tag: lease ? `${name}/${lease}` : name }; // tag: who, in the log
 }

@@ -180,7 +180,7 @@ commit outcome**, not rollback: reread before retrying.
 | `--copy-root DIR` | Allow `vm_copy` `local:` paths, confined to `DIR` (see [B](#b-streamable-http-on-the-host-over-tailscale)). Over HTTP, `local:` is refused without it. |
 | `--allow-user LOGIN` | Also require this `Tailscale-User-Login` header (set by `tailscale serve`). Loopback binds only. Can be repeated. |
 | `--allow-origin ORIGIN` | Accept requests with this `Origin`. Foreign origins are rejected by default. |
-| `--no-auth` | Skip the bearer token. **Local testing only.** |
+| `--no-auth` | Skip the bearer token. **Local testing only:** refused unless `--http` binds loopback (`127.0.0.1`, `::1`, `localhost`). |
 | `--ui` | Offer `vm_view` even to clients that don't advertise MCP Apps support |
 
 ## Testing

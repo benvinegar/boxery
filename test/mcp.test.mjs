@@ -775,9 +775,30 @@ describe("http", () => {
 		assert.equal(await new Promise((r) => q.on("exit", r)), 2);
 	});
 
+	test("--no-auth is refused unless listening on loopback", async () => {
+		for (const listen of ["0.0.0.0:1", "192.0.2.1:1", "[::]:1"]) {
+			const q = spawn(process.execPath, [SERVER, "--http", listen, "--no-auth"], { env: { ...env, BOXERY_MCP_TOKEN: "" }, stdio: "ignore" });
+			assert.equal(await new Promise((r) => q.on("exit", r)), 2, listen);
+		}
+		const lport = 20000 + Math.floor(Math.random() * 20000);
+		const q = spawn(process.execPath, [SERVER, "--http", `127.0.0.1:${lport}`, "--vm", "fakevm", "--no-auth"], { env: { ...env, BOXERY_MCP_TOKEN: "" }, stdio: "ignore" });
+		try {
+			let r;
+			for (let i = 0; i < 50 && !r; i++) {
+				r = await fetch(`http://127.0.0.1:${lport}/mcp`, { method: "POST", headers: H, body: JSON.stringify(init) }).catch(() => null);
+				if (!r) await new Promise((res) => setTimeout(res, 100));
+			}
+			assert.equal(r?.status, 200, "loopback --no-auth serves without a token");
+		} finally {
+			q.kill();
+		}
+	});
+
 	test("auth: token required, Tailscale user allowlist, Origin check", async () => {
 		assert.equal((await post(init)).status, 401);
-		assert.equal((await post(init, { authorization: "Bearer nope" })).status, 401);
+		for (const bad of ["Bearer nope", "Bearer t0ke", `Bearer ${token}x`, `Bearer ${token}${"x".repeat(4096)}`, token, `bearer ${token}`, "Bearer "]) {
+			assert.equal((await post(init, { authorization: bad })).status, 401, bad.slice(0, 40));
+		}
 		assert.equal((await post(init, { authorization: `Bearer ${token}` })).status, 403, "no tailscale user");
 		assert.equal((await post(init, { authorization: `Bearer ${token}`, "tailscale-user-login": "evil@x" })).status, 403);
 		assert.equal((await post(init, { authorization: `Bearer ${token}`, "tailscale-user-login": "me@x", origin: "https://evil.example" })).status, 403);
