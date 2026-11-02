@@ -40,6 +40,7 @@ export async function poolAdd(rt, [name]) {
 	if (await rt.vms.imageExists(`${name}@${POOL_SNAP}`)) await rt.vms.call("backend_image_rm", [`${name}@${POOL_SNAP}`]);
 	await captureVm(rt, name, `${name}@${POOL_SNAP}`);
 	leases.add(rt.db(), name);
+	rt.deleteToken(name); // a pool VM's proxy token is issued per lease
 	rt.done(action);
 	log(`${name} added to the pool (only lease holders can reach it now)`);
 }
@@ -51,6 +52,7 @@ export async function poolRm(rt, [name, force]) {
 	if (force !== "--force" && !["FREE", "BROKEN"].includes(row.state)) fail(`${name} is active; release it first (or --force)`);
 	const action = rt.intent("pool-rm", name);
 	leases.remove(rt.db(), name, force === "--force");
+	rt.clearEdge(name); // a --force removal's grants were the lease's
 	await restorePetAccess(rt, name);
 	await rt.vms.call("backend_cleanup_image", [`${name}@${POOL_SNAP}`]);
 	rt.done(action);
@@ -72,18 +74,28 @@ export function validRoutes(routes) {
 			/^[A-Za-z0-9-]{1,64}$/.test(k) && !RESERVED.has(k.toLowerCase()) && typeof v === "string" && !/[\r\n\0]/.test(v) && v.length <= 8192))));
 }
 
-export async function edgeSet(rt, [name]) {
+/** edge-set NAME [--lease ID]. A pool VM's routes belong to its current lease: they are stamped with
+ * its id, and the proxy honours them only with that lease's token. --lease (the controller's lease
+ * record) refuses a stale caller instead of touching the next holder's routes. */
+export async function edgeSet(rt, [name, ...args]) {
 	validName(name);
+	if (args.length && (args.length !== 2 || args[0] !== "--lease" || !/^l-[0-9a-f]{32}$/.test(args[1]))) fail("usage: edge-set NAME [--lease ID] < routes.json");
+	const want = args[1];
 	if (!await rt.vms.exists(name)) fail(`no such VM: ${name}`);
 	let routes;
 	try { routes = JSON.parse(readFd(0, { limit: 262144 })); } catch { routes = null; }
 	if (!validRoutes(routes)) fail("edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)");
+	const row = rt.poolRow(name);
+	if (want && row?.lease_id !== want) fail(`edge-set: ${want} is not ${name}'s current lease`);
+	// The lease the proxy will see on this VM's token (none for a lease that began before tokens were per lease).
+	const lease = row?.state === "LEASED" && rt.token(name)?.lease === row.lease_id ? row.lease_id : undefined;
 	const dir = path.join(rt.conf, "edge");
 	mkdirSync(dir, { recursive: true });
 	chmodSync(dir, 0o700);
 	if (!Object.keys(routes).length) { rt.clearEdge(name); log(`${name}: edge routes cleared`); return; }
+	if (row && row.state !== "LEASED") fail(`edge-set: ${name} is a pool VM without an active lease`);
 	const tmp = path.join(dir, `.${name}.${randomBytes(4).toString("hex")}`);
-	writeFileSync(tmp, JSON.stringify({ hosts: routes }), { mode: 0o600, flag: "wx" });
+	writeFileSync(tmp, JSON.stringify({ hosts: routes, ...(lease ? { lease } : {}) }), { mode: 0o600, flag: "wx" });
 	renameSync(tmp, path.join(dir, `${name}.json`)); // atomic: the proxy never reads a partial file
 	log(`${name}: edge routes → ${Object.keys(routes).sort().join(", ")}`);
 }

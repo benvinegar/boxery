@@ -3,6 +3,7 @@
 //   snap   = capture NAME → NAME@LABEL          revert = put NAME's own image back (reimage)
 //   fork   = capture SRC → new VM(s) from it    pool   = reset to NAME@boxery-clean
 // Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
+import { installToken } from "./seed.mjs";
 import { fail, log, POOL_SNAP, stamp, validName, validSnap } from "./util.mjs";
 
 /** Put VM NAME back to its image NAME@LABEL. */
@@ -65,6 +66,9 @@ export async function revertVm(rt, name, label) {
 	await rt.waitSsh(name, ep);
 	// Step the guest clock to host time, as a pool reset does.
 	await rt.guest.run(ep, `sudo date -u -s @${Math.floor(Date.now() / 1000)} >/dev/null`);
+	// The VM keeps its token, but the image may carry an older one (from before the VM was in the pool).
+	const token = rt.token(name);
+	if (typeof token === "string") await installToken(rt, name, token);
 }
 
 export async function revert(rt, [name, label]) {

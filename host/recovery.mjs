@@ -51,10 +51,11 @@ export async function replayIntents(rt) {
 				if (!leases.get(db, name)) {
 					await rt.vms.call("backend_cleanup_image", [`${name}@${POOL_SNAP}`]);
 					await setPetKeys(rt, name);
-				}
+				} else rt.deleteToken(name);
 				break;
 			case "pool-rm":
 				if (leases.get(db, name)) leases.remove(db, name, true);
+				rt.clearEdge(name);
 				await restorePetAccess(rt, name);
 				await rt.vms.call("backend_cleanup_image", [`${name}@${POOL_SNAP}`]);
 				break;
