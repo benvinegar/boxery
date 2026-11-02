@@ -132,9 +132,11 @@ if "$A" pool add "$VM" >/dev/null 2>&1; then
 	if [[ -n $LID ]]; then
 		ok "acquire → $VM"
 		check "lease holder can use it" "$A" run "$VM" bash -c 'echo lease-work > ~/project/lease.txt'
-		stale=/tmp/boxery-e2e-stale.$$; cp "${BOXERY_HOME:-$HOME/.boxery}/leases/$LID.key" "$stale"
+		# Lease keys and ssh_config live in the default host's profile directory.
+		pdir=$("$A" host ls --json | jq -r 'map(select(.default))[0].dir')
+		stale=/tmp/boxery-e2e-stale.$$; cp "$pdir/leases/$LID.key" "$stale"
 		"$A" release "$VM" >/dev/null 2>&1 && ok "release" || bad release
-		check "released lease key is locked out" bash -c "! ssh -F '${BOXERY_HOME:-$HOME/.boxery}/ssh_config' -i '$stale' -o IdentitiesOnly=yes -o BatchMode=yes '$VM.boxery' true"
+		check "released lease key is locked out" bash -c "! ssh -F '$pdir/ssh_config' -i '$stale' -o IdentitiesOnly=yes -o BatchMode=yes '$VM.boxery' true"
 		rm -f "$stale"
 		"$A" pool rm "$VM" >/dev/null 2>&1 && ok "pool rm" || bad "pool rm"
 		check "reset on release: work from the lease is gone" "$A" run "$VM" bash -c 'test ! -e ~/project/lease.txt'
