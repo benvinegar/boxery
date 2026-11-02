@@ -29,8 +29,10 @@ const CLI_FOR_TOOL = {
 	vm_manage: {
 		new: "new", fork: "fork", rm: "rm", start: "start", stop: "stop", resize: "resize",
 		snap: "snap", "snap-rm": "snap-rm", revert: "revert", use: NO_CURRENT, none: NO_CURRENT, "build-base": "build-base",
+		host: none("the CLI has no session host; every command takes --host, and the default is the user's (boxery host use)"),
+		host_add: "host add", host_rm: "host rm",
 	},
-	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version" },
+	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version", hosts: "host ls" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
 	vm_grant: "grant", // the agent asks; the user approves in a prompt, then it runs boxery grant
 };
@@ -38,7 +40,6 @@ const CLI_FOR_TOOL = {
 // CLI commands no tool maps to, and why agents don't get them.
 const CLI_ONLY = {
 	help: "usage text",
-	host: "the host registry belongs to the CLI user (MCP adds vm_manage host_add/host_rm outside the shared tools; selecting the default stays theirs)",
 	setup: "configuring the VM host is the user's setup",
 	backend: "refreshes the backend recorded in the user's profile (vm_info hosts reads that record)",
 	"upgrade-host": "upgrading the host is the user's to run (vm_info version tells agents to ask)",

@@ -1299,12 +1299,13 @@ export async function manage(a, opts = {}) {
 
 // ---------------------------------------------------------------- shared prompt text
 
-/** @param {string | null | undefined} current @param {{ localToolsNote?: string }} [opts] */
-export function guidance(current, { localToolsNote } = {}) {
+/** The agent's standing instructions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
+export function guidance(current, { localToolsNote, host } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
+	const hostLine = host ? `Current host: ${host}. VM selections belong only to that host. Every vm_* tool accepts optional host (vm_info {action:'hosts'} lists them).\n` : "";
 	if (!current)
-		return `boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
-	return [
+		return `${hostLine}boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+	return hostLine + [
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
 		local,

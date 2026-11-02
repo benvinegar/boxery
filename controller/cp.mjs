@@ -28,10 +28,10 @@ for (const sig of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"])) {
 	});
 }
 
-const copy = /** @type {Tool & Required<Pick<Tool, "run">>} */ (TOOLS.find((t) => t.name === "vm_copy"));
+const copy = /** @type {Tool} */ (TOOLS.find((t) => t.name === "vm_copy"));
 try {
 	const [from, to] = locs.map(local);
-	const r = await core.withHost(host, () => copy.run(/** @type {any} */ (null) /* noVm: ignored */, { from, to }, { localCwd: process.cwd(), signal: abort.signal }));
+	const r = await core.withHost(host, () => copy.run(/** @type {any} */ (null) /* noVm: ignored */, { from, to }, /** @type {any} */ ({ localCwd: process.cwd(), signal: abort.signal }) /* no session: vm_copy needs none */));
 	console.log(r.text);
 } catch (/** @type {any} */ e) {
 	console.error(`boxery: ${e.message}`);

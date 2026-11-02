@@ -18,6 +18,8 @@ Types: the code is plain JavaScript typed with JSDoc comments (`/** @param {stri
 
 `test/parity.test.mjs` keeps the CLI and the agent tools in step: a new `vm_*` tool or action, or a new `boxery` command, fails it until it is mapped to its counterpart or listed with a reason it has none. When both sides need a feature, give the CLI the tool's implementation rather than a second one (as `boxery cp` runs `vm_copy`).
 
+`test/frontends.test.mjs` does the same for the two agent front-ends, the MCP server and the pi extension: both must list exactly the shared tool table in `core/boxery-tools.mjs`. Put a new tool or action in the table (with its `run`), not in one front-end; something only one of them can offer goes in that test's `MCP_ONLY` or `PI_ONLY` with the reason.
+
 `test/lease-workflows.test.mjs` tests lease policy directly through injected store/backend/journal dependencies, without SQLite or subprocesses. [Host module boundaries](docs/host-modules.md) documents ownership and dependencies. `test/operations.test.mjs` uses deterministic fake-backend barriers to SIGKILL supervisors while their worker groups are alive, checking both recovery and external side effects. Keep these tests offline: they use only temporary config and VM directories. The [lifecycle contract](docs/lifecycle.md) documents resource boundaries, durable intents and backend recovery responsibilities.
 
 Backends live in `host/backends/<name>.sh` and implement the contract in `host/backends/README.md`; `fake.sh` is the test double.

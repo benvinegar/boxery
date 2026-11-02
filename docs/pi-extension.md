@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-The main way to use boxery: [pi](https://pi.dev) runs on your laptop with your model login and your extensions, and gets explicit `vm_*` tools for the VMs.
+boxery's native front-end for [pi](https://pi.dev): pi runs on your laptop with your model login and your extensions, and gets explicit `vm_*` tools for the VMs. The tools are the same ones the [MCP server](mcp.md) offers, from one shared table, so pi can also use boxery over MCP. The extension adds what MCP can't: `--vm` flags, `/vm` commands, pi's own tool rendering, and throwaway VMs and leases that live exactly as long as the pi session.
 
 pi's built-in `bash`/`read`/`write`/`edit` are **left alone** and keep working on your laptop. The agent can work on both sides, and other extensions that wrap the built-ins keep working.
 
@@ -26,7 +26,19 @@ pi --vm demo --vm-grant ssh-agent,env:GH_TOKEN,file:.env
 pi                               # no current VM; the agent can still create one with vm_manage
 ```
 
-The extension pins the controller's selected [host profile](hosts.md) on first transport use. Select it with `boxery host use NAME` before starting pi; restart pi to adopt a changed default. Saved VMs are host-bound and are not automatically resumed on another host. Pool leases use that same pinned profile.
+### Hosts
+
+With more than one [host](hosts.md) registered, pi starts on the controller's default host, or on `--vm-host NAME`. It keeps that host for the session (a changed default doesn't redirect a running pi) until you switch:
+
+```bash
+pi --vm-host hornet --vm demo    # start on hornet
+```
+
+- `/vm host` lists the registered hosts; `/vm host NAME` switches to one and clears the current VM.
+- The agent can do the same with `vm_info {action:"hosts"}` and `vm_manage {action:"host", host:"NAME"}`, and every `vm_*` tool takes an optional `host` for a single call on another host.
+- A VM name belongs to its host: `demo` on two hosts is two VMs. The status line shows `HOST/NAME` once you have more than one host.
+- The current VM and host are saved in the session, so `pi --continue` resumes on the same host. If that name has since been registered for a different profile, pi warns and doesn't follow it.
+- Pool leases (`--vm pool`, `/vm pool`, `vm_lease`) come from the session's host and are renewed and released there.
 
 The current VM is saved in the session, so `pi --continue` picks it back up. Throwaway VMs and leases belong to their pi process. They're given back as soon as they stop being current: when you quit, `/new`, `/resume`, fork, or switch VMs.
 
@@ -42,10 +54,10 @@ The current VM is saved in the session, so `pi --continue` picks it back up. Thr
 | `vm_browser` | Playwright code against Chrome on the desktop over CDP. Watch it live with `/vm desktop`. |
 | `vm_grant` | Ask the user for a [grant](grants.md#agents-can-ask) (`github`, `ssh-agent`, `env:VAR`, `file:LOCAL[=REMOTE]`) in a confirm dialog; without a UI, returns the `boxery grant` command |
 | `vm_lease` | Pool leases: `acquire` · `renew` · `release` · `list`. Renewed while pi runs, released when the session ends. See [Pool leases](mcp.md#pool-leases). |
-| `vm_manage` | `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snap-rm` · `revert` · `use` · `none` · `build-base` on VM `vm` (for `fork`, the source; `new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`, see `vm_info images`; `build-base` builds the host's desktop base image) |
-| `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `images` · `version` (`vm` defaults to the current VM; `version` flags a host older than the controller) |
+| `vm_manage` | `new` · `fork` · `rm` · `start` · `stop` · `resize` · `snap` · `snap-rm` · `revert` · `use` · `none` · `build-base` on VM `vm` (for `fork`, the source; `new`/`fork` take `shape` or `cpus`/`mem`/`disk`, see [Shapes](shapes.md); `new` takes `from:"VM@SNAP"`, see `vm_info images`; `build-base` builds the host's desktop base image). `host` · `host_add` · `host_rm` select, register and forget [hosts](hosts.md), as in [MCP](mcp.md#multiple-hosts-one-server) |
+| `vm_info` | Read-only `list` · `shapes` · `grants` · `snaps` · `images` · `version` · `hosts` (`vm` defaults to the current VM; `version` flags a host older than the controller) |
 
-Every tool takes an optional `vm` argument (default: the current VM), so one agent can **fan out** across several VMs at once. The system prompt tells the model that project work happens in the VM through `vm_*` tools, and that built-ins act locally.
+Every tool takes an optional `vm` argument (default: the current VM), so one agent can **fan out** across several VMs at once, and an optional `host` (default: the session's host). The system prompt tells the model that project work happens in the VM through `vm_*` tools, and that built-ins act locally.
 
 ## Commands
 
@@ -57,6 +69,7 @@ Every tool takes an optional `vm` argument (default: the current VM), so one age
 | `/vm pool` | Lease a VM from the shared pool |
 | `/vm off` | No current VM (releases a lease, removes a throwaway) |
 | `/vm ls` · `/vm rm NAME` | List / remove VMs |
+| `/vm host [NAME]` | List the registered hosts, or switch to NAME (no current VM afterwards) |
 | `/vm desktop [NAME]` | Open the desktop in your browser |
 | `/vm grant SPEC…` · `/vm revoke SPEC…` · `/vm grants` | Manage [grants](grants.md) for the current VM |
 

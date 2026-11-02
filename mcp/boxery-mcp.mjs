@@ -15,18 +15,18 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import * as core from "../core/boxery-core.mjs";
-import { INFO_ACTIONS, infoAction, leaseAction, manageAction, MANAGE_ACTIONS, TOOLS as SHARED_TOOLS, VM_PARAM } from "../core/boxery-tools.mjs";
-/** @import { HostProfile, Lease } from "../core/boxery-core.mjs" */
-/** @import { JsonSchema, ObjectSchema, Tool, ToolContext } from "../core/boxery-tools.mjs" */
+import { HOST_PARAM, runTool, sameHost, TOOLS as SHARED_TOOLS, VM_PARAM } from "../core/boxery-tools.mjs";
+/** @import { Lease } from "../core/boxery-core.mjs" */
+/** @import { JsonSchema, ObjectSchema, Session as ToolSession, Tool, ToolContext } from "../core/boxery-tools.mjs" */
 /** Sends one JSON-RPC message to the client. @typedef {(message: object) => unknown} Notify */
 /**
- * One MCP client session. pending: our requests to the client (elicitation) by id; approve: vm_grant's prompt (see elicitApprover).
- * @typedef {{ id: string, host: HostProfile, current: string | null, currentHost: HostProfile | null, inflight: Map<unknown, AbortController>, protocolVersion: string,
- *   lastActive: number, pending: Map<string, (msg: any) => void>, requestSeq: number, keeper: core.LeaseKeeper, ui?: boolean, elicit?: boolean,
+ * One MCP client session: the shared tool session (current VM, host, leases; core/boxery-tools.mjs) plus protocol state.
+ * pending: our requests to the client (elicitation) by id; approve: vm_grant's prompt (see elicitApprover).
+ * @typedef {ToolSession & { id: string, inflight: Map<unknown, AbortController>, protocolVersion: string,
+ *   lastActive: number, pending: Map<string, (msg: any) => void>, requestSeq: number, ui?: boolean, elicit?: boolean,
  *   approve?: (req: { message: string, send: Notify, signal: AbortSignal }) => Promise<string> }} Session
  */
-/** The shared context plus this call's session and resolved host. @typedef {ToolContext & { session: Session, host: HostProfile }} McpContext */
-/** A tool as this server lists and runs it. @typedef {{ name: string, title: string, description: string, inputSchema: ObjectSchema, outputSchema?: JsonSchema, annotations: Tool["annotations"], noVm?: boolean, _meta?: object, run: NonNullable<Tool<McpContext>["run"]> }} McpTool */
+/** A tool as this server lists and runs it. @typedef {{ name: string, title: string, description: string, inputSchema: ObjectSchema, outputSchema?: JsonSchema, annotations: Tool["annotations"], noVm?: boolean, _meta?: object, run: Tool["run"] }} McpTool */
 
 const VERSION = (() => {
 	try {
@@ -78,141 +78,20 @@ const LOCAL_COPY_NOTE =
 
 // ---------------------------------------------------------------- tools
 
-// Built from the shared table (core/boxery-tools.mjs). MCP adds per-call host selection, and
-// vm_manage gains host (vm_info gains hosts) because the session's host is MCP state.
-// vm_manage/vm_lease act on the session's current VM and leases.
-const HOST_ACTIONS = ["host", "host_add", "host_rm"];
-const hostProp = {
-	host: {
-		type: "string",
-		description: "Registered host name (see vm_info {action:\"hosts\"} for where each runs); default: this session's host. " +
-			"Names registered for the same profile directory (hosts shows same_as) are the same host.",
-	},
-};
-const withHost = (/** @type {ObjectSchema} */ schema) => ({ ...schema, properties: { ...schema.properties, ...hostProp } });
-/** @param {Tool} t @returns {Tool<McpContext>} */
-const manageMcp = (t) => ({
-	...t,
-	description: `${t.description.replace(MANAGE_ACTIONS.join(" | "), [...MANAGE_ACTIONS, ...HOST_ACTIONS].join(" | "))} ` +
-		"`host` selects a session host via host:NAME and clears the current VM (vm_info hosts lists them). " +
-		"`host_add` registers a new host: name (its alias), dest (`local` = the machine this server runs on, or an ssh destination such as user@box) and, " +
-		"to create a separate profile there for another VM platform, backend (libvirt | lima | cloud-hypervisor | exe | boat; it gets its own state, proxy port and services), " +
-		"or profile to use one that already exists there; buildBase:true then runs build-base on it. " +
-		"It uses the user's default ssh key and becomes the CLI default only if there is none; select it afterwards with action:'host'. " +
-		"`host_rm` forgets registered host `name` (only the registration: its VMs, profile data and grants stay; the CLI default can't be removed). Credentials and grants remain user-controlled.",
-	parameters: {
-		...t.parameters,
-		properties: {
-			...t.parameters.properties,
-			action: { type: "string", enum: [...MANAGE_ACTIONS, ...HOST_ACTIONS] },
-			name: { type: "string", description: "host_add/host_rm: the host's alias (a host, not a VM; VMs are `vm`)" },
-			dest: { type: "string", description: "host_add: local, or an ssh destination (user@host or an ssh-config alias)" },
-			backend: { type: "string", description: "host_add: create a new profile on dest for this backend (libvirt | lima | cloud-hypervisor | exe | boat)" },
-			profile: { type: "string", description: "host_add: use this existing profile on dest (default: with backend, the host name)" },
-			buildBase: { type: "boolean", description: "host_add: then build the desktop base image (~3 min)" },
-		},
-	},
-	async run(_vm, a, { session, host, progress }) {
-		if (a.action === "host_add") {
-			if (Object.hasOwn(a, "host")) throw new Error("host_add takes the new host's alias as name, not host");
-			const out = await core.addHost(a, { progress });
-			let built = "";
-			if (a.buildBase) built = `\n${await core.withHost(a.name, () => core.manage({ action: "build-base" }, { progress }))}`;
-			return { text: `${out}${built}\nselect it with vm_manage {action:"host", host:"${a.name}"}` };
-		}
-		if (a.action === "host_rm") {
-			if (Object.hasOwn(a, "host")) throw new Error("host_rm takes the host's alias as name, not host");
-			const out = await core.removeHost(a.name);
-			// Resolved sessions keep their profile directory; say so when this session is one of them.
-			return { text: session.host.name === a.name ? `${out}\nthis session still uses ${a.name} until you select another host` : out };
-		}
-		if (a.action === "host") {
-			if (a.host == null) throw new Error("host selection requires host:NAME");
-			session.host = host;
-			session.current = null;
-			session.currentHost = null;
-			return { text: `current host: ${host.name}; no current VM` };
-		}
-		const adopt = (/** @type {string} */ name) => { session.current = name; session.host = session.currentHost = host; };
-		return manageAction(a, {
-			keeper: session.keeper,
-			progress,
-			async use(name) {
-				await core.ensureVm(name, progress);
-				await core.boxeryCli(["grants", name, "apply", "--quiet"], 120_000).catch(() => {});
-				adopt(name);
-			},
-			adopt,
-			clear() { session.current = null; session.currentHost = null; },
-			removed(name) { if (session.current === name && sameHost(session.currentHost, host)) this.clear(); },
-		});
-	},
-});
-/** @param {Tool} t @returns {Tool<McpContext>} */
-const infoMcp = (t) => ({
-	...t,
-	description: `${t.description.replace(INFO_ACTIONS.join(" | "), [...INFO_ACTIONS, "hosts"].join(" | "))} \`hosts\` lists registered hosts: where each runs (local or its ssh destination), its backend, and which names share a profile (same host).`,
-	parameters: { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...INFO_ACTIONS, "hosts"] } } },
-	outputSchema: { ...t.outputSchema, properties: { .../** @type {JsonSchema} */ (t.outputSchema).properties, host: { type: "string" }, hosts: HOSTS_SCHEMA } },
-	async run(_vm, a, { host, current }) {
-		if (a.action === "hosts") return hostsResult(host);
-		const r = await infoAction(a, { current, listNote: ` (host: ${host.name})`, hostName: host.name });
-		return a.action === "list" ? { ...r, structured: { ...r.structured, host: host.name } } : r;
-	},
-});
-const HOSTS_SCHEMA = {
-	type: "array",
-	description: "Registered hosts, by name. Read from local profile files only; no host is contacted.",
-	items: {
-		type: "object",
-		properties: {
-			name: { type: "string", description: "Host name for the host parameter" },
-			destination: { type: ["string", "null"], description: "Where its VM host runs: \"local\" (the machine running this MCP server's controller) or the ssh destination (user@host or ssh-config alias); null if the profile has no destination set or it can't be read without executing the config" },
-			backend: { type: ["string", "null"], description: "VM backend (lima, libvirt, cloud-hypervisor, exe, boat, …) as recorded by `boxery setup` or `boxery --host NAME backend`; null if never recorded" },
-			current: { type: "boolean", description: "This session's host (used when host is omitted)" },
-			default: { type: "boolean", description: "The controller's default (default-host); new sessions start here unless started with --host" },
-			same_as: { type: "array", items: { type: "string" }, description: "Other names whose profile is the same directory, i.e. the same host and VMs" },
-			dir: { type: "string", description: "Profile directory (config, ssh_config, grants)" },
-		},
-		required: ["name", "destination", "backend", "current", "default", "same_as", "dir"],
-	},
-};
-/** @param {HostProfile} host */
-function hostsResult(host) {
-	const hosts = core.describeHosts().map(({ name, destination, backend, default: def, same_as, dir }) =>
-		({ name, destination, backend, current: name === host.name, default: def, same_as, dir }));
-	const row = (/** @type {(typeof hosts)[number]} */ h) => [`${h.name}${h.current ? " *" : ""}`, h.destination ?? "-", h.backend ?? "-",
-		[h.default && "default", h.same_as.length && `same host as ${h.same_as.join(", ")}`].filter(Boolean).join("; ") || "-", h.dir].join("\t");
-	const text = ["NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE", ...hosts.map(row),
-		"(* = this session's host; destination local = the machine running this server; backend - = not recorded, run boxery --host NAME backend)"].join("\n");
-	return { text, structured: { hosts } };
-}
-/** @param {Tool} t @returns {Tool<McpContext>} */
-const leaseMcp = (t) => ({
-	...t,
-	run(_vm, a, { session, host, current }) {
-		return leaseAction(a, {
-			keeper: session.keeper,
-			current,
-			adopt(name) { session.current = name; session.host = session.currentHost = host; },
-			clear() { session.current = null; session.currentHost = null; },
-		});
-	},
-});
-/** @param {Tool} t @returns {Tool<McpContext>} */
-const copyMcp = (t) => (LOCAL_COPY_NOTE ? { ...t, description: `${t.description} ${LOCAL_COPY_NOTE}` } : t);
-/** @type {Record<string, (t: Tool) => Tool<McpContext>>} */
-const MCP_TOOL = { vm_manage: manageMcp, vm_lease: leaseMcp, vm_info: infoMcp, vm_copy: copyMcp };
+// Built from the shared table (core/boxery-tools.mjs), host selection included. MCP adds only
+// vm_copy's note on what `local:` means for this server, and the live desktop view below.
+/** @type {Record<string, (t: Tool) => Tool>} */
+const MCP_TOOL = { vm_copy: (t) => (LOCAL_COPY_NOTE ? { ...t, description: `${t.description} ${LOCAL_COPY_NOTE}` } : t) };
 /** @type {McpTool[]} */
 const TOOLS = SHARED_TOOLS.map((t) => MCP_TOOL[t.name]?.(t) ?? t).map((t) => ({
 	name: t.name,
 	title: t.title,
 	description: t.description,
-	inputSchema: withHost(t.parameters),
+	inputSchema: t.parameters,
 	outputSchema: t.outputSchema,
 	annotations: { title: t.title, ...t.annotations },
 	noVm: t.noVm,
-	run: /** @type {McpTool["run"]} */ (t.run), // vm_manage/vm_lease get theirs from MCP_TOOL
+	run: t.run,
 }));
 
 // Live desktop view (MCP Apps, extension io.modelcontextprotocol/ui). vm_view renders ui://boxery/desktop
@@ -235,7 +114,7 @@ const VIEW_TOOLS = [
 		description:
 			"Show the user a live view of a VM's desktop in the chat, which they can watch and, if they choose, control with mouse and keyboard. " +
 			"Use it when the user wants to see or take over the desktop. To look at the screen yourself, use vm_screenshot.",
-		inputSchema: withHost({ type: "object", properties: { vm: VM_PARAM }, required: [] }),
+		inputSchema: { type: "object", properties: { vm: VM_PARAM, host: HOST_PARAM }, required: [] },
 		annotations: { title: "VM live view", readOnlyHint: true, openWorldHint: false },
 		_meta: uiMeta(["model", "app"]),
 		async run(vm, _a, { host }) {
@@ -250,7 +129,7 @@ const VIEW_TOOLS = [
 		name: "vm_view_frame",
 		title: "VM live view frame",
 		description: "One frame of the live view: a JPEG of the VM's desktop, sized like vm_screenshot so clicks use the same coordinates.",
-		inputSchema: withHost({ type: "object", properties: { vm: VM_PARAM }, required: [] }),
+		inputSchema: { type: "object", properties: { vm: VM_PARAM, host: HOST_PARAM }, required: [] },
 		annotations: { title: "VM live view frame", readOnlyHint: true, openWorldHint: false },
 		_meta: uiMeta(["app"]),
 		async run(vm) {
@@ -259,7 +138,6 @@ const VIEW_TOOLS = [
 		},
 	},
 ];
-const sameHost = (/** @type {HostProfile | null | undefined} */ a, /** @type {HostProfile | null | undefined} */ b) => a?.name === b?.name && a?.dir === b?.dir;
 const TOOL_MAP = new Map([...TOOLS, ...VIEW_TOOLS].map((t) => [t.name, t]));
 
 // ---------------------------------------------------------------- MCP / JSON-RPC
@@ -267,7 +145,13 @@ const TOOL_MAP = new Map([...TOOLS, ...VIEW_TOOLS].map((t) => [t.name, t]));
 /** @type {Set<Session>} */
 const allSessions = new Set();
 function newSession() {
-	const session = /** @type {Session} */ ({ id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), protocolVersion: PROTOCOL_VERSIONS.at(-1), lastActive: Date.now() });
+	const session = /** @type {Session} */ ({
+		id: randomUUID(), host: DEFAULT_HOST, current: DEFAULT_VM, currentHost: DEFAULT_VM ? DEFAULT_HOST : null, inflight: new Map(), protocolVersion: PROTOCOL_VERSIONS.at(-1), lastActive: Date.now(),
+		// Session hooks for the shared vm_manage / vm_lease (core/boxery-tools.mjs).
+		adopt(name, host) { session.current = name; session.host = session.currentHost = host; },
+		clear() { session.current = null; session.currentHost = null; },
+		selectHost(host) { session.host = host; session.clear(); },
+	});
 	// Requests this server sent the client (elicitation), by id, awaiting the client's response.
 	session.pending = new Map();
 	session.requestSeq = 0;
@@ -335,7 +219,8 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"])
 	});
 
 const instructions = (/** @type {Session} */ s) =>
-	`Current host: ${s.host.name}. VM selections belong only to that host. Every vm_* tool accepts optional host.\n` + core.guidance(s.current, {
+	core.guidance(s.current, {
+		host: s.host.name,
 		localToolsNote:
 			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
 	}) + (LOCAL_COPY_NOTE ? `\nvm_copy: ${LOCAL_COPY_NOTE}` : "");
@@ -383,18 +268,8 @@ async function callTool(session, params, signal, progress, send) {
 	if (!tool) throw Object.assign(new Error(`unknown tool ${params?.name}`), { code: -32602 });
 	const args = params.arguments ?? {};
 	try {
-		// Snapshot before any await: concurrent selection must not retarget this call or its cleanup.
-		const host = Object.hasOwn(args, "host") ? core.resolveHost(core.assertHost(args.host)) : session.host;
-		const current = sameHost(session.currentHost, host) ? session.current : null;
-		let vm = null;
-		if (!tool.noVm) {
-			vm = args.vm || current;
-			if (!vm) throw new Error("No VM given and no current VM. Pass `vm`, or call vm_manage {action:'use', vm:…} first.");
-			core.assertName(vm);
-		}
-		const { vm: _drop, ...rest } = args;
 		const approve = tool.name === "vm_grant" ? elicitApprover(session, send, signal) : undefined;
-		const r = await core.withHost(host, () => tool.run(vm, tool.noVm ? args : rest, { session, signal, host, current, progress, approve, localCopy: LOCAL_COPY }));
+		const r = await runTool(tool, args, session, { signal, progress, approve, localCopy: LOCAL_COPY });
 		/** @type {{ type: string, text?: string, data?: string, mimeType?: string }[]} */
 		const content = [{ type: "text", text: r.text ?? "" }];
 		if (r.image) content.push({ type: "image", data: r.image.data, mimeType: r.image.mimeType });

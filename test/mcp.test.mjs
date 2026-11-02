@@ -149,24 +149,15 @@ describe("stdio", () => {
 		assert.ok(!tools.some((t) => "run" in t), "internal fields not leaked");
 	});
 
-	test("tools/list is the shared tool table plus host selection", async () => {
+	test("tools/list is the shared tool table, host selection included", async () => {
 		const { TOOLS } = await import("../core/boxery-tools.mjs");
 		const { tools } = (await c.call("tools/list")).result;
 		assert.deepEqual(tools.map((t) => t.name), TOOLS.map((t) => t.name));
 		for (const shared of TOOLS) {
 			const t = tools.find((x) => x.name === shared.name);
-			const { host, ...props } = t.inputSchema.properties;
-			assert.ok(host, `${t.name} takes host`);
-			if (t.name === "vm_manage") {
-				assert.deepEqual(props.action.enum, [.../** @type {readonly string[]} */ (shared.parameters.properties.action.enum), "host", "host_add", "host_rm"]);
-				continue;
-			}
-			if (t.name === "vm_info") {
-				assert.deepEqual(props.action.enum, [.../** @type {readonly string[]} */ (shared.parameters.properties.action.enum), "hosts"]);
-				continue;
-			}
+			assert.ok(t.inputSchema.properties.host, `${t.name} takes host`);
 			assert.equal(t.description, shared.description, t.name);
-			assert.deepEqual({ ...t.inputSchema, properties: props }, shared.parameters, t.name);
+			assert.deepEqual(t.inputSchema, shared.parameters, t.name);
 		}
 	});
 

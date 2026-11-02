@@ -1,41 +1,61 @@
 // The vm_* tool surface, defined once. The MCP server (mcp/boxery-mcp.mjs) and the pi extension
-// (extension/index.ts) are both built from this table, so names, descriptions and schemas cannot drift.
+// (extension/index.ts) are both built from this table, so names, descriptions, schemas and behavior
+// cannot drift: test/frontends.test.mjs fails when either one lists something the table doesn't.
 //
-// Entry: { name, title, description, parameters (plain JSON Schema, incl. `vm`), annotations (MCP
+// Entry: { name, title, description, parameters (plain JSON Schema, incl. `vm` and `host`), annotations (MCP
 // hints), outputSchema? (MCP structuredContent), run(vm, args, ctx) → {text, image?, structured?, isError?} }.
-// ctx: { signal, current, localCwd, localCopy?, progress? }. progress(message) reports a status line while the
-// tool runs (MCP progress notifications); front-ends without it pass nothing. localCopy limits vm_copy's
-// local: endpoints (see copyTool); front-ends that run on the user's own machine pass nothing.
+// Front-ends call runTool(), which resolves the call's host and VM against their Session and runs the
+// tool on that host. ctx: { signal, session, host, current, localCwd, localCopy?, progress?, approve? }.
+// progress(message) reports a status line while the tool runs (MCP progress notifications); front-ends
+// without it pass nothing. localCopy limits vm_copy's local: endpoints (see copyTool); front-ends that run
+// on the user's own machine pass nothing.
 //   engine: pi runs this tool with its own built-in engine (same rendering/truncation as bash, read, …)
 //   noVm:   the front-end does not resolve a VM; the tool gets every argument, `vm` included
 //           (vm_copy, vm_manage, vm_info, vm_lease)
-// vm_manage and vm_lease have no `run`: "current VM" and held leases are front-end session state.
-// Each front-end calls manageAction() / leaseAction() with its own session hooks.
+// "Current VM", the session's host and held leases are front-end state: vm_manage and vm_lease change
+// them only through the Session hooks.
 import * as core from "./boxery-core.mjs";
-/** @import { Approve, LocalConfinement, ManageArgs, Progress, ToolResult } from "./boxery-core.mjs" */
+/** @import { Approve, HostProfile, LocalConfinement, ManageArgs, Progress, ToolResult } from "./boxery-core.mjs" */
 /** A JSON Schema fragment. @typedef {{ type?: string | string[], description?: string, enum?: readonly string[], properties?: Record<string, JsonSchema>, items?: JsonSchema, required?: string[], anyOf?: JsonSchema[], minimum?: number, maximum?: number }} JsonSchema */
 /** A tool's input schema: always an object with named properties. @typedef {JsonSchema & { type: "object", properties: Record<string, JsonSchema>, required: string[] }} ObjectSchema */
 /** MCP tool annotations (hints). @typedef {{ title?: string, readOnlyHint?: boolean, destructiveHint?: boolean, idempotentHint?: boolean, openWorldHint?: boolean }} ToolAnnotations */
-/** What every front-end passes run (see the header). @typedef {{ signal?: AbortSignal, current?: string | null, localCwd?: string, localCopy?: LocalConfinement | false, progress?: Progress, approve?: Approve }} ToolContext */
+/** What every front-end passes runTool (see the header). @typedef {{ signal?: AbortSignal, localCwd?: string, localCopy?: LocalConfinement | false, progress?: Progress, approve?: Approve }} ToolContext */
+/** What run gets: the front-end's context plus the call's session, host and (on that host) current VM. @typedef {ToolContext & { session: Session, host: HostProfile, current: string | null }} RunContext */
 /**
- * One TOOLS entry (see the header). A front-end may extend the context (X); noVm tools ignore `vm` (front-ends pass null).
- * @template [X=ToolContext]
+ * One TOOLS entry (see the header). A front-end may extend the context (X); noVm tools get vm = null.
+ * @template [X=RunContext]
  * @typedef {{ name: string, title: string, description: string, engine?: "bash" | "read" | "write" | "edit", noVm?: boolean, parameters: ObjectSchema,
- *   outputSchema?: JsonSchema, annotations: ToolAnnotations, run?: (vm: string, args: any, ctx: X) => Promise<ToolResult> }} Tool
+ *   outputSchema?: JsonSchema, annotations: ToolAnnotations, run: (vm: string, args: any, ctx: X) => Promise<ToolResult> }} Tool
  */
-/** vm_manage's front-end session (see manageAction). @typedef {{ use: (name: string) => Promise<void>, adopt: (name: string) => void, clear: () => void, removing?: (name: string) => Promise<void> | void, removed?: (name: string) => void, keeper?: core.LeaseKeeper, progress?: Progress }} ManageSession */
-/** vm_lease's front-end session (see leaseAction). @typedef {{ keeper: core.LeaseKeeper, current?: string | null, adopt: (name: string) => void, clear: () => void }} LeaseSession */
+/**
+ * What a front-end keeps for one agent session, and the hooks the shared actions change it through.
+ * host: the session's host (calls without `host` use it). current/currentHost: the current VM and the host it
+ * belongs to (a VM name means nothing without its host). keeper: the session's pool leases.
+ *   adopt(name, host)      make VM `name` on `host` current; `host` becomes the session's host
+ *   clear()                no current VM (the session's host stays)
+ *   selectHost(host)       make `host` the session's host, with no current VM
+ *   removing?(name, host)  before vm_manage rm of the current VM (may throw to refuse); it is cleared after
+ * @typedef {{ host: HostProfile, current: string | null, currentHost: HostProfile | null, keeper: core.LeaseKeeper,
+ *   adopt: (name: string, host: HostProfile) => void, clear: () => void, selectHost: (host: HostProfile) => void,
+ *   removing?: (name: string, host: HostProfile) => Promise<void> | void }} Session
+ */
 
 const where = "in a boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
 export const VM_PARAM = { type: "string", description: "VM name (default: the current VM)" };
+export const HOST_PARAM = {
+	type: "string",
+	description: "Registered host name (see vm_info {action:\"hosts\"} for where each runs); default: this session's host. " +
+		"Names registered for the same profile directory (hosts shows same_as) are the same host.",
+};
 const SHOT = { screenshot: { type: "boolean", description: "Return a screenshot after the action (default true)" } };
 /** @param {Record<string, JsonSchema>} properties @param {string[]} [required] @returns {ObjectSchema} */
-const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM }, required });
+const obj = (properties, required = []) => ({ type: "object", properties: { ...properties, vm: VM_PARAM, host: HOST_PARAM }, required });
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
-export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base"];
+export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base", "host", "host_add", "host_rm"];
+const BACKENDS = "libvirt | lima | cloud-hypervisor | exe | boat";
 const SIZE = (/** @type {string} */ unit, /** @type {number} */ min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
-export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version"];
+export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version", "hosts"];
 
 const INFO_OUTPUT = {
 	type: "object",
@@ -54,9 +74,26 @@ const INFO_OUTPUT = {
 		},
 		host: {
 			anyOf: [{ type: "object" }, { type: "string" }, { type: "null" }],
-			description: "version: the host's {name, version, describe, install}, describe as for controller (null if the host predates versions)",
+			description: "list: the host's name; version: the host's {name, version, describe, install}, describe as for controller (null if the host predates versions)",
 		},
 		behind: { type: "boolean", description: "version: the host is older than the controller" },
+		hosts: {
+			type: "array",
+			description: "hosts: registered hosts, by name. Read from local profile files only; no host is contacted.",
+			items: {
+				type: "object",
+				properties: {
+					name: { type: "string", description: "Host name for the host parameter" },
+					destination: { type: ["string", "null"], description: "Where its VM host runs: \"local\" (the machine running this agent's controller) or the ssh destination (user@host or ssh-config alias); null if the profile has no destination set or it can't be read without executing the config" },
+					backend: { type: ["string", "null"], description: "VM backend (lima, libvirt, cloud-hypervisor, exe, boat, …) as recorded by `boxery setup` or `boxery --host NAME backend`; null if never recorded" },
+					current: { type: "boolean", description: "This session's host (used when host is omitted)" },
+					default: { type: "boolean", description: "The controller's default (default-host); new sessions start here unless started with another host" },
+					same_as: { type: "array", items: { type: "string" }, description: "Other names whose profile is the same directory, i.e. the same host and VMs" },
+					dir: { type: "string", description: "Profile directory (config, ssh_config, grants)" },
+				},
+				required: ["name", "destination", "backend", "current", "default", "same_as", "dir"],
+			},
+		},
 	},
 };
 
@@ -228,7 +265,13 @@ export const TOOLS = [
 			"`resize` changes an existing VM's cpus/mem/disk (disk only grows); a running VM restarts, so its processes and jobs end. `start`/`stop` power a VM on/off; disk state is kept. " +
 			"`snap` snapshots VM `vm` (as `snapshot`, optional); `revert` restores snapshot `snapshot` and `snap-rm` deletes it (see vm_info snaps). " +
 			"`use` makes `vm` the current VM (default for all vm_* tools; created if missing); `none` clears it. " +
-			"`build-base` builds the host's desktop base image (~3 min), which desktop VMs are created from; a new host needs it once (headless VMs don't). The host refuses while VMs depend on the current base.",
+			"`build-base` builds the host's desktop base image (~3 min), which desktop VMs are created from; a new host needs it once (headless VMs don't). The host refuses while VMs depend on the current base. " +
+			"`host` selects a session host via host:NAME and clears the current VM (vm_info hosts lists them). " +
+			"`host_add` registers a new host: name (its alias), dest (`local` = the machine this agent's controller runs on, or an ssh destination such as user@box) and, " +
+			`to create a separate profile there for another VM platform, backend (${BACKENDS}; it gets its own state, proxy port and services), ` +
+			"or profile to use one that already exists there; buildBase:true then runs build-base on it. " +
+			"It uses the user's default ssh key and becomes the CLI default only if there is none; select it afterwards with action:'host'. " +
+			"`host_rm` forgets registered host `name` (only the registration: its VMs, profile data and grants stay; the CLI default can't be removed). Credentials and grants remain user-controlled.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -243,10 +286,17 @@ export const TOOLS = [
 				cpus: SIZE("vCPUs", 1),
 				mem: SIZE("memory in MiB", 512),
 				disk: SIZE("disk in GiB (resize: only grows)", 1),
+				name: { type: "string", description: "host_add/host_rm: the host's alias (a host, not a VM; VMs are `vm`)" },
+				dest: { type: "string", description: "host_add: local, or an ssh destination (user@host or an ssh-config alias)" },
+				backend: { type: "string", description: `host_add: create a new profile on dest for this backend (${BACKENDS})` },
+				profile: { type: "string", description: "host_add: use this existing profile on dest (default: with backend, the host name)" },
+				buildBase: { type: "boolean", description: "host_add: then build the desktop base image (~3 min)" },
+				host: HOST_PARAM,
 			},
 			required: ["action"],
 		},
 		annotations: { destructiveHint: true, openWorldHint: false },
+		run: (_vm, a, x) => manageAction(a, x),
 	},
 	{
 		name: "vm_info",
@@ -256,10 +306,11 @@ export const TOOLS = [
 			`Read-only lookups about boxery VMs. action: ${INFO_ACTIONS.join(" | ")}. ` +
 			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (to ask for more, use vm_grant); `snaps` the snapshots of VM `vm`; `images` every snapshot on the host as VM@SNAP (what vm_manage new takes as `from`); " +
 			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
+			"`hosts` lists registered hosts: where each runs (local or its ssh destination), its backend, and which names share a profile (same host). " +
 			"`vm` defaults to the current VM.",
 		parameters: {
 			type: "object",
-			properties: { action: { type: "string", enum: INFO_ACTIONS }, vm: { type: "string", description: "grants/snaps: the VM (default: the current VM)" } },
+			properties: { action: { type: "string", enum: INFO_ACTIONS }, vm: { type: "string", description: "grants/snaps: the VM (default: the current VM)" }, host: HOST_PARAM },
 			required: ["action"],
 		},
 		annotations: { readOnlyHint: true, openWorldHint: false },
@@ -306,19 +357,59 @@ export const TOOLS = [
 				ttl: { type: "integer", minimum: core.LEASE_TTL.min, maximum: core.LEASE_TTL.max, description: `acquire/renew: lease length in seconds (default ${core.LEASE_TTL.default})` },
 				wait: { type: "integer", minimum: 0, maximum: 3600, description: "acquire: seconds to wait for a free VM (default 60)" },
 				use: { type: "boolean", description: "acquire: make the leased VM the current VM (default true)" },
+				host: HOST_PARAM,
 			},
 			required: ["action"],
 		},
 		annotations: { destructiveHint: true },
+		run: (_vm, a, x) => leaseAction(a, x),
 	},
 ];
 
+/** Two resolved hosts are the same when both name and profile directory match. @param {HostProfile | null | undefined} a @param {HostProfile | null | undefined} b */
+export const sameHost = (a, b) => a?.name === b?.name && a?.dir === b?.dir;
+
 /**
- * vm_info: read-only lookups. ctx.current is the current VM; ctx.listNote is appended to list output;
- * ctx.hostName names the host in version output.
- * @param {{ action?: string, vm?: string | null }} a @param {{ current?: string | null, listNote?: string, hostName?: string }} [ctx] @returns {Promise<ToolResult>}
+ * What one call targets, resolved against session `s` without awaiting anything, so a concurrent selection
+ * can't retarget it or its cleanup: the host (`host`, else the session's), the current VM if it belongs to
+ * that host, and for tools that run in a VM the VM (`vm`, else the current one). For those, `args` drops
+ * `vm` and `host`; noVm tools get every argument.
+ * @param {{ noVm?: boolean }} tool @param {Record<string, any>} args @param {Session} s
  */
-export async function infoAction(a, { current, listNote, hostName } = {}) {
+export function callTarget(tool, args, s) {
+	const host = Object.hasOwn(args, "host") ? core.resolveHost(core.assertHost(args.host)) : s.host;
+	const current = sameHost(s.currentHost, host) ? s.current : null;
+	if (tool.noVm) return { host, current, vm: /** @type {string | null} */ (null), args };
+	const { vm, host: _host, ...rest } = args;
+	if (!vm && !current) throw new Error("No VM given and no current VM. Pass `vm`, or select one with vm_manage {action:'use', vm:…}.");
+	return { host, current, vm: /** @type {string | null} */ (core.assertName(vm || current)), args: rest };
+}
+
+/**
+ * Run a TOOLS entry (or a front-end's own tool of the same shape): resolve its target (callTarget), then run it on that host.
+ * @param {Pick<Tool, "noVm" | "run">} tool @param {Record<string, any>} args @param {Session} s @param {ToolContext} [ctx] @returns {Promise<ToolResult>}
+ */
+export async function runTool(tool, args, s, ctx = {}) {
+	const { host, current, vm, args: a } = callTarget(tool, args, s);
+	return core.withHost(host, () => tool.run(/** @type {string} */ (vm), a, { ...ctx, session: s, host, current }));
+}
+
+/** vm_info hosts: the registered hosts, `host` marked current. @param {HostProfile} host @returns {ToolResult} */
+export function hostsResult(host) {
+	const hosts = core.describeHosts().map(({ name, destination, backend, default: def, same_as, dir }) =>
+		({ name, destination, backend, current: name === host.name, default: def, same_as, dir }));
+	const row = (/** @type {(typeof hosts)[number]} */ h) => [`${h.name}${h.current ? " *" : ""}`, h.destination ?? "-", h.backend ?? "-",
+		[h.default && "default", h.same_as.length && `same host as ${h.same_as.join(", ")}`].filter(Boolean).join("; ") || "-", h.dir].join("\t");
+	const text = ["NAME\tDESTINATION\tBACKEND\tNOTES\tPROFILE", ...hosts.map(row),
+		"(* = this session's host; destination local = the machine running this controller; backend - = not recorded, run boxery --host NAME backend)"].join("\n");
+	return { text, structured: { hosts } };
+}
+
+/**
+ * vm_info: read-only lookups on the call's host. current: the current VM there.
+ * @param {{ action?: string, vm?: string | null }} a @param {{ host: HostProfile, current?: string | null }} ctx @returns {Promise<ToolResult>}
+ */
+export async function infoAction(a, { host, current }) {
 	const target = () => {
 		const vm = a.vm ?? current;
 		if (!vm) throw new Error("No VM given and no current VM. Pass `vm`.");
@@ -327,7 +418,7 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 	switch (a.action) {
 		case "list": {
 			const vms = await core.listVms();
-			return { text: `${core.formatVms(vms)}\ncurrent: ${current ?? "(none)"}${listNote ?? ""}`, structured: { vms, current: current ?? null } };
+			return { text: `${core.formatVms(vms)}\ncurrent: ${current ?? "(none)"} (host: ${host.name})`, structured: { vms, current: current ?? null, host: host.name } };
 		}
 		case "shapes": {
 			const shapes = await core.listShapes();
@@ -349,65 +440,82 @@ export async function infoAction(a, { current, listNote, hostName } = {}) {
 		}
 		case "version": {
 			const v = await core.versions();
-			if (hostName && v.host) v.host = { ...v.host, name: hostName };
+			if (v.host) v.host = { ...v.host, name: host.name };
 			return { text: core.formatVersions(v), structured: v };
 		}
+		case "hosts":
+			return hostsResult(host);
 		default:
 			throw new Error(`unknown action ${a.action}`);
 	}
 }
 
 /**
- * vm_manage, given a front-end's "current VM" session:
- *   s.use(name)          select an existing-or-new VM as current (create, apply grants)
- *   s.adopt(name)        mark a VM that was just created as current
- *   s.clear()            no current VM
- *   s.removing?(name)    before rm (may throw to refuse); s.removed?(name) after it
- *   s.keeper?            the session's core.LeaseKeeper: leased VMs cannot be removed
- *   s.progress?(message) status lines from long controller operations (MCP progress)
- * @param {ManageArgs & { action: string }} a @param {ManageSession} s @returns {Promise<ToolResult>}
+ * vm_manage on the call's host: VM lifecycle, plus the session's current VM and host (through the Session hooks).
+ * Leased VMs can't be removed. progress: status lines from long controller operations (MCP progress).
+ * @param {ManageArgs & { action: string, name?: string, dest?: string, backend?: string | null, profile?: string | null, buildBase?: boolean }} a
+ * @param {{ session: Session, host: HostProfile, progress?: Progress }} ctx @returns {Promise<ToolResult>}
  */
-export async function manageAction(a, s) {
+export async function manageAction(a, { session: s, host, progress }) {
 	switch (a.action) {
 		case "use": {
 			const vm = core.needVm(a);
-			await s.use(vm);
-			return { text: `current VM: ${vm}` };
+			await core.ensureVm(vm, progress);
+			const unapplied = await core.boxeryCli(["grants", vm, "apply", "--quiet"], 120_000).then(() => "", (e) => `\ngrants not applied: ${e.message}`);
+			s.adopt(vm, host);
+			return { text: `current VM: ${vm}${unapplied}` };
 		}
 		case "none":
 			s.clear();
 			return { text: "no current VM" };
 		case "new": {
 			const vm = a.vm ? core.assertName(a.vm) : core.newName();
-			const out = await core.manage({ ...a, vm }, { progress: s.progress });
-			if (a.use) s.adopt(vm);
+			const out = await core.manage({ ...a, vm }, { progress });
+			if (a.use) s.adopt(vm, host);
 			return { text: `${out}${a.use ? `\ncurrent VM: ${vm}` : ""}` };
 		}
 		case "rm": {
 			const vm = core.needVm(a);
-			if (s.keeper?.find(vm)) throw new Error(`${vm} is leased from the pool; release it with vm_lease {action:"release"}`);
-			await s.removing?.(vm);
-			const out = await core.manage(a, { progress: s.progress });
-			s.removed?.(vm);
+			if (s.keeper.find(vm)) throw new Error(`${vm} is leased from the pool; release it with vm_lease {action:"release"}`);
+			const isCurrent = () => s.current === vm && sameHost(s.currentHost, host);
+			if (isCurrent()) await s.removing?.(vm, host);
+			const out = await core.manage(a, { progress });
+			if (isCurrent()) s.clear();
 			return { text: out };
+		}
+		case "host":
+			if (a.host == null) throw new Error("host selection requires host:NAME");
+			s.selectHost(host);
+			return { text: `current host: ${host.name}; no current VM` };
+		case "host_add": {
+			if (Object.hasOwn(a, "host")) throw new Error("host_add takes the new host's alias as name, not host");
+			const out = await core.addHost(/** @type {{ name: string, dest: string }} */ (a), { progress });
+			const built = a.buildBase ? `\n${await core.withHost(/** @type {string} */ (a.name), () => core.manage({ action: "build-base" }, { progress }))}` : "";
+			return { text: `${out}${built}\nselect it with vm_manage {action:"host", host:"${a.name}"}` };
+		}
+		case "host_rm": {
+			if (Object.hasOwn(a, "host")) throw new Error("host_rm takes the host's alias as name, not host");
+			const out = await core.removeHost(/** @type {string} */ (a.name));
+			// Resolved sessions keep their profile directory; say so when this session is one of them.
+			return { text: s.host.name === a.name ? `${out}\nthis session still uses ${a.name} until you select another host` : out };
 		}
 		default:
 			if (INFO_ACTIONS.includes(a.action)) throw new Error(`vm_manage has no ${a.action}; use vm_info {action:"${a.action}"}`);
-			return { text: await core.manage(a, { progress: s.progress }) };
+			return { text: await core.manage(a, { progress }) };
 	}
 }
 
 /**
- * vm_lease, given a front-end session: s.keeper (core.LeaseKeeper), s.current (the current VM name
- * or null), and s.adopt(name) and s.clear() as for manageAction.
- * @param {{ action?: string, vm?: string | null, ttl?: number | null, wait?: number | null, use?: boolean }} a @param {LeaseSession} s @returns {Promise<ToolResult>}
+ * vm_lease on the call's host, with the session's lease keeper. current: the current VM there.
+ * @param {{ action?: string, vm?: string | null, ttl?: number | null, wait?: number | null, use?: boolean }} a
+ * @param {{ session: Session, host: HostProfile, current?: string | null }} ctx @returns {Promise<ToolResult>}
  */
-export async function leaseAction(a, s) {
-	const target = () => core.assertName(a.vm ?? s.current ?? "");
+export async function leaseAction(a, { session: s, host, current }) {
+	const target = () => core.assertName(a.vm ?? current ?? "");
 	switch (a.action) {
 		case "acquire": {
 			const l = await s.keeper.acquire({ ttl: a.ttl ?? undefined, wait: a.wait ?? undefined });
-			if (a.use !== false) s.adopt(l.name);
+			if (a.use !== false) s.adopt(l.name, host);
 			return { text: `leased ${l.name} (lease ${l.id}, ttl ${l.ttl}s, renewed automatically while this session is active)${a.use !== false ? `\ncurrent VM: ${l.name}` : ""}` };
 		}
 		case "renew": {
@@ -417,12 +525,12 @@ export async function leaseAction(a, s) {
 		case "release": {
 			const name = target();
 			await s.keeper.release(name);
-			const wasCurrent = s.current === name;
+			const wasCurrent = current === name;
 			if (wasCurrent) s.clear();
 			return { text: `released ${name}; the host resets it to its clean image${wasCurrent ? "\nno current VM" : ""}` };
 		}
 		case "list":
-			return { text: core.formatLeases(s.keeper.list(), s.current) };
+			return { text: core.formatLeases(s.keeper.list(), current) };
 		default:
 			throw new Error(`unknown action ${a.action}`);
 	}
