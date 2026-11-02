@@ -37,7 +37,7 @@ sudo loginctl enable-linger "$USER"
 **Install**
 
 ```bash
-npm install -g boxery-vm            # or: git clone https://github.com/benvinegar/boxery.git && use ./host/boxery-host
+npm install -g boxery-vm            # or: git clone https://github.com/modem-dev/boxery.git && use ./host/boxery-host
 boxery-host init                 # storage pool, proxy + vsock + reaper user services, ~/.local/bin symlinks
 boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Node 24, pi, opencode (~3 min)
 ```

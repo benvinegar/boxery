@@ -101,7 +101,7 @@ rm -rf "$gtmp"
 echo "== edge grants (http: — credential injected by the host proxy, never in the VM)"
 if command -v gh >/dev/null && gh auth token >/dev/null 2>&1; then
 	"$A" grant "$VM" github --readonly >/dev/null 2>&1 && ok "grant github --readonly" || bad "grant github"
-	repo=${BOXERY_E2E_PRIVATE_REPO:-benvinegar/boxery}
+	repo=${BOXERY_E2E_PRIVATE_REPO:-modem-dev/boxery}
 	check "git ls-remote https://github.com/$repo via the edge" "$A" run "$VM" bash -c "git ls-remote https://github.com/$repo HEAD | grep -q HEAD"
 	check "GitHub API via \$BOXERY_EDGE" "$A" run "$VM" bash -c 'bash -lc "curl -sf \"\$BOXERY_EDGE/api.github.com/user\" | grep -q login"'
 	check "read-only grant blocks writes" "$A" run "$VM" bash -c 'bash -lc "test \$(curl -s -o /dev/null -w %{http_code} -X POST \"\$BOXERY_EDGE/api.github.com/user/repos\" -d {}) = 403"'

@@ -2,13 +2,13 @@
 
 ← [Architecture](../../ARCHITECTURE.md#roadmap)
 
-Status: **proposal, not built.** This is the design for profiles and the parts of the lease design that were never implemented. It moved out of `ARCHITECTURE.md` in November 2026 so that file describes only what exists ([#22](https://github.com/benvinegar/boxery/issues/22)). The shipped lease system (SQLite state machine, generations and epochs, reaper, per-lease keys, boot-ID fencing) is described in [ARCHITECTURE.md → Leases](../../ARCHITECTURE.md#leases) and [pool.md](../pool.md).
+Status: **proposal, not built.** This is the design for profiles and the parts of the lease design that were never implemented. It moved out of `ARCHITECTURE.md` in November 2026 so that file describes only what exists ([#22](https://github.com/modem-dev/boxery/issues/22)). The shipped lease system (SQLite state machine, generations and epochs, reaper, per-lease keys, boot-ID fencing) is described in [ARCHITECTURE.md → Leases](../../ARCHITECTURE.md#leases) and [pool.md](../pool.md).
 
-Open question first: [#75](https://github.com/benvinegar/boxery/issues/75) asks whether leases should become ephemeral VMs (new on acquire, removed on release) instead of a resettable pool. Settle that before profiles build on the pool.
+Open question first: [#75](https://github.com/modem-dev/boxery/issues/75) asks whether leases should become ephemeral VMs (new on acquire, removed on release) instead of a resettable pool. Settle that before profiles build on the pool.
 
 ## 1. Host gateway (lease enforcement)
 
-Today fencing works through each guest's `authorized_keys`, which keeps cooperating clients apart. A laptop with ordinary ssh access to the host can still use the host's management key ([#71](https://github.com/benvinegar/boxery/issues/71)). Proposed:
+Today fencing works through each guest's `authorized_keys`, which keeps cooperating clients apart. A laptop with ordinary ssh access to the host can still use the host's management key ([#71](https://github.com/modem-dev/boxery/issues/71)). Proposed:
 
 - Laptop keys go into the host's `authorized_keys` **restricted**: `command="boxery-host gateway",restrict,port-forwarding`, so a laptop can't bypass boxery-host. Admin access uses a separate, unrestricted key.
 - The gateway checks the lease on every `connect`/`run`/`snap`/`revert`/`rm`.

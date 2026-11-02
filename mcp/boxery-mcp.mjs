@@ -432,7 +432,7 @@ async function handle(session, msg, notify) {
 				session.elicit = !!el && typeof el === "object" && (Object.keys(el).length === 0 || !!el.form);
 				const serverInfo = { name: "boxery", title: "boxery VMs", version: VERSION };
 				if (since(session, "2025-11-25"))
-					Object.assign(serverInfo, { description: "Self-hosted Ubuntu desktop VMs for coding agents: shell, files, computer use and Chrome.", websiteUrl: "https://github.com/benvinegar/boxery" });
+					Object.assign(serverInfo, { description: "Self-hosted Ubuntu desktop VMs for coding agents: shell, files, computer use and Chrome.", websiteUrl: "https://github.com/modem-dev/boxery" });
 				return reply({
 					protocolVersion: session.protocolVersion,
 					capabilities: { tools: { listChanged: false }, ...(session.ui ? { resources: {} } : {}) },
