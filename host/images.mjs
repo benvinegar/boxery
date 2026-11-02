@@ -5,15 +5,17 @@
 // Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
 import { installToken } from "./seed.mjs";
 import { fail, log, POOL_SNAP, stamp, validName, validSnap } from "./util.mjs";
+/** @import { Backend, CallOptions } from "./backend.mjs" */
+/** @import { Runtime } from "./runtime.mjs" */
 
-/** Put VM NAME back to its image NAME@LABEL. */
+/** Put VM NAME back to its image NAME@LABEL. @param {Backend} backend @param {string} name @param {string} label @param {CallOptions} [options] */
 export async function restoreVm(backend, name, label, options) {
 	const image = `${name}@${label}`;
 	if (await backend.imageExists(image, options)) return backend.call("backend_reimage", [name, image], options);
 	throw new Error(`no snapshot ${label} for ${name}`);
 }
 
-/** Capture NAME's disk as IMAGE, journaled with NAME's state so a crash can be undone. */
+/** Capture NAME's disk as IMAGE, journaled with NAME's state so a crash can be undone. @param {Runtime} rt @param {string} name @param {string} image */
 export async function captureVm(rt, name, image) {
 	let state = "";
 	try { state = (await rt.vms.list()).find((v) => v.name === name)?.state ?? ""; } catch { /* recorded as unknown */ }
@@ -22,17 +24,19 @@ export async function captureVm(rt, name, image) {
 	rt.done(action);
 }
 
-/** [label, created, size] for NAME's images (incl. the pool's clean state and in-flight fork images). */
+/** [label, created, size] for NAME's images (incl. the pool's clean state and in-flight fork images). @param {Runtime} rt @param {string} name */
 export async function snapsLines(rt, name) {
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	return (await rt.vms.images()).filter((i) => i.image.startsWith(`${name}@`))
 		.map((i) => [i.image.slice(name.length + 1), i.created, i.size]);
 }
 
+/** @param {Runtime} rt @param {string} name */
 export async function cleanupVmImages(rt, name) {
 	for (const { image } of await rt.vms.images()) if (image.startsWith(`${name}@`)) await rt.vms.call("backend_image_rm", [image]);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function snap(rt, [name, label]) {
 	validName(name);
 	const s = validSnap(label || `snap-${stamp("-")}`);
@@ -42,13 +46,14 @@ export async function snap(rt, [name, label]) {
 	log(`snapshot ${name}@${s}`);
 }
 
-/** Idempotent: also replays a previously validated removal. */
+/** Idempotent: also replays a previously validated removal. @param {Runtime} rt @param {string} name @param {string} label */
 export async function deleteSnapshot(rt, name, label) {
 	let images;
 	try { images = await rt.vms.images(); } catch { fail("cannot inspect images during removal"); }
 	if (images.some((i) => i.image === `${name}@${label}`)) await rt.vms.call("backend_image_rm", [`${name}@${label}`]);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function snapRm(rt, [name, label]) {
 	validName(name); validSnap(label);
 	if (label === POOL_SNAP && rt.poolRow(name)) fail(`${name}@${label} is the pool's clean state`);
@@ -59,7 +64,7 @@ export async function snapRm(rt, [name, label]) {
 	log(`removed snapshot ${name}@${label}`);
 }
 
-/** Reimage NAME from NAME@LABEL and wait for it. Also the recovery of an interrupted revert. */
+/** Reimage NAME from NAME@LABEL and wait for it. Also the recovery of an interrupted revert. @param {Runtime} rt @param {string} name @param {string} label */
 export async function revertVm(rt, name, label) {
 	await restoreVm(rt.vms, name, label);
 	const ep = await rt.vms.waitEndpoint(name);
@@ -71,6 +76,7 @@ export async function revertVm(rt, name, label) {
 	if (typeof token === "string") await installToken(rt, name, token);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function revert(rt, [name, label]) {
 	validName(name);
 	if (!label) fail("usage: revert NAME SNAP");

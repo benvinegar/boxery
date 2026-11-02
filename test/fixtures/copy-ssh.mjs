@@ -8,17 +8,17 @@ const HELPER = fileURLToPath(new URL("./copy-helper.mjs", import.meta.url));
 const args = process.argv.slice(2);
 let conf, vm;
 while (args.length > 1) {
-	const flag = args.shift();
+	const flag = /** @type {string} */ (args.shift());
 	if (flag === "-F") conf = args.shift();
 	else if (flag === "-o") args.shift();
 	else if (flag.endsWith(".boxery")) vm = flag.slice(0, -7);
 }
 const host = path.basename(path.dirname(conf ?? ""));
-if (!["alpha", "beta", "gamma"].includes(host) || !["vm", "other"].includes(vm)) process.exit(255);
+if (!["alpha", "beta", "gamma"].includes(host) || !["vm", "other"].includes(/** @type {string} */ (vm))) process.exit(255);
 const endpoint = `${host}/${vm}`;
-const root = path.join(process.env.COPY_ROOT, "vms", host, vm);
+const root = path.join(/** @type {string} */ (process.env.COPY_ROOT), "vms", host, /** @type {string} */ (vm));
 const script = args[0].replaceAll("/home/agent", root).replaceAll("/tmp/.boxery-copy-", `${root}/tmp/.boxery-copy-`);
-appendFileSync(process.env.COPY_LOG, JSON.stringify({ kind: "ssh", endpoint, script, pid: process.pid }) + "\n");
+appendFileSync(/** @type {string} */ (process.env.COPY_LOG), JSON.stringify({ kind: "ssh", endpoint, script, pid: process.pid }) + "\n");
 const cleanup = script.includes('for record in "$t"/pgid.') && !script.includes("setsid -w");
 if (process.env.COPY_FAIL_CLEANUP === endpoint && cleanup) {
 	process.stderr.write("injected cleanup connection failure\n"); process.exit(255);
@@ -34,8 +34,9 @@ if (preparing && process.env.COPY_LATE_PREPARE === endpoint) {
 	await new Promise(() => {}); // the transport is killed at its deadline, not its remote helper
 }
 if (preparing && process.env.COPY_SLOW_PREPARE === endpoint) await new Promise((r) => setTimeout(r, 200));
+/** @type {NodeJS.ProcessEnv} */
 const env = { ...process.env, COPY_ENDPOINT: endpoint, HOME: root };
-if (process.env.COPY_SKIP_EXIT_SNAPSHOT === endpoint) env.BASH_ENV = path.join(process.env.COPY_ROOT, "no-exit-trap.sh");
+if (process.env.COPY_SKIP_EXIT_SNAPSHOT === endpoint) env.BASH_ENV = path.join(/** @type {string} */ (process.env.COPY_ROOT), "no-exit-trap.sh");
 const child = spawn("bash", ["-c", script], { env, cwd: root, stdio: "inherit" });
 child.on("error", () => { process.exitCode = 255; });
 child.on("close", (code) => { process.exitCode = code ?? 255; });

@@ -25,6 +25,13 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
+/** @typedef {"FREE" | "ACQUIRING" | "LEASED" | "RESETTING" | "BROKEN"} LeaseState */
+/** A pool VM's row in `vms`. @typedef {{ name: string, state: LeaseState, gen: number, lease_id: string | null, holder: string | null, pubkey: string | null, acquired_at: number | null, expires_at: number | null, boot_id: string | null, updated_at: number, epoch: string }} LeaseRow */
+/** @typedef {Pick<LeaseRow, "name" | "state" | "gen" | "holder" | "acquired_at" | "expires_at"> & { expires_in: number | null }} LeaseListEntry */
+/** What claim() hands the acquirer (state ACQUIRING at `gen`). @typedef {{ name: string, gen: number, epoch: string, lease_id: string, expires_at: number }} Claim */
+/** A row moved to RESETTING at `gen`; finish() it with that gen. @typedef {{ name: string, gen: number, epoch: string }} ResetTicket */
+/** @typedef {ResetTicket & { reason: string }} DueReset */
+
 export const TTL_MIN = 60;
 export const TTL_MAX = 8 * 3600;
 export const STALE_SECS = 300; // an ACQUIRING/RESETTING row older than this is assumed abandoned
@@ -35,6 +42,7 @@ export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 // Linux exposes precise kernel start ticks; macOS uses ps lstart in a fixed locale/timezone.
 // Zombies no longer execute side effects. Inspection errors other than "not found" fail closed.
 export const PS_ENV = { ...process.env, LC_ALL: "C", TZ: "UTC" };
+/** @param {number} pid @returns {string | null} */
 export function identity(pid) {
 	if (process.platform === "linux") {
 		try {
@@ -44,7 +52,7 @@ export function identity(pid) {
 			if (!/^\d+$/.test(fields[19] ?? "")) throw new Error("malformed process start time");
 			return `linux:${fields[19]}`;
 		} catch (e) {
-			if (["ENOENT", "ESRCH"].includes(e.code)) return null;
+			if (["ENOENT", "ESRCH"].includes(/** @type {any} */ (e).code)) return null;
 			throw e;
 		}
 	}
@@ -57,12 +65,14 @@ export function identity(pid) {
 
 // The machine's boot identity. Linux: the kernel's boot_id. macOS: launchd's start time, which
 // (unlike now - uptime) does not move when the wall clock is stepped.
+/** @type {string | null | undefined} */
 let machineBoot;
+/** @returns {string} */
 export function machineBootId() {
 	if (machineBoot) return machineBoot;
 	try { machineBoot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(); }
 	catch (e) {
-		if (e.code !== "ENOENT") throw e;
+		if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e;
 		machineBoot = identity(1);
 		if (!machineBoot) throw new Error("cannot determine host boot identity");
 	}
@@ -70,17 +80,18 @@ export function machineBootId() {
 }
 /** Lease fencing: a lease taken before a reboot is void. Tests fake reboots with BOXERY_BOOT_ID. */
 export const bootId = () => process.env.BOXERY_BOOT_ID || machineBootId();
-const clampTtl = (t) => Math.max(TTL_MIN, Math.min(TTL_MAX, Math.floor(Number(t) || 1800)));
+const clampTtl = (/** @type {unknown} */ t) => Math.max(TTL_MIN, Math.min(TTL_MAX, Math.floor(Number(t) || 1800)));
 const HOLDER = /^[A-Za-z0-9._@:/+-]{1,128}$/;
 const PUBKEY = /^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/=]{20,} ?[^\n]{0,200}$/;
 
 // Changing journal mode can return SQLITE_BUSY immediately (it doesn't always honour busy_timeout).
+/** @template T @param {() => T} fn @returns {T} */
 function retryBusy(fn) {
 	for (let i = 0; ; i++) {
 		try {
 			return fn();
 		} catch (e) {
-			if (!/locked|busy/i.test(String(e?.message)) || i >= 200) throw e;
+			if (!/locked|busy/i.test(String(/** @type {Error | undefined} */ (e)?.message)) || i >= 200) throw e;
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 + Math.random() * 50);
 		}
 	}
@@ -111,12 +122,15 @@ const SCHEMA_V1 = `
 		operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
 	);`;
 
-export const schemaVersion = (db, schema = "main") => db.prepare(`PRAGMA ${schema}.user_version`).get().user_version;
+/** @param {DatabaseSync} db @returns {number} */
+export const schemaVersion = (db, schema = "main") => /** @type {{ user_version: number }} */ (db.prepare(`PRAGMA ${schema}.user_version`).get()).user_version;
+/** @param {string} file @param {number} v */
 function checkVersion(file, v) {
 	if (v <= SCHEMA_VERSION) return;
 	throw new Error(`${file} has schema version ${v}, newer than this boxery understands (${SCHEMA_VERSION}): a newer release wrote it. `
 		+ "Upgrade boxery, or restore the copy taken before the upgrade (see Upgrading in docs/install.md)");
 }
+/** @param {DatabaseSync} db @param {string} file */
 function migrate(db, file) {
 	const v = schemaVersion(db); // again, under the write lock: another opener may have migrated it
 	checkVersion(file, v);
@@ -124,6 +138,7 @@ function migrate(db, file) {
 	if (v !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 
+/** @param {string} file */
 export function open(file) {
 	// timeout = SQLite busy timeout, applied at open: concurrent openers wait for locks (including the
 	// one-time switch to WAL and the migration) instead of failing with "database is locked".
@@ -141,9 +156,10 @@ export function open(file) {
 	return db;
 }
 
-const quote = (name) => `"${name.replace(/"/g, '""')}"`;
+const quote = (/** @type {string} */ name) => `"${name.replace(/"/g, '""')}"`;
 /** A consistent copy of DB at FILE (VACUUM INTO a temp file, then rename), mode 0600.
- * `edit(copy)` may change the copy before it replaces FILE. */
+ * `edit(copy)` may change the copy before it replaces FILE.
+ * @param {DatabaseSync} db @param {string} file @param {(copy: DatabaseSync) => void} [edit] */
 export function backup(db, file, edit = () => {}) {
 	const tmp = `${file}.tmp`;
 	rmSync(tmp, { force: true });
@@ -158,15 +174,16 @@ export function backup(db, file, edit = () => {}) {
  * transaction on this connection. Other processes keep their connections and see the copy's contents;
  * swapping the file under them would leave them writing to a deleted one. Every pool row's generation
  * moves past any it had, so a claim made after the copy is fenced rather than issued twice.
- * `then()` runs in the same transaction. */
+ * `then()` runs in the same transaction.
+ * @param {DatabaseSync} db @param {string} file @param {() => void} [then] */
 export function restore(db, file, then = () => {}) {
 	let bump;
-	try { bump = 1 + Number(db.prepare("SELECT max(gen) g FROM vms").get().g ?? 0); }
+	try { bump = 1 + Number(/** @type {{ g: number | null }} */ (db.prepare("SELECT max(gen) g FROM vms").get()).g ?? 0); }
 	catch { bump = 1e9; } // the newer schema renamed what we'd read
 	db.prepare("ATTACH DATABASE ? AS pre").run(file);
 	try {
 		tx(db, () => {
-			const objects = (schema) => db.prepare(`SELECT type, name, sql FROM ${schema}.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'`).all();
+			const objects = (/** @type {string} */ schema) => /** @type {{ type: string, name: string, sql: string }[]} */ (db.prepare(`SELECT type, name, sql FROM ${schema}.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'`).all());
 			// Dropping a table drops its indexes and triggers.
 			for (const o of objects("main")) if (o.type === "table" || o.type === "view") db.exec(`DROP ${o.type} IF EXISTS main.${quote(o.name)}`);
 			const copy = objects("pre");
@@ -187,6 +204,7 @@ export function restore(db, file, then = () => {}) {
 	}
 }
 
+/** @template T @param {DatabaseSync} db @param {() => T} fn @returns {T} */
 export function tx(db, fn) {
 	db.exec("BEGIN IMMEDIATE");
 	try {
@@ -199,27 +217,32 @@ export function tx(db, fn) {
 	}
 }
 
+/** @param {DatabaseSync} db @param {string} name */
 export function add(db, name) {
 	db.prepare("INSERT INTO vms (name, state, gen, updated_at, epoch) VALUES (?, 'FREE', 0, ?, ?)").run(name, now(), randomBytes(16).toString("hex"));
 	return get(db, name);
 }
 
+/** @param {DatabaseSync} db @param {string} name */
 export function get(db, name) {
-	return db.prepare("SELECT * FROM vms WHERE name = ?").get(name) ?? null;
+	return /** @type {LeaseRow | undefined} */ (db.prepare("SELECT * FROM vms WHERE name = ?").get(name)) ?? null;
 }
 
+/** @param {DatabaseSync} db @param {string} leaseId */
 export function find(db, leaseId) {
-	return db.prepare("SELECT * FROM vms WHERE lease_id=?").get(leaseId) ?? null;
+	return /** @type {LeaseRow | undefined} */ (db.prepare("SELECT * FROM vms WHERE lease_id=?").get(leaseId)) ?? null;
 }
 
+/** @param {DatabaseSync} db @returns {LeaseListEntry[]} */
 export function list(db) {
 	const t = now();
-	return db
+	return /** @type {Omit<LeaseListEntry, "expires_in">[]} */ (db
 		.prepare("SELECT name, state, gen, holder, acquired_at, expires_at FROM vms ORDER BY name")
-		.all()
-		.map((r) => ({ ...r, expires_in: r.state === "LEASED" ? r.expires_at - t : null }));
+		.all())
+		.map((r) => ({ ...r, expires_in: r.state === "LEASED" ? /** @type {number} */ (r.expires_at) - t : null }));
 }
 
+/** @param {DatabaseSync} db @param {string} name */
 export function remove(db, name, force = false) {
 	return tx(db, () => {
 		const r = get(db, name);
@@ -231,26 +254,28 @@ export function remove(db, name, force = false) {
 }
 
 /** FREE → ACQUIRING for the least recently used free VM. Returns null when the pool is exhausted. */
+/** @param {DatabaseSync} db @param {string | undefined} holder @param {unknown} ttl @param {string | undefined} pubkey @returns {Claim | null} */
 export function claim(db, holder, ttl, pubkey) {
 	if (!HOLDER.test(holder ?? "")) throw new Error(`invalid holder "${holder}"`);
 	if (!PUBKEY.test(pubkey ?? "")) throw new Error("invalid ssh public key");
 	const t = now();
 	const exp = t + clampTtl(ttl);
 	return tx(db, () => {
-		const r = db.prepare(`SELECT name, gen, epoch FROM vms WHERE state = 'FREE'
+		const r = /** @type {Pick<LeaseRow, "name" | "gen" | "epoch"> | undefined} */ (db.prepare(`SELECT name, gen, epoch FROM vms WHERE state = 'FREE'
 			AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE resource=vms.name)
-			ORDER BY updated_at, name LIMIT 1`).get();
+			ORDER BY updated_at, name LIMIT 1`).get());
 		if (!r) return null;
 		const lease = `l-${randomBytes(16).toString("hex")}`;
 		db.prepare(
 			`UPDATE vms SET state='ACQUIRING', gen=gen+1, lease_id=?, holder=?, pubkey=?, acquired_at=?, expires_at=?, boot_id=?, updated_at=?
 			 WHERE name=? AND gen=? AND state='FREE'`,
-		).run(lease, holder, pubkey, t, exp, bootId(), t, r.name, r.gen);
+		).run(lease, /** @type {string} */ (holder), /** @type {string} */ (pubkey), t, exp, bootId(), t, r.name, r.gen);
 		return { name: r.name, gen: r.gen + 1, epoch: r.epoch, lease_id: lease, expires_at: exp };
 	});
 }
 
 /** ACQUIRING(gen) → LEASED. False if someone else moved the row on (e.g. the reaper). */
+/** @param {DatabaseSync} db @param {string} name @param {number | string} gen */
 export function commit(db, name, gen) {
 	const r = db
 		.prepare("UPDATE vms SET state='LEASED', gen=gen+1, updated_at=? WHERE name=? AND gen=? AND state='ACQUIRING' AND expires_at>? AND boot_id=?")
@@ -258,13 +283,14 @@ export function commit(db, name, gen) {
 	return r.changes === 1;
 }
 
+/** @param {DatabaseSync} db @param {string} leaseId @param {unknown} ttl */
 export function renew(db, leaseId, ttl) {
 	const t = now();
 	return tx(db, () => {
-		const r = db.prepare("SELECT * FROM vms WHERE lease_id = ?").get(leaseId);
+		const r = /** @type {LeaseRow | undefined} */ (db.prepare("SELECT * FROM vms WHERE lease_id = ?").get(leaseId));
 		if (!r) throw new Error("unknown lease (released, expired and reset, or never existed)");
 		if (r.state !== "LEASED") throw new Error(`lease is ${r.state}`);
-		if (r.expires_at <= t) throw new Error("lease expired");
+		if (/** @type {number} */ (r.expires_at) <= t) throw new Error("lease expired");
 		if (r.boot_id !== bootId()) throw new Error("host rebooted; lease is void");
 		const exp = t + clampTtl(ttl);
 		db.prepare("UPDATE vms SET expires_at=?, updated_at=? WHERE name=?").run(exp, t, r.name);
@@ -272,6 +298,7 @@ export function renew(db, leaseId, ttl) {
 	});
 }
 
+/** @param {DatabaseSync} db @param {string} name @param {number} gen */
 const toResetting = (db, name, gen) =>
 	db
 		.prepare(
@@ -280,9 +307,10 @@ const toResetting = (db, name, gen) =>
 		.run(now(), name, gen).changes === 1;
 
 /** Release: LEASED/ACQUIRING with this lease → RESETTING. The lease id stops working immediately. */
+/** @param {DatabaseSync} db @param {string} leaseId @returns {ResetTicket} */
 export function beginReset(db, leaseId) {
 	return tx(db, () => {
-		const r = db.prepare("SELECT name, gen, state, epoch FROM vms WHERE lease_id = ?").get(leaseId);
+		const r = /** @type {Pick<LeaseRow, "name" | "gen" | "state" | "epoch"> | undefined} */ (db.prepare("SELECT name, gen, state, epoch FROM vms WHERE lease_id = ?").get(leaseId));
 		if (!r || !["LEASED", "ACQUIRING"].includes(r.state)) throw new Error("unknown or inactive lease");
 		toResetting(db, r.name, r.gen);
 		return { name: r.name, gen: r.gen + 1, epoch: r.epoch };
@@ -290,6 +318,7 @@ export function beginReset(db, leaseId) {
 }
 
 /** After a failed acquire: ACQUIRING(gen) → RESETTING, only if nobody else touched the row. */
+/** @param {DatabaseSync} db @param {string} name @param {number | string} gen @returns {ResetTicket} */
 export function beginResetName(db, name, gen) {
 	return tx(db, () => {
 		const r = get(db, name);
@@ -299,21 +328,25 @@ export function beginResetName(db, name, gen) {
 	});
 }
 
+/** @param {LeaseRow} r */
 function resetReason(r) {
-	if (r.state === "LEASED" && r.expires_at <= now()) return "expired";
+	if (r.state === "LEASED" && /** @type {number} */ (r.expires_at) <= now()) return "expired";
 	if (r.state === "LEASED" && r.boot_id !== bootId()) return "host rebooted";
 	if (["ACQUIRING", "RESETTING"].includes(r.state) && r.updated_at < now() - STALE_SECS) return `stale ${r.state}`;
 	return null;
 }
 
 /** Observation only. The host takes the VM lock before claiming a candidate for reset. */
+/** @param {DatabaseSync} db */
 export function candidates(db) {
-	return db.prepare("SELECT * FROM vms").all().filter(resetReason);
+	return /** @type {LeaseRow[]} */ (db.prepare("SELECT * FROM vms").all()).filter(resetReason);
 }
 
 /** Claim resets. With a candidate, revalidate its generation, incarnation AND deadline under lock. */
+/** @param {DatabaseSync} db @param {string | null} [name] @param {number | string} [gen] @param {string} [epoch] */
 export function due(db, name, gen, epoch) {
 	return tx(db, () => {
+		/** @type {DueReset[]} */
 		const out = [];
 		for (const r of candidates(db)) {
 			if (name != null && (r.name !== name || r.gen !== Number(gen) || r.epoch !== epoch)) continue;
@@ -325,6 +358,7 @@ export function due(db, name, gen, epoch) {
 }
 
 /** RESETTING(gen) → FREE | BROKEN. False if fenced (a newer reset took over). */
+/** @param {DatabaseSync} db @param {string} name @param {number | string} gen @param {string} state */
 export function finish(db, name, gen, state) {
 	if (!["FREE", "BROKEN"].includes(state)) throw new Error("finish: state must be FREE or BROKEN");
 	const r = db
@@ -336,6 +370,7 @@ export function finish(db, name, gen, state) {
 }
 
 /** The VM vanished from the backend: fence its row (any lease ends) until someone repairs it. */
+/** @param {DatabaseSync} db @param {string} name */
 export function markMissing(db, name) {
 	db.prepare(`UPDATE vms SET state='BROKEN', gen=gen+1, lease_id=NULL, holder=NULL,
 		pubkey=NULL, acquired_at=NULL, expires_at=NULL, boot_id=NULL, updated_at=?
@@ -347,7 +382,7 @@ export function markMissing(db, name) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const [file, op, ...a] = process.argv.slice(2);
-	const out = (v) => process.stdout.write(`${JSON.stringify(v)}\n`);
+	const out = (/** @type {unknown} */ v) => process.stdout.write(`${JSON.stringify(v)}\n`);
 	try {
 		if (!file || !op) throw new Error("usage: boxery-leases.mjs DB OP ARGS…");
 		const db = open(file);
@@ -361,7 +396,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 			default: throw new Error(`unknown op ${op}`);
 		}
 	} catch (e) {
-		process.stderr.write(`boxery-leases: ${e.message}\n`);
+		process.stderr.write(`boxery-leases: ${/** @type {Error} */ (e).message}\n`);
 		process.exit(2);
 	}
 }

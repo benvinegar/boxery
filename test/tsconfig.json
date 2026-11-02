@@ -1,0 +1,7 @@
+{
+  // Tests are checked against the annotated sources' types, but their own fixtures and callbacks
+  // don't need annotations, null checks or narrowing of caught errors.
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "noImplicitAny": false, "useUnknownInCatchVariables": false, "allowImportingTsExtensions": true },
+  "include": ["**/*.mjs", "*.d.ts"]
+}

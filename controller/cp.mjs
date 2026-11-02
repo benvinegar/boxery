@@ -4,6 +4,7 @@
 import { constants } from "node:os";
 import * as core from "../core/boxery-core.mjs";
 import { TOOLS } from "../core/boxery-tools.mjs";
+/** @import { Tool } from "../core/boxery-tools.mjs" */
 
 const [host, ...locs] = process.argv.slice(2);
 if (!host || locs.length !== 2) {
@@ -12,7 +13,7 @@ if (!host || locs.length !== 2) {
 }
 // The CLI has no current VM: a bare path is on this machine, like cp and scp. One that only looks
 // bare because its VM name is invalid (Demo:x, my_vm:x) is a typo, not a local file name.
-const local = (l) => {
+const local = (/** @type {string} */ l) => {
 	if (!core.isBarePath(l)) return l;
 	if (/^[^/]*:/.test(l)) throw new Error(`"${l}" is not a valid location (VM names are lowercase letters, digits and -); for a local path, write local:${l}`);
 	return `local:${l}`;
@@ -20,19 +21,19 @@ const local = (l) => {
 
 // Ctrl-C cancels like an MCP cancellation: stop both ends and remove staging before exiting.
 const abort = new AbortController();
-for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+for (const sig of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"])) {
 	process.once(sig, () => {
 		process.exitCode = 128 + constants.signals[sig];
 		abort.abort();
 	});
 }
 
-const copy = TOOLS.find((t) => t.name === "vm_copy");
+const copy = /** @type {Tool & Required<Pick<Tool, "run">>} */ (TOOLS.find((t) => t.name === "vm_copy"));
 try {
 	const [from, to] = locs.map(local);
-	const r = await core.withHost(host, () => copy.run(null, { from, to }, { localCwd: process.cwd(), signal: abort.signal }));
+	const r = await core.withHost(host, () => copy.run(/** @type {any} */ (null) /* noVm: ignored */, { from, to }, { localCwd: process.cwd(), signal: abort.signal }));
 	console.log(r.text);
-} catch (e) {
+} catch (/** @type {any} */ e) {
 	console.error(`boxery: ${e.message}`);
 	process.exitCode ||= 1;
 }

@@ -11,17 +11,58 @@ import { fileURLToPath } from "node:url";
 import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
 export { q } from "./shell.mjs";
+/** @import { ChildProcessWithoutNullStreams } from "node:child_process" */
+/** @import { EditRequest } from "./atomic-edit.mjs" */
+/** A resolved host profile (resolveHost): frozen, and recognised again by resolveHost without a registry read. @typedef {Readonly<{ name: string, dir: string, sshConf: string }>} HostProfile */
+/** A host name, a resolved profile, or nullish for the default host. @typedef {string | HostProfile | null | undefined} HostRef */
+/** @typedef {(line: string) => void} Progress */
+/** @typedef {{ progress?: Progress }} ProgressOpts */
+/** @typedef {{ name: string, dir: string, default: boolean, destination: string | null, backend: string | null, same_as: string[] }} HostDescription */
+/** @typedef {{ host?: HostProfile, vm: string | null, path: string }} Loc */
+/** @typedef {{ input?: string | Buffer, signal?: AbortSignal, timeoutMs?: number, onData?: (d: Buffer) => void, maxBytes?: number, closePipes?: boolean }} SshRunOpts */
+/** @typedef {{ code: number | null, stdout: Buffer, stderr: string }} SshResult */
+/** @typedef {{ onData?: (d: Buffer) => void, signal?: AbortSignal, timeout?: number }} ExecRemoteOpts */
+/** @typedef {{ exitCode: number | null }} ExecResult */
+/** @typedef {{ data: string, mimeType: string }} ImageContent */
+/** What a tool returns to the front-end: text, plus an image, MCP structuredContent and/or an error flag. @typedef {{ text: string, image?: ImageContent, structured?: Record<string, any>, isError?: boolean }} ToolResult */
+/** @typedef {{ signal?: AbortSignal }} SignalOpts */
+/** @typedef {{ signal?: AbortSignal, progress?: Progress }} BashToolOpts */
+/** @typedef {{ action?: string, command?: string, cwd?: string, job?: string, lines?: number, stripAnsi?: boolean, timeout?: number, grace?: number }} JobsParams */
+/** @typedef {EditRequest["edits"][number]} TextEdit */
+/** local: endpoint policy for vm_copy: undefined (unrestricted), false (refused) or confined to a root. @typedef {{ root: string, deny?: string[] }} LocalConfinement */
+/** A resolved vm_copy endpoint as streamCopy takes it. @typedef {{ path: string, label: string, vm?: string, sshConf?: string, confine?: (real: string) => void }} CopyEndpoint */
+/** @typedef {{ current?: string | null, localCwd?: string, local?: LocalConfinement | false, signal?: AbortSignal }} CopyOpts */
+/** @typedef {{ text: string, image: ImageContent, size: { width: number, height: number, screenWidth: number, screenHeight: number } }} Screenshot */
+/** A grant as `boxery grants --json` lists it. @typedef {{ kind: string, var?: string, cmd?: string, host?: string, auth?: string, readonly?: boolean, local?: string, remote?: string }} Grant */
+/** A validated vm_grant request (parseGrantRequest). @typedef {{ kind: "ssh-agent" | "github" | "env" | "file", spec: string, readonly?: boolean, var?: string, local?: string, requested?: string, remote?: string }} GrantSpec */
+/** vm_grant arguments. @typedef {{ spec?: unknown, readonly?: boolean, reason?: unknown }} GrantRequestArgs */
+/** @typedef {"accept" | "decline" | "cancel"} ApprovalAnswer */
+/** @typedef {(message: string) => Promise<ApprovalAnswer | string>} Approve */
+/** A VM as `boxery ls --json` lists it (docs/cli.md); `addr` is from hosts before ssh_addr. @typedef {{ name: string, state?: string | null, ssh_addr?: string | null, addr?: string | null, disk_size?: number | null, disk_used?: number | null, tunnel?: string | null, lease?: { state?: string, [k: string]: any } | null, shape?: string | null, cpus?: number | null, mem?: number | null, desktop?: boolean, grants?: Grant[] }} VmInfo */
+/** @typedef {{ cpus: number, mem: number, disk: number }} Shape */
+/** @typedef {{ default?: string, shapes: Record<string, Shape> }} Shapes */
+/** @typedef {{ name: string, created?: string | null, size?: string | number | null }} SnapInfo */
+/** @typedef {{ image: string, created?: string | null, size?: string | number | null }} ImageInfo */
+/** @typedef {{ version: string, describe?: string }} VersionInfo */
+/** @typedef {{ controller: VersionInfo, host: (VersionInfo & { name: string, install: string }) | null, behind?: boolean }} Versions */
+/** vm_manage arguments. @typedef {{ action?: string, vm?: string | null, snapshot?: string, to?: string | string[], shape?: string | null, from?: string, cpus?: number, mem?: number, disk?: number, headless?: boolean, [k: string]: unknown }} ManageArgs */
+/** A pool lease held by a LeaseKeeper. @typedef {{ name: string, id: string, ttl: number, host: HostProfile, expiresAt: number, timer: NodeJS.Timeout | null }} Lease */
+/** @typedef {{ alive?: (lease: Lease) => boolean, onLost?: (lease: Lease, error: unknown) => void, everyMs?: (ttl: number) => number }} LeaseKeeperOpts */
 
 export const BOXERY_HOME = path.resolve(process.env.BOXERY_HOME ?? path.join(homedir(), ".boxery"));
 // A context is resolved once at a call boundary, then inherited by all nested async work.
-const hostContext = new AsyncLocalStorage();
+const hostContext = /** @type {AsyncLocalStorage<HostProfile>} */ (new AsyncLocalStorage());
+/** @type {WeakSet<object>} */
 const resolvedHosts = new WeakSet();
+/** @type {HostProfile | undefined} */
 let implicitHost; // Existing callers (pi) keep a stable default for this process.
 export const VALID_HOST = /^[a-z][a-z0-9-]{0,30}$/;
+/** @param {unknown} name */
 export function assertHost(name) {
 	if (typeof name !== "string" || name !== name.trim() || !VALID_HOST.test(name)) throw new Error(`invalid host name "${name ?? ""}"`);
 	return name;
 }
+/** @param {string} file @returns {string | null} */
 function registryLine(file, optional = false) {
 	let fd, text;
 	try {
@@ -31,17 +72,18 @@ function registryLine(file, optional = false) {
 		if (!fstatSync(fd).isFile()) throw new Error("expected a readable regular file, not symlink");
 		text = readFileSync(fd, "utf8");
 	} catch (e) {
-		if (optional && e.code === "ENOENT") return null;
-		throw new Error(`invalid registry file: ${file} (${e.message})`);
+		if (optional && /** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return null;
+		throw new Error(`invalid registry file: ${file} (${/** @type {Error} */ (e).message})`);
 	} finally {
 		if (fd !== undefined) closeSync(fd);
 	}
 	if (text.length < 2 || text.includes("\0") || !text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) throw new Error(`invalid registry file: ${file}`);
 	return text.slice(0, -1);
 }
+/** @param {HostRef} [host] @returns {HostProfile} */
 export function resolveHost(host) {
 	if (host && typeof host === "object" && resolvedHosts.has(host)) return host;
-	const name = host ?? defaultHost();
+	const name = /** @type {string | null} */ (host ?? defaultHost()); // an unregistered object fails assertHost
 	if (name == null) throw new Error("no boxery host configured; run: boxery setup user@host|local");
 	assertHost(name);
 	const dir = registryLine(path.join(BOXERY_HOME, "host-registry", name), true);
@@ -54,7 +96,9 @@ export function resolveHost(host) {
 }
 /** The default host's name (BOXERY_HOME/default-host), or null when none is selected. */
 export const defaultHost = () => registryLine(path.join(BOXERY_HOME, "default-host"), true);
+/** @returns {HostProfile} */
 export const currentHost = () => hostContext.getStore() ?? (implicitHost ??= resolveHost());
+/** @template T @param {HostRef} host @param {() => T} fn @returns {T} */
 export const withHost = (host, fn) => hostContext.run(resolveHost(host), fn);
 export function registeredHosts() {
 	const registry = path.join(BOXERY_HOME, "host-registry");
@@ -63,6 +107,7 @@ export function registeredHosts() {
 }
 const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
 // A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
+/** @param {string} file */
 function readProfileFile(file, max = 64 * 1024) {
 	let fd;
 	try {
@@ -73,6 +118,7 @@ function readProfileFile(file, max = 64 * 1024) {
 }
 // One shell word as `boxery setup` writes it (literal(): '…' with '\'' for quotes), or a plain word.
 // Anything needing expansion ($, `, globs…) is unknown: profile configs are never executed here.
+/** @param {string} s */
 function shellWord(s) {
 	let out = "";
 	for (let i = 0; i < s.length;) {
@@ -92,15 +138,15 @@ function shellWord(s) {
 	}
 	return out;
 }
-/** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). */
+/** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). @param {HostRef} [host] */
 export function hostDestination(host) {
 	const h = resolveHost(host);
 	const text = readProfileFile(path.join(h.dir, "config")) ?? "";
 	const values = text.split("\n").map((l) => /^[ \t]*(?:export[ \t]+)?HOST=(.*)$/.exec(l)).filter(Boolean);
-	const dest = values.length ? shellWord(values.at(-1)[1]) : null; // the last assignment wins, as when sourced
+	const dest = values.length ? shellWord(/** @type {RegExpExecArray} */ (values.at(-1))[1]) : null; // the last assignment wins, as when sourced
 	return dest && VALID_DEST.test(dest) ? dest : null;
 }
-/** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. */
+/** The host's VM backend as recorded in the profile by `boxery setup`/`boxery backend`, or null. Never contacts the host. @param {HostRef} [host] */
 export function hostBackend(host) {
 	const text = readProfileFile(path.join(resolveHost(host).dir, "backend"), 64);
 	const name = text?.replace(/\n$/, "");
@@ -110,11 +156,12 @@ export function hostBackend(host) {
  * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
  * profile files (never sources them, never contacts a host). same_as names the other entries registered for
  * this profile directory: they are the same host.
+ * @returns {HostDescription[]}
  */
 export function describeHosts() {
 	let def = null;
 	try { def = resolveHost().name; } catch {}
-	const real = (d) => { try { return realpathSync(d); } catch { return path.resolve(d); } };
+	const real = (/** @type {string} */ d) => { try { return realpathSync(d); } catch { return path.resolve(d); } };
 	const hosts = registeredHosts().map((h) => ({ host: h, real: real(h.dir) }));
 	return hosts.map(({ host: h, real: r }) => ({
 		name: h.name,
@@ -130,6 +177,7 @@ export function describeHosts() {
  * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
  * --config-dir, which name local files (an imported config is shell code). Becomes the default only
  * when there is none.
+ * @param {{ name: string, dest: string, backend?: string | null, profile?: string | null }} host @param {ProgressOpts} [opts]
  */
 export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	assertHost(name);
@@ -138,12 +186,13 @@ export function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
 	return registryCli(["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])], 600_000, { progress });
 }
-/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). */
+/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). @param {string} name */
 export function removeHost(name) {
 	assertHost(name);
 	return registryCli(["host", "rm", name], 60_000);
 }
 // Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
+/** @param {string[]} args @param {number} timeout @param {ProgressOpts} [opts] @returns {Promise<string>} */
 function registryCli(args, timeout, { progress } = {}) {
 	return new Promise((resolve, reject) => {
 		const child = execFile(BOXERY, args, { env: { ...process.env, BOXERY_HOME }, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
@@ -153,6 +202,7 @@ function registryCli(args, timeout, { progress } = {}) {
 		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
 	});
 }
+/** @param {string[]} args */
 export function controllerCommand(args) {
 	const host = currentHost();
 	// Bind the resolved directory, not a registry entry that could change during this call.
@@ -176,28 +226,30 @@ export function controllerPath() {
 }
 export const BOXERY = controllerPath();
 
-export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
 export const newName = () => `pi-${randomBytes(3).toString("hex")}`;
 
 export const VALID_SNAP = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** @param {unknown} s @returns {string} */
 export function assertSnap(s) {
-	if (!s || !VALID_SNAP.test(s)) throw new Error(`invalid snapshot name "${s ?? ""}"`);
-	return s;
+	if (!s || !VALID_SNAP.test(/** @type {string} */ (s))) throw new Error(`invalid snapshot name "${s ?? ""}"`);
+	return /** @type {string} */ (s);
 }
 
-/** An image is a snapshot addressed host-wide: VM@SNAP. */
+/** An image is a snapshot addressed host-wide: VM@SNAP. @param {unknown} s @returns {string} */
 export function assertImage(s) {
 	const [vm, snap, ...rest] = typeof s === "string" ? s.split("@") : [];
 	if (rest.length || !vm || !VALID_NAME.test(vm) || !snap || !VALID_SNAP.test(snap)) throw new Error(`invalid image "${s ?? ""}" (use VM@SNAP)`);
-	return s;
+	return /** @type {string} */ (s);
 }
 
+/** @param {unknown} name @returns {string} */
 export function assertName(name) {
 	if (typeof name !== "string" || !VALID_NAME.test(name)) throw new Error(`invalid VM name "${name ?? ""}"`);
 	return name;
 }
 
-/** VM path for a model-supplied path: ~ → VM home, relative → VM project dir. */
+/** VM path for a model-supplied path: ~ → VM home, relative → VM project dir. @param {unknown} p */
 export function vmPath(p) {
 	const s = String(p ?? ".").trim() || ".";
 	if (s === "~") return REMOTE_HOME;
@@ -205,15 +257,15 @@ export function vmPath(p) {
 	return path.posix.isAbsolute(s) ? path.posix.normalize(s) : path.posix.join(PROJECT, s);
 }
 
-const hostVmLoc = (spec) => {
+const hostVmLoc = (/** @type {unknown} */ spec) => {
 	const m = String(spec).match(/^([^:]*\/[^:]*):(.*)$/s);
 	return m && !m[1].startsWith("/") ? m : null;
 };
-const vmLoc = (spec) => String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
+const vmLoc = (/** @type {unknown} */ spec) => String(spec).match(/^([a-z][a-z0-9-]{0,30}|local):(.*)$/s);
 /** A location with no host/vm:, vm: or local: prefix; parseLoc puts it on the current VM. */
-export const isBarePath = (spec) => !hostVmLoc(spec) && !vmLoc(spec);
+export const isBarePath = (/** @type {unknown} */ spec) => !hostVmLoc(spec) && !vmLoc(spec);
 
-/** Parse "host/vm:/path", "vm:/path", "local:/path" or a plain path (= current VM). */
+/** Parse "host/vm:/path", "vm:/path", "local:/path" or a plain path (= current VM). @param {unknown} spec @param {string | null} [current] @returns {Loc} */
 export function parseLoc(spec, current) {
 	const explicit = hostVmLoc(spec);
 	if (explicit) {
@@ -233,22 +285,26 @@ export function parseLoc(spec, current) {
 /**
  * Run a bash script in a VM. opts: { input, signal, timeoutMs, onData }.
  * Resolves { code, stdout: Buffer, stderr }. ssh exit 255 (transport failure) rejects.
+ * @param {string} vm @param {string} script @param {SshRunOpts} [opts] @returns {Promise<SshResult>}
  */
 export function sshRun(vm, script, opts = {}) {
 	return new Promise((resolve, reject) => {
 		if (!VALID_NAME.test(vm ?? "")) return reject(new Error(`invalid VM name "${vm}"`));
 		const { sshConf } = currentHost();
 		if (!existsSync(sshConf)) return reject(new Error(`boxery not set up (${sshConf} missing); run: boxery setup user@host`));
-		const child = spawn("ssh", ["-F", sshConf, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
+		// stdin is a pipe whenever it is used (opts.input != null).
+		const child = /** @type {ChildProcessWithoutNullStreams} */ (spawn("ssh", ["-F", sshConf, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
 			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"],
-		});
+		}));
+		/** @type {Buffer[]} */
 		const out = [];
 		let err = "";
+		/** @type {NodeJS.Timeout | undefined} */
 		let timer;
 		let size = 0;
 		const cap = opts.maxBytes ?? MAX_CAPTURE;
 		let overflow = false;
-		child.stdout.on("data", (d) => {
+		child.stdout.on("data", (/** @type {Buffer} */ d) => {
 			if (opts.onData) return opts.onData(d);
 			size += d.length;
 			if (size > cap) {
@@ -258,7 +314,7 @@ export function sshRun(vm, script, opts = {}) {
 			}
 			out.push(d);
 		});
-		child.stderr.on("data", (d) => {
+		child.stderr.on("data", (/** @type {Buffer} */ d) => {
 			if (opts.onData) return opts.onData(d);
 			if (err.length < 64 * 1024) err += d.toString();
 		});
@@ -289,13 +345,14 @@ export function sshRun(vm, script, opts = {}) {
 	});
 }
 
+/** @param {string} vm @param {string} script @param {SshRunOpts} [opts] */
 export async function sshOk(vm, script, opts = {}) {
 	const r = await sshRun(vm, script, opts);
 	if (r.code !== 0) throw new Error(r.stderr.trim() || `command failed (exit ${r.code})`);
 	return r.stdout;
 }
 
-/** opts.progress(line): called with each non-empty output line as it arrives (MCP progress). */
+/** opts.progress(line): called with each non-empty output line as it arrives (MCP progress). @param {string[]} args @param {number} [timeoutMs] @param {ProgressOpts} [opts] @returns {Promise<string>} */
 export function boxeryCli(args, timeoutMs = 300_000, { progress } = {}) {
 	return new Promise((resolve, reject) => {
 		const command = controllerCommand(args);
@@ -308,12 +365,13 @@ export function boxeryCli(args, timeoutMs = 300_000, { progress } = {}) {
 }
 
 /** The last non-empty line of an output chunk, for progress messages. */
-export const lastLine = (d) => String(d).split("\n").map((l) => l.trim()).filter(Boolean).pop()?.slice(0, 200) ?? "";
+export const lastLine = (/** @type {unknown} */ d) => String(d).split("\n").map((l) => l.trim()).filter(Boolean).pop()?.slice(0, 200) ?? "";
 
 /**
  * Run a command in a VM as its own process group, so abort/timeout kill the remote job too.
  * stdin is /dev/null (tools like rg would otherwise read the ssh pipe). Local env is not forwarded.
  * Resolves { exitCode }; rejects "aborted" / "timeout:N" / transport errors.
+ * @param {string} vm @param {string} command @param {string | null | undefined} cwd @param {ExecRemoteOpts} [opts] @returns {Promise<ExecResult>}
  */
 export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
 	return new Promise((resolve, reject) => {
@@ -357,7 +415,7 @@ export function execRemote(vm, command, cwd, { onData, signal, timeout } = {}) {
 
 // ---------------------------------------------------------------- truncation
 
-/** Keep the first lines/bytes (file reads). */
+/** Keep the first lines/bytes (file reads). @param {string} text */
 export function truncHead(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 	const lines = text.split("\n");
 	let out = [];
@@ -375,7 +433,7 @@ export function truncHead(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 	return { text: out.join("\n"), truncated, shownLines: out.length, totalLines: lines.length };
 }
 
-/** Keep the last lines/bytes (command output). */
+/** Keep the last lines/bytes (command output). @param {string} text */
 export function truncTail(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 	const lines = text.split("\n");
 	const out = [];
@@ -397,22 +455,24 @@ export function truncTail(text, maxLines = MAX_LINES, maxBytes = MAX_BYTES) {
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
+/** @param {string} vm @param {{ command: string, timeout?: number }} params @param {BashToolOpts} [opts] @returns {Promise<ToolResult>} */
 export async function bashTool(vm, { command, timeout }, { signal, progress } = {}) {
 	// Bounded tail buffer: an endless producer (`yes`) can't exhaust memory.
+	/** @type {Buffer[]} */
 	const chunks = [];
 	let held = 0;
 	const keep = 4 * MAX_BYTES;
-	const onData = (d) => {
+	const onData = (/** @type {Buffer} */ d) => {
 		if (progress && lastLine(d)) progress(lastLine(d));
 		chunks.push(d);
 		held += d.length;
-		while (held - chunks[0].length >= keep) held -= chunks.shift().length;
+		while (held - chunks[0].length >= keep) held -= /** @type {Buffer} */ (chunks.shift()).length;
 	};
 	let r;
 	try {
 		r = await execRemote(vm, command, PROJECT, { onData, signal, timeout: timeout ?? 120 });
 	} catch (e) {
-		if (String(e.message).startsWith("timeout:")) {
+		if (String(/** @type {Error} */ (e).message).startsWith("timeout:")) {
 			const t = truncTail(Buffer.concat(chunks).toString());
 			return { text: `${t.text}\n\n[command timed out after ${timeout ?? 120}s and was killed]`, isError: true };
 		}
@@ -434,31 +494,33 @@ const JOBS_NODE = `T="--experimental-strip-types --disable-warning=ExperimentalW
 node $T -e "" >/dev/null 2>&1 || { echo "boxery jobs: need Node >= 22.18 in the VM (found: $(node -v 2>/dev/null || echo none))" >&2; exit 1; }
 BOXERY_CALLER=$PPID exec node $T -`;
 export const VALID_JOB = /^job-[a-z0-9-]{1,36}$/;
-const b64 = (s) => Buffer.from(s).toString("base64");
+const b64 = (/** @type {string} */ s) => Buffer.from(s).toString("base64");
 
-/** Run the helper; args must be validated (ids, numbers) or base64. Resolves {code, stdout, stderr}. */
+/** Run the helper; args must be validated (ids, numbers) or base64. Resolves {code, stdout, stderr}. @param {string} vm @param {string[]} args @param {SshRunOpts} [opts] */
 function jobsHelper(vm, args, opts = {}) {
 	return sshRun(vm, `${JOBS_NODE} ${args.join(" ")}`, { ...opts, input: JOBS_SOURCE, closePipes: true });
 }
-const helperError = (r, signal) =>
+const helperError = (/** @type {SshResult} */ r, /** @type {AbortSignal | undefined} */ signal) =>
 	new Error(
 		signal?.aborted
 			? "aborted (the job itself was not stopped)"
 			: r.stderr.trim().replace(/^boxery jobs: /, "") || (r.code == null ? "timed out waiting for the VM" : `job operation failed (exit ${r.code})`),
 	);
+/** Parsed JSON from the VM helper. @param {string} vm @param {string[]} args @param {SshRunOpts} opts @returns {Promise<any>} */
 async function jobsJson(vm, args, opts) {
 	const r = await jobsHelper(vm, args, opts);
 	const text = r.stdout.toString().trim(); // wait's heartbeat newlines are whitespace
 	if (r.code !== 0 || !text) throw helperError(r, opts?.signal);
 	return JSON.parse(text);
 }
+/** @param {unknown} v @param {string} name @param {number} dflt @param {number} min @param {number} max @returns {number} */
 const int = (v, name, dflt, min, max) => {
 	if (v == null) return dflt;
-	if (!Number.isInteger(v) || v < min || v > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
-	return v;
+	if (!Number.isInteger(v) || /** @type {number} */ (v) < min || /** @type {number} */ (v) > max) throw new Error(`${name} must be an integer from ${min} to ${max}`);
+	return /** @type {number} */ (v);
 };
 
-/** Text tail of a raw byte tail: no partial leading UTF-8 character, at most MAX_BYTES once decoded. */
+/** Text tail of a raw byte tail: no partial leading UTF-8 character, at most MAX_BYTES once decoded. @param {Buffer} buf */
 function boundedText(buf) {
 	let start = 0;
 	while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
@@ -474,6 +536,7 @@ function boundedText(buf) {
 /**
  * vm_jobs: background jobs in tmux in the VM. Cancelling or timing out a call stops observing, never
  * the job (only `kill` does). The VM side of an abandoned wait exits within ~2 s (heartbeat).
+ * @param {string} vm @param {JobsParams} params @param {SignalOpts} [opts] @returns {Promise<ToolResult>}
  */
 export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi, timeout, grace }, { signal } = {}) {
 	assertName(vm);
@@ -493,7 +556,7 @@ export async function jobsTool(vm, { action, command, cwd, job, lines, stripAnsi
 			return { text: JSON.stringify(started), structured: started };
 		}
 		case "list": {
-			const jobs = (await jobsJson(vm, ["list"], opts)).map(({ argv: _a, log: _l, ...j }) => j);
+			const jobs = (await jobsJson(vm, ["list"], opts)).map((/** @type {Record<string, unknown>} */ { argv: _a, log: _l, ...j }) => j);
 			return { text: JSON.stringify(jobs), structured: { jobs } };
 		}
 		case "logs": {
@@ -562,6 +625,7 @@ export const JOBS_OUTPUT = {
 	},
 };
 
+/** @param {string} vm @param {{ path?: string, offset?: number, limit?: number }} params @returns {Promise<ToolResult>} */
 export async function readTool(vm, { path: p, offset, limit }) {
 	const rp = vmPath(p);
 	const mime = (await sshOk(vm, `test -r ${q(rp)} || { printf 'cannot read %s\\n' ${q(rp)} >&2; exit 1; }; file --mime-type -b -- ${q(rp)}`)).toString().trim();
@@ -581,13 +645,14 @@ export async function readTool(vm, { path: p, offset, limit }) {
 	return { text };
 }
 
+/** @param {string} vm @param {{ path?: string, content?: string }} params @returns {Promise<ToolResult>} */
 export async function writeTool(vm, { path: p, content }) {
 	const rp = vmPath(p);
 	await sshOk(vm, `f=${q(rp)}; mkdir -p "$(dirname "$f")" && cat > "$f"`, { input: content ?? "" });
 	return { text: `wrote ${Buffer.byteLength(content ?? "")} bytes to ${rp}` };
 }
 
-/** Exact-text replacement; each oldText must match exactly once in the original file; edits must not overlap. */
+/** Exact-text replacement; each oldText must match exactly once in the original file; edits must not overlap. @param {string} original @param {TextEdit[]} edits */
 export function applyEdits(original, edits) {
 	const spans = edits.map((e, i) => {
 		if (!e.oldText) throw new Error(`edits[${i}].oldText is empty`);
@@ -616,6 +681,7 @@ const editScript = `set -e; umask 077
  [ ! -L "$l" ] && { [ ! -e "$l" ] || [ -f "$l" ]; } || { echo 'unsafe edit lock file' >&2; exit 1; }
  exec flock -w 60 "$l" node --input-type=module -e ${q(`${atomicEditHelper}\nawait main(${applyEdits.toString()});`)}`;
 
+/** @param {string} vm @param {{ path?: string, edits?: TextEdit[], oldText?: string, newText?: string | null }} params @param {SignalOpts} [opts] @returns {Promise<ToolResult>} */
 export async function editTool(vm, { path: p, edits, oldText, newText }, { signal } = {}) {
 	if (signal?.aborted) throw new Error("edit cancelled");
 	const rp = vmPath(p);
@@ -630,7 +696,7 @@ export async function editTool(vm, { path: p, edits, oldText, newText }, { signa
 		if (result.code !== 0) throw new Error(result.stderr.trim() || `edit interrupted (exit ${result.code})`);
 		if (JSON.parse(result.stdout.toString("utf8"))?.committed !== true) throw new Error("invalid edit acknowledgement");
 	} catch (cause) {
-		throw new Error(`${cause.message}; commit outcome may be unknown; reread before retrying`, { cause });
+		throw new Error(`${/** @type {Error} */ (cause).message}; commit outcome may be unknown; reread before retrying`, { cause });
 	}
 	return { text: `edited ${rp}: ${list.length} replacement(s)` };
 }
@@ -643,7 +709,7 @@ export const LOCAL_COPY_DISABLED =
 	"vm_copy local: endpoints are disabled on this server: it runs on the boxery control plane, and local: would be that machine's files (where boxery keeps its credentials), not yours. " +
 	"Copy between VMs (NAME:/path), or ask the user to start the server with --copy-root DIR to allow local: paths inside DIR.";
 
-const isWithin = (p, dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+const isWithin = (/** @type {string} */ p, /** @type {string} */ dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
 /**
  * Paths no agent request reaches (a confined local: endpoint, even inside its root; a vm_grant file):
@@ -651,34 +717,37 @@ const isWithin = (p, dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir :
  * profile directories) and the user's keys and agent credentials (~/.ssh, ~/.gnupg, ~/.pi). Each is
  * given lexically and, when it exists, by its real path. → [{dir, keys}]: keys marks ~/.ssh and
  * ~/.gnupg, whose use ssh-agent stands in for.
+ * @param {string[]} [extra] @returns {{ dir: string, keys: boolean }[]}
  */
 function deniedDirs(extra = []) {
 	const home = homedir();
 	const config = path.join(home, ".config");
-	let profiles = [], hosts = [];
+	let profiles = /** @type {string[]} */ ([]), hosts = /** @type {string[]} */ ([]);
 	try { profiles = readdirSync(config).filter((n) => n.startsWith("boxery")).map((n) => path.join(config, n)); } catch {}
 	try { hosts = registeredHosts().map((h) => h.dir); } catch {}
 	const keys = [".ssh", ".gnupg"].map((d) => ({ dir: path.join(home, d), keys: true }));
-	const own = [process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts, path.join(home, ".pi"), ...extra]
-		.filter(Boolean).map((dir) => ({ dir, keys: false }));
+	const own = /** @type {string[]} */ ([process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts, path.join(home, ".pi"), ...extra]
+		.filter(Boolean)).map((dir) => ({ dir, keys: false }));
+	/** @type {Set<string>} */
 	const seen = new Set();
 	return [...keys, ...own].flatMap(({ dir, keys }) => {
 		const p = path.resolve(dir);
 		let real;
 		try { real = realpathSync(p); } catch {}
-		return [p, real].filter((d) => d && !seen.has(d) && seen.add(d)).map((d) => ({ dir: d, keys }));
+		return /** @type {string[]} */ ([p, real].filter((d) => d && !seen.has(d) && seen.add(d))).map((d) => ({ dir: d, keys }));
 	});
 }
-const copyDenied = (extra) => deniedDirs(extra).map((d) => d.dir);
+const copyDenied = (/** @type {string[] | undefined} */ extra) => deniedDirs(extra).map((d) => d.dir);
 
-/** realpath of `p`, whose last components may not exist yet. A dangling symlink is refused: a write would follow it. */
+/** realpath of `p`, whose last components may not exist yet. A dangling symlink is refused: a write would follow it. @param {string} p @returns {string} */
 function realPathAllowMissing(p) {
+	/** @type {string[]} */
 	const missing = [];
 	for (let cur = p; ; cur = path.dirname(cur)) {
 		try {
 			return path.join(realpathSync(cur), ...missing.reverse());
 		} catch (e) {
-			if (e.code !== "ENOENT" || cur === path.dirname(cur)) throw e;
+			if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT" || cur === path.dirname(cur)) throw e;
 			let link = false;
 			try { link = lstatSync(cur).isSymbolicLink(); } catch {}
 			if (link) throw new Error(`${cur} is a symlink to a missing path`);
@@ -687,7 +756,7 @@ function realPathAllowMissing(p) {
 	}
 }
 
-/** Validate a --copy-root directory → its real path. */
+/** Validate a --copy-root directory → its real path. @param {unknown} dir @param {{ deny?: string[] }} [opts] */
 export function copyRoot(dir, { deny = [] } = {}) {
 	if (typeof dir !== "string" || !dir) throw new Error("--copy-root needs a directory");
 	let real;
@@ -704,15 +773,16 @@ export function copyRoot(dir, { deny = [] } = {}) {
 /**
  * A local: policy confined to `root` (a real directory path). check(p) takes a real path and throws
  * unless it is inside the root and neither inside nor containing a denied path.
+ * @param {LocalConfinement} confinement
  */
 function confineLocal({ root, deny = [] }) {
 	const denied = copyDenied(deny);
-	const check = (real, shown = real) => {
+	const check = (/** @type {string} */ real, shown = real) => {
 		if (!isWithin(real, root)) throw new Error(`local:${shown} is outside the copy root ${root}`);
 		const hit = denied.find((d) => isWithin(real, d) || isWithin(d, real));
 		if (hit) throw new Error(`local:${shown} is or holds ${hit} (boxery's own configuration or keys), which vm_copy never copies`);
 	};
-	const resolve = (p) => {
+	const resolve = (/** @type {string} */ p) => {
 		if (String(p).split("/").includes("..")) throw new Error(`local:${p}: ".." is not allowed in local: paths on this server`);
 		return path.resolve(root, String(p).replace(/^~(?=\/|$)/, homedir()));
 	};
@@ -721,6 +791,7 @@ function confineLocal({ root, deny = [] }) {
 		check,
 		// The tar producer archives a symlink named on its command line as a link, so the directory
 		// it runs in must be real; the entry itself is checked by its target too.
+		/** @param {string} p */
 		source(p) {
 			const lexical = resolve(p);
 			let real, dir;
@@ -736,6 +807,7 @@ function confineLocal({ root, deny = [] }) {
 			return named;
 		},
 		// The destination may not exist yet; its existing part must resolve inside the root.
+		/** @param {string} p @param {string} basename */
 		destination(p, basename) {
 			const real = realPathAllowMissing(resolve(p));
 			let isDir = false;
@@ -752,6 +824,7 @@ function confineLocal({ root, deny = [] }) {
  * and stdio MCP run on the user's own machine), false (refused), or {root, deny} (confined to root:
  * realpath-checked in both directions, no "..", nothing of boxery's own or the user's keys, and VM →
  * local copies never merge into or replace an existing directory, so they can't write through a symlink).
+ * @param {{ from: string, to: string }} params @param {CopyOpts} [opts] @returns {Promise<ToolResult>}
  */
 export async function copyTool({ from, to }, { current, localCwd = process.cwd(), local, signal } = {}) {
 	const host = currentHost();
@@ -759,16 +832,17 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 	const dst = { host, ...parseLoc(to, current) };
 	if (local === false && (!src.vm || !dst.vm)) throw new Error(LOCAL_COPY_DISABLED);
 	const confined = local ? confineLocal(local) : null;
-	const localAbs = (s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
+	const localAbs = (/** @type {string} */ s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
 	// Resolve BOTH endpoints and SSH profiles before creating staging directories or starting work.
 	// The stream transport never consults ambient host/session state, including during cleanup.
+	/** @param {Loc & { host: HostProfile }} loc @param {string} [basename] @returns {CopyEndpoint} */
 	const endpoint = (loc, basename) => {
 		if (!loc.vm) {
 			if (!confined) return { path: localAbs(loc.path), label: "local" };
 			// Re-checked by the transport where it stages and commits (the tree may change meanwhile).
 			return basename === undefined
 				? { path: confined.source(loc.path), label: "local" }
-				: { path: confined.destination(loc.path, basename), label: "local", confine: (real) => confined.check(real) };
+				: { path: confined.destination(loc.path, basename), label: "local", confine: (/** @type {string} */ real) => confined.check(real) };
 		}
 		assertName(loc.vm);
 		if (!existsSync(loc.host.sshConf)) throw new Error(`boxery not set up (${loc.host.sshConf} missing); run: boxery setup user@host`);
@@ -777,7 +851,7 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 	const source = endpoint(src);
 	const destination = endpoint(dst, path.posix.basename(source.path));
 	const bytes = await streamCopy(source, destination, { signal });
-	const fmt = (l, e) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${e.path}`;
+	const fmt = (/** @type {Loc & { host: HostProfile }} */ l, /** @type {CopyEndpoint} */ e) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${e.path}`;
 	return { text: `copied ${fmt(src, source)} → ${fmt(dst, destination)} (${bytes} bytes tar)` };
 }
 
@@ -786,24 +860,28 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 // Desktop tools on a headless VM (boxery new --headless) fail with this, not with an X11 error.
 const HEADLESS_EXIT = 64;
 const X = `[ ! -e /etc/boxery/headless ] || exit ${HEADLESS_EXIT}; export DISPLAY=:1; `;
-const headlessError = (vm) =>
+const headlessError = (/** @type {string} */ vm) =>
 	new Error(`VM "${vm}" is headless (created with --headless): it has no desktop, so screenshots, mouse/keyboard input and vm_browser don't work there. Use a desktop VM (vm_manage {action:'new'} without headless) for GUI or browser work.`);
+/** @param {string} vm @param {string} script @param {SshRunOpts} [opts] */
 async function desktopRun(vm, script, opts) {
 	const r = await sshRun(vm, script, opts);
 	if (r.code === HEADLESS_EXIT) throw headlessError(vm);
 	return r;
 }
+/** @param {string} vm @param {string} script @param {SshRunOpts} [opts] */
 async function desktopOk(vm, script, opts) {
 	const r = await desktopRun(vm, script, opts);
 	if (r.code !== 0) throw new Error(r.stderr.trim() || `command failed (exit ${r.code})`);
 	return r.stdout;
 }
+/** @type {Map<string, number>} */
 const screenScale = new Map(); // screenshot px → screen px, per host+VM
-const screenKey = (vm) => `${currentHost().dir}\0${vm}`;
+const screenKey = (/** @type {string} */ vm) => `${currentHost().dir}\0${vm}`;
 
 /**
  * Screenshot of the VM's desktop, downscaled to maxWidth (model image limits; clicks scale back).
  * jpeg is for the live view (frames many times smaller); `size` gives shot and screen dimensions.
+ * @param {string} vm @param {number} [maxWidth] @param {{ jpeg?: boolean }} [opts] @returns {Promise<Screenshot>}
  */
 export async function screenshot(vm, maxWidth = 1280, { jpeg = false } = {}) {
 	// geometry on stderr, image on stdout
@@ -829,8 +907,9 @@ export async function screenshot(vm, maxWidth = 1280, { jpeg = false } = {}) {
 	};
 }
 
-const toScreen = (vm, n) => Math.round(Number(n) * (screenScale.get(screenKey(vm)) ?? 1600 / 1280));
+const toScreen = (/** @type {string} */ vm, /** @type {unknown} */ n) => Math.round(Number(n) * (screenScale.get(screenKey(vm)) ?? 1600 / 1280));
 
+/** @param {string} vm @param {string} msg @param {boolean | undefined} want @returns {Promise<ToolResult>} */
 async function after(vm, msg, want) {
 	if (want === false) return { text: msg };
 	await sleep(500);
@@ -838,17 +917,20 @@ async function after(vm, msg, want) {
 	return { text: `${msg}\n${s.text}`, image: s.image };
 }
 
+/** @param {string} vm @param {{ x: number, y: number, button?: string, double?: boolean, screenshot?: boolean }} params */
 export async function click(vm, { x, y, button, double, screenshot: shot }) {
-	const b = { left: 1, middle: 2, right: 3 }[button ?? "left"] ?? 1;
+	const b = /** @type {Record<string, number>} */ ({ left: 1, middle: 2, right: 3 })[button ?? "left"] ?? 1;
 	await desktopOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click ${double ? "--repeat 2 " : ""}${b}`);
 	return after(vm, `clicked ${button ?? "left"} at (${x}, ${y})`, shot);
 }
 
+/** @param {string} vm @param {{ text: string, screenshot?: boolean }} params */
 export async function typeText(vm, { text, screenshot: shot }) {
 	await desktopOk(vm, `${X}xdotool type --clearmodifiers --delay 8 --file -`, { input: String(text) });
 	return after(vm, `typed ${String(text).length} chars`, shot);
 }
 
+/** @param {string} vm @param {{ keys: string, screenshot?: boolean }} params */
 export async function pressKeys(vm, { keys, screenshot: shot }) {
 	const list = String(keys).trim().split(/\s+/);
 	if (!list.every((k) => /^[A-Za-z0-9_+\-]+$/.test(k))) throw new Error(`invalid key spec: ${keys}`);
@@ -856,14 +938,16 @@ export async function pressKeys(vm, { keys, screenshot: shot }) {
 	return after(vm, `pressed ${list.join(" ")}`, shot);
 }
 
+/** @param {string} vm @param {{ x: number, y: number, direction: string, amount?: number, screenshot?: boolean }} params */
 export async function scroll(vm, { x, y, direction, amount, screenshot: shot }) {
-	const btn = { up: 4, down: 5, left: 6, right: 7 }[direction];
+	const btn = /** @type {Record<string, number>} */ ({ up: 4, down: 5, left: 6, right: 7 })[direction];
 	if (!btn) throw new Error("direction must be up, down, left or right");
 	const n = Math.max(1, Math.min(50, Math.floor(amount ?? 5)));
 	await desktopOk(vm, `${X}xdotool mousemove ${toScreen(vm, x)} ${toScreen(vm, y)} click --repeat ${n} ${btn}`);
 	return after(vm, `scrolled ${direction} x${n}`, shot);
 }
 
+/** @param {string} vm @param {{ code: string, screenshot?: boolean, timeout?: number }} params @param {SignalOpts} [opts] @returns {Promise<ToolResult>} */
 export async function browser(vm, { code, screenshot: shot, timeout }, { signal } = {}) {
 	const program = `
 const { chromium } = await import(process.env.BOXERY_PW);
@@ -898,7 +982,7 @@ process.exit(0);`;
 
 // ---------------------------------------------------------------- lifecycle
 
-/** Run a controller command with --json and parse its stdout (stderr is diagnostics only). */
+/** Run a controller command with --json and parse its stdout (stderr is diagnostics only). @param {string[]} args @param {number} [timeoutMs] @returns {Promise<any>} */
 export function boxeryJson(args, timeoutMs = 60_000) {
 	const command = controllerCommand([...args, "--json"]);
 	return new Promise((resolve, reject) => {
@@ -915,22 +999,28 @@ export function boxeryJson(args, timeoutMs = 60_000) {
 
 /** VMs on the host: [{name, state, ssh_addr, disk_size, disk_used, tunnel, lease, shape, cpus, mem, desktop, grants}]
  *  (fields: docs/cli.md). ssh_addr is "HOST:PORT" as the host reaches the VM; disk_size and disk_used are GiB. */
+/** @type {() => Promise<VmInfo[]>} */
 export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
+/** @type {() => Promise<Shapes>} */
 export const listShapes = () => boxeryJson(["shapes"]);
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
+/** @type {(name: string) => Promise<SnapInfo[]>} */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
 
 /** Every image on the host (snapshots, addressed VM@SNAP): [{image, created, size}] (docs/cli.md). */
+/** @type {() => Promise<ImageInfo[]>} */
 export const listImages = () => boxeryJson(["images"]);
 
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
+/** @type {() => Promise<Versions>} */
 export const versions = () => boxeryJson(["version"]);
 
+/** @param {Versions} versions */
 export function formatVersions({ controller, host, behind }) {
-	const v = (x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
+	const v = (/** @type {VersionInfo} */ x) => `${x.version}${x.describe && x.describe !== x.version ? ` (${x.describe})` : ""}`;
 	let def = null;
 	try { def = defaultHost(); } catch {}
 	const upgrade = host?.name && host.name !== def ? `boxery --host ${host.name} upgrade-host` : "boxery upgrade-host";
@@ -939,49 +1029,54 @@ export function formatVersions({ controller, host, behind }) {
 	return lines.join("\n");
 }
 
+/** @param {string} name @param {SnapInfo[]} snaps */
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
 	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
 }
 
+/** @param {ImageInfo[]} images */
 export function formatImages(images) {
 	if (!images.length) return "no images (snapshots) on the host";
 	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}`).join("\n");
 }
 
+/** @param {unknown} s @returns {string} */
 export function assertShape(s) {
 	if (typeof s !== "string" || !/^[a-z][a-z0-9-]{0,30}$/.test(s)) throw new Error(`invalid shape name: ${s}`);
 	return s;
 }
 
+/** @param {Shapes} shapes */
 export function formatShapes({ default: def, shapes }) {
 	const rows = [["SHAPE", "CPUS", "MEM", "DISK"], ...Object.entries(shapes).map(([n, s]) => [n + (n === def ? " (default)" : ""), String(s.cpus), `${s.mem / 1024} GiB`, `${s.disk} GiB`])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(w[i]))).join("  ")).join("\n");
 }
 
-const fmtGrant = (g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
+const fmtGrant = (/** @type {Grant} */ g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
 
 // The VM's ssh endpoint from the host (HOST:PORT). A running VM whose tunnel isn't up (exe.dev) shows why
 // instead. `addr`: hosts from before ssh_addr.
-const fmtAddr = (v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? v.addr ?? "-"));
+const fmtAddr = (/** @type {VmInfo} */ v) => (v.state === "running" && v.tunnel != null && v.tunnel !== "up" ? `tunnel ${v.tunnel}` : (v.ssh_addr ?? v.addr ?? "-"));
 // USED/SIZE in GiB ("0.5/40GiB"), or only the size when the backend can't tell what's used.
-const fmtDisk = (v) => (v.disk_size == null && v.disk_used == null ? "-"
+const fmtDisk = (/** @type {VmInfo} */ v) => (v.disk_size == null && v.disk_used == null ? "-"
 	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
 
-/** Human-readable table for tools and /vm ls. */
+/** Human-readable table for tools and /vm ls. @param {VmInfo[]} vms */
 export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
-	const kind = (v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
-	const lease = (v) => v.lease?.state?.toLowerCase() ?? "-"; // hosts from before lowercase lease states
+	const kind = (/** @type {VmInfo} */ v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
+	const lease = (/** @type {VmInfo} */ v) => v.lease?.state?.toLowerCase() ?? "-"; // hosts from before lowercase lease states
 	const rows = [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), fmtDisk(v), v.shape ?? "-", kind(v), lease(v), (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
 }
 
+/** @param {string} name @param {Grant[]} grants */
 export function formatGrants(name, grants) {
 	if (!grants.length) return `no grants for ${name}`;
-	const line = (g) =>
+	const line = (/** @type {Grant} */ g) =>
 		g.kind === "ssh-agent"
 			? "ssh-agent   forward the user's local ssh agent"
 			: g.kind === "env"
@@ -998,9 +1093,9 @@ export function formatGrants(name, grants) {
 // dialog), which the agent cannot answer. Only what `boxery grant` could add without a --cmd is
 // requestable: a command run on the user's machine is theirs to write.
 
-const quoteWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
+const quoteWord = (/** @type {string} */ s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
 /** Is real path `p` inside `dir`? `dir` is resolved too (macOS: /var → /private/var). */
-const underDir = (p, dir) => {
+const underDir = (/** @type {string} */ p, /** @type {string} */ dir) => {
 	try {
 		dir = realpathSync(dir);
 	} catch {
@@ -1015,6 +1110,7 @@ const underDir = (p, dir) => {
  * (~ = home), then to the real path, which is what gets stored: every apply re-reads the file, and a
  * symlink left in the spec could be re-pointed after the user approved it. `requested` is the path
  * the agent named, when it differs.
+ * @param {GrantRequestArgs} [a] @param {{ localCwd?: string }} [opts] @returns {GrantSpec}
  */
 export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	const s = typeof spec === "string" ? spec.trim() : "";
@@ -1053,21 +1149,22 @@ export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	return { kind: "file", spec: `file:${real}=${remote}`, local: real, ...(real === local ? {} : { requested: local }), remote };
 }
 
-const realOr = (p) => { try { return realpathSync(p); } catch { return p; } };
+const realOr = (/** @type {string} */ p) => { try { return realpathSync(p); } catch { return p; } };
 // A stored file grant counts by the file it reads now: the CLI (and older vm_grant) store paths as given.
-const grantedAlready = (g, grants) =>
+const grantedAlready = (/** @type {GrantSpec} */ g, /** @type {Grant[]} */ grants) =>
 	g.kind === "ssh-agent"
 		? grants.some((x) => x.kind === "ssh-agent")
 		: g.kind === "env"
 			? grants.some((x) => x.kind === "env" && x.var === g.var)
 			: g.kind === "file"
-				? grants.some((x) => x.kind === "file" && realOr(x.local) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
+				? grants.some((x) => x.kind === "file" && realOr(/** @type {string} */ (x.local)) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
 				: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
 
 /** ~/… for paths in the user's home: clients truncate long prompt lines. */
-const tildePath = (p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync(homedir()).length)}` : p);
+const tildePath = (/** @type {string | undefined} */ p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync(homedir()).length)}` : p);
 
 /** What the user is agreeing to, in their terms. The agent's reason comes last and is labelled as such. */
+/** @param {string} vm @param {string} host @param {GrantSpec} g @param {unknown} reason */
 function grantPrompt(vm, host, g, reason) {
 	const where = `VM "${vm}" on host "${host}"`;
 	const what = {
@@ -1083,6 +1180,7 @@ function grantPrompt(vm, host, g, reason) {
 	return [`Give ${where} access to:`, "", ...what, "", `Revoke any time: ${grantCommand("revoke", vm, host, g)}`, ...(why ? ["", `The agent's reason: "${why}"`] : [])].join("\n");
 }
 
+/** @param {"grant" | "revoke"} verb @param {string} vm @param {string} host @param {GrantSpec} g */
 function grantCommand(verb, vm, host, g) {
 	const spec = verb === "revoke" && g.kind === "file" ? `file:${g.local}` : g.spec;
 	return ["boxery", "--host", host, verb, vm, spec, ...(verb === "grant" && g.readonly ? ["--readonly"] : [])].map(quoteWord).join(" ");
@@ -1091,6 +1189,7 @@ function grantCommand(verb, vm, host, g) {
 /**
  * Wrap a front-end's approve(message) → "accept" | "decline" | "cancel" so a session shows one
  * grant prompt at a time; a request made while one is open fails with e.busy.
+ * @template T @template R @param {(request: T) => Promise<R>} approve @returns {(request: T) => Promise<R>}
  */
 export function oneAtATime(approve) {
 	let open = false;
@@ -1108,12 +1207,13 @@ export function oneAtATime(approve) {
 /**
  * vm_grant: ask the user to grant VM `vm` something, and on approval add it with `boxery grant`.
  * ctx.approve(message) shows the prompt (absent: the front-end can't prompt, so the user gets the command).
+ * @param {string} vm @param {GrantRequestArgs} a @param {{ approve?: Approve, localCwd?: string, signal?: AbortSignal }} [ctx] @returns {Promise<ToolResult>}
  */
 export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 	const g = parseGrantRequest(a, { localCwd });
 	const host = currentHost().name;
 	const command = grantCommand("grant", vm, host, g);
-	if (g.kind === "env" && process.env[g.var] === undefined)
+	if (g.kind === "env" && process.env[/** @type {string} */ (g.var)] === undefined)
 		return { text: `$${g.var} isn't set where boxery runs, so there is nothing to grant. Ask the user to grant it from a command that prints the value, e.g.:\n  ${command} --cmd '…'`, isError: true };
 	if (grantedAlready(g, await boxeryJson(["grants", vm])))
 		return { text: `${vm} already has ${g.spec}; login shells (and vm_bash) have it. If it still fails, the problem is elsewhere: tell the user what you saw.` };
@@ -1124,8 +1224,8 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 		answer = await approve(grantPrompt(vm, host, g, a.reason));
 	} catch (e) {
 		if (signal?.aborted) throw e;
-		if (e?.busy) return { text: "Another grant request is waiting for the user's answer. Wait for it before asking again.", isError: true };
-		return { text: `The approval prompt failed (${e?.message ?? e}), so nothing was granted. ${manual}`, isError: true };
+		if (/** @type {{ busy?: boolean } | undefined} */ (e)?.busy) return { text: "Another grant request is waiting for the user's answer. Wait for it before asking again.", isError: true };
+		return { text: `The approval prompt failed (${/** @type {Error | undefined} */ (e)?.message ?? e}), so nothing was granted. ${manual}`, isError: true };
 	}
 	if (answer !== "accept")
 		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up: carry on without it, or ask them how to proceed.` };
@@ -1133,11 +1233,12 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 	return { text: `The user approved: ${vm} now has ${g.spec}. New login shells (vm_bash runs one) pick it up.\n${out}` };
 }
 
+/** @param {string} name */
 export async function vmExists(name) {
 	return (await listVms()).some((v) => v.name === name);
 }
 
-/** Make sure VM `name` exists (create it if not) and answers over ssh. */
+/** Make sure VM `name` exists (create it if not) and answers over ssh. @param {string} name @param {(message: string) => void} [notify] */
 export async function ensureVm(name, notify = () => {}) {
 	assertName(name);
 	if (!(await vmExists(name))) {
@@ -1147,13 +1248,13 @@ export async function ensureVm(name, notify = () => {}) {
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
 
-/** The VM a vm_manage action `a` acts on: `a.vm`, which it must name. */
+/** The VM a vm_manage action `a` acts on: `a.vm`, which it must name. @param {ManageArgs} a */
 export function needVm(a) {
 	if (a.vm == null || a.vm === "") throw new Error(`${a.action} needs \`vm\`, the VM to act on`);
 	return assertName(a.vm);
 }
 
-/** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
+/** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. @param {ManageArgs} a @param {ProgressOpts} [opts] @returns {Promise<string>} */
 export async function manage(a, opts = {}) {
 	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
 	const need = () => needVm(a);
@@ -1198,6 +1299,7 @@ export async function manage(a, opts = {}) {
 
 // ---------------------------------------------------------------- shared prompt text
 
+/** @param {string | null | undefined} current @param {{ localToolsNote?: string }} [opts] */
 export function guidance(current, { localToolsNote } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
 	if (!current)
@@ -1218,6 +1320,7 @@ export function guidance(current, { localToolsNote } = {}) {
 // ---------------------------------------------------------------- pool leases
 
 export const LEASE_TTL = { min: 60, max: 28_800, default: 1800 };
+/** @param {string} what @param {number} v @param {number} min @param {number} max */
 function assertSeconds(what, v, min, max) {
 	if (!Number.isSafeInteger(v) || v < min || v > max) throw new Error(`${what} must be a whole number of seconds, ${min}–${max}`);
 	return v;
@@ -1231,14 +1334,16 @@ function assertSeconds(what, v, min, max) {
  * remembers the host it came from; renew/release run against that host.
  */
 export class LeaseKeeper {
+	/** @param {LeaseKeeperOpts} [opts] */
 	constructor({ alive = () => true, onLost = () => {}, everyMs = (ttl) => Math.max(20, ttl / 3) * 1000 } = {}) {
+		/** @type {Map<string, Lease>} */
 		this.leases = new Map(); // lease id → { name, id, ttl, host, expiresAt, timer }
 		this.alive = alive;
 		this.onLost = onLost;
 		this.everyMs = everyMs; // heartbeat interval for a TTL (tests shorten it)
 	}
 
-	/** The lease this session holds on VM `name` on `host` (default: the current host), if any. */
+	/** The lease this session holds on VM `name` on `host` (default: the current host), if any. @param {string} name @returns {Lease | null} */
 	find(name, host = currentHost()) {
 		for (const l of this.leases.values()) if (l.name === name && l.host.name === host.name && l.host.dir === host.dir) return l;
 		return null;
@@ -1248,6 +1353,7 @@ export class LeaseKeeper {
 		return [...this.leases.values()];
 	}
 
+	/** @param {{ ttl?: number, wait?: number }} [opts] @returns {Promise<Lease>} */
 	async acquire({ ttl = LEASE_TTL.default, wait = 60 } = {}) {
 		assertSeconds("ttl", ttl, LEASE_TTL.min, LEASE_TTL.max);
 		assertSeconds("wait", wait, 0, 3600);
@@ -1260,18 +1366,21 @@ export class LeaseKeeper {
 			if (leaked) await boxeryCli(["release", leaked], 180_000).catch(() => {}); // never leak a lease
 			throw new Error(`unexpected acquire output: ${out.slice(0, 300)}`);
 		}
+		/** @type {Lease} */
 		const lease = { name: m[1], id: m[2], ttl, host, expiresAt: Date.now() + ttl * 1000, timer: null };
 		this.leases.set(lease.id, lease);
 		this.#schedule(lease);
 		return lease;
 	}
 
+	/** @param {Lease} lease */
 	#schedule(lease) {
-		clearInterval(lease.timer);
+		clearInterval(/** @type {NodeJS.Timeout} */ (lease.timer));
 		lease.timer = setInterval(() => void this.#heartbeat(lease), this.everyMs(lease.ttl));
 		lease.timer.unref?.();
 	}
 
+	/** @param {Lease} lease */
 	async #heartbeat(lease) {
 		if (!this.leases.has(lease.id) || !this.alive(lease)) return;
 		try {
@@ -1281,6 +1390,7 @@ export class LeaseKeeper {
 		}
 	}
 
+	/** @param {Lease} lease @param {number} ttl */
 	async #renew(lease, ttl) {
 		const out = await boxeryCli(["renew", lease.id, "--ttl", String(ttl)], 60_000);
 		lease.ttl = ttl;
@@ -1288,12 +1398,13 @@ export class LeaseKeeper {
 		return out;
 	}
 
+	/** @param {Lease} lease */
 	#forget(lease) {
-		clearInterval(lease.timer);
+		clearInterval(/** @type {NodeJS.Timeout} */ (lease.timer));
 		return this.leases.delete(lease.id);
 	}
 
-	/** Renew now (optionally with a new TTL, which later heartbeats keep). A failed renewal loses the lease. */
+	/** Renew now (optionally with a new TTL, which later heartbeats keep). A failed renewal loses the lease. @param {string} name @param {number | null} [ttl] */
 	async renew(name, ttl) {
 		const lease = this.find(name);
 		if (!lease) throw new Error(`this session holds no lease on ${name}`);
@@ -1302,13 +1413,13 @@ export class LeaseKeeper {
 			await this.#renew(lease, ttl ?? lease.ttl);
 		} catch (e) {
 			this.#forget(lease);
-			throw new Error(`lease on ${name} is gone (${e.message}); the VM may already be reset`);
+			throw new Error(`lease on ${name} is gone (${/** @type {Error} */ (e).message}); the VM may already be reset`);
 		}
 		this.#schedule(lease);
 		return lease;
 	}
 
-	/** Give the lease back; the host resets the VM to its clean image. */
+	/** Give the lease back; the host resets the VM to its clean image. @param {string} name */
 	async release(name) {
 		const lease = this.find(name);
 		if (!lease) throw new Error(`this session holds no lease on ${name}`);
@@ -1322,6 +1433,7 @@ export class LeaseKeeper {
 	}
 }
 
+/** @param {Lease[]} leases @param {string | null} [current] */
 export function formatLeases(leases, current) {
 	if (!leases.length) return "this session holds no leases";
 	const now = Date.now();

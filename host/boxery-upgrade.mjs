@@ -11,14 +11,25 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** @typedef {{ version: string, describe: string | null, commit: string | null, branch: string | null, install: "git" | "npm" | "unknown", root: string }} VersionInfo */
+/** A boxery service file's command. @typedef {{ kind: "proxy" | "reaper", root: string, conf: string | null, node: string | null, path: string | null }} Service */
+/** One profile's services of this install. @typedef {{ proxy?: Service, reaper?: Service }} ProfileServices */
+/** A service of another install. @typedef {{ file: string, root: string, conf: string }} OtherService */
+/** @typedef {{ check: boolean, reinit: boolean, ref: string | null, wait: number }} UpgradeOptions */
+/** @typedef {{ from: string, to: string, upToDate: boolean, fromLabel: string, toLabel: string, mode?: "ff" | "detach", branch?: string | null, dirty?: boolean }} Plan */
+/** @import { Hold } from "./boxery-operations.mjs" */
+/** Where the new code comes from (git or npm). @typedef {{ plan(): Plan, apply(p: Plan): void, rollback(p: Plan): void }} Source */
+
 const SELF = fileURLToPath(import.meta.url);
 export const ROOT = path.resolve(path.dirname(SELF), "..");
 const HOST = path.join(ROOT, "host/boxery-host");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (m) => process.stderr.write(`==> ${m}\n`);
+const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
+const log = (/** @type {string} */ m) => process.stderr.write(`==> ${m}\n`);
+/** @type {(message: string, exitCode?: number) => never} */
 const fail = (message, exitCode = 1) => { throw Object.assign(new Error(message), { exitCode }); };
 const defaultConf = () => path.join(homedir(), ".config/boxery");
 
+/** @param {string} cmd @param {string[]} args @param {{ cwd?: string, env?: NodeJS.ProcessEnv, quiet?: boolean, allowFail?: boolean }} [opts] @returns {string | null} */
 function sh(cmd, args, { cwd = ROOT, env = process.env, quiet = true, allowFail = false } = {}) {
 	// quiet: capture stdout (returned) and stderr (in the error). Otherwise both stream to our stderr.
 	const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8", stdio: quiet ? ["ignore", "pipe", "pipe"] : ["ignore", 2, 2] });
@@ -32,29 +43,32 @@ function sh(cmd, args, { cwd = ROOT, env = process.env, quiet = true, allowFail 
 
 // ---------------------------------------------------------------- version
 
-const isNpmInstall = (root, pkg) => pkg.name === "boxery-vm" && path.basename(path.dirname(root)) === "node_modules";
+const isNpmInstall = (/** @type {string} */ root, /** @type {{ name?: string }} */ pkg) => pkg.name === "boxery-vm" && path.basename(path.dirname(root)) === "node_modules";
+/** @returns {VersionInfo} */
 export function versionInfo(root = ROOT) {
 	const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 	const git = existsSync(path.join(root, ".git"));
+	/** @type {VersionInfo} */
 	const info = { version: pkg.version, describe: null, commit: null, branch: null, install: git ? "git" : isNpmInstall(root, pkg) ? "npm" : "unknown", root };
 	if (git) {
-		const g = (...a) => sh("git", a, { cwd: root, allowFail: true }) || null;
+		const g = (/** @type {string[]} */ ...a) => sh("git", a, { cwd: root, allowFail: true }) || null;
 		info.describe = g("describe", "--tags", "--always", "--dirty");
 		info.commit = g("rev-parse", "HEAD");
 		info.branch = g("symbolic-ref", "--short", "-q", "HEAD");
 	}
 	return info;
 }
-const label = (v) => (v.describe && v.describe !== v.version ? `${v.version} (${v.describe})` : v.version);
+const label = (/** @type {VersionInfo} */ v) => (v.describe && v.describe !== v.version ? `${v.version} (${v.describe})` : v.version);
 
 // ---------------------------------------------------------------- profiles (from the service files)
 
 /**
  * Parse a boxery service file: systemd user unit (Linux) or launchd plist (macOS).
  * → {kind: "proxy"|"reaper", root, conf, node, path} or null for anything else (e.g. the vsock bridge).
+ * @param {string} text @returns {Service | null}
  */
 export function parseService(text) {
-	let argv, env = {};
+	let argv, /** @type {Record<string, string>} */ env = {};
 	if (text.includes("<plist")) {
 		const args = text.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1] ?? "";
 		argv = [...args.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]);
@@ -80,17 +94,18 @@ function serviceFiles() {
 	return readdirSync(dir).filter((f) => (darwin ? /^dev\..*\.plist$/.test(f) : f.endsWith(".service"))).map((f) => path.join(dir, f));
 }
 
-/** Services of this install, grouped by profile (BOXERY_CONF); and services of other installs (reported, not touched). */
+/** Services of this install, grouped by profile (BOXERY_CONF); and services of other installs (reported, not touched).
+ * @returns {{ profiles: Map<string, ProfileServices>, others: OtherService[] }} */
 export function discover(root = ROOT, files = serviceFiles()) {
-	const real = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
-	const mine = real(root), profiles = new Map(), others = [];
+	const real = (/** @type {string} */ p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+	const mine = real(root), profiles = /** @type {Map<string, ProfileServices>} */ (new Map()), others = /** @type {OtherService[]} */ ([]);
 	for (const file of files) {
 		const s = parseService(readFileSync(file, "utf8"));
 		if (!s) continue;
 		const conf = path.resolve(s.conf ?? defaultConf());
 		if (real(s.root) !== mine) { others.push({ file, root: s.root, conf }); continue; }
 		if (!profiles.has(conf)) profiles.set(conf, {});
-		profiles.get(conf)[s.kind] = s;
+		/** @type {ProfileServices} */ (profiles.get(conf))[s.kind] = s;
 	}
 	// A default profile set up without services (BOXERY_NO_SERVICES) has nothing to discover; it is
 	// this install's only if no other install's services use it.
@@ -98,14 +113,16 @@ export function discover(root = ROOT, files = serviceFiles()) {
 	return { profiles, others };
 }
 
-const readHostEnv = (conf) => {
+const readHostEnv = (/** @type {string} */ conf) => {
+	/** @type {Record<string, string>} */
 	const env = {};
 	try { for (const line of readFileSync(path.join(conf, "host.env"), "utf8").split("\n")) { const i = line.indexOf("="); if (i > 0) env[line.slice(0, i)] = line.slice(i + 1); } }
-	catch (e) { if (e.code !== "ENOENT") throw e; }
+	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
 	return env;
 };
 
 // The node the profile's services run now (resolved through wrappers), so an upgrade keeps it.
+/** @param {string} conf @param {ProfileServices} services */
 function serviceNode(conf, services) {
 	const recorded = readHostEnv(conf).BOXERY_NODE;
 	if (recorded && existsSync(recorded)) return recorded;
@@ -118,6 +135,7 @@ function serviceNode(conf, services) {
 
 // The settings init persists in host.env come from that file, never from whoever runs the upgrade.
 const PERSISTED = /^(BOXERY_(CONF|NODE|BACKEND|PROXY_PORT|PROXY_UNIT|REAPER_UNIT|POOL|POOL_DIR|BASE_VOL|DOMAIN_PREFIX|NET|LIMA_[A-Z_]+|CH_[A-Z_]+|EXE_[A-Z_]+|NO_SERVICES)|LIBVIRT_DEFAULT_URI|LIMA_HOME)$/;
+/** @param {string} conf @param {ProfileServices} services @param {string} node */
 function initEnv(conf, services, node) {
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !PERSISTED.test(k)));
 	// init derives the services' PATH from this one. Keep what the services had: an upgrade over a
@@ -134,12 +152,13 @@ function initEnv(conf, services, node) {
 
 // ---------------------------------------------------------------- sources
 
+/** @param {UpgradeOptions} opts @returns {Source} */
 function gitSource({ ref }) {
-	const git = (...a) => sh("git", a);
-	const tryGit = (...a) => sh("git", a, { allowFail: true });
-	const rev = (r) => tryGit("rev-parse", "--verify", "--quiet", `${r}^{commit}`);
-	const describe = (r) => tryGit("describe", "--tags", "--always", r) || r.slice(0, 12);
-	const ancestor = (a, b) => spawnSync("git", ["merge-base", "--is-ancestor", a, b], { cwd: ROOT }).status === 0;
+	const git = (/** @type {string[]} */ ...a) => /** @type {string} */ (sh("git", a));
+	const tryGit = (/** @type {string[]} */ ...a) => sh("git", a, { allowFail: true });
+	const rev = (/** @type {string} */ r) => tryGit("rev-parse", "--verify", "--quiet", `${r}^{commit}`);
+	const describe = (/** @type {string} */ r) => tryGit("describe", "--tags", "--always", r) || r.slice(0, 12);
+	const ancestor = (/** @type {string} */ a, /** @type {string} */ b) => spawnSync("git", ["merge-base", "--is-ancestor", a, b], { cwd: ROOT }).status === 0;
 	return {
 		plan() {
 			const dirty = Boolean(git("status", "--porcelain", "--untracked-files=no"));
@@ -148,7 +167,7 @@ function gitSource({ ref }) {
 			const remote = (branch && tryGit("config", `branch.${branch}.remote`)) || "origin";
 			log(`fetching ${remote}`);
 			git("fetch", "--quiet", "--tags", remote);
-			let to, mode, what;
+			let /** @type {string} */ to, /** @type {"ff" | "detach"} */ mode, /** @type {string} */ what;
 			if (ref) {
 				if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref)) fail(`invalid --ref ${ref}`);
 				to = rev(`refs/tags/${ref}`) || rev(`${remote}/${ref}`) || rev(ref) || fail(`unknown ref ${ref} (after fetching ${remote})`);
@@ -160,7 +179,7 @@ function gitSource({ ref }) {
 			} else {
 				// A detached checkout follows releases: the newest v* tag.
 				const tag = git("tag", "--list", "v*", "--sort=-v:refname").split("\n")[0] || fail("no release tags (v*) to upgrade to; pass --ref");
-				to = rev(`refs/tags/${tag}`); mode = "detach"; what = tag;
+				to = /** @type {string} */ (rev(`refs/tags/${tag}`)); mode = "detach"; what = tag;
 				if (!ancestor(from, to)) { log(`HEAD is not behind the newest release (${tag}); pass --ref to move it`); to = from; }
 			}
 			return { from, to, mode, branch, dirty, upToDate: from === to, fromLabel: describe(from), toLabel: `${describe(to)}${what ? ` (${what})` : ""}` };
@@ -174,24 +193,26 @@ function gitSource({ ref }) {
 	};
 }
 
-const semver = (v) => (String(v).match(/^(\d+)\.(\d+)\.(\d+)/) ?? []).slice(1).map(Number);
+const semver = (/** @type {unknown} */ v) => (String(v).match(/^(\d+)\.(\d+)\.(\d+)/) ?? []).slice(1).map(Number);
+/** @param {unknown} a @param {unknown} b */
 export function newer(a, b) { // a > b?
 	const x = semver(a), y = semver(b);
 	for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
 	return false;
 }
 
+/** @param {UpgradeOptions} opts @param {VersionInfo} current @returns {Source} */
 function npmSource({ ref }, current) {
 	// The npm next to the node running this owns its global root; check it is the one with this install.
 	const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}` };
-	const npm = (args, quiet = true) => sh("npm", args, { env, cwd: homedir(), quiet });
-	const install = (version) => { log(`npm install -g boxery-vm@${version}`); npm(["install", "-g", "--no-fund", "--no-audit", `boxery-vm@${version}`], false); };
+	const npm = (/** @type {string[]} */ args, quiet = true) => /** @type {string} */ (sh("npm", args, { env, cwd: homedir(), quiet }));
+	const install = (/** @type {string} */ version) => { log(`npm install -g boxery-vm@${version}`); npm(["install", "-g", "--no-fund", "--no-audit", `boxery-vm@${version}`], false); };
 	return {
 		plan() {
 			const root = npm(["root", "-g"]);
 			if (realpathSync(root) !== realpathSync(path.dirname(ROOT))) fail(`${ROOT} is not in the global npm root of ${process.execPath} (${root}); run the upgrade with the node that installed it`);
 			if (ref && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(ref)) fail(`invalid --ref ${ref}`);
-			let to = npm(["view", `boxery-vm@${ref ?? "latest"}`, "version"]).split("\n").pop().replace(/^.*'(.*)'$/, "$1").trim();
+			let to = /** @type {string} */ (npm(["view", `boxery-vm@${ref ?? "latest"}`, "version"]).split("\n").pop()).replace(/^.*'(.*)'$/, "$1").trim();
 			if (!to) fail(`npm has no boxery-vm@${ref ?? "latest"}`);
 			if (!ref && !newer(to, current.version)) to = current.version; // never downgrade unless asked to
 			return { from: current.version, to, upToDate: to === current.version, fromLabel: current.version, toLabel: to };
@@ -209,8 +230,9 @@ function npmSource({ ref }, current) {
 // Besides init, only locked operations write these files, so restoring them loses nothing.
 export const PRE_UPGRADE = "pre-upgrade";
 const STATE_FILES = ["tokens.json", "edge", "vm-shapes", "vm-kind"];
-const copy = (from, to) => cpSync(from, to, { recursive: true, preserveTimestamps: true });
+const copy = (/** @type {string} */ from, /** @type {string} */ to) => cpSync(from, to, { recursive: true, preserveTimestamps: true });
 
+/** @param {string} conf @param {Hold} hold */
 function saveState(conf, hold) {
 	const dir = path.join(conf, PRE_UPGRADE), tmp = `${dir}.tmp`;
 	rmSync(tmp, { recursive: true, force: true });
@@ -222,6 +244,7 @@ function saveState(conf, hold) {
 	log(`${conf}: saved the lease store and state files in ${dir}`);
 }
 
+/** @param {string} conf @param {Hold} hold */
 function restoreState(conf, hold) {
 	const dir = path.join(conf, PRE_UPGRADE);
 	hold.restore(path.join(dir, "leases.db")); // in place, through SQLite: see boxery-leases.mjs restore()
@@ -238,14 +261,17 @@ function restoreState(conf, hold) {
 
 // ---------------------------------------------------------------- init + verification
 
+/** @param {string} conf @param {ProfileServices} services @param {string} node */
 function init(conf, services, node) {
 	log(`init ${conf}`);
 	sh(HOST, ["init"], { env: initEnv(conf, services, node), quiet: false });
 }
 
 // After init: the profile's services must work as the services run them, not as this shell would.
+/** @param {string} conf @param {string} node */
 async function verify(conf, node) {
 	const services = discover().profiles.get(conf) ?? {};
+	/** @type {NodeJS.ProcessEnv} */
 	const env = { ...initEnv(conf, services, node), BOXERY_CONF: conf };
 	if (services.reaper?.path) env.PATH = services.reaper.path; // the reaper's PATH must find the backend's tools
 	const out = sh(HOST, ["ls", "--json"], { env, allowFail: true });
@@ -253,8 +279,8 @@ async function verify(conf, node) {
 	try { vms = JSON.parse(out ?? ""); } catch {}
 	if (!Array.isArray(vms)) fail(`boxery-host ls (as the reaper runs it) failed for ${conf}`);
 	// ls carries on without the lease store; the new code must be able to open (and so migrate) it.
-	try { if (!Array.isArray(JSON.parse(sh(HOST, ["pool", "ls", "--json"], { env })))) throw new Error("not a list"); }
-	catch (e) { fail(`the lease store of ${conf} can't be read: ${e.message}`); }
+	try { if (!Array.isArray(JSON.parse(/** @type {string} */ (sh(HOST, ["pool", "ls", "--json"], { env }))))) throw new Error("not a list"); }
+	catch (e) { fail(`the lease store of ${conf} can't be read: ${/** @type {Error} */ (e).message}`); }
 	if (!services.proxy) return;
 	const port = readHostEnv(conf).BOXERY_PROXY_PORT ?? "8088";
 	for (let i = 0; i < 40; i++) {
@@ -268,7 +294,9 @@ async function verify(conf, node) {
 // ---------------------------------------------------------------- commands
 
 const USAGE = "usage: boxery-host upgrade [--check] [--ref REF] [--wait SECONDS] [--reinit]";
+/** @param {string[]} argv */
 export function parseArgs(argv) {
+	/** @type {UpgradeOptions} */
 	const o = { check: false, reinit: false, ref: null, wait: 600 };
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -285,6 +313,7 @@ export function parseArgs(argv) {
 	return o;
 }
 
+/** @param {string[]} argv */
 async function upgrade(argv) {
 	const opts = parseArgs(argv);
 	const current = versionInfo();
@@ -304,9 +333,9 @@ async function upgrade(argv) {
 	if (plan.dirty && !plan.upToDate) fail(`${ROOT} has uncommitted changes; commit or stash them, then retry`);
 
 	const { holdExclusive } = await import("./boxery-operations.mjs");
-	const deadline = Date.now() + opts.wait * 1000, held = [];
+	const deadline = Date.now() + opts.wait * 1000, held = /** @type {Hold[]} */ ([]);
 	// Recorded before init rewrites the service files: each profile keeps the node its services use.
-	const nodes = new Map(confs.map((c) => [c, serviceNode(c, profiles.get(c))]));
+	const nodes = new Map(confs.map((c) => [c, serviceNode(c, /** @type {ProfileServices} */ (profiles.get(c)))]));
 	try {
 		for (const conf of confs) {
 			log(`waiting for in-flight operations in ${conf} (new ones wait for the upgrade)`);
@@ -320,20 +349,20 @@ async function upgrade(argv) {
 				confs.forEach((conf, i) => saveState(conf, held[i]));
 				source.apply(plan); applied = true;
 			}
-			for (const conf of confs) init(conf, profiles.get(conf), nodes.get(conf));
-			for (const conf of confs) await verify(conf, nodes.get(conf));
+			for (const conf of confs) init(conf, /** @type {ProfileServices} */ (profiles.get(conf)), /** @type {string} */ (nodes.get(conf)));
+			for (const conf of confs) await verify(conf, /** @type {string} */ (nodes.get(conf)));
 		} catch (e) {
 			if (!applied) throw e;
-			log(`upgrade failed: ${e.message}`);
+			log(`upgrade failed: ${/** @type {Error} */ (e).message}`);
 			log(`rolling back to ${plan.fromLabel}`);
 			try {
 				source.rollback(plan);
 				confs.forEach((conf, i) => restoreState(conf, held[i])); // after the code: nothing new migrates it again
-				for (const conf of confs) init(conf, profiles.get(conf), nodes.get(conf));
+				for (const conf of confs) init(conf, /** @type {ProfileServices} */ (profiles.get(conf)), /** @type {string} */ (nodes.get(conf)));
 			} catch (r) {
-				fail(`ROLLBACK FAILED (${r.message}). ${ROOT} needs repair by hand: restore ${plan.fromLabel} and each profile's ${PRE_UPGRADE}/ copy (see Upgrading in docs/install.md), then run boxery-host init for ${confs.join(", ")}`);
+				fail(`ROLLBACK FAILED (${/** @type {Error} */ (r).message}). ${ROOT} needs repair by hand: restore ${plan.fromLabel} and each profile's ${PRE_UPGRADE}/ copy (see Upgrading in docs/install.md), then run boxery-host init for ${confs.join(", ")}`);
 			}
-			fail(`upgrade to ${plan.toLabel} failed and was rolled back to ${plan.fromLabel}: ${e.message}`);
+			fail(`upgrade to ${plan.toLabel} failed and was rolled back to ${plan.fromLabel}: ${/** @type {Error} */ (e).message}`);
 		}
 		if (applied) for (const conf of confs) log(`${conf}: kept the state from before the upgrade in ${path.join(conf, PRE_UPGRADE)}`);
 	} finally {

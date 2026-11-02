@@ -30,7 +30,7 @@ function stub(name, script) {
 
 test("backend.sh and config.mjs read the same host.env keys", () => {
 	const sh = readFileSync(path.join(ROOT, "host/backend.sh"), "utf8");
-	const keys = sh.match(/case \$k in ([A-Z_ |]+)\)/)[1].split("|").map((k) => k.trim());
+	const keys = /** @type {RegExpMatchArray} */ (sh.match(/case \$k in ([A-Z_ |]+)\)/))[1].split("|").map((k) => k.trim());
 	assert.deepEqual(keys, HOST_ENV);
 });
 
@@ -92,7 +92,7 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 test("a failing backend call keeps its exit status and says whether it reported the error", async () => {
 	const b = createBackend({ ...env, BOXERY_FAKE_FAIL_CAPTURE: "1" });
 	fakeVm("a1");
-	await assert.rejects(b.call("backend_capture", ["a1", "a1@x"], { quiet: true }), (e) => e.exitCode === 1 && e.message === "backend_capture failed");
+	await assert.rejects(b.call("backend_capture", ["a1", "a1@x"], { quiet: true }), (/** @type {any} */ e) => e.exitCode === 1 && e.message === "backend_capture failed");
 });
 
 test("guest: ssh argv, stdin for keys, wait retries, host key creation", async () => {
@@ -107,7 +107,7 @@ test("guest: ssh argv, stdin for keys, wait retries, host key creation", async (
 	const ep = { host: "10.0.0.5", port: "2222" };
 	await guest.setKeys(ep, guest.petKeys());
 	assert.equal(readFileSync(path.join(dir, "keys"), "utf8"), "ssh-ed25519 AAAAnew boxery-host\nssh-ed25519 BBBB laptop\n");
-	const line = readFileSync(log, "utf8").trim().split("\n").at(-1);
+	const line = /** @type {string} */ (readFileSync(log, "utf8").trim().split("\n").at(-1));
 	assert.match(line, /-o IdentityFile=.*mgmt_ed25519 .* -p 2222 agent@10\.0\.0\.5 umask 077;/);
 	assert.equal(await guest.run(ep, "echo hi"), 0);
 	const failing = createGuest({ conf, env: { ...env, SSH_FAIL: "1" } });

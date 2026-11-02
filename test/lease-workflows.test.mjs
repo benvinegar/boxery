@@ -2,12 +2,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LeaseWorkflows } from "../host/lease-workflows.mjs";
+/** @import { LeaseBackend, LeaseStore } from "../host/lease-workflows.mjs" */
+/** @import { Claim } from "../host/boxery-leases.mjs" */
 
 function fixture() {
 	const events = [], logs = [];
 	let clock = 100;
 	const state = { row: { name: "p1", gen: 2, epoch: "epoch", state: "RESETTING", lease_id: "l-one" } };
 	const note = (kind, ...args) => events.push([kind, ...args]);
+	/** @type {LeaseStore} */
 	const store = {
 		get: (name) => { note("get", name); return state.row; },
 		claim: (...args) => { note("claim", ...args); return { name: "p1", gen: 1, epoch: "epoch", lease_id: "l-one", expires_at: 600 }; },
@@ -18,7 +21,7 @@ function fixture() {
 		candidates: () => { note("candidates"); return [{ name: "p1", gen: 1, epoch: "epoch" }]; },
 		due: (...args) => { note("due", ...args); return [{ name: "p1", gen: 2, epoch: "epoch", reason: "expired" }]; },
 	};
-	const backend = Object.fromEntries(["revokeToken", "issueToken", "clearEdge", "restore", "waitReady", "stepClock", "setKeys"].map((kind) => [kind, async (...args) => note(kind, ...args)]));
+	const backend = /** @type {LeaseBackend} */ (Object.fromEntries(["revokeToken", "issueToken", "clearEdge", "restore", "waitReady", "stepClock", "setKeys"].map((kind) => [kind, async (...args) => note(kind, ...args)])));
 	const journal = {
 		intent: async (...args) => { note("intent", ...args); return "intent-id"; },
 		done: async (id) => note("done", id),
@@ -125,13 +128,13 @@ test("acquire claims before locking and returns its original structured result",
 test("pool exhaustion reclaims once, tolerates reclaim failure, and retains exit code 4", async () => {
 	const f = fixture(); f.store.claim = () => null;
 	f.flows.reclaim = async () => { f.events.push(["reclaim"]); throw new Error("reaper unavailable"); };
-	await assert.rejects(f.flows.acquire({ holder: "alice", pubkey: "key" }), (e) => e.exitCode === 4 && /pool exhausted/.test(e.message));
+	await assert.rejects(f.flows.acquire({ holder: "alice", pubkey: "key" }), (/** @type {any} */ e) => e.exitCode === 4 && /pool exhausted/.test(e.message));
 	assert.deepEqual(f.kinds(), ["reclaim"]);
 });
 
 test("wait retries use the injected clock and sleep without holding a VM lock", async () => {
 	const f = fixture(); let attempts = 0;
-	f.store.claim = () => ++attempts < 3 ? null : { name: "p1", gen: 1, epoch: "epoch", expires_at: 600 };
+	f.store.claim = () => ++attempts < 3 ? null : /** @type {Claim} */ ({ name: "p1", gen: 1, epoch: "epoch", expires_at: 600 });
 	await f.flows.acquire({ holder: "alice", pubkey: "key", wait: 4 });
 	assert.deepEqual(f.kinds(), ["reclaim", "sleep", "lock"]);
 });

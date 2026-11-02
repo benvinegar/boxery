@@ -3,14 +3,16 @@
 | Layer | Command | Needs |
 |---|---|---|
 | Lint (shellcheck + node syntax) | `npm run lint` | shellcheck, node |
-| Type check: VM-side TypeScript (`core/*.ts`, run by Node's type stripping, no build step) | `npm i --no-save typescript@5.9.3 @types/node@22 && npm run typecheck` | node |
+| Type check: the `.mjs` sources (JSDoc types, `checkJs`), the tests (`test/tsconfig.json`) and VM-side `core/*.ts` | `npm i --no-save typescript@5.9.3 @types/node@22 && npm run typecheck` | node |
 | Unit/integration tests: core helpers, proxy, MCP, SQLite leases and lifecycle crash recovery (real host dispatcher with a fake backend), background jobs (real CLI + MCP, helper run as in a VM) | `npm test` | node ≥ 20; lease/lifecycle cases need node ≥ 22.13, job cases ≥ 22.18 |
 | Shell tests: host dispatcher against the `fake` backend, leases, images/forks (`host-images.sh`: the behaviour every backend must match), controller local mode + grants, named registry/import/defaults, injection/concurrency regressions | `npm run test:shell` | bash, jq, openssl, node ≥ 22.13, ps (procps on Linux) |
 | Same under macOS's bash 3.2 | `docker run --rm -v "$PWD":/src:ro bash:3.2 bash -c 'apk add -q openssh-client jq coreutils openssl nodejs perl git procps-ng; cp -r /src /w && cd /w && bash test/shell/run.sh'` | docker |
 | MCP protocol against a live VM | `mcp/test-mcp.sh VM` | a VM |
 | End-to-end (create VM → agents → proxy → extension → MCP → grants → snapshots → rm) | `./e2e.sh` | a configured host (libvirt or Lima) |
 
-CI (`.github/workflows/ci.yml`) runs lint, unit tests on Node 22/24/26, shell tests, bash 3.2, and a real macOS runner on every push and PR. `e2e.sh` needs KVM or Lima, so it runs manually (or on a self-hosted runner).
+CI (`.github/workflows/ci.yml`) runs lint, the type check, unit tests on Node 22/24/26, shell tests, bash 3.2, and a real macOS runner on every push and PR. `e2e.sh` needs KVM or Lima, so it runs manually (or on a self-hosted runner).
+
+Types: the code is plain JavaScript typed with JSDoc comments (`/** @param {string} name */`, `@typedef`, `/** @import { Runtime } from "./runtime.mjs" */`), checked by `tsc` under `strict`. There is no build step, and nothing to strip: npm installs live under `node_modules`, where Node refuses to strip TypeScript types, so files that ship stay `.mjs`. Define a shared shape as a `@typedef` in the module that owns it. Only `core/*.ts` is TypeScript syntax: it is piped into the VM and run under type stripping, so it must stay erasable.
 
 `test/copy.test.mjs` exercises streaming transfers with real tar and isolated fake SSH endpoints: 192 MiB archives with bounded agent buffers, all endpoint combinations, producer/consumer failures, cancellation/KILL escalation (including descriptor-free descendants), metadata deadline/late-preparation faults, read-only cleanup, non-writable parents and pinned routing. `COPY_TEST_TAR=/path/to/bsdtar node --test test/copy.test.mjs` checks BSD tar locally; native macOS CI uses its system tar. Fixture subprocesses live under `test/fixtures/`.
 

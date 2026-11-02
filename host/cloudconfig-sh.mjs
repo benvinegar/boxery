@@ -5,7 +5,9 @@
 import fs from "node:fs";
 
 const yaml = fs.readFileSync(process.argv[2], "utf8");
-const files = []; let cur = null, inContent = false, indent = 0;
+/** @typedef {{ path: string, content: string, encoding?: string, permissions?: string, owner?: string, [key: string]: string | undefined }} WriteFile */
+/** @type {WriteFile[]} */
+const files = []; let cur = /** @type {WriteFile | null} */ (null), inContent = false, indent = 0;
 let section = "";
 for (const line of yaml.split("\n")) {
 	if (/^[a-z_]+:/.test(line)) { section = line.split(":")[0]; if (cur) { files.push(cur); cur = null; } inContent = false; continue; }
@@ -15,7 +17,7 @@ for (const line of yaml.split("\n")) {
 	if (!cur) continue;
 	if (inContent) {
 		if (line.trim() === "") { cur.content += "\n"; continue; }
-		const ind = line.match(/^ */)[0].length;
+		const ind = /** @type {RegExpMatchArray} */ (line.match(/^ */))[0].length;
 		if (ind >= indent) { cur.content += line.slice(indent) + "\n"; continue; }
 		inContent = false;
 	}

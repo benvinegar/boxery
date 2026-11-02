@@ -9,6 +9,11 @@ import { loadConfig } from "./config.mjs";
 import { createGuest } from "./guest.mjs";
 import { loadShapes } from "./shapes.mjs";
 import { fail, log } from "./util.mjs";
+/** @import { DatabaseSync } from "node:sqlite" */
+/** @import { Token } from "./boxery-operations.mjs" */
+/** @import { GuestEndpoint } from "./guest.mjs" */
+
+/** The object every host command works with (`rt`). @typedef {ReturnType<typeof createRuntime>} Runtime */
 
 export function createRuntime(env = process.env) {
 	const config = loadConfig(env);
@@ -17,13 +22,14 @@ export function createRuntime(env = process.env) {
 		const have = readdirSync(backends).filter((f) => f.endsWith(".sh")).map((f) => f.slice(0, -3)).sort();
 		fail(`unknown backend '${config.backend}' (have: ${have.map((b) => `${b} `).join("")})`);
 	}
+	/** @type {DatabaseSync | undefined} */
 	let db;
 	const rt = {
 		...config,
 		log,
 		vms: createBackend(config.env),
 		guest: createGuest(config),
-		/** Wait for NAME's sshd at EP, asking the backend why it can't be reached (exe: its tunnel). */
+		/** Wait for NAME's sshd at EP, asking the backend why it can't be reached (exe: its tunnel). @param {string} name @param {GuestEndpoint} ep @param {number} [tries] */
 		waitSsh: (name, ep, tries) => rt.guest.waitSsh(ep, tries, () => rt.vms.endpointProblem(name)),
 		db: () => (db ??= leases.open(path.join(config.conf, "leases.db"))),
 		close: () => db?.close(),
@@ -32,16 +38,17 @@ export function createRuntime(env = process.env) {
 		operationEnv: () => ({ ...config.env, BOXERY_BACKEND: config.backend }),
 		// Inside a worker: the operation and the resources it holds.
 		operationId: env.BOXERY_OPERATION_ID,
-		holds: (name) => (env.BOXERY_LOCKS ?? "").includes(`:${name}:`),
-		requireLock: (name) => { if (!rt.holds(name)) fail(`lifecycle lock required for ${name}`); },
-		/** Journal intent after preflight, before side effects; `done` once the unit of work is complete. */
+		holds: (/** @type {string} */ name) => (env.BOXERY_LOCKS ?? "").includes(`:${name}:`),
+		requireLock: (/** @type {string} */ name) => { if (!rt.holds(name)) fail(`lifecycle lock required for ${name}`); },
+		/** Journal intent after preflight, before side effects; `done` once the unit of work is complete. @param {string} kind @param {...unknown} data */
 		intent: (kind, ...data) => recordIntent(rt.db(), rt.operationId, kind, data.map(String)),
-		done: (id) => completeIntent(rt.db(), rt.operationId, id),
-		token: (name) => readToken(config.conf, name),
+		done: (/** @type {string} */ id) => completeIntent(rt.db(), rt.operationId, id),
+		token: (/** @type {string} */ name) => readToken(config.conf, name),
+		/** @param {string} name @param {Token} value */
 		setToken: (name, value) => updateToken(rt.db(), config.conf, name, value),
-		deleteToken: (name) => updateToken(rt.db(), config.conf, name, undefined),
-		clearEdge: (name) => rmSync(path.join(config.conf, "edge", `${name}.json`), { force: true }),
-		/** null when NAME is not in the pool; fails closed if the store can't be read. */
+		deleteToken: (/** @type {string} */ name) => updateToken(rt.db(), config.conf, name, undefined),
+		clearEdge: (/** @type {string} */ name) => rmSync(path.join(config.conf, "edge", `${name}.json`), { force: true }),
+		/** null when NAME is not in the pool; fails closed if the store can't be read. @param {string} name */
 		poolRow: (name) => { try { return leases.get(rt.db(), name); } catch { return fail("lease store error"); } },
 	};
 	return rt;

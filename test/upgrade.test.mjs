@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { discover, newer, parseArgs, parseService } from "../host/boxery-upgrade.mjs";
+/** @import { ProfileServices, Service } from "../host/boxery-upgrade.mjs" */
 
 let O, L;
 try { L = await import("../host/boxery-leases.mjs"); O = await import("../host/boxery-operations.mjs"); }
@@ -38,7 +39,7 @@ test("parseService reads systemd proxy and reaper units", () => {
 		{ kind: "proxy", root: "/srv/boxery", conf: "/home/u/.config/boxery-lima", node: "/opt/node/bin/node", path: null });
 	assert.deepEqual(parseService(reaper("/srv/boxery", "/c")),
 		{ kind: "reaper", root: "/srv/boxery", conf: "/c", node: null, path: "/opt/node/bin:/home/u/.local/bin:/usr/bin" });
-	assert.equal(parseService(unit("/srv/boxery", null)).conf, null, "older units have no BOXERY_CONF: the default profile");
+	assert.equal(/** @type {Service} */ (parseService(unit("/srv/boxery", null))).conf, null, "older units have no BOXERY_CONF: the default profile");
 	assert.equal(parseService("[Service]\nExecStart=/usr/bin/socat VSOCK-LISTEN:8088,fork TCP:127.0.0.1:8088\n"), null, "the vsock bridge isn't a profile service");
 	assert.equal(parseService("[Service]\nExecStart=/usr/bin/something-else\n"), null);
 });
@@ -62,8 +63,8 @@ test("discover groups this install's services by profile and reports other insta
 		];
 		const { profiles, others } = discover(mine, files);
 		assert.deepEqual([...profiles.keys()].sort(), ["/c/one", "/c/two"]);
-		assert.equal(profiles.get("/c/one").reaper.kind, "reaper");
-		assert.equal(profiles.get("/c/two").reaper, undefined);
+		assert.equal(/** @type {{ reaper: Service }} */ (profiles.get("/c/one")).reaper.kind, "reaper");
+		assert.equal(/** @type {ProfileServices} */ (profiles.get("/c/two")).reaper, undefined);
 		assert.deepEqual(others.map((o) => o.root), [other]);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

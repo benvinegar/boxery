@@ -11,6 +11,7 @@ catch (e) { if (!String(e.message).includes("sqlite")) throw e; }
 const it = L ? test : test.skip;
 const HOST = path.resolve(import.meta.dirname, "../host/boxery-host");
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIleasekeyoneleasekeyone holder";
+/** @typedef {import("node:child_process").ChildProcessWithoutNullStreams & { result: Promise<{ code: number | null, stdout: string, stderr: string }> }} HostChild */
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 let dir, conf, vms, env, db, children;
 async function until(fn) {
@@ -18,7 +19,7 @@ async function until(fn) {
 	throw new Error("timed out waiting for lifecycle barrier");
 }
 function run(args, extra = {}, input, { keepInputOpen = false } = {}) {
-	const child = spawn(HOST, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
+	const child = /** @type {HostChild} */ (spawn(HOST, args, { env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] }));
 	children.push(child);
 	let stdout = "", stderr = "";
 	child.stdout.on("data", (d) => { stdout += d; });
@@ -39,7 +40,7 @@ async function ok(args, extra, input) {
 }
 const barrier = (name, point) => path.join(vms, ".barriers", `${name}.${point}`);
 const release = (name, point) => writeFileSync(`${barrier(name, point)}.release`, "go");
-const token = (name) => JSON.parse(readFileSync(path.join(conf, "tokens.json")))[name];
+const token = (name) => JSON.parse(/** @type {any} */ (readFileSync(path.join(conf, "tokens.json"))))[name];
 const locks = () => db.prepare("SELECT * FROM operation_locks").all();
 function operationAt(name, point) {
 	const id = readFileSync(barrier(name, point), "utf8").trim();

@@ -14,13 +14,14 @@ if (options.groupEperm) {
 const ac = new AbortController();
 process.on("message", (message) => {
 	if (message === "abort") ac.abort();
-	if (message === "inspect" && process.connected) process.send({ handles: process._getActiveHandles().map((h) => ({ type: h.constructor.name, pid: h.pid, exitCode: h.exitCode, signalCode: h.signalCode, destroyed: h.destroyed, readable: h.readable, writable: h.writable })) });
+	if (message === "inspect" && process.connected) /** @type {NonNullable<typeof process.send>} */ (process.send)({ handles: /** @type {any} */ (process)._getActiveHandles().map((h) => ({ type: h.constructor.name, pid: h.pid, exitCode: h.exitCode, signalCode: h.signalCode, destroyed: h.destroyed, readable: h.readable, writable: h.writable })) });
 });
 process.once("disconnect", () => ac.abort());
 if (options.preabort) ac.abort();
 let peakBuffers = process.memoryUsage().arrayBuffers;
 const sample = () => { peakBuffers = Math.max(peakBuffers, process.memoryUsage().arrayBuffers); };
 const timer = setInterval(sample, 5);
+/** @type {any} */
 let result;
 try {
 	const value = await withHost("alpha", () => {

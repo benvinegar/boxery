@@ -71,6 +71,7 @@ test("CLI/core reject non-regular, symlink and unreadable defaults without routi
 		assert.equal(existsSync(f.log), false);
 		const target = path.join(f.dir, "symlink-target");
 		writeFileSync(target, "alpha\n");
+		/** @type {[string, () => void][]} */
 		const cases = [
 			["directory", () => { mkdirSync(f.selected); writeFileSync(path.join(f.selected, "keep"), "do not delete\n"); }],
 			["FIFO", () => { const r = spawnSync("mkfifo", [f.selected]); assert.ifError(r.error); assert.equal(r.status, 0); }],

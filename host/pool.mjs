@@ -6,8 +6,12 @@ import * as leases from "./boxery-leases.mjs";
 import { captureVm } from "./images.mjs";
 import { restorePetAccess } from "./vms.mjs";
 import { fail, jsonArray, log, POOL_SNAP, print, readFd, sleep, table, validName } from "./util.mjs";
+/** @import { Runtime } from "./runtime.mjs" */
+
+/** Edge routes per host (stdin of edge-set). @typedef {Record<string, { headers?: Record<string, string> | null | false, readonly?: boolean | null }>} EdgeRoutes */
 
 // Lease states print lowercase (free, leased, …) like VM states; the lease store keeps its own FREE, LEASED, ….
+/** @param {Runtime} rt @param {string[]} args */
 export function poolLs(rt, [arg]) {
 	let rows;
 	try { rows = leases.list(rt.db()); } catch { fail("lease store error"); }
@@ -19,10 +23,12 @@ export function poolLs(rt, [arg]) {
 
 // authorized_keys in a pool VM := the host key (+ the lease holder's). This is the fence: a VM in the
 // pool accepts nobody else, and resetting it (reimage from its clean image) drops the lease key again.
+/** @param {Runtime} rt @param {string} name @param {string} [pubkey] */
 export async function setLeaseKeys(rt, name, pubkey) {
 	await rt.guest.setKeys(await rt.vms.sshEndpoint(name), [rt.guest.hostPubkey(), ...(pubkey ? [pubkey] : [])]);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function poolAdd(rt, [name]) {
 	validName(name);
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
@@ -45,6 +51,7 @@ export async function poolAdd(rt, [name]) {
 	log(`${name} added to the pool (only lease holders can reach it now)`);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function poolRm(rt, [name, force]) {
 	validName(name);
 	const row = rt.poolRow(name);
@@ -64,9 +71,11 @@ export async function poolRm(rt, [name, force]) {
 // stdin: {"HOST": {"headers": {"Name": "value"}, "readonly": bool}, …}   ({} clears)
 const DNS_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
 const RESERVED = new Set(["host", "content-length", "connection", "transfer-encoding", "te", "upgrade", "proxy-connection", "keep-alive", "trailer"]);
+/** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** Same host/header rules as the proxy: nothing that could smuggle a header or reach an IP/port. */
+/** Same host/header rules as the proxy: nothing that could smuggle a header or reach an IP/port.
+ *  @param {unknown} routes @returns {routes is EdgeRoutes} */
 export function validRoutes(routes) {
 	return isObject(routes) && Object.entries(routes).every(([host, r]) => DNS_NAME.test(host) && isObject(r)
 		&& [undefined, null, false, true].includes(r.readonly)
@@ -76,7 +85,7 @@ export function validRoutes(routes) {
 
 /** edge-set NAME [--lease ID]. A pool VM's routes belong to its current lease: they are stamped with
  * its id, and the proxy honours them only with that lease's token. --lease (the controller's lease
- * record) refuses a stale caller instead of touching the next holder's routes. */
+ * record) refuses a stale caller instead of touching the next holder's routes. @param {Runtime} rt @param {string[]} args */
 export async function edgeSet(rt, [name, ...args]) {
 	validName(name);
 	if (args.length && (args.length !== 2 || args[0] !== "--lease" || !/^l-[0-9a-f]{32}$/.test(args[1]))) fail("usage: edge-set NAME [--lease ID] < routes.json");
@@ -88,7 +97,7 @@ export async function edgeSet(rt, [name, ...args]) {
 	const row = rt.poolRow(name);
 	if (want && row?.lease_id !== want) fail(`edge-set: ${want} is not ${name}'s current lease`);
 	// The lease the proxy will see on this VM's token (none for a lease that began before tokens were per lease).
-	const lease = row?.state === "LEASED" && rt.token(name)?.lease === row.lease_id ? row.lease_id : undefined;
+	const lease = row?.state === "LEASED" && /** @type {{ lease?: string } | undefined} */ (rt.token(name))?.lease === row.lease_id ? row.lease_id : undefined;
 	const dir = path.join(rt.conf, "edge");
 	mkdirSync(dir, { recursive: true });
 	chmodSync(dir, 0o700);

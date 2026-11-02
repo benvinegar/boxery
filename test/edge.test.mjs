@@ -13,6 +13,7 @@ let upstream, proxy, port, seen, conf, logs = "", upReply = null;
 
 const listen = (srv) => new Promise((r) => srv.listen(0, "127.0.0.1", () => r(srv.address().port)));
 const setRoutes = (vm, hosts) => writeFileSync(path.join(conf, "edge", `${vm}.json`), JSON.stringify({ hosts }));
+/** @param {string} p @param {{ method?: string, headers?: Record<string, string>, body?: string, token?: string }} [opts] */
 async function edge(p, { method = "GET", headers = {}, body, token = TOKEN } = {}) {
 	seen = null;
 	const r = await fetch(`http://127.0.0.1:${port}/edge/${token}${p}`, { method, headers, body, redirect: "manual" });

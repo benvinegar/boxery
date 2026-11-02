@@ -6,37 +6,45 @@ import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
 import { issueToken, writeSeed } from "./seed.mjs";
 import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
 import { fail, log, print, stamp, validImage, validName, validNum } from "./util.mjs";
+/** @import { GuestEndpoint } from "./guest.mjs" */
+/** @import { Runtime } from "./runtime.mjs" */
+/** @import { ShapeRecord } from "./shapes.mjs" */
+
+/** Parsed `new` arguments; sizes are the flags' strings ("" = unset). @typedef {{ name: string, shape: string, cpus: string, mem: string, disk: string, from: string, headless: boolean }} NewArgs */
+/** @typedef {{ cpus: string, mem: string, disk: string }} SizeFlags */
 
 const SHAPE_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 const NOVNC = "for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.html && exit 0; sleep 1; done; exit 1";
 
-/** Pet VMs accept the host and every registered controller. */
+/** Pet VMs accept the host and every registered controller. @param {Runtime} rt @param {string} name */
 export async function setPetKeys(rt, name) {
 	await rt.guest.setKeys(await rt.vms.sshEndpoint(name), rt.guest.petKeys());
 }
 /** Back to a pet: registered controller keys may log in again, and the VM gets a proxy token of its own
  * (a pool VM's token belonged to a lease). A stopped VM gets both on its next start; a
- * running-but-unreachable guest is an error, not a successful permission update. */
+ * running-but-unreachable guest is an error, not a successful permission update. @param {Runtime} rt @param {string} name */
 export async function restorePetAccess(rt, name) {
 	let inventory;
 	try { inventory = await rt.vms.list(); } catch { fail("cannot inspect VM for pet access"); }
-	if (["running", "idle"].includes(inventory.find((v) => v.name === name)?.state)) {
+	if (/** @type {Array<string | undefined>} */ (["running", "idle"]).includes(inventory.find((v) => v.name === name)?.state)) {
 		try { await setPetKeys(rt, name); await issueToken(rt, name); } catch { fail(`could not restore pet access to ${name}`); }
 	} else rt.deleteToken(name);
 }
+/** @param {Runtime} rt @param {GuestEndpoint} ep @param {string} command */
 async function mustRun(rt, ep, command) {
 	if (await rt.guest.run(ep, command) !== 0) fail(`ssh to ${ep.host}:${ep.port} failed`);
 }
 
 // ---------------------------------------------------------------- new
-/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless] */
+/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless] @param {string[]} args */
 export function parseNewArgs(args) {
+	/** @type {NewArgs} */
 	const o = { name: "", shape: "", cpus: "", mem: "", disk: "", from: "", headless: false };
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i], v = args[i + 1];
 		if (a === "--headless") o.headless = true;
 		else if (a === "--shape") { if (!SHAPE_NAME.test(v ?? "")) fail(`invalid shape name '${v ?? ""}'`); o.shape = v; i++; }
-		else if (["--cpus", "--mem", "--disk"].includes(a)) { o[a.slice(2)] = validNum(a, v); i++; }
+		else if (["--cpus", "--mem", "--disk"].includes(a)) { o[/** @type {keyof SizeFlags} */ (a.slice(2))] = validNum(a, v); i++; }
 		else if (a === "--from") { o.from = validImage(v); i++; }
 		else if (a.startsWith("-")) fail(`unknown flag ${a}`);
 		else o.name = a;
@@ -45,7 +53,7 @@ export function parseNewArgs(args) {
 	return o;
 }
 
-/** Create, boot and wait for NAME. Returns "NAME HOST:PORT". */
+/** Create, boot and wait for NAME. Returns "NAME HOST:PORT". @param {Runtime} rt @param {NewArgs} args */
 export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless }) {
 	validName(name);
 	// Size: the shape (the default shape if none), then explicit flags. Any flag makes it a custom size.
@@ -97,6 +105,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	return `${name} ${ep.host}:${ep.port}`;
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function newVm(rt, args) {
 	print(await createVm(rt, parseNewArgs(args)));
 }
@@ -106,9 +115,10 @@ export async function newVm(rt, args) {
 // boot every DST from that image with its own identity (hostname, proxy token, ssh keys, network). Prints
 // "DST ADDR" per fork, like new. The capture is temporary: forks never depend on it. Forks get SRC's
 // recorded size unless --shape or a size flag is given (flags override SRC's size field by field).
+/** @param {Runtime} rt @param {string[]} args */
 export async function fork(rt, args) {
 	let src = "", shape = "";
-	const dsts = [], flags = [];
+	const dsts = /** @type {string[]} */ ([]), flags = /** @type {string[]} */ ([]);
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i], v = args[i + 1];
 		if (["--cpus", "--mem", "--disk"].includes(a)) { flags.push(a, validNum(a, v)); i++; }
@@ -122,11 +132,14 @@ export async function fork(rt, args) {
 	if (!await rt.vms.exists(src)) fail(`no such vm: ${src}`);
 	// Size: --shape, else SRC's recorded size, else (VMs made before shapes) its size per the backend.
 	const rec = vmShape(rt.conf, src);
+	/** @type {number[] | null} */
 	let sz = rec ? [rec.cpus, rec.mem, rec.disk] : null;
 	if (!rec && await rt.vms.has("backend_size")) sz = await rt.vms.size(src, { quiet: true }).catch(() => null);
+	/** @type {string[]} */
 	let sizing = [], label = "";
 	if (shape) { shapeSize(rt.shapes(), shape); sizing = ["--shape", shape]; }
 	else if (sz?.every((n) => Number.isInteger(n) && n >= 0)) {
+		/** @type {Partial<Record<string, number>>} */
 		const size = { "--cpus": sz[0], "--mem": sz[1], "--disk": sz[2] };
 		for (let i = 0; i < flags.length; i += 2) delete size[flags[i]];
 		sizing = Object.entries(size).flatMap(([f, n]) => [f, String(n)]);
@@ -149,7 +162,7 @@ export async function fork(rt, args) {
 	results.forEach((r, i) => {
 		if (r.status === "fulfilled") {
 			print(r.value);
-			if (label) setVmShape(rt.conf, dsts[i], { ...vmShape(rt.conf, dsts[i]), shape: label });
+			if (label) setVmShape(rt.conf, dsts[i], { .../** @type {ShapeRecord} */ (vmShape(rt.conf, dsts[i])), shape: label });
 		} else {
 			rc = 1;
 			if (!r.reason?.reported) process.stderr.write(`boxery-host: ${r.reason?.message ?? r.reason}\n`);
@@ -163,6 +176,7 @@ export async function fork(rt, args) {
 }
 
 // ---------------------------------------------------------------- rm, start, stop
+/** @param {Runtime} rt @param {string[]} args */
 export async function rm(rt, [name]) {
 	validName(name);
 	if (rt.poolRow(name)) fail(`${name} is a pool VM; run: boxery-host pool rm ${name} (after its lease ends)`);
@@ -178,6 +192,7 @@ export async function rm(rt, [name]) {
 	log(`${name} removed with its snapshots (proxy token revoked)`);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function start(rt, [name]) {
 	validName(name);
 	await rt.vms.call("backend_start", [name]);
@@ -189,6 +204,7 @@ export async function start(rt, [name]) {
 	log(`${name} started`);
 }
 
+/** @param {Runtime} rt @param {string[]} args */
 export async function stop(rt, [name]) {
 	validName(name);
 	await rt.vms.call("backend_stop", [name]);
@@ -197,12 +213,14 @@ export async function stop(rt, [name]) {
 
 // ---------------------------------------------------------------- resize
 const RESIZE_USAGE = "usage: resize NAME [--cpus N] [--mem MiB] [--disk GiB]";
+/** @param {Runtime} rt @param {string[]} argv */
 export async function resize(rt, [name, ...args]) {
 	if (!name || name.startsWith("-")) fail(RESIZE_USAGE);
+	/** @type {SizeFlags} */
 	const want = { cpus: "", mem: "", disk: "" };
 	for (let i = 0; i < args.length; i += 2) {
 		if (!["--cpus", "--mem", "--disk"].includes(args[i])) fail(RESIZE_USAGE);
-		want[args[i].slice(2)] = validNum(args[i], args[i + 1]);
+		want[/** @type {keyof SizeFlags} */ (args[i].slice(2))] = validNum(args[i], args[i + 1]);
 	}
 	if (!want.cpus && !want.mem && !want.disk) fail(RESIZE_USAGE);
 	validName(name);
@@ -215,6 +233,7 @@ export async function resize(rt, [name, ...args]) {
 }
 
 // Like start/stop, the result is the hypervisor's state: an interrupted resize is not rolled back.
+/** @param {Runtime} rt @param {string} name @param {SizeFlags} want */
 async function resizeVm(rt, name, want) {
 	let before;
 	try { before = await rt.vms.size(name); } catch { fail(`cannot read the size of ${name}`); }
