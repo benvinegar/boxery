@@ -27,8 +27,13 @@ vm_ip() {
 }
 
 wait_ip() {
-	local ip
-	for _ in $(seq 180); do ip=$(vm_ip "$1"); [[ -n $ip ]] && { echo "$ip"; return; }; sleep 1; done
+	# Subsecond probes avoid a full extra second after DHCP succeeds. Use a time budget, not a
+	# fixed attempt count, so slow virsh calls cannot stretch this wait indefinitely.
+	local ip deadline=$((SECONDS + 180))
+	while ((SECONDS < deadline)); do
+		ip=$(vm_ip "$1"); [[ -n $ip ]] && { echo "$ip"; return; }
+		sleep 0.25
+	done
 	die "timed out waiting for $1 to get an IP"
 }
 
