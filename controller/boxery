@@ -26,6 +26,9 @@ json_array() { # element per line on stdin → JSON array
 	awk 'NR == 1 { printf "[\n%s", $0; next } { printf ",\n%s", $0 } END { print (NR ? "\n]" : "[]") }'
 }
 has_flag() { f=$1; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
+# Create lock file PATH or fail if it exists: bash's noclobber open is O_EXCL. Not `mkdir`: uutils
+# coreutils (Ubuntu 26.04's mkdir) lets several racing `mkdir DIR` all succeed. Release with rm -f.
+take_lock() { (set -C; : >"$1") 2>/dev/null; }
 
 valid_alias() { valid_vm "${1:-}"; }
 need_alias() { valid_alias "${1:-}" || die "invalid host name: ${1:-}"; }
@@ -205,7 +208,9 @@ write_ssh_config() {
 		echo "  ControlPath $(ssh_value "$CONF_DIR/cm-")%h"
 		echo "  ControlPersist 10m"
 		if [ -n "$key" ]; then echo "  IdentityFile $(ssh_value "$key")"; fi
-	} >"$SSH_CONF"
+	} >"$SSH_CONF.tmp.$$"
+	# Publish whole: other boxery processes (and ssh -F) read this while grant changes rewrite it.
+	mv "$SSH_CONF.tmp.$$" "$SSH_CONF"
 }
 
 # setup DEST [--name NAME] ...: (re)configure host NAME, registering it first if it is new.
@@ -378,9 +383,9 @@ cmd_host() {
 	alias=$1; shift
 	need_alias "$alias"
 	mkdir -p "$REGISTRY"
-	mkdir "$REGISTRY/.lock" 2>/dev/null || die "host registry is locked; retry"
+	take_lock "$REGISTRY/.lock" || die "host registry is locked; retry"
 	cleanup_profile=""
-	trap '[ -z "$cleanup_profile" ] || rm -rf "$cleanup_profile"; rmdir "$REGISTRY/.lock"' EXIT
+	trap '[ -z "$cleanup_profile" ] || rm -rf "$cleanup_profile"; rm -f "$REGISTRY/.lock"' EXIT
 	case $action in
 	use) [ $# -eq 0 ] || die "usage: boxery host use NAME"
 		profile_dir "$alias" >/dev/null
@@ -659,10 +664,10 @@ has_grant() { [ -f "$(grant_file "$1")" ] && awk -F'\t' -v k="$2" '$1==k{f=1} EN
 has_pushed_grants() { [ -f "$(grant_file "$1")" ] && awk -F'\t' '$1=="env"||$1=="file"||$1=="http"||$1=="llm"{f=1} END{exit !f}' "$(grant_file "$1")"; }
 edge_marker() { echo "$GRANTS_DIR/.$1.edge"; }   # exists while the host holds edge routes for NAME
 
-grants_lock() { # NAME cmd...: serialize local grant-store edits (mkdir is atomic everywhere)
+grants_lock() { # NAME cmd...: serialize local grant-store edits
 	l="$GRANTS_DIR/.$1.lock"; mkdir -p "$GRANTS_DIR"; i=0
-	while ! mkdir "$l" 2>/dev/null; do i=$((i + 1)); [ $i -lt 300 ] || die "grants for $1 are locked ($l)"; sleep 0.1; done
-	shift; rc=0; "$@" || rc=$?; rmdir "$l"; return $rc
+	while ! take_lock "$l"; do i=$((i + 1)); [ $i -lt 300 ] || die "grants for $1 are locked ($l)"; sleep 0.1; done
+	shift; rc=0; "$@" || rc=$?; rm -f "$l"; return $rc
 }
 
 grant_put() { # NAME kind key extra
@@ -989,7 +994,7 @@ cmd_revoke() { # NAME SPEC...|all
 	[ $# -gt 0 ] || die "usage: boxery revoke NAME ssh-agent | env:VAR | file:LOCAL-or-REMOTE | http:HOST | github | llm:PROVIDER | all"
 	for spec in "$@"; do
 		case $spec in
-		all) rm -f "$(grant_file "$n")"; echo "==> revoked all grants for $n" ;;
+		all) grants_lock "$n" rm -f "$(grant_file "$n")"; echo "==> revoked all grants for $n" ;;
 		ssh-agent) [ "$(grants_lock "$n" grant_del "$n" ssh-agent "")" -gt 0 ] && echo "==> revoked ssh-agent" || warn "no ssh-agent grant" ;;
 		llm:*) [ "$(grants_lock "$n" grant_del "$n" llm "${spec#llm:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
 		http:*) [ "$(grants_lock "$n" grant_del "$n" http "${spec#http:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
