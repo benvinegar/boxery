@@ -198,11 +198,14 @@ ensure_discard() { # DOM
 }
 
 # How guests reach the LLM proxy: socat in the guest connects to vsock CID 2 (the host).
+# One bridge per profile, named after its proxy unit: profiles have their own ports (#117).
 backend_proxy_services() {
-	cat >"$HOME/.config/systemd/user/boxery-vsock.service" <<-EOF
+	local unit; unit=$(profile_unit boxery-vsock)
+	retire_shared_unit boxery-vsock "VSOCK-LISTEN:$PROXY_PORT,"
+	cat >"$HOME/.config/systemd/user/$unit.service" <<-EOF
 		[Unit]
 		Description=boxery: expose LLM proxy to guests over vsock port $PROXY_PORT
-		After=boxery-proxy.service
+		After=$PROXY_UNIT.service
 		[Service]
 		ExecStart=$(command -v socat) VSOCK-LISTEN:$PROXY_PORT,reuseaddr,fork TCP:127.0.0.1:$PROXY_PORT
 		Restart=always
@@ -210,7 +213,7 @@ backend_proxy_services() {
 		[Install]
 		WantedBy=default.target
 	EOF
-	echo boxery-vsock.service
+	echo "$unit.service"
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 

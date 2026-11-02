@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/modem-dev/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/modem-dev/boxery/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
   <a href="https://www.npmjs.com/package/boxery-vm"><img alt="npm" src="https://img.shields.io/npm/v/boxery-vm?logo=npm"></a>
   <a href="docs/install.md#choosing-a-backend"><img alt="OS: macOS | Linux" src="https://img.shields.io/badge/os-macOS%20%7C%20Linux-lightgrey"></a>
@@ -42,6 +42,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <em><strong>Early-stage, experimental software.</strong> Expect rough edges and breaking changes between releases.</em>
+</p>
+
 ---
 
 Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for full Ubuntu desktop VMs: shell, files, a real Chrome and the whole desktop. It works with Claude Code, Codex, Cursor, opencode and any other MCP agent, and has a native [pi](https://pi.dev) extension.
@@ -56,7 +60,14 @@ Your agent keeps running where it already runs. boxery gives it **`vm_*` tools**
 
 ## Quick start
 
-On a Mac:
+Give this prompt to your agent:
+
+```text
+Read github.com/modem-dev/boxery and set up boxery on this machine.
+Then spin up a VM with `boxery new demo` and open its desktop.
+```
+
+Or by hand, on a Mac:
 
 ```bash
 brew install lima jq node
@@ -88,7 +99,7 @@ And ask: *"Clone my repo in a VM, start the dev server, and screenshot the homep
 You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo`, `boxery desktop demo`.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
+  <img src="https://raw.githubusercontent.com/modem-dev/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
 </p>
 
 ## How it works
@@ -104,7 +115,7 @@ Agents reach the **boxery host**, a machine you run, over ssh. The host holds yo
 
 ## Status
 
-boxery is young and moves fast. The exe.dev, boat.dev and Cloud Hypervisor backends are experimental. See the [roadmap](ARCHITECTURE.md#roadmap).
+The exe.dev, boat.dev and Cloud Hypervisor backends are experimental. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ## Contributing
 
@@ -113,6 +124,18 @@ Bug reports and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 ```bash
 npm run lint && npm test && npm run test:shell
 ```
+
+## Sponsor
+
+Sponsored by [Modem](https://modem.dev?utm_source=github&utm_medium=oss&utm_campaign=oss_boxery&utm_content=readme_footer).
+
+<a href="https://modem.dev?utm_source=github&utm_medium=oss&utm_campaign=oss_boxery&utm_content=readme_footer">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://modem.dev/images/logo/svg/modem-combined-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://modem.dev/images/logo/svg/modem-combined-black.svg">
+    <img src="https://modem.dev/images/logo/svg/modem-combined-black.svg" alt="Modem" width="220">
+  </picture>
+</a>
 
 ## License
 

@@ -237,7 +237,9 @@ async function startServices(rt, { reaper }) {
 		}
 	} else {
 		// The backend's guest → proxy bridge units (may be none).
-		const extra = (await rt.vms.call("backend_proxy_services", [], { capture: true })).split(/\s+/).filter(Boolean);
+		// Named after this profile's proxy unit, which is passed explicitly: two profiles of one backend
+		// must not share a bridge (#117).
+		const extra = (await rt.vms.call("backend_proxy_services", [], { capture: true, extraEnv: { BOXERY_PROXY_UNIT: rt.proxyUnit } })).split(/\s+/).filter(Boolean);
 		await run("systemctl", ["--user", "daemon-reload"]);
 		await run("systemctl", ["--user", "enable", "--now", `${rt.proxyUnit}.service`, ...extra], { quiet: true });
 		await run("systemctl", ["--user", "restart", `${rt.proxyUnit}.service`, ...extra]);

@@ -199,4 +199,12 @@ e=$( (backend_check) 2>&1 ) && bad "v53 accepted" || { [[ $e == *"v54 or newer"*
 stub cloud-hypervisor 'echo "cloud-hypervisor v54.0"'
 e=$( (backend_check) 2>&1 ) || true; [[ $e != *"or newer"* ]] && ok "cloud-hypervisor v54 accepted" || bad "v54 error: $e"
 
+# --- the proxy bridge: one unit per profile (#117). A second CH profile has its own BOXERY_CH_DIR.
+U=$HOME/.config/systemd/user; mkdir -p "$U"
+u1=$(BOXERY_PROXY_UNIT=boxery-proxy "$ROOT/host/backend.sh" backend_proxy_services)
+u2=$(BOXERY_PROXY_UNIT=boxery-proxy-ch2 BOXERY_PROXY_PORT=9998 BOXERY_CH_DIR=$tmp/ch2 "$ROOT/host/backend.sh" backend_proxy_services)
+[[ $u1 == boxery-ch-vsock.service && $u2 == boxery-ch-vsock-ch2.service ]] && ok "bridge units: boxery-ch-vsock (default), boxery-ch-vsock-ch2" || bad "units: $u1 $u2"
+grep -q "UNIX-LISTEN:$BOXERY_CH_DIR/proxy.sock,.* TCP:127.0.0.1:9999$" "$U/$u1" && grep -q "UNIX-LISTEN:$tmp/ch2/proxy.sock,.* TCP:127.0.0.1:9998$" "$U/$u2" && grep -qx 'After=boxery-proxy-ch2.service' "$U/$u2" &&
+	ok "each profile's socket goes to its own proxy" || bad "bridges: $(grep -h ExecStart "$U"/boxery-ch-vsock*.service)"
+
 echo "passed: $pass  failed: $fail"; ((fail == 0))
