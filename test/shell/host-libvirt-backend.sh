@@ -35,6 +35,8 @@ virsh() {
 	blockpull) echo "${5##*/}" >"$V/$2.qcow2" ;;   # DOM vda --base PATH: the disk now sits on PATH
 	domstate) echo running ;;
 	dominfo) [[ -f $T/dom.$2 ]] ;;
+	dumpxml) [[ -f $T/xml.$2 ]] && cat "$T/xml.$2" ;;   # DOM --inactive
+	define) sed -n "s/.*<driver name='qemu' type='qcow2'\(.*\)\/>.*/defined driver:\1/p" "$2" >>"$LOG" ;;
 	*) return 0 ;;   # pool-refresh, autostart, start, destroy, blockcopy, blockjob, domfsfreeze/thaw
 	esac
 }
@@ -83,6 +85,29 @@ called "blockpull boxery-dt vda --base $POOL_DIR/$BASE_VOL" && ok "...the base f
 [[ $(dependents "$BASE_VOL") == 2 ]] && ok "base dependents: the desktop VM and its image, not headless disks" || bad "dependents: $(dependents "$BASE_VOL")"
 rm "$V/boxery-dt.qcow2" "$V/boxery-dt@s1.qcow2"
 [[ $(dependents "$BASE_VOL") == 0 ]] && ok "headless VMs alone don't block build-base" || bad "dependents after rm: $(dependents "$BASE_VOL")"
+
+# --- discards reach the host: new disks get discard=unmap, older domains get it on their next cold start
+before() { local a b; a=$(grep -nF -m1 -- "$1" "$LOG"); b=$(grep -nF -m1 -- "$2" "$LOG"); [[ -n $a && -n $b && ${a%%:*} -lt ${b%%:*} ]]; }
+: >"$LOG"; backend_new dn 2 2048 10 "$tmp/ud"
+called "--disk vol=test/boxery-dn.qcow2,bus=virtio,discard=unmap" && ok "new VM disks pass discards to the host" || bad "virt-install: $(grep virt-install "$LOG")"
+dxml() { printf "<domain>\n  <name>%s</name>\n  <devices>\n    <disk type='volume' device='disk'>\n      <driver name='qemu' type='qcow2'%s/>\n    </disk>\n    <disk type='volume' device='cdrom'>\n      <driver name='qemu' type='raw'/>\n    </disk>\n  </devices>\n</domain>\n" "$1" "$2" >"$T/xml.$1"; }
+dxml boxery-old ""; : >"$LOG"
+ensure_discard boxery-old && called "defined driver: discard='unmap'" && [[ $(grep -c "defined driver" "$LOG") == 1 ]] && ok "an older domain's qcow2 disk gets discard=unmap (the cdrom is left alone)" || bad "ensure_discard: $(cat "$LOG")"
+dxml boxery-old " discard='unmap'"; : >"$LOG"
+! ensure_discard boxery-old && ! called "virsh define" && ok "a domain that already has it isn't redefined" || bad "redefined: $(cat "$LOG")"
+dxml boxery-old " cache='none'"; : >"$LOG"
+! ensure_discard boxery-old && ! called "virsh define" && ok "a disk driver with other attributes is left alone" || bad "custom driver: $(cat "$LOG")"
+dxml boxery-old ""; : >"$LOG"
+backend_start old
+before "defined driver: discard='unmap'" "virsh start boxery-old" && ok "start adds it before booting" || bad "start: $(cat "$LOG")"
+dxml boxery-hl ""; : >"$LOG"
+backend_reimage hl hl@s1
+before "defined driver: discard='unmap'" "virsh start boxery-hl" && ok "reimage (revert, lease reset) adds it before booting" || bad "reimage: $(cat "$LOG")"
+virsh() { case $1 in list) printf 'boxery-a\nboxery-b\nother-vm\n' ;; dumpxml) printf "<driver name='qemu' type='qcow2'/>\n" ;; define) echo "define" >>"$LOG" ;; esac; }
+: >"$LOG"; log() { echo "$*" >>"$LOG"; }
+backend_init 2>/dev/null
+[[ $(grep -c '^define$' "$LOG") == 2 ]] && called "2 VM(s) will pass discards" && ok "init adds it to every domain of this host, not other domains" || bad "init: $(cat "$LOG")"
+log() { :; }
 
 # --- inventory: ssh endpoint as HOST:PORT, the volume's Capacity and Allocation in bytes
 virsh() {
