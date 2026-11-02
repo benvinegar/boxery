@@ -187,6 +187,7 @@ jq -se 'map(select(.name == "bxtest-build")) | last | .type == "default" and .tt
 grep -F 'curl POST /sandboxes/'"$bb"'/sshkey {"key":"ssh-ed25519 ' "$CALLS" >/dev/null && ok "the host's admin key is authorized through the API" || bad "sshkey"
 [[ $(grep -c "curl POST /sandboxes/$bb/sshkey" "$CALLS") -ge 2 ]] && ok "the build poller re-pins a builder whose host key changed" || bad "no re-pin: $(grep -c "sshkey" "$CALLS")"
 die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }
+eval "$(grep '^take_lock()' "$ROOT/host/backend.sh")"   # the real lock helper (host/backend.sh defines it for every backend)
 PROXY_PORT=9999
 cp "$S/build-script" "$tmp/build.sh"   # the last build's script, as the builder received it
 bash -n "$tmp/build.sh" && ok "build script parses" || bad "build script syntax"

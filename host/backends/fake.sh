@@ -27,7 +27,7 @@ fake_disk_copy() { # SRC_DIR DST_DIR: copy everything that isn't hypervisor stat
 }
 backend_new() { # NAME CPUS MEM DISK USERDATA [SOURCE: VM@LABEL image | stock]
 	mkdir -p "$FAKE/$1/home" "$FAKE/.ports"
-	local p=22000; while ! mkdir "$FAKE/.ports/$p" 2>/dev/null; do p=$((p + 1)); done   # atomic: parallel creates
+	local p=22000; while ! take_lock "$FAKE/.ports/$p"; do p=$((p + 1)); done   # atomic: parallel creates
 	echo "$p" >"$FAKE/$1/port"
 	[[ -z ${BOXERY_FAKE_FAIL_NEW:-} ]] || { echo running >"$FAKE/$1/state"; die "fake backend: injected failure"; }
 	if [[ ${6:-} == stock ]]; then

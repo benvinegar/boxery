@@ -58,6 +58,9 @@ host_key_opts() { # NAME
 die() { echo "boxery-host: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
+# Create FILE only if it does not exist (O_EXCL, via noclobber): a lock or a claim. Not `mkdir DIR`:
+# uutils coreutils (Ubuntu 26.04's default) lets several racing mkdirs of one DIR all succeed.
+take_lock() { (set -C; : >"$1") 2>/dev/null; }
 vm_ssh_cmd() { # NAME HOST PORT CMD…   as agent in VM NAME at HOST:PORT
 	local n=$1 h=$2 p=$3 k=() l; shift 3
 	while IFS= read -r l; do k+=("$l"); done < <(host_key_opts "$n")

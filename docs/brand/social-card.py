@@ -15,7 +15,7 @@ from fontTools.ttLib import TTFont
 
 BRAND = Path(__file__).parent
 FONT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / "Library/Fonts/JetBrainsMono-Regular.ttf"
-TAGLINE = ["Spin up and manage VMs across local,", "remote and cloud from your agents"]
+TAGLINE = ["Spin up and manage VMs across local, remote", "and sandbox providers from your agents"]
 INSTALL = "npm install -g boxery-vm"
 
 THEMES = {

@@ -329,8 +329,9 @@ mkdir -p "$E/half" "$S/bxtest-v0000aa-half" "$S/bxtest-v0000bb-half"; echo 77 >"
 touch "$HOME/.config/systemd/user/boxery-exe-bxtest-v-half.service" "$UNITS/boxery-exe-bxtest-v-half.service"
 rec backend_cleanup_new half && [[ ! -d $E/half && -z $(gens half) && ! -f $UNITS/boxery-exe-bxtest-v-half.service && ! -f $HOME/.config/systemd/user/boxery-exe-bxtest-v-half.service ]] && ok "cleanup_new removes a half-created VM: every exe.dev generation, tunnel, state" || bad "cleanup_new: $(gens half)"
 rec backend_cleanup_new half && ok "cleanup_new is idempotent" || bad "cleanup_new second run"
-mkdir "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ -d $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new leaves a fresh slot lock (a live new may hold it)" || bad "fresh slot lock removed"
-touch -t 202001010000 "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -d $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's stale slot lock" || bad "stale slot lock"
+: >"$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ -f $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new leaves a fresh slot lock (a live new may hold it)" || bad "fresh slot lock removed"
+touch -t 202001010000 "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -e $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's stale slot lock" || bad "stale slot lock"
+mkdir "$BOXERY_EXE_DIR/.slot.lock" && touch -t 202001010000 "$BOXERY_EXE_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -e $BOXERY_EXE_DIR/.slot.lock ]] && ok "cleanup_new clears an older boxery's stale slot lock directory" || bad "stale slot lock directory"
 FAIL_LS=1 rec backend_cleanup_new p1 2>/dev/null && bad "cleanup_new succeeded without exe.dev" || ok "cleanup_new fails (keeps the journal) when exe.dev is unreachable"
 mkdir -p "$S/$(img x@y)"; echo running >"$S/$(img x@y)/status"   # a cp killed before its comment
 rec backend_cleanup_image x@y && [[ ! -d $S/$(img x@y) ]] && rec backend_cleanup_image x@y && ok "cleanup_image removes an unlabelled image, idempotently" || bad "cleanup_image"
@@ -353,6 +354,7 @@ pgrep -f 'sleep 60' >/dev/null && { bad "abandoned worker still running"; pkill 
 
 # --- helpers (sourced)
 die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
+eval "$(grep '^take_lock()' "$ROOT/host/backend.sh")"   # the real lock helper (host/backend.sh defines it for every backend)
 PROXY_PORT=9999
 # shellcheck source=/dev/null
 . "$ROOT/host/backends/exe.sh"
