@@ -9,12 +9,15 @@ boxery is built for **one trusted owner running untrusted-ish agents**: the agen
 | | |
 |---|---|
 | ✅ The internet | Through libvirt's NAT network (or Lima's user network) |
+| ✅ DNS and DHCP | From the host's network (libvirt's dnsmasq on the bridge address) |
 | ✅ LLM providers | Only through the host proxy, with a per-VM token |
 | ✅ What you [grant](grants.md) | ssh-agent, env vars, files: only while granted |
 | 🔒 `http:`/`github` grant secrets | never: the host proxy injects them per request; the VM can use but not read them |
 | ❌ Your real LLM keys / OAuth tokens | They stay on the host |
 | ❌ Your laptop | No inbound path. ssh goes laptop → host → VM. With Lima the laptop *is* the host: on macOS a guest reaches the Mac's loopback (`127.0.0.1`) only on the proxy port. See [limits](#known-limits). |
-| ⚠️ The host's sshd | Reachable on the NAT network (keys required). See [limits](#known-limits). |
+| ❌ The host's sshd and other services | libvirt and Cloud Hypervisor guests can't open connections to the host: only DHCP and DNS reach it. Lima guests can reach the Mac's non-loopback addresses (see [limits](#known-limits)). |
+| ❌ Other VMs | libvirt, Cloud Hypervisor: dropped on the host, and a guest can't take another's MAC or IP (ARP, IP and MAC spoofing are filtered) |
+| ❌ Your LAN, Tailscale, cloud metadata | libvirt, Cloud Hypervisor: everything in `0/8`, `10/8`, `100.64/10` (CGNAT, Tailscale), `127/8`, `169.254/16` (link-local, `169.254.169.254`), `172.16/12`, `192.168/16` and `224/3` (multicast) is dropped, as is IPv6. Lima: see [limits](#known-limits) |
 
 Inside the VM, everything listens on localhost: the desktop (noVNC on `127.0.0.1:6080`), Chrome's CDP port, and the proxy forwarder. You reach the desktop only through an ssh tunnel (`boxery desktop`).
 
@@ -41,7 +44,11 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
 
 ## Known limits
 
-- **Shared NAT network.** VMs share libvirt's `default` network. They can reach the internet and the host's sshd, but not the proxy port. For stricter isolation, give them a dedicated network with nwfilter rules (on the [roadmap](../ARCHITECTURE.md#roadmap)). The experimental [cloud-hypervisor backend](../host/backends/README.md#cloud-hypervisor-experimental) already isolates guests: one routed TAP per VM, and nftables drops guest→host, guest→guest and guest→private-range traffic.
+- **Guest network isolation on libvirt.** VMs share libvirt's `default` NAT network (one bridge), and every guest's interface carries the nwfilter `boxery-guest-isolation`. libvirt applies it on the host whenever the domain starts, so root in the guest can't lift it, and it is part of the domain's configuration, so forks, reverts, lease resets and host reboots keep it. The guest's address is the one the host's DHCP server leased it (`CTRL_IP_LEARNING=dhcp`, answers only from the bridge address count); traffic from any other MAC or IP, and ARP claiming one, is dropped. To the host it may send DHCP and DNS only, and from outside it accepts replies and ssh from the host. The private ranges listed above are dropped, which is also what keeps guests apart (they share `192.168.122.0/24`). The policy is the [cloud-hypervisor backend's](../host/backends/README.md#cloud-hypervisor-experimental) (one routed TAP per VM and nftables), expressed as libvirt nwfilter rules, so it needs no root and no host firewall of boxery's own. What it doesn't cover:
+  - **VMs made before this release** stay on the open network until their next cold start; `init` (and `upgrade`) adds the filter to their configuration, `boxery stop NAME && boxery start NAME` applies it.
+  - **`BOXERY_NET_ISOLATION=off`** in `host.env` turns it off for VMs that must reach LAN services ([install](install.md#linux-host-libvirtkvm)). Their guests then reach the host's sshd and services on the bridge address, each other and every network the host routes to.
+  - **Public addresses of the host itself** (a cloud VM's public IP) aren't in a blocked range, so a guest reaches services the host exposes there, as anyone on the internet can.
+  - **DNS answers** come from the host's resolver. A guest can resolve internal names; it just can't connect to private addresses.
 - **Lima guests and the host's loopback.** Lima NATs the guest's gateway, `192.168.5.2`, to the host's `127.0.0.1`. Left alone, that hands every guest each loopback service on the Mac: Ollama's admin API (`/api/pull`, `/api/delete`, bypassing the proxy's allowlist), the HTTP MCP server, dev databases ([#67](https://github.com/benvinegar/boxery/issues/67)). On macOS, boxery therefore starts every Lima instance under `sandbox-exec` with a Seatbelt profile. Lima's host agent, which carries the guest's network, and the qemu it spawns may then open loopback connections only to the proxy port and to the instance's own ssh port, which leads back to the guest's own sshd. Everything else on `127.0.0.1` (any 127/8 address, TCP and UDP) is refused. The Mac's kernel enforces it, so root in the guest can't lift it. What it doesn't cover:
   - **Services listening on the Mac's other addresses** (`0.0.0.0`, the LAN or Tailscale IP) stay reachable from guests, as from your LAN. Guest traffic leaves through the Mac's own routing, so guests also reach your LAN and tailnet.
   - **Instances started outside boxery** (a plain `limactl start boxery-NAME`) and VMs that were already running when you upgraded aren't confined. Restart them with `boxery stop NAME && boxery start NAME`.

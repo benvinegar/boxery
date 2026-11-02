@@ -24,7 +24,7 @@ They can be the same machine.
 **Requirements**
 
 - KVM (`/dev/kvm` readable)
-- libvirt on `qemu:///system`, with your user in the `libvirt` group
+- libvirt on `qemu:///system`, with your user in the `libvirt` group, and its nwfilter driver (`virtnwfilterd`, or the monolithic `libvirtd`), which isolates guests
 - `virt-install`, `qemu-img`, `cloud-localds` (from `cloud-image-utils`)
 - `socat`, `nc`
 - Node ≥ 22.13 (the lease store uses `node:sqlite`)
@@ -43,6 +43,19 @@ boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Nod
 ```
 
 `init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path and the node and tools found on your `PATH` at `init` time, so after switching Node versions with nvm/fnm re-run `boxery-host init`. To update boxery itself, see [Upgrading](#upgrading).
+
+**Guest network isolation.** VMs share libvirt's `default` NAT network, and each one's interface carries a libvirt network filter (nwfilter `boxery-guest-isolation`). A guest reaches the internet, and DHCP and DNS on the host's bridge address, and nothing else: not the host's sshd or other services, other guests, your LAN, Tailscale, cloud metadata (`169.254.169.254`) or any other private range, and it can't take another guest's MAC or IP. The LLM proxy goes over vsock, which the filter doesn't touch. Details: [security](security.md#what-a-vm-can-and-cant-reach).
+
+- New VMs, forks, reverts and lease resets get the filter. A VM made before this release gets it from its next cold start: `init` (which `upgrade` runs) adds it to every VM's configuration, and `boxery stop NAME && boxery start NAME` applies it. A VM that is still running keeps the open network until then.
+- Guests that must reach LAN services (a dev database, an internal registry) can't while isolated. To turn isolation off for every VM of this host, set it in `host.env` (or `BOXERY_NET_ISOLATION=off boxery-host init`), then restart the VMs:
+
+  ```bash
+  echo BOXERY_NET_ISOLATION=off >>~/.config/boxery/host.env
+  boxery stop NAME && boxery start NAME     # start removes the filter; new VMs get none
+  ```
+
+  Remove the line (or set `on`) and restart the VMs to turn it back on.
+- `BOXERY_NET` must be a libvirt network with an IPv4 address on a private range (libvirt's `default` is `192.168.122.0/24`); isolation drops guest-to-guest traffic because the network itself is in a blocked range.
 
 ## macOS host (Lima)
 
