@@ -6,9 +6,10 @@ export class LeaseWorkflows {
 		Object.assign(this, { store, backend, journal, lock, reclaim, now, sleep, log });
 	}
 
+	/** The row if it is still at this generation, incarnation and state, else null. */
 	matches(name, gen, epoch, state) {
 		const row = this.store.get(name); // storage errors propagate; they are not "stale"
-		return row?.gen === Number(gen) && row.epoch === epoch && row.state === state;
+		return row?.gen === Number(gen) && row.epoch === epoch && row.state === state ? row : null;
 	}
 
 	async acquire({ holder, ttl = 1800, wait = 0, pubkey }) {
@@ -35,8 +36,11 @@ export class LeaseWorkflows {
 
 	// Held-lock entry points. The runtime validates lock ownership before calling these.
 	async install(name, gen, epoch, pubkey) {
-		if (!this.matches(name, gen, epoch, "ACQUIRING")) throw new Error(`lease on ${name} changed while waiting for its lock`);
+		const row = this.matches(name, gen, epoch, "ACQUIRING");
+		if (!row) throw new Error(`lease on ${name} changed while waiting for its lock`);
 		const action = await this.journal.intent("acquire", [name, String(gen), epoch]);
+		// A proxy token of this lease's own, in place before the holder's key can log in.
+		await this.backend.issueToken(name, row.lease_id);
 		await this.backend.setKeys(name, pubkey);
 		if (!this.store.commit(name, gen)) throw new Error(`lease on ${name} was fenced`);
 		await this.journal.done(action);
@@ -60,6 +64,8 @@ export class LeaseWorkflows {
 			return;
 		}
 		const action = await this.journal.intent("reset", [name, String(gen), epoch]);
+		// The lease's proxy token and grants end first: nothing the holder copied works past this point.
+		await this.backend.revokeToken(name);
 		await this.backend.clearEdge(name);
 		let healthy = false;
 		try {
