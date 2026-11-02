@@ -13,13 +13,13 @@
     "lima",
     "kvm"
   ],
-  "homepage": "https://github.com/benvinegar/boxery#readme",
+  "homepage": "https://github.com/modem-dev/boxery#readme",
   "bugs": {
-    "url": "https://github.com/benvinegar/boxery/issues"
+    "url": "https://github.com/modem-dev/boxery/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/benvinegar/boxery.git"
+    "url": "git+https://github.com/modem-dev/boxery.git"
   },
   "author": "Ben Vinegar",
   "license": "MIT",
@@ -68,6 +68,6 @@
     "extensions": [
       "./extension/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/benvinegar/boxery/master/docs/computer-use.png"
+    "image": "https://raw.githubusercontent.com/modem-dev/boxery/master/docs/computer-use.png"
   }
 }
