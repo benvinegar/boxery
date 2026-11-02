@@ -9,6 +9,23 @@ boxery has two halves:
 
 They can be the same machine.
 
+## Choosing a backend
+
+| VMs run on | The host runs on | Backend | Status |
+|---|---|---|---|
+| Your Mac | The same Mac | [`lima`](#macos-host-lima) | Stable |
+| A physical Linux machine (KVM) | The same machine | [`libvirt`](#linux-host-libvirtkvm), [`cloud-hypervisor`](#linux-host-cloud-hypervisor-experimental) | libvirt: stable, fastest. Cloud Hypervisor: experimental |
+| exe.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. a VPS) | [`exe`](#exedev-experimental) | Experimental |
+| boat.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. a VPS) | [`boat`](#boatdev-experimental) | Experimental |
+
+- **To try it out**, use the machine you're on: Lima on a Mac, libvirt on a Linux desktop or laptop. Everything stays local.
+- **For the fastest VMs**, use a physical Linux machine: a home server, an old desktop, or a dedicated server. A VPS works only if it offers nested virtualization (check for `/dev/kvm`), and most don't.
+- **With no hardware of your own**, run the VMs on exe.dev or boat.dev. The host can stay on your local machine, but it keeps a tunnel open to each VM and agents lose their LLM while it sleeps, so for long-running work put it on an always-on machine such as a small VPS.
+
+Agents see the same tools on every backend. One MCP server can [route across several hosts](hosts.md), and one machine can run [two backends side by side](#a-second-backend-on-the-same-machine).
+
+## Setup
+
 - [Linux host (libvirt/KVM)](#linux-host-libvirtkvm)
 - [macOS host (Lima)](#macos-host-lima)
 - [Linux host (Cloud Hypervisor, experimental)](#linux-host-cloud-hypervisor-experimental)
