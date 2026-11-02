@@ -102,6 +102,15 @@ lima_apply_cloudconfig() { # FILE build|vm [NAME]
 }
 
 backend_has_base() { lima_exists_inst "$LIMA_BASE"; }
+backend_template_status() {
+	[[ $1 != stock ]] || { echo on-demand; return; }
+	[[ $1 == base ]] || die "unknown template source"
+	local j st; j=$(limactl list --format json) || die "cannot inspect template instances"
+	jq -se 'all(.[]; type == "object" and (.name | type == "string"))' <<<"$j" >/dev/null || die "invalid Lima template inventory"
+	st=$(jq -r --arg n "$LIMA_BASE" 'select(.name == $n) | (.status // "unknown")' <<<"$j")
+	if [[ -z $st ]]; then echo missing
+	else case $st in Running|Stopped) echo ready ;; *) echo unready ;; esac; fi
+}
 backend_exists() { lima_exists_inst "$(linst "$1")"; }
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]

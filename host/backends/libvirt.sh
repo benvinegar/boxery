@@ -160,6 +160,14 @@ backend_build_base() {
 
 
 backend_has_base() { virsh vol-info --pool "$POOL" "$BASE_VOL" >/dev/null 2>&1; }
+backend_template_status() {
+	[[ $1 != stock ]] || { echo on-demand; return; }
+	[[ $1 == base ]] || die "unknown template source"
+	[[ $BASE_VOL != *[[:space:]]* ]] || die "template preflight requires a volume name without whitespace"
+	local volumes; volumes=$(LC_ALL=C virsh vol-list --pool "$POOL") || die "cannot inspect template volumes"
+	awk 'NR == 1 && ($1 != "Name" || $2 != "Path") {exit 1}' <<<"$volumes" || die "invalid libvirt template inventory"
+	if awk -v n="$BASE_VOL" 'NR > 2 && $1 == n {found=1} END {exit !found}' <<<"$volumes"; then echo ready; else echo missing; fi
+}
 backend_exists() { exists "$1"; }
 
 # Disks: every VM disk and every image is a qcow2 overlay directly on a root volume (chain depth 1):

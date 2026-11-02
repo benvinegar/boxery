@@ -939,7 +939,8 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [-
 		--from) valid_image "${2:-}" || die "invalid image name: ${2:-} (use VM@SNAP)"; from=$2; shift 2 ;;
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
-		--headless) pass="$pass --headless"; shift ;;
+		--headless|--cold) pass="$pass $1"; shift ;;
+		--template) [ $# -ge 2 ] || die "--template needs a value"; valid_vm "$2" || die "invalid template name: $2"; pass="$pass --template $2"; shift 2 ;;
 		--shape) [ $# -ge 2 ] || die "--shape needs a value"; valid_vm "$2" || die "invalid shape name: $2"; pass="$pass --shape $2"; shift 2 ;;
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
 			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
@@ -1239,8 +1240,9 @@ usage() {
 		host add NAME --config-dir DIR   import existing config/ssh_config without setup
 		host ls [--json] | show NAME | use NAME | rm NAME
 		                                ls: where each host runs (local or ssh destination) and its backend
-		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
+		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--cold] [--template NAME] [--grant SPEC]... [--agent-forward]
 		                                --headless: no desktop (shell + agents only); needs no build-base
+		templates [--json]              templates supported by this backend/profile and their readiness
 		build-base                      build the host's desktop base image (one-time, ~3 min)
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
 		ls [--json]                     list VMs (with their shape and grants)
@@ -1344,6 +1346,7 @@ fork) need_host; cmd_fork "$@" ;;
 snap-rm) need_host; [ -n "${2:-}" ] && valid_snap "$2" || die "usage: boxery snap-rm NAME SNAP"; h snap-rm "$@" ;;
 images) need_host; h images "$@" ;;
 build-base) need_host; [ $# -eq 0 ] || die "usage: boxery build-base"; h build-base ;;
+templates) need_host; case ${1:-} in '' | --json) h templates "$@" ;; *) die "usage: boxery templates [--json]" ;; esac ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;

@@ -129,7 +129,7 @@ boat_vm_ids() { jq -r --arg n "${BOAT_PREFIX}vm-$1" '.[] | select(.name == $n) |
 boat_state_of() { jq -r --arg i "$1" '.[] | select(.id == $i) | .state' <<<"$2"; }                                                 # ID SANDBOXES
 boat_get() { boat_api GET "/sandboxes/$1" | jq -c '.sandbox // .'; }
 boat_delete() { boat_api DELETE "/sandboxes/$1" "" "X-Ascii-Confirm-Delete: $1" >/dev/null; }
-boat_saved() { boat_api GET "/saved-snapshots" | jq -c '.snapshots // []'; }
+boat_saved() { boat_api GET "/saved-snapshots" | jq -ce '.snapshots | if type == "array" then . else error("invalid boat snapshot inventory") end'; }
 boat_saved_status() { jq -r --arg n "$1" '.[] | select(.name == $n) | .status' <<<"$2"; }   # NAME SAVED
 # Poll a sandbox until it runs commands (ready, idle, running). Fails on error, or when it stops.
 boat_wait_ready() { # ID
@@ -317,6 +317,16 @@ backend_build_base() {
 	log "base image ready: boat saved snapshot $base"
 }
 
+backend_template_status() {
+	[[ $1 == base ]] || die "unknown template source"
+	[[ -n $BOAT_PREFIX ]] || die "no boat prefix; run init"
+	local j st; j=$(boat_api GET /saved-snapshots) || die "cannot inspect boat templates"
+	jq -e 'type == "object" and (.snapshots | type == "array")' <<<"$j" >/dev/null || die "invalid boat template inventory"
+	st=$(jq -r --arg n "$(boat_base)" '.snapshots[] | select(.name == $n) | .status' <<<"$j")
+	if [[ -z $st ]]; then echo missing
+	elif [[ $st == ready ]]; then echo ready
+	else echo unready; fi
+}
 backend_has_base() {
 	[[ -n $BOAT_PREFIX ]] || return 1
 	local s; s=$(boat_saved) || exit 1

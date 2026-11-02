@@ -60,12 +60,15 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
                             profile using it and check them; waits for in-flight operations, rolls back on failure
   build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
-  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--cold]
                             --headless: no desktop; boots the stock image, no build-base needed
+                            --cold: bypass any Boxery RAM-template fast-create path
+  new NAME --template NAME  select a declared backend/profile template (no silent fallback)
   new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
   fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
                             copy a VM (running or not) into new VMs with their own identity
                             (same size as SRC unless --shape or size flags are given)
+  templates [--json]        backend/profile templates (ready, missing or on-demand)
   shapes [--json]           VM sizes (built-ins + TMP/conf/shapes.json; * = default)
   ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]

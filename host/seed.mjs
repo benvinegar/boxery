@@ -33,7 +33,7 @@ export function opencodeConfig(cred, ollama = []) {
 }
 
 /** Guest files (under the agent's home) that carry the proxy token CRED. */
-function credentialFiles(cred, ollama = []) {
+export function credentialFiles(cred, ollama = []) {
 	return [
 		[".pi/agent/models.json", JSON.stringify(piModels(cred, ollama), null, 2)],
 		[".config/opencode/opencode.json", JSON.stringify(opencodeConfig(cred, ollama), null, 2)],
@@ -102,14 +102,18 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 
 /** Mint NAME's proxy token and write its user-data under the operation's private work directory.
  * Returns the file's path. The supervisor removes the directory when the operation ends. */
-export async function writeSeed(rt, name, provision = "") {
+export async function writeSeed(rt, name, provision = "", kind = "desktop") {
 	const work = path.join(rt.conf, "work"), op = path.join(work, rt.operationId), dir = path.join(op, name);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	for (const d of [work, op, dir]) chmodSync(d, 0o700);
 	const secret = randomBytes(24).toString("hex");
 	rt.setToken(name, secret);
 	const file = path.join(dir, "user-data");
-	writeFileSync(file, cloudConfig({ name, keys: rt.guest.petKeys(), upstream: await rt.vms.guestProxyUpstream(), cred: `${name}:${secret}`, ollama: await ollamaModels(), provision, layers: provision ? await rt.vms.layerFiles() : [] }));
+	const keys = rt.guest.petKeys(), upstream = await rt.vms.guestProxyUpstream(), ollama = await ollamaModels();
+	writeFileSync(file, cloudConfig({ name, keys, upstream, cred: `${name}:${secret}`, ollama, provision, layers: provision ? await rt.vms.layerFiles() : [] }));
+	// Restore-aware backends consume structured identity, never parse/eval cloud-config shell.
+	writeFileSync(`${file}.json`, JSON.stringify({ version: 1, name, kind, keys, upstream,
+		files: [...credentialFiles(`${name}:${secret}`, ollama), [".pi/agent/settings.json", JSON.stringify(piSettings(), null, 2)]] }), { mode: 0o600 });
 	return file;
 }
 

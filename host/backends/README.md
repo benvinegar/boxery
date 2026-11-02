@@ -14,7 +14,7 @@ The host (Node) runs one backend function per process: `host/backend.sh FUNCTION
 | `guest_proxy_upstream` | socat address the guest's `boxery-llm` service forwards 127.0.0.1:8088 to (e.g. `VSOCK-CONNECT:2:8088`, `TCP:192.168.5.2:8088`) |
 | `backend_build_base` / `backend_has_base` | build / detect the golden desktop image. The cloud-config to build it from is `$BASE_USERDATA` (`image/base-user-data.yaml` with the [layers](#image-layers-desktop-and-headless-vms) filled in) |
 | `backend_exists NAME` | 0 if the VM exists |
-| `backend_new NAME CPUS MEM_MIB DISK_GIB USERDATA [SOURCE]` | create + boot a VM and apply the cloud-config in USERDATA (see *Identity* below). SOURCE: empty = the desktop base; `VM@LABEL` = that image; `stock` = the backend's stock image, no base needed (headless VMs, see [layers](#image-layers-desktop-and-headless-vms)). `stock` has no `@`, so it is never an image name |
+| `backend_new NAME CPUS MEM_MIB DISK_GIB USERDATA [SOURCE] [BOOT_POLICY]` | create + boot a VM and apply the cloud-config in USERDATA (see *Identity* below). SOURCE: empty = the desktop base; `VM@LABEL` = that image; `stock` = the backend's stock image, no base needed (headless VMs, see [layers](#image-layers-desktop-and-headless-vms)). `stock` has no `@`, so it is never an image name. Optional BOOT_POLICY `cold` bypasses Boxery RAM templates; ordinary disk-boot backends can ignore it |
 | `backend_list` | lines `NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USED_BYTES[<TAB>TUNNEL]` (VMs only, never images; empty field = unknown). SSH: the VM's ssh endpoint as this host reaches it, always `HOST:PORT` (`192.168.122.50:22`, `127.0.0.1:60022`), empty unless the VM is running and reachable. DISK_BYTES: the disk's configured (virtual) size. DISK_USED_BYTES: what the VM's own disk takes on this host (allocated blocks; a shared base or backing image is not counted), empty if the backend can't know. TUNNEL only for backends that reach VMs through a tunnel: `up`, `connecting`, `down`. `boxery-host` turns these into the `ls --json` objects (sizes in GiB) |
 | `backend_ssh_endpoint NAME` / `backend_wait_endpoint NAME` | `HOST PORT` where the VM's sshd is reachable from the host (now / after waiting) |
 | `backend_endpoint_problem NAME` | optional, local checks only (it runs while `boxery-host` waits for ssh). Print nothing and return 0 when nothing is known to be wrong; else print what's wrong and the fix, and return 1 (may recover: `boxery-host` keeps waiting for ssh and adds the message to its timeout) or 2 (won't recover without the fix: it gives up at once). `boxery-host` asks after each failed ssh attempt in `new`, `start`, `resize`, `revert` and lease resets; the prelude's `wait_ssh` doesn't. exe: the VM's tunnel |
@@ -31,6 +31,16 @@ boxery-host asks the backend which functions it defines (`host/backend.sh __func
 | `backend_resize` | `resize` fails with "the BACKEND backend cannot resize VMs" |
 | `backend_proxy_bind` | the LLM proxy listens on `127.0.0.1` (no backend overrides it today; for one whose guests reach the proxy over a host interface instead of vsock or a tunnel) |
 | `backend_endpoint_problem` | waits for ssh report only a timeout, not why the VM can't be reached (remote backends: [`remote_endpoint_problem`](#remote-backends)) |
+| `backend_template_status base\|stock` | required only when a driver declares built-in templates; emit `ready`, `missing`, `on-demand` or `unready` and exit 0. Inspection/API failures exit nonzero; never encode absence as an error exit code |
+
+### Template declarations
+
+`host/backends/NAME.templates.json` declares supported built-ins and whether the existing image
+primitive supports named templates. Operators define additional per-backend image names in the
+host profile's `templates.json`. `templates [--json]` distinguishes prepared sources from missing,
+on-demand and unready ones; an outage is an error. `new --template NAME` binds to the ordinary
+base/stock/image path before lifecycle supervision, retaining source-image locks and identity checks.
+Normal creation without a selector is unchanged. [Schema and examples](../../docs/templates.md).
 
 ### Persisted settings
 
@@ -61,7 +71,7 @@ Rules every backend must follow:
 - **Disk only.** Images never include RAM. Processes restart; runtime secrets that grants push to tmpfs are never captured.
 - **Independent.** VMs made from an image, and images of those VMs, never depend on the source VM or image staying around. (libvirt pulls image data into the new overlay; Lima clones are full or copy-on-write copies.) This is what keeps fork-of-a-fork-of-a-fork cheap and lets snapshots be deleted in any order.
 - **Cheap.** Captures and VMs from images should cost about as much disk as the data they change, not a full disk copy, where the platform allows it.
-- **No locking needed.** boxery-host holds lifecycle resource locks through the complete workflow, including capture/reimage/rm, image readers, guest readiness and key installation. Backends don't need their own. See [lifecycle coordination](../../docs/lifecycle.md).
+- **No lifecycle locking needed.** boxery-host holds lifecycle resource locks through the complete workflow, including capture/reimage/rm, image readers, guest readiness and key installation. Shared allocators (e.g. network slots across different VMs) still need atomic allocation. See [lifecycle coordination](../../docs/lifecycle.md).
 
 ## Image layers: desktop and headless VMs
 
@@ -156,7 +166,7 @@ Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, `boxery-llm.serv
 
 ## cloud-hypervisor (experimental)
 
-Runs VMs with [Cloud Hypervisor](https://www.cloudhypervisor.org/) directly, without libvirt. Tested end to end with Cloud Hypervisor v54 on arm64 (Ubuntu 24.04 in a nested-virtualization Lima VM). Not yet tested on an x86 host.
+Runs VMs with [Cloud Hypervisor](https://www.cloudhypervisor.org/) directly, without libvirt. Tested end to end with Cloud Hypervisor v54 on arm64 (Ubuntu 24.04 in a nested-virtualization Lima VM). The opt-in RAM-template adapter was also tested end to end on x86_64 Linux; see [fast creation](../fast/README.md) for measurements, setup, trade-offs and remaining gaps.
 
 **Requirements:**
 - `cloud-hypervisor` and `ch-remote` **v54 or newer**. Older versions can't open qcow2 overlays (no `backing_files`), and their `pause()` doesn't flush qcow2 metadata, so a capture could copy a stale disk.
@@ -184,6 +194,18 @@ Known gaps:
 - VMs don't autostart after a host reboot (`start` recreates TAPs and rules).
 - Other firewalls with a FORWARD drop policy block guest traffic: Docker (allow `bxch*` in `DOCKER-USER`), ufw (`DEFAULT_FORWARD_POLICY`), firewalld.
 - `net.ipv4.ip_forward=1` is host-wide, so the host also routes between its other interfaces.
+
+### Opt-in RAM templates
+
+`BOXERY_CH_FAST=1` selects a matching, immutable, pre-user RAM template for empty
+creates; missing shapes use ordinary cold boot. `new --cold` (tool `cold: true`)
+bypasses selection. Snapshots/forks/pool resets remain disk-only. This is a separate
+experimental path, not a changed default. [Setup and validation](../fast/README.md).
+
+`BOXERY_CH_NET_MODE=passt` explicitly selects rootless userspace networking, localhost
+SSH forwarding and eager RAM restore. It does **not** provide the TAP nftables egress
+policy above. TAP remains the default; its new fast-profile interfaces/tables are
+namespaced. Template versions and image boot metadata must be retained while referenced.
 
 ## exe (experimental)
 

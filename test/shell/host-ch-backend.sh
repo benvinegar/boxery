@@ -27,7 +27,7 @@ stub systemctl 'echo "systemctl $*" >>"$CALLS"; u=${3:-}
 case $2 in show-environment) [[ -z ${FAIL_SYSTEMD:-} ]] ;; start) [[ -z ${FAIL_START:-} ]] || exit 1; [[ -z ${SLOW_START:-} ]] || sleep 60; touch "$UNITS/$u" ;; stop) rm -f "$UNITS/$u" ;; is-active) [[ -f "$UNITS/${4:-}" ]] ;; esac'
 # GNU cp flags the backend uses; BSD cp (macOS) lacks them
 stub cp '[[ -z ${FAIL_CP:-} ]] || exit 1; a=(); for x in "$@"; do case $x in --reflink=*|--sparse=*) ;; *) a+=("$x") ;; esac; done; exec /bin/cp "${a[@]}"'
-stub flock 'exit 0'   # util-linux; not on macOS
+stub flock 'if [[ -x /usr/bin/flock ]]; then exec /usr/bin/flock "$@"; else exec python3 -c "import fcntl,sys; fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX)" "${@: -1}"; fi'   # same inherited-FD lock on macOS
 export PATH="$tmp/bin:$PATH"
 touch "$BOXERY_CH_DIR/base.qcow2"
 
@@ -198,5 +198,23 @@ stub cloud-hypervisor 'echo "cloud-hypervisor v53.0"'
 e=$( (backend_check) 2>&1 ) && bad "v53 accepted" || { [[ $e == *"v54 or newer"* ]] && ok "cloud-hypervisor < v54 rejected" || bad "v53 error: $e"; }
 stub cloud-hypervisor 'echo "cloud-hypervisor v54.0"'
 e=$( (backend_check) 2>&1 ) || true; [[ $e != *"or newer"* ]] && ok "cloud-hypervisor v54 accepted" || bad "v54 error: $e"
+
+# Fast profiles must not reuse legacy interfaces or units, including after flag changes.
+if ! command -v sha256sum >/dev/null; then stub sha256sum 'shasum -a 256 "$@"'; fi
+printf '#cloud-config\n' >"$tmp/fast-seed"
+export BOXERY_CH_FAST=1
+rec backend_new fastns 2 2048 20 "$tmp/fast-seed" stock cold
+fast_unit=$(cat "$V/fastns/unit-name"); fast_tap=$(cat "$V/fastns/tap-name")
+[[ $fast_unit != boxery-ch-fastns.service && $fast_tap != bxch* ]] && ok "fast cold fallback has private unit/TAP namespaces" || bad "fast namespaces"
+rec ch_nft_rules | grep -q "table inet boxery_ch_${fast_tap%$(cat "$V/fastns/slot")}" && ok "fast TAP firewall is namespaced" || bad "fast nft namespace"
+unset BOXERY_CH_FAST
+: >"$CALLS"
+rec backend_start fastns
+called "ip tuntap add dev $fast_tap mode tap" && called "systemctl --user start $fast_unit" && ok "restart retains pinned unit/TAP after fast flag changes" || bad "pinned fast restart: $(cat "$CALLS")"
+rec backend_rm fastns
+[[ ! -d $V/fastns ]] && called "ip link del $fast_tap" && ok "cleanup retains the original managed TAP name" || bad "fast cleanup"
+: >"$CALLS"
+BOXERY_CH_NET_MODE=passt rec backend_init
+! grep -Eq '^(nft|ip|sysctl) ' "$CALLS" && ok "passt initialization never changes shared host networking" || bad "passt host network: $(cat "$CALLS")"
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

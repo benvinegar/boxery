@@ -858,7 +858,7 @@ export async function scroll(vm, { x, y, direction, amount, screenshot: shot }) 
 export async function browser(vm, { code, screenshot: shot, timeout }, { signal } = {}) {
 	const program = `
 const { chromium } = await import(process.env.BOXERY_PW);
-const out = (o) => process.stdout.write('\\n__BOXERY__' + JSON.stringify(o) + '\\n');
+const out = (o) => new Promise(resolve => process.stdout.write('\\n__BOXERY__' + JSON.stringify(o) + '\\n', resolve));
 try {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:${CDP_PORT}');
   const context = browser.contexts()[0] ?? await browser.newContext();
@@ -867,8 +867,8 @@ try {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const result = await new AsyncFunction('page', 'context', 'browser', ${JSON.stringify(String(code))})(page, context, browser);
   const shot = ${shot ? "(await page.screenshot()).toString('base64')" : "null"};
-  out({ ok: true, result: result === undefined ? null : result, url: page.url(), shot });
-} catch (e) { out({ ok: false, error: String(e && e.stack || e) }); }
+  await out({ ok: true, result: result === undefined ? null : result, url: page.url(), shot });
+} catch (e) { await out({ ok: false, error: String(e && e.stack || e) }); }
 process.exit(0);`;
 	const script =
 		`${X}if ! curl -fs -m1 127.0.0.1:${CDP_PORT}/json/version >/dev/null; then ` +
@@ -910,6 +910,10 @@ export const listVms = () => boxeryJson(["ls"]);
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 export const listShapes = () => boxeryJson(["shapes"]);
+export const listTemplates = () => boxeryJson(["templates"]);
+export function formatTemplates({ backend, templates }) {
+	return `Templates on ${backend}:\n${templates.map((t) => `${t.name}: ${t.kind ?? "unknown"}, ${t.status} (${t.image ?? t.source})`).join("\n") || "(none declared)"}`;
+}
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
@@ -1137,7 +1141,9 @@ export function needVm(a) {
 
 /** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. */
 export async function manage(a, opts = {}) {
-	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
+	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless, cold, template } = a;
+	if (action === "new" && template && (from || headless)) throw new Error("template cannot be combined with from or headless");
+	if (template != null && !VALID_NAME.test(template)) throw new Error("invalid template name");
 	const need = () => needVm(a);
 	const sizeArgs = () =>
 		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
@@ -1154,7 +1160,7 @@ export async function manage(a, opts = {}) {
 			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
 		}
 		case "new":
-			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
+			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : []), ...(cold ? ["--cold"] : []), ...(template ? ["--template", template] : [])], undefined, opts);
 		case "rm":
 			return boxeryCli(["rm", need()], 120_000, opts);
 		case "start":

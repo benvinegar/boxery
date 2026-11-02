@@ -18,7 +18,8 @@ import { addKey, buildBase, init, profiles } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
 import { addVmShape, vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, print, readFd, table, validName } from "./util.mjs";
-import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
+import { fork, newVm, parseNewArgs, resize, rm, start, stop } from "./vms.mjs";
+import { applyTemplate, extractTemplate, templatesCommand } from "./templates.mjs";
 
 const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for coding agents (backend: ${backend})
 
@@ -32,12 +33,15 @@ const usage = ({ backend, conf }) => `boxery-host — Ubuntu desktop VMs for cod
                             profile using it and check them; waits for in-flight operations, rolls back on failure
   build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
-  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--cold]
                             --headless: no desktop; boots the stock image, no build-base needed
+                            --cold: bypass any Boxery RAM-template fast-create path
+  new NAME --template NAME  select a declared backend/profile template (no silent fallback)
   new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
   fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
                             copy a VM (running or not) into new VMs with their own identity
                             (same size as SRC unless --shape or size flags are given)
+  templates [--json]        backend/profile templates (ready, missing or on-demand)
   shapes [--json]           VM sizes (built-ins + ${conf}/shapes.json; * = default)
   ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]
@@ -141,7 +145,7 @@ function proxyLog(rt, [n = "30"]) {
 const lifecycle = (command) => (rt, args) => runLifecycle(rt, command, args);
 const COMMANDS = {
 	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
-	ls, list: ls, shapes, snaps, images, ip,
+	ls, list: ls, shapes, templates: templatesCommand, snaps, images, ip,
 	pool: (rt, [sub = "ls", ...args]) => (sub === "ls" ? poolLs(rt, args) : fail(POOL_USAGE)),
 	"proxy-log": proxyLog,
 	backend: (rt) => print(rt.backend),
@@ -191,6 +195,10 @@ async function main(argv) {
 			return await CALLBACKS[callback](rt, rest);
 		}
 		if (command === "__recover") return await replayIntents(rt);
+		if (command === "new") {
+			const selected = extractTemplate(args);
+			if (selected.name) args = await applyTemplate(rt, selected.name, parseNewArgs(selected.args), selected.args);
+		}
 		if (supervised(command, args)) {
 			const names = resources(command, args);
 			process.exitCode = await supervise({ conf: rt.conf, names, command, args: ["__dispatch", command, ...args], env: rt.operationEnv() });

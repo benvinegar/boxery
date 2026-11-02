@@ -32,6 +32,8 @@ See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal.
 boxery setup you@my-host                     # or: setup local   [--name NAME] [--key ~/.ssh/id_ed25519.pub]
 boxery new demo                              # ~13 s   [--shape large] [--cpus N --mem MiB --disk GiB] [--grant SPEC]…
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
+boxery templates [--json]                    # backend/profile creation sources and readiness
+boxery new work --template dev                # select a registered template; see Templates
 boxery build-base                            # the host's desktop base image (one time, ~3 min)
 boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
 boxery ls [--json]                           # VMs, with their shape and grants
@@ -39,6 +41,8 @@ boxery start demo | stop demo
 boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
 ```
+
+**Templates.** `templates [--json]` lists names declared by this backend/profile, with `ready`, `missing`, `on-demand` or `unready` status. `new --template NAME` explicitly selects one; unknown/missing names fail without substitution. It cannot be combined with `--from` or `--headless`. Operators register prepared disk images per backend in the host's `templates.json`; names do not imply identical environments across providers. [Templates](templates.md).
 
 **Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
 
@@ -167,7 +171,8 @@ upgrade [--check] [--ref REF] [--wait S] [--reinit]
                                 update this install, re-run init for each profile using it, check, roll back on failure
 build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
-new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
+templates [--json]              backend/profile template names and readiness
+new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE | --template NAME] [--headless] [--cold]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
