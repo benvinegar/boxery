@@ -66,8 +66,9 @@ d=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/boxery-vnc
 umask 077
 mkdir -p "$d" && chmod 700 "$d"
 [ "${1:-}" = --new ] || [ ! -s "$d/passwd" ] || exit 0
-# head stops reading after 8: tr then gets EPIPE (or SIGPIPE), which is expected, so its complaint is dropped.
-p=$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom 2>/dev/null | head -c 8)
+# A bounded read (about 60 usable characters from 256 bytes), every stage reading to the end: tr straight off
+# /dev/urandom into `head -c 8` never ends where SIGPIPE is ignored, as BSD tr then keeps reading after EPIPE.
+p=$(head -c 256 /dev/urandom | LC_ALL=C tr -dc A-Za-z0-9 | cut -c1-8)
 [ ${#p} = 8 ] || { echo "boxery-vnc-password: could not generate a password" >&2; exit 1; }
 printf '%s\n' "$p" | vncpasswd -f >"$d/passwd.new"
 mv -f "$d/passwd.new" "$d/passwd"
