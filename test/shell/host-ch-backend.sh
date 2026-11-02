@@ -167,7 +167,8 @@ mkdir -p "$V/half"; echo 77 >"$V/half/slot"; touch "$HOME/.config/systemd/user/b
 rec backend_cleanup_new half && [[ ! -d $V/half && ! -f $HOME/.config/systemd/user/boxery-ch-half.service && ! -f $UNITS/boxery-ch-half.service ]] && called "ip link del bxch77" && ok "cleanup_new removes a half-created VM: unit, TAP, dir" || bad "cleanup_new: $(cat "$CALLS")"
 rec backend_cleanup_new half && ok "cleanup_new is idempotent" || bad "cleanup_new second run"
 mkdir -p "$V/early" && rec backend_cleanup_new early && [[ ! -d $V/early ]] && ok "cleanup_new before a slot was assigned" || bad "cleanup_new early"
-mkdir "$BOXERY_CH_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -d $BOXERY_CH_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's slot lock" || bad "slot lock"
+: >"$BOXERY_CH_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -e $BOXERY_CH_DIR/.slot.lock ]] && ok "cleanup_new clears a dead holder's slot lock" || bad "slot lock"
+mkdir "$BOXERY_CH_DIR/.slot.lock" && rec backend_cleanup_new nothing && [[ ! -e $BOXERY_CH_DIR/.slot.lock ]] && ok "cleanup_new clears an older boxery's slot lock directory" || bad "slot lock directory"
 mkdir -p "$I"; touch "$I/x@y.qcow2" "$I/x@y.qcow2.part"
 rec backend_cleanup_image x@y && [[ ! -e $I/x@y.qcow2 && ! -e $I/x@y.qcow2.part ]] && rec backend_cleanup_image x@y && ok "cleanup_image removes image + partial, idempotently" || bad "cleanup_image"
 "$H" new rc1 >/dev/null 2>&1; touch "$I/rc1@z.qcow2.part"; : >"$CALLS"
@@ -188,6 +189,7 @@ pgrep -f 'sleep 60' >/dev/null && { bad "abandoned worker still running"; pkill 
 
 # --- helpers (sourced)
 die() { echo "$*" >&2; exit 1; }; log() { :; }; need() { :; }   # helpers that die run in ( subshells )
+eval "$(grep '^take_lock()' "$ROOT/host/backend.sh")"   # the real lock helper (host/backend.sh defines it for every backend)
 # shellcheck source=/dev/null
 . "$ROOT/host/backends/cloud-hypervisor.sh"
 [[ $(ch_mac 300) == 52:54:00:77:01:2c ]] && ok "MAC encodes the slot" || bad "mac: $(ch_mac 300)"
