@@ -6,7 +6,7 @@ import { LeaseWorkflows } from "../host/lease-workflows.mjs";
 function fixture() {
 	const events = [], logs = [];
 	let clock = 100;
-	const state = { row: { name: "p1", gen: 2, epoch: "epoch", state: "RESETTING" } };
+	const state = { row: { name: "p1", gen: 2, epoch: "epoch", state: "RESETTING", lease_id: "l-one" } };
 	const note = (kind, ...args) => events.push([kind, ...args]);
 	const store = {
 		get: (name) => { note("get", name); return state.row; },
@@ -18,7 +18,7 @@ function fixture() {
 		candidates: () => { note("candidates"); return [{ name: "p1", gen: 1, epoch: "epoch" }]; },
 		due: (...args) => { note("due", ...args); return [{ name: "p1", gen: 2, epoch: "epoch", reason: "expired" }]; },
 	};
-	const backend = Object.fromEntries(["clearEdge", "restore", "waitReady", "stepClock", "setKeys"].map((kind) => [kind, async (...args) => note(kind, ...args)]));
+	const backend = Object.fromEntries(["revokeToken", "issueToken", "clearEdge", "restore", "waitReady", "stepClock", "setKeys"].map((kind) => [kind, async (...args) => note(kind, ...args)]));
 	const journal = {
 		intent: async (...args) => { note("intent", ...args); return "intent-id"; },
 		done: async (id) => note("done", id),
@@ -33,11 +33,11 @@ function fixture() {
 	return { flows, state, events, logs, store, backend, journal, kinds: () => events.map((e) => e[0]) };
 }
 
-test("reset journals before effects and commits only after readiness and management keys", async () => {
+test("reset journals, revokes the lease's token and grants first, and commits only after readiness and management keys", async () => {
 	const f = fixture();
 	await f.flows.reset("p1", "2", "epoch");
 	assert.deepEqual(f.events, [
-		["get", "p1"], ["intent", "reset", ["p1", "2", "epoch"]], ["clearEdge", "p1"],
+		["get", "p1"], ["intent", "reset", ["p1", "2", "epoch"]], ["revokeToken", "p1"], ["clearEdge", "p1"],
 		["restore", "p1", "boxery-clean"], ["waitReady", "p1"], ["stepClock", "p1"], ["setKeys", "p1"],
 		["finish", "p1", "2", "FREE"], ["done", "intent-id"],
 	]);
@@ -82,25 +82,33 @@ test("a failed state commit leaves the recovery intent intact", async () => {
 test("an edge cleanup failure leaves the intent and never begins restore", async () => {
 	const f = fixture(); f.backend.clearEdge = async () => { throw new Error("permission denied"); };
 	await assert.rejects(f.flows.reset("p1", 2, "epoch"), /permission denied/);
+	assert.deepEqual(f.kinds(), ["get", "intent", "revokeToken"]);
+});
+
+test("a token revocation failure leaves the intent and touches neither grants nor the guest", async () => {
+	const f = fixture(); f.backend.revokeToken = async () => { throw new Error("tokens.json unwritable"); };
+	await assert.rejects(f.flows.reset("p1", 2, "epoch"), /unwritable/);
 	assert.deepEqual(f.kinds(), ["get", "intent"]);
 });
 
-test("install validates ownership, journals, installs the key, then commits", async () => {
+test("install validates ownership, journals, issues the lease's token, installs the key, then commits", async () => {
 	const f = fixture(); f.state.row.state = "ACQUIRING";
 	await f.flows.install("p1", 2, "epoch", "public key");
 	assert.deepEqual(f.events, [
-		["get", "p1"], ["intent", "acquire", ["p1", "2", "epoch"]], ["setKeys", "p1", "public key"],
-		["commit", "p1", 2], ["done", "intent-id"],
+		["get", "p1"], ["intent", "acquire", ["p1", "2", "epoch"]], ["issueToken", "p1", "l-one"],
+		["setKeys", "p1", "public key"], ["commit", "p1", 2], ["done", "intent-id"],
 	]);
 });
 
 test("failed/fenced installation retains its intent for reset", async () => {
-	for (const failure of ["keys", "commit"]) {
+	for (const failure of ["token", "keys", "commit"]) {
 		const f = fixture(); f.state.row.state = "ACQUIRING";
-		if (failure === "keys") f.backend.setKeys = async () => { throw new Error("keys failed"); };
+		if (failure === "token") f.backend.issueToken = async () => { throw new Error("guest unreachable"); };
+		else if (failure === "keys") f.backend.setKeys = async () => { throw new Error("keys failed"); };
 		else f.store.commit = () => false;
 		await assert.rejects(f.flows.install("p1", 2, "epoch", "public key"));
 		assert.ok(!f.kinds().includes("done"));
+		if (failure === "token") assert.ok(!f.kinds().includes("setKeys"), "the holder's key waits for the token");
 	}
 });
 

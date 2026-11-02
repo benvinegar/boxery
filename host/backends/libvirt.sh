@@ -45,6 +45,21 @@ backend_init() {
 		virsh pool-define-as "$POOL" dir --target "$POOL_DIR" >/dev/null
 		virsh pool-build "$POOL" >/dev/null; virsh pool-start "$POOL" >/dev/null; virsh pool-autostart "$POOL" >/dev/null
 	fi
+	local d n=0
+	while read -r d; do ensure_discard "$d" && n=$((n + 1)); done < <(virsh list --all --name | awk -v p="$PREFIX" 'index($0,p) == 1')
+	((n == 0)) || log "$n VM(s) will pass discards to the host from their next cold start (stop + start, revert or lease reset)"
+}
+
+# Disks pass the guest's discards (online discard, fstrim) to the host, so space freed in the guest is
+# freed in its overlay and isn't copied into snapshots, forks and reimages. libvirt's default ignores them.
+# For a domain made before boxery set this, add it to the persistent config (applies on the next cold
+# start). Returns 1 when nothing changed; a disk driver with other attributes is left alone.
+ensure_discard() { # DOM
+	local xml f; xml=$(virsh dumpxml "$1" --inactive 2>/dev/null) || return 1
+	[[ $xml == *"<driver name='qemu' type='qcow2'/>"* ]] || return 1
+	f=$(mktemp); printf '%s\n' "${xml//"<driver name='qemu' type='qcow2'/>"/"<driver name='qemu' type='qcow2' discard='unmap'/>"}" >"$f"
+	if ! virsh define "$f" >/dev/null; then rm -f "$f"; log "could not enable discard on $1 (left as it was)"; return 1; fi
+	rm -f "$f"
 }
 
 # How guests reach the LLM proxy: socat in the guest connects to vsock CID 2 (the host).
@@ -114,7 +129,7 @@ backend_build_base() {
 	virsh vol-delete --pool "$POOL" build.log >/dev/null 2>&1 || true
 	log "booting builder VM (installs XFCE, VNC, node, pi, opencode; ~5-10 min)"
 	virt-install --name "$name" --memory 8192 --vcpus 8 --osinfo ubuntu24.04 \
-		--disk "vol=$POOL/$BASE_VOL,bus=virtio" --disk "vol=$POOL/boxery-base-seed.iso,device=cdrom" \
+		--disk "vol=$POOL/$BASE_VOL,bus=virtio,discard=unmap" --disk "vol=$POOL/boxery-base-seed.iso,device=cdrom" \
 		--network "network=$NET,model=virtio" --graphics none \
 		--serial "pty,log.file=$POOL_DIR/build.log" \
 		--events on_reboot=destroy --import --noautoconsole >/dev/null
@@ -186,7 +201,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	log "creating $name (${cpus} vCPU, ${mem} MiB, $((bytes / 1073741824)) GiB overlay on $backing)"
 	new_overlay "$d.qcow2" "$bytes" "$backing"
 	virt-install --name "$d" --memory "$mem" --vcpus "$cpus" --osinfo ubuntu24.04 \
-		--disk "vol=$POOL/$d.qcow2,bus=virtio" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
+		--disk "vol=$POOL/$d.qcow2,bus=virtio,discard=unmap" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
 		--network "network=$NET,model=virtio" \
 		--vsock cid.auto=yes \
 		--graphics none --console pty,target_type=serial \
@@ -218,7 +233,7 @@ backend_ssh_endpoint() {
 }
 backend_wait_endpoint() { echo "$(wait_ip "$1") 22"; }
 
-backend_start() { virsh start "$(dom "$1")" >/dev/null; }
+backend_start() { ensure_discard "$(dom "$1")" || true; virsh start "$(dom "$1")" >/dev/null; }
 backend_stop() { virsh shutdown "$(dom "$1")" >/dev/null; }
 backend_size() {
 	local d; d=$(dom "$1")
@@ -338,6 +353,7 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 		virsh vol-delete --pool "$POOL" "$d.qcow2" >/dev/null || die "could not remove $name's disk"
 	fi
 	new_overlay "$d.qcow2" "$bytes" "$(vol "$img")" || die "could not create $name's disk from $img"
+	ensure_discard "$d" || true
 	virsh start "$d" >/dev/null || die "could not start $name"
 	pull_to_base "$name" "$(root_vol "$(vol "$img")")"
 }

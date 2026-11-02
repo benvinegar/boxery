@@ -8,6 +8,7 @@ import { restoreVm } from "./images.mjs";
 import { LeaseWorkflows } from "./lease-workflows.mjs";
 import { setLeaseKeys } from "./pool.mjs";
 import { reconcileDrift } from "./recovery.mjs";
+import { issueToken } from "./seed.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => Math.floor(Date.now() / 1000);
@@ -62,6 +63,8 @@ export async function runLifecycle(rt, command, args) {
 		.map((method) => [method, (...argv) => leases[method](db, ...argv)]));
 	const backend = {
 		clearEdge: async (name) => rt.clearEdge(nameOf(name)),
+		issueToken: (name, lease) => issueToken(rt, nameOf(name), leaseOf(lease)),
+		revokeToken: async (name) => rt.deleteToken(nameOf(name)),
 		restore: (name, label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
 		waitReady: async (name) => rt.waitSsh(nameOf(name), await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
 		async stepClock(name) {

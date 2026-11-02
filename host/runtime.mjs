@@ -4,7 +4,7 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createBackend } from "./backend.mjs";
 import * as leases from "./boxery-leases.mjs";
-import { completeIntent, recordIntent, updateToken } from "./boxery-operations.mjs";
+import { completeIntent, readToken, recordIntent, updateToken } from "./boxery-operations.mjs";
 import { loadConfig } from "./config.mjs";
 import { createGuest } from "./guest.mjs";
 import { loadShapes } from "./shapes.mjs";
@@ -37,6 +37,7 @@ export function createRuntime(env = process.env) {
 		/** Journal intent after preflight, before side effects; `done` once the unit of work is complete. */
 		intent: (kind, ...data) => recordIntent(rt.db(), rt.operationId, kind, data.map(String)),
 		done: (id) => completeIntent(rt.db(), rt.operationId, id),
+		token: (name) => readToken(config.conf, name),
 		setToken: (name, value) => updateToken(rt.db(), config.conf, name, value),
 		deleteToken: (name) => updateToken(rt.db(), config.conf, name, undefined),
 		clearEdge: (name) => rmSync(path.join(config.conf, "edge", `${name}.json`), { force: true }),

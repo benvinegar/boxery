@@ -3,7 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { captureVm, cleanupVmImages } from "./images.mjs";
 import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
-import { writeSeed } from "./seed.mjs";
+import { issueToken, writeSeed } from "./seed.mjs";
 import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
 import { fail, log, print, stamp, validImage, validName, validNum } from "./util.mjs";
 
@@ -14,14 +14,15 @@ const NOVNC = "for i in $(seq 60); do curl -fsS -o /dev/null 127.0.0.1:6080/vnc.
 export async function setPetKeys(rt, name) {
 	await rt.guest.setKeys(await rt.vms.sshEndpoint(name), rt.guest.petKeys());
 }
-/** Back to a pet: registered controller keys may log in again. A stopped VM gets them on its next
- * start; a running-but-unreachable guest is an error, not a successful permission update. */
+/** Back to a pet: registered controller keys may log in again, and the VM gets a proxy token of its own
+ * (a pool VM's token belonged to a lease). A stopped VM gets both on its next start; a
+ * running-but-unreachable guest is an error, not a successful permission update. */
 export async function restorePetAccess(rt, name) {
 	let inventory;
 	try { inventory = await rt.vms.list(); } catch { fail("cannot inspect VM for pet access"); }
 	if (["running", "idle"].includes(inventory.find((v) => v.name === name)?.state)) {
-		try { await setPetKeys(rt, name); } catch { fail(`could not restore pet access to ${name}`); }
-	}
+		try { await setPetKeys(rt, name); await issueToken(rt, name); } catch { fail(`could not restore pet access to ${name}`); }
+	} else rt.deleteToken(name);
 }
 async function mustRun(rt, ep, command) {
 	if (await rt.guest.run(ep, command) !== 0) fail(`ssh to ${ep.host}:${ep.port} failed`);
@@ -181,7 +182,10 @@ export async function start(rt, [name]) {
 	validName(name);
 	await rt.vms.call("backend_start", [name]);
 	await rt.waitSsh(name, await rt.vms.waitEndpoint(name));
-	if (!rt.poolRow(name)) await setPetKeys(rt, name);
+	if (!rt.poolRow(name)) {
+		await setPetKeys(rt, name);
+		if (typeof rt.token(name) !== "string") await issueToken(rt, name); // left the pool while stopped
+	}
 	log(`${name} started`);
 }
 
