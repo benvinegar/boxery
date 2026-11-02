@@ -186,11 +186,13 @@ backend_init() {
 }
 
 backend_proxy_services() {
+	local unit; unit=$(profile_unit boxery-ch-vsock)   # one per profile (#117)
+	retire_shared_unit boxery-ch-vsock "UNIX-LISTEN:$CH_DIR/proxy.sock,"
 	mkdir -p "$CH_DIR"
-	cat >"$HOME/.config/systemd/user/boxery-ch-vsock.service" <<-EOF
+	cat >"$HOME/.config/systemd/user/$unit.service" <<-EOF
 		[Unit]
 		Description=boxery: LLM proxy for cloud-hypervisor guests (hybrid vsock socket)
-		After=boxery-proxy.service
+		After=$PROXY_UNIT.service
 		[Service]
 		ExecStart=$(command -v socat) UNIX-LISTEN:$CH_DIR/proxy.sock,fork,unlink-early,mode=600 TCP:127.0.0.1:$PROXY_PORT
 		Restart=always
@@ -198,7 +200,7 @@ backend_proxy_services() {
 		[Install]
 		WantedBy=default.target
 	EOF
-	echo boxery-ch-vsock.service
+	echo "$unit.service"
 }
 guest_proxy_upstream() { echo "VSOCK-CONNECT:2:$PROXY_PORT"; }
 

@@ -2,7 +2,7 @@
 
 `host/boxery-host` is backend-agnostic. It generates each VM's identity (cloud-config with ssh keys, LLM proxy token, pi/opencode config), manages tokens, leases and locks, waits for ssh, and runs the LLM proxy. A backend is a bash file that implements the functions below.
 
-The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh NAME HOST [PORT]`, `vm_ssh_cmd NAME HOST PORT CMD…` (both check VM NAME's pinned host key), and the variables `ROOT`, `CACHE`, `PROXY_PORT` and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
+The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh NAME HOST [PORT]`, `vm_ssh_cmd NAME HOST PORT CMD…` (both check VM NAME's pinned host key), `profile_unit BASE` (the name for a host-wide unit in this profile: `BASE` for the default profile, `BASE-NAME` for profile NAME), and the variables `ROOT`, `CACHE`, `PROXY_PORT`, `PROXY_UNIT` (this profile's proxy unit) and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
 
 ## VMs
 
@@ -10,7 +10,7 @@ The host (Node) runs one backend function per process: `host/backend.sh FUNCTION
 |---|---|
 | `backend_check` | verify dependencies (fail with `die`) |
 | `backend_init` | one-time host setup (storage pools etc.) |
-| `backend_proxy_services` | install host-side bridge services for the guest→proxy path; print unit names to enable (may print nothing) |
+| `backend_proxy_services` | install host-side bridge services for the guest→proxy path; print unit names to enable (may print nothing). Name each with `profile_unit` and order it `After=$PROXY_UNIT.service`: two profiles of one backend run side by side, each on its own proxy port |
 | `guest_proxy_upstream` | socat address the guest's `boxery-llm` service forwards 127.0.0.1:8088 to (e.g. `VSOCK-CONNECT:2:8088`, `TCP:192.168.5.2:8088`) |
 | `backend_build_base` / `backend_has_base` | build / detect the golden desktop image. The cloud-config to build it from is `$BASE_USERDATA` (`image/base-user-data.yaml` with the [layers](#image-layers-desktop-and-headless-vms) filled in) |
 | `backend_exists NAME` | 0 if the VM exists |

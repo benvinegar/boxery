@@ -13,7 +13,8 @@ fake_checkpoint() { # POINT NAME
 }
 backend_check() { :; }
 backend_init() { mkdir -p "$FAKE"; }
-backend_proxy_services() { :; }
+# A bridge unit name, like libvirt's (profile_unit), so tests see which one init enables. No file is written.
+backend_proxy_services() { echo "$(profile_unit boxery-fake-bridge).service"; }
 guest_proxy_upstream() { echo "TCP:fake-gateway:$PROXY_PORT"; }
 backend_build_base() { mkdir -p "$FAKE"; touch "$FAKE/.base"; }
 backend_has_base() { [[ -f $FAKE/.base ]]; }
