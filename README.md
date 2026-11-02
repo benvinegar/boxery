@@ -60,8 +60,8 @@ boxery lets your agents manage their own Linux VMs: on your Mac, a Linux server,
 
 ## Why boxery
 
-- **Fast.** A full desktop VM in about 13 s on libvirt, or a [headless](docs/cli.md#lifecycle) one with no desktop at all. Snapshot a running VM in about 1 s.
 - **Built for agents.** Agents create, fork and drive VMs themselves over [MCP](docs/mcp.md): Claude Code, Codex, Cursor, opencode or any MCP client, plus a native [pi](docs/pi-extension.md) extension.
+- **Fast.** A full desktop VM in about 13 s on libvirt, or a [headless](docs/cli.md#lifecycle) one with no desktop at all. Snapshot a running VM in about 1 s.
 - **Mix VM providers.** One MCP server drives your Mac, a Linux server and the cloud (exe.dev, boat.dev) [at once](docs/hosts.md), with the same tools on each.
 - **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
 
