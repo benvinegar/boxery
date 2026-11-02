@@ -6,7 +6,7 @@
 </h1>
 
 <p align="center">
-  <strong>Linux VMs for your agents: throwaway or long-lived, on your Mac, a server, or the cloud.</strong>
+  <strong>Spin up and manage VMs across local, remote and sandbox providers from your agents.</strong>
 </p>
 
 <p align="center">
@@ -48,7 +48,7 @@
 
 ---
 
-boxery lets your agents manage their own Linux VMs: on your Mac, a Linux server, a cloud VM provider like exe.dev or boat.dev, or all of them at once. Your agent stays on your machine with your login and setup; the VM is where it works, and your keys never go in.
+boxery lets your agents manage their own Linux VMs: on your Mac, a Linux server, a sandbox provider like exe.dev or boat.dev, or all of them at once. Your agent stays on your machine with your login and setup; the VM is where it works, and your keys never go in.
 
 ## What it's for
 
@@ -62,7 +62,7 @@ boxery lets your agents manage their own Linux VMs: on your Mac, a Linux server,
 
 - **Built for agents.** Agents create, fork and drive VMs themselves over [MCP](docs/mcp.md): Claude Code, Codex, Cursor, opencode or any MCP client, plus a native [pi](docs/pi-extension.md) extension.
 - **Fast.** A full desktop VM in about 13 s on libvirt, or a [headless](docs/cli.md#lifecycle) one with no desktop at all. Snapshot a running VM in about 1 s.
-- **Mix VM providers.** One MCP server drives your Mac, a Linux server and the cloud (exe.dev, boat.dev) [at once](docs/hosts.md), with the same tools on each.
+- **Mix VM providers.** One MCP server drives your Mac, a Linux server and sandbox providers (exe.dev, boat.dev) [at once](docs/hosts.md), with the same tools on each.
 - **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
 
 ## How it works

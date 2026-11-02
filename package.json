@@ -1,7 +1,7 @@
 {
   "name": "boxery-vm",
   "version": "0.9.0",
-  "description": "Linux VMs for your agents: throwaway or long-lived, on your Mac, a server, or the cloud; MCP server + pi extension give agents vm_* tools",
+  "description": "Spin up and manage VMs across local, remote and sandbox providers from your agents; MCP server + pi extension give agents vm_* tools",
   "keywords": [
     "pi-package",
     "mcp",
