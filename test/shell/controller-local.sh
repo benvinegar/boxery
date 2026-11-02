@@ -215,12 +215,24 @@ if "$A" fork fk 'x;id' >/dev/null 2>&1; then bad "invalid fork name accepted"; e
 if "$A" new fk4 --from 'fk;id' >/dev/null 2>&1; then bad "bad --from accepted"; else ok "bad --from rejected"; fi
 for n in fk fk1 fk2 fk3; do "$A" rm "$n" >/dev/null 2>&1 || true; done
 
-# --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9)
+# --- concurrent grant/revoke must not corrupt the store or the guest state (P1 #9). Several rounds:
+# the store lock was once a `mkdir`, which uutils coreutils (Ubuntu 26.04) lets racers share.
 "$A" new w4 >/dev/null 2>&1
-for i in 1 2 3 4 5 6; do env "V$i=x" "$A" grant w4 "env:V$i" >/dev/null 2>&1 & done; wait
-[ "$(grep -c '^env' "$P/grants/w4")" = 6 ] && ok "6 parallel grants → 6 entries" || bad "grant store: $(cat "$P/grants/w4")"
-for i in 1 2 3 4 5 6; do "$A" revoke w4 "env:V$i" >/dev/null 2>&1 & done; wait
-[ ! -f "$P/grants/w4" ] && ok "6 parallel revokes → store empty" || bad "left: $(cat "$P/grants/w4" 2>/dev/null)"
+gr_ok=1 rv_ok=1
+for r in 1 2 3; do
+	for i in 1 2 3 4 5 6 7 8; do env "V$i=x" "$A" grant w4 "env:V$i" >/dev/null 2>&1 & done; wait
+	[ "$(grep -c '^env' "$P/grants/w4")" = 8 ] || { gr_ok=""; bad "round $r grant store: $(cat "$P/grants/w4")"; }
+	for i in 1 2 3 4 5 6 7 8; do "$A" revoke w4 "env:V$i" >"$tmp/revoke$i" 2>&1 & done; wait
+	[ ! -f "$P/grants/w4" ] || { rv_ok=""; bad "round $r left: $(cat "$P/grants/w4") revokes said: $(cat "$tmp"/revoke?)"; rm -f "$P/grants/w4"; }
+done
+[ -z "$gr_ok" ] || ok "8 parallel grants → 8 entries (3 rounds)"
+[ -z "$rv_ok" ] || ok "8 parallel revokes → store empty (3 rounds)"
+env V1=x "$A" grant w4 env:V1 >/dev/null 2>&1
+: >"$P/grants/.w4.lock"   # another writer holds the store
+"$A" revoke w4 all >/dev/null 2>&1 & sleep 0.3
+[ -f "$P/grants/w4" ] && ok "revoke all waits for the grant-store lock" || bad "revoke all ignored the lock"
+rm -f "$P/grants/.w4.lock"; wait
+[ ! -f "$P/grants/w4" ] && ok "revoke all, once the lock is free" || bad "revoke all left: $(cat "$P/grants/w4")"
 "$A" rm w4 >/dev/null 2>&1 || true
 
 # --- regression (code review P0 #1): args must not be re-parsed by the host shell
