@@ -142,19 +142,19 @@ ensure_isolation() { # DOM
 # NET FILTER GATEWAY (empty = remove) < domain XML > domain XML. Exits 1 (no output) if every interface
 # on NET already is as wanted: FILTER with DHCPSERVER=GATEWAY and DHCP learning, or no FILTER.
 isolation_rewrite() {
-	awk -v net="$1" -v name="$2" -v gw="$3" '
+	awk -v net="$1" -v name="$2" -v gw="$3" -v q="'" '
 		function flush(   n, i, ours, other, ok, out, skip) {
-			if (index(block, "<source network=\x27" net "\x27") == 0) { out_all = out_all block; return }
-			ours = index(block, "<filterref filter=\x27" name "\x27") > 0
+			if (index(block, "<source network=" q net q) == 0) { out_all = out_all block; return }
+			ours = index(block, "<filterref filter=" q name q) > 0
 			other = !ours && index(block, "<filterref ") > 0
-			ok = gw == "" ? !ours : (ours && index(block, "<parameter name=\x27DHCPSERVER\x27 value=\x27" gw "\x27/>") && index(block, "<parameter name=\x27CTRL_IP_LEARNING\x27 value=\x27dhcp\x27/>"))
+			ok = gw == "" ? !ours : (ours && index(block, "<parameter name=" q "DHCPSERVER" q " value=" q gw q "/>") && index(block, "<parameter name=" q "CTRL_IP_LEARNING" q " value=" q "dhcp" q "/>"))
 			if (other || ok) { out_all = out_all block; return }   # someone else filters it, or nothing to do
 			changed = 1; n = split(block, L, "\n"); out = ""
 			for (i = 1; i < n; i++) {
 				if (skip) { if (L[i] ~ /<\/filterref>/) skip = 0; continue }
-				if (index(L[i], "<filterref filter=\x27" name "\x27")) { if (L[i] !~ /\/>/) skip = 1; continue }
+				if (index(L[i], "<filterref filter=" q name q)) { if (L[i] !~ /\/>/) skip = 1; continue }
 				if (L[i] ~ /<\/interface>/ && gw != "")
-					out = out "      <filterref filter=\x27" name "\x27>\n        <parameter name=\x27CTRL_IP_LEARNING\x27 value=\x27dhcp\x27/>\n        <parameter name=\x27DHCPSERVER\x27 value=\x27" gw "\x27/>\n      </filterref>\n"
+					out = out "      <filterref filter=" q name q ">\n        <parameter name=" q "CTRL_IP_LEARNING" q " value=" q "dhcp" q "/>\n        <parameter name=" q "DHCPSERVER" q " value=" q gw q "/>\n      </filterref>\n"
 				out = out L[i] "\n"
 			}
 			out_all = out_all out
