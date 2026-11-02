@@ -640,6 +640,38 @@ abs_path() { # resolve a local path (file must exist)
 	echo "$d/$(basename "$1")"
 }
 
+real_path() { # PATH → PATH with every symlink resolved: readlink for the last component, cd -P for its directory (macOS has no readlink -f)
+	local p=$1 t i=0 d
+	while [ -L "$p" ]; do
+		i=$((i + 1)); [ $i -le 40 ] || return 1
+		t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac
+	done
+	d=$(CDPATH='' cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || return 1
+	printf '%s/%s\n' "${d%/}" "$(basename "$p")"
+}
+
+# Where keys and boxery's own state live (as vm_grant refuses them), one per line, as given and by
+# real path. Files are re-read on every apply, so a file grant whose path is outside these but that
+# now resolves into one (a symlink re-pointed after approval) is skipped; naming one directly is the user's call.
+grant_deny_dirs() {
+	local d f
+	{
+		for d in "$HOME/.ssh" "$HOME/.gnupg" "$HOME/.pi" "$HOME/.config/boxery" "$HOME"/.config/boxery?* "${BOXERY_CONF:-}" "$ROOT_DIR" "$CONF_DIR"; do printf '%s\n' "$d"; done
+		for f in "$REGISTRY"/*; do [ -f "$f" ] && [ ! -L "$f" ] && IFS= read -r d <"$f" && printf '%s\n' "$d"; done
+	} | while IFS= read -r d; do
+		d=${d%/}; [ -n "$d" ] || continue
+		printf '%s\n' "$d"
+		(CDPATH='' cd -P "$d" 2>/dev/null && pwd -P) || true
+	done
+}
+in_deny_dirs() { # PATH DIRS(lines) → is PATH one of them or inside one?
+	local d
+	while IFS= read -r d; do case $1 in "$d" | "$d"/*) return 0 ;; esac; done <<EOF
+$2
+EOF
+	return 1
+}
+
 valid_edge_host() { # DNS name with a dot; no IPs, ports, userinfo or paths (mirrors the proxy's check)
 	case $1 in "" | *[!a-z0-9.-]* | .* | *. | *..* | -* | *-) return 1 ;; *.*) ;; *) return 1 ;; esac
 	case ${1##*.} in *[!a-z]* | ?) return 1 ;; esac
@@ -811,13 +843,22 @@ put_file() {
 }
 EOF
 	if [ -f "$f" ]; then
+		deny=""
 		while IFS="$TAB" read -r kind a b; do
 			case $kind in
 			env) v=$(env_value "$a" "$b") || continue
 				printf 'put_env %s %s\n' "$a" "$(printf %s "$v" | base64 | tr -d '\n')" ;;
 			http) printf 'put_edge %s\n' "$a" ;;
 			file) [ -r "$a" ] || { warn "grant file:$a: not readable; skipped"; continue; }
-				printf 'put_file %s %s\n' "$(printf %q "$b")" "$(base64 <"$a" | tr -d '\n')" ;;
+				r=$(real_path "$a") || { warn "grant file:$a: cannot resolve its path; skipped"; continue; }
+				if [ "$r" != "$a" ]; then
+					[ -n "$deny" ] || deny=$(grant_deny_dirs)
+					if in_deny_dirs "$r" "$deny" && ! in_deny_dirs "$a" "$deny"; then
+						warn "grant file:$a: now leads through a symlink to $r, where keys or boxery's own state live; skipped (grant that path itself if you mean it)"; continue
+					fi
+				fi
+				# Read the real path just checked rather than following the link a second time.
+				printf 'put_file %s %s\n' "$(printf %q "$b")" "$(base64 <"$r" | tr -d '\n')" ;;
 			esac
 		done <"$f"
 	fi
