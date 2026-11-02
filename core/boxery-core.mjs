@@ -646,21 +646,30 @@ export const LOCAL_COPY_DISABLED =
 const isWithin = (p, dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
 /**
- * Paths a confined local: endpoint never reads or writes, even inside its root: boxery's own state
- * (BOXERY_CONF and other ~/.config/boxery* profiles, BOXERY_HOME, registered profile directories)
- * and the user's keys and agent credentials (~/.ssh, ~/.gnupg, ~/.pi). Each is given lexically and,
- * when it exists, by its real path.
+ * Paths no agent request reaches (a confined local: endpoint, even inside its root; a vm_grant file):
+ * boxery's own state (BOXERY_CONF and other ~/.config/boxery* profiles, BOXERY_HOME, registered
+ * profile directories) and the user's keys and agent credentials (~/.ssh, ~/.gnupg, ~/.pi). Each is
+ * given lexically and, when it exists, by its real path. → [{dir, keys}]: keys marks ~/.ssh and
+ * ~/.gnupg, whose use ssh-agent stands in for.
  */
-function copyDenied(extra = []) {
+function deniedDirs(extra = []) {
 	const home = homedir();
 	const config = path.join(home, ".config");
 	let profiles = [], hosts = [];
 	try { profiles = readdirSync(config).filter((n) => n.startsWith("boxery")).map((n) => path.join(config, n)); } catch {}
 	try { hosts = registeredHosts().map((h) => h.dir); } catch {}
-	const paths = [process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts,
-		...[".ssh", ".gnupg", ".pi"].map((d) => path.join(home, d)), ...extra].filter(Boolean).map((p) => path.resolve(p));
-	return [...new Set(paths.flatMap((p) => { try { return [p, realpathSync(p)]; } catch { return [p]; } }))];
+	const keys = [".ssh", ".gnupg"].map((d) => ({ dir: path.join(home, d), keys: true }));
+	const own = [process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts, path.join(home, ".pi"), ...extra]
+		.filter(Boolean).map((dir) => ({ dir, keys: false }));
+	const seen = new Set();
+	return [...keys, ...own].flatMap(({ dir, keys }) => {
+		const p = path.resolve(dir);
+		let real;
+		try { real = realpathSync(p); } catch {}
+		return [p, real].filter((d) => d && !seen.has(d) && seen.add(d)).map((d) => ({ dir: d, keys }));
+	});
 }
+const copyDenied = (extra) => deniedDirs(extra).map((d) => d.dir);
 
 /** realpath of `p`, whose last components may not exist yet. A dangling symlink is refused: a write would follow it. */
 function realPathAllowMissing(p) {
@@ -1002,7 +1011,10 @@ const underDir = (p, dir) => {
 
 /**
  * Validate a requested grant and resolve it to the exact spec `boxery grant` will store.
- * → {kind, spec, readonly?, var?, local?, remote?}. LOCAL paths resolve against localCwd (~ = home).
+ * → {kind, spec, readonly?, var?, local?, requested?, remote?}. LOCAL paths resolve against localCwd
+ * (~ = home), then to the real path, which is what gets stored: every apply re-reads the file, and a
+ * symlink left in the spec could be re-pointed after the user approved it. `requested` is the path
+ * the agent named, when it differs.
  */
 export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	const s = typeof spec === "string" ? spec.trim() : "";
@@ -1010,6 +1022,8 @@ export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	if (s === "ssh-agent") return { kind: "ssh-agent", spec: s };
 	if (s === "github") return { kind: "github", spec: s, readonly: !!readonly };
 	const env = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
+	// boxery's own settings, some of them its credentials (BOXERY_MCP_TOKEN drives every VM over HTTP MCP).
+	if (env?.[1].startsWith("BOXERY_")) throw new Error(`$${env[1]} is boxery's own setting and can't be requested: BOXERY_* variables configure boxery, and some are its credentials`);
 	if (env) return { kind: "env", spec: s, var: env[1] };
 	if (s.startsWith("http:")) throw new Error(`${s} needs a command, run on the user's machine, that prints the secret; only the user can add it (boxery grant VM ${s} --cmd '…'). For GitHub, request the github grant.`);
 	if (!s.startsWith("file:")) throw new Error(`unknown grant "${s}" (ssh-agent, env:VAR, file:LOCAL[=REMOTE] or github)`);
@@ -1027,23 +1041,27 @@ export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	}
 	if (!st.isFile()) throw new Error(`not a regular file: ${local}`);
 	if (st.size > 1024 * 1024) throw new Error(`file grants are limited to 1 MiB: ${local}`);
-	// Keys and boxery's own credentials (VM ssh keys, proxy tokens) are never requestable.
-	const home = homedir();
-	if ([path.join(home, ".ssh"), path.join(home, ".gnupg")].some((d) => underDir(real, d))) throw new Error(`${local} holds keys; request ssh-agent instead (the keys stay on the user's machine)`);
-	if ([BOXERY_HOME, ...registeredHosts().map((h) => h.dir)].some((d) => underDir(real, d))) throw new Error(`${local} is boxery's own configuration and can't be granted`);
+	// Keys, boxery's own credentials (VM ssh keys, proxy tokens) and agent logins are never requestable.
+	const shown = real === local ? local : `${local} (→ ${real})`;
+	// Listed here too because registeredHosts() throws on a broken registry: refuse rather than miss a profile.
+	const hit = deniedDirs(registeredHosts().map((h) => h.dir)).find((d) => isWithin(real, d.dir));
+	if (hit?.keys) throw new Error(`${shown} holds keys; request ssh-agent instead (the keys stay on the user's machine)`);
+	if (hit) throw new Error(`${shown} is inside ${hit.dir} (boxery's own configuration or the user's credentials) and can't be granted`);
 	// REMOTE is relative to /home/agent; accept ~/… and /home/agent/… spellings too.
 	let remote = eq < 0 ? `project/${path.basename(local)}` : rest.slice(eq + 1).replace(/^~\//, "").replace(/^\/home\/agent\//, "");
-	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + local)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to /home/agent)`);
-	return { kind: "file", spec: `file:${local}=${remote}`, local, remote };
+	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + real)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to /home/agent)`);
+	return { kind: "file", spec: `file:${real}=${remote}`, local: real, ...(real === local ? {} : { requested: local }), remote };
 }
 
+const realOr = (p) => { try { return realpathSync(p); } catch { return p; } };
+// A stored file grant counts by the file it reads now: the CLI (and older vm_grant) store paths as given.
 const grantedAlready = (g, grants) =>
 	g.kind === "ssh-agent"
 		? grants.some((x) => x.kind === "ssh-agent")
 		: g.kind === "env"
 			? grants.some((x) => x.kind === "env" && x.var === g.var)
 			: g.kind === "file"
-				? grants.some((x) => x.kind === "file" && x.local === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
+				? grants.some((x) => x.kind === "file" && realOr(x.local) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
 				: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
 
 /** ~/… for paths in the user's home: clients truncate long prompt lines. */
@@ -1055,7 +1073,7 @@ function grantPrompt(vm, host, g, reason) {
 	const what = {
 		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
 		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
-		file: [`file: ${tildePath(g.local)}`, `  → in the VM: ~/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
+		file: [`file: ${tildePath(g.local)}`, ...(g.requested ? [`  (the agent asked for ${tildePath(g.requested)}, which leads here through a symlink)`] : []), `  → in the VM: ~/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
 		github: [
 			`github${g.readonly ? " (read-only)" : ""}: git over https and the GitHub API, as this machine's \`gh auth token\`.`,
 			`The token stays on the VM host's proxy; the VM never holds it.${g.readonly ? " Only clone/fetch and GET requests are allowed." : " That includes git push and API writes."}`,

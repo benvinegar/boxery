@@ -73,6 +73,28 @@ if "$A" resize 'bad;name' --cpus 2 >/dev/null 2>&1; then bad "resize accepted an
 if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted"; else ok "invalid env name rejected"; fi
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
+# Every apply re-reads granted files: a symlink re-pointed after approval at keys or boxery's own
+# state is skipped (and its old copy removed); a key file the user names directly is still sent.
+G() { HOME=$tmp/home "$A" "$@"; }
+mkdir -p "$tmp/home/.pi/agent" "$tmp/benign"
+printf 'PLAIN=1\n' >"$tmp/plain.env"; printf 'BENIGN\n' >"$tmp/benign/id_ed25519"
+printf 'PRIVATE-SSH\n' >"$tmp/home/.ssh/id_ed25519"; printf 'MGMT-KEY\n' >"$BOXERY_CONF/mgmt_ed25519"; printf 'PI-AUTH\n' >"$tmp/home/.pi/agent/auth.json"
+ln -s "$tmp/plain.env" "$tmp/swap.env"; ln -s "$tmp/benign" "$tmp/kdir"
+G grant w1 "file:$tmp/swap.env=project/swap.env" "file:$tmp/kdir/id_ed25519=project/kd" >/dev/null 2>&1
+swap=$tmp/vms/w1/home/project/swap.env kd=$tmp/vms/w1/home/project/kd
+grep -q PLAIN "$swap" && grep -q BENIGN "$kd" && ok "file grants through symlinks are applied" || bad "symlinked file grant: $(cat "$swap" "$kd" 2>&1)"
+for target in "$tmp/home/.ssh/id_ed25519" "$BOXERY_CONF/mgmt_ed25519" "$tmp/home/.pi/agent/auth.json"; do
+	ln -sfn "$target" "$tmp/swap.env"
+	out=$(G grants w1 apply 2>&1)
+	if [[ $out == *"swap.env: now leads through a symlink"*skipped* ]] && ! grep -qs -e PRIVATE -e MGMT -e PI-AUTH "$swap"; then ok "re-pointed symlink to ${target#"$tmp"/} skipped"
+	else bad "re-pointed symlink to $target: $out / $(cat "$swap" 2>&1)"; fi
+done
+ln -sfn "$tmp/home/.ssh" "$tmp/kdir"
+out=$(G grants w1 apply 2>&1)
+[[ $out == *"kdir/id_ed25519: now leads through a symlink"*skipped* ]] &&! grep -qs PRIVATE "$kd" && ok "re-pointed directory symlink to ~/.ssh skipped" || bad "directory swap: $out / $(cat "$kd" 2>&1)"
+G grant w1 "file:$tmp/home/.ssh/id_ed25519.pub=project/me.pub" >/dev/null 2>&1
+grep -q AAAAme "$tmp/vms/w1/home/project/me.pub" && ok "a key file the user grants by name is still applied" || bad "explicit ~/.ssh grant not applied"
+G revoke w1 "file:$tmp/swap.env" "file:$tmp/kdir/id_ed25519" "file:$tmp/home/.ssh/id_ed25519.pub" >/dev/null 2>&1
 printf '#!/bin/sh\nprintf "pi\\t2\\t1700000000\\t1\\nweird \\"name\\t1\\t1700000001\\t0\\n"\n' >"$tmp/bin/tmux"; chmod +x "$tmp/bin/tmux"
 "$A" sessions w1 --json | jq -e '. == [{name: "pi", windows: 2, created: 1700000000, attached: true}, {name: "weird \"name", windows: 1, created: 1700000001, attached: false}]' >/dev/null && ok "sessions --json (names escaped)" || bad "sessions --json: $("$A" sessions w1 --json 2>&1)"
 printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/tmux"

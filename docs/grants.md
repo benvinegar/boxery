@@ -45,7 +45,8 @@ The agent's reason: "pnpm install got a 401 from the registry"
 If you allow it, the tool runs `boxery grant` for you, which applies the grant the same way. If you decline, nothing changes, and the agent is told not to ask again.
 
 - **The prompt comes from boxery, not the agent.** In MCP clients it's an [elicitation](https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation), and in pi it's a confirm dialog. Neither is a tool call the agent can answer. A client that can't show one (no form elicitation, a plain-JSON HTTP call, pi in print mode) gets no prompt: the agent gets the exact `boxery grant …` command to pass on to you.
-- **Agents can request `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg` or boxery's own config directories. An `env:VAR` request needs `VAR` set where boxery runs.
+- **Agents can request `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg`, `~/.pi` (your agent logins) or boxery's own config directories (`~/.config/boxery*`, `$BOXERY_CONF`, `~/.boxery` and every registered host profile), nor `env:BOXERY_*` variables (`BOXERY_MCP_TOKEN` drives every VM). An `env:VAR` request needs `VAR` set where boxery runs.
+- **A requested file is granted by its real path.** If the agent asks for a symlink, the prompt shows the file it leads to, and that is what's stored, so re-pointing the link afterwards changes nothing.
 - One prompt at a time per session. Something already granted is reported without a prompt.
 - The agent's reason is shown last and labelled as the agent's. Judge the request by the lines above it.
 - Claude Code shows the first three lines and folds the rest; expand it to read the warning and the reason.
@@ -67,6 +68,7 @@ This is the way to get credentials into a VM on another [host](hosts.md). Grants
 - **env / file**: the local store (`~/.boxery/profiles/HOST/grants/NAME`) holds **names and paths only**. Values are read when grants are applied, then pushed over ssh into `/run/user/<uid>/boxery` in the VM. That's tmpfs, so values never touch the VM's disk and disappear on reboot.
   - Login and interactive shells source the env vars, and so does `vm_bash`.
   - Files are symlinked into place and added to `.git/info/exclude`.
+  - Files are read afresh on every apply. One whose path now leads through a symlink into `~/.ssh`, `~/.gnupg`, `~/.pi` or boxery's own state is skipped with a warning, and its old copy is removed from the VM. A file there that you grant by its own path is still sent.
 - **Reconciled on every apply.** Grants are re-applied on `grant`, `revoke`, `new`, `start`, `revert`, `attach`, `ssh`, and when pi selects the VM. Each apply makes the VM match the current grants exactly, so revoked values are deleted.
 - `boxery agent-forward NAME on|off` still works as an alias for `grant`/`revoke NAME ssh-agent`.
 

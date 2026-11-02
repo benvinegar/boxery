@@ -92,8 +92,8 @@ exit 0
 });
 
 /** Start the stdio server, return a client with call(method, params). */
-function client(args = []) {
-	const p = spawn(process.execPath, [SERVER, ...args], { env, stdio: ["pipe", "pipe", "ignore"] });
+function client(args = [], extraEnv = {}) {
+	const p = spawn(process.execPath, [SERVER, ...args], { env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "ignore"] });
 	let buf = "";
 	const waiting = new Map();
 	const notifications = [];
@@ -619,8 +619,8 @@ describe("leases", () => {
 describe("grant requests (vm_grant)", () => {
 	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
 	const grantCalls = () => calls().filter((l) => l.startsWith("grant "));
-	const elicitClient = async (protocolVersion = "2025-06-18", elicitation = {}) => {
-		const c = client(["--vm", "fakevm"]);
+	const elicitClient = async (protocolVersion = "2025-06-18", elicitation = {}, extraEnv = {}) => {
+		const c = client(["--vm", "fakevm"], extraEnv);
 		await c.call("initialize", { protocolVersion, capabilities: { elicitation }, clientInfo: { name: "t", version: "0" } });
 		return c;
 	};
@@ -675,13 +675,27 @@ describe("grant requests (vm_grant)", () => {
 	});
 
 	test("file specs resolve to an absolute local path and a /home/agent-relative remote", async () => {
-		const f = path.join(dir, "auth.ini");
+		const f = path.join(realpathSync(dir), "auth.ini");
 		writeFileSync(f, "//registry/:_authToken=x\n", { mode: 0o644 });
 		c.onRequest = () => ({ action: "accept" });
 		const r = await c.tool("vm_grant", { spec: `file:${f}=~/.config/pnpm/auth.ini`, reason: "pnpm install got 401" });
 		assert.equal(r.isError, false, r.content[0].text);
 		assert.equal(grantCalls().at(-1), `grant fakevm file:${f}=.config/pnpm/auth.ini`);
 		assert.match(c.requests.at(-1).params.message, new RegExp(`file: ${f}\n  → in the VM: ~/\\.config/pnpm/auth\\.ini\n`));
+	});
+
+	test("a symlink is granted, and shown, as the file it leads to", async () => {
+		const proj = path.join(realpathSync(dir), "linked-proj");
+		mkdirSync(proj, { recursive: true });
+		writeFileSync(path.join(proj, "real.env"), "A=1\n");
+		symlinkSync("real.env", path.join(proj, ".env"));
+		c.onRequest = () => ({ action: "accept" });
+		const r = await c.tool("vm_grant", { spec: `file:${proj}/.env`, reason: "x" });
+		assert.equal(r.isError, false, r.content[0].text);
+		assert.equal(grantCalls().at(-1), `grant fakevm file:${proj}/real.env=project/.env`, "the real path is stored; the remote keeps the requested name");
+		const msg = c.requests.at(-1).params.message;
+		assert.ok(msg.includes(`file: ${proj}/real.env\n  (the agent asked for ${proj}/.env, which leads here through a symlink)\n  → in the VM: ~/project/.env\n`), msg);
+		assert.ok(msg.includes(`revoke fakevm file:${proj}/real.env`), msg);
 	});
 
 	test("refused before any prompt: boxery's own files, http: grants, unset env vars, bad specs", async () => {
@@ -695,10 +709,42 @@ describe("grant requests (vm_grant)", () => {
 		assert.match(await err({ spec: "file:/no/such/file" }), /no such local file/);
 		assert.match(await err({ spec: `file:${path.join(dir, "auth.ini")}=../../etc/x` }), /invalid remote path/);
 		assert.match(await err({ spec: "http:api.example.com" }), /needs a command[\s\S]*only the user can add it/);
-		assert.match(await err({ spec: "env:BOXERY_SURELY_UNSET" }), /isn't set where boxery runs[\s\S]*boxery --host local grant fakevm env:BOXERY_SURELY_UNSET --cmd/);
+		assert.match(await err({ spec: "env:SURELY_UNSET_FOR_BOXERY" }), /isn't set where boxery runs[\s\S]*boxery --host local grant fakevm env:SURELY_UNSET_FOR_BOXERY --cmd/);
 		assert.match(await err({ spec: "ssh-agent", readonly: true }), /readonly applies only to the github grant/);
 		assert.match(await err({ spec: "everything" }), /unknown grant/);
 		assert.equal(c.requests.length, n, "no prompt for a request that can't be granted");
+	});
+
+	test("keys, boxery's state and agent logins are refused, also through a symlink; so are boxery's env vars", async () => {
+		const home = mkdtempSync(path.join(dir, "grant-home-"));
+		const conf = path.join(dir, "grant-hostconf");
+		const files = [".ssh/id_ed25519", ".gnupg/private-keys-v1.d/k.key", ".config/boxery/mgmt_ed25519", ".config/boxery/tokens.json", ".config/boxery/proxy.env", ".config/boxery-work/proxy.env", ".pi/agent/auth.json"].map((f) => path.join(home, f));
+		for (const f of [...files, path.join(conf, "proxy.env")]) {
+			mkdirSync(path.dirname(f), { recursive: true });
+			writeFileSync(f, "secret\n");
+		}
+		mkdirSync(path.join(home, "proj"));
+		symlinkSync(path.join(home, ".config/boxery/tokens.json"), path.join(home, "proj/tokens.json"));
+		symlinkSync(path.join(home, ".ssh"), path.join(home, "proj/keys"));
+		const h = await elicitClient("2025-06-18", {}, { HOME: home, BOXERY_CONF: conf, BOXERY_MCP_TOKEN: "t0ken" });
+		h.onRequest = () => ({ action: "accept" });
+		const before = grantCalls().length;
+		const err = async (spec) => {
+			const r = await h.tool("vm_grant", { spec, reason: "x" });
+			assert.equal(r.isError, true, `${spec}: ${r.content[0].text}`);
+			return r.content[0].text;
+		};
+		try {
+			for (const f of files.slice(0, 2)) assert.match(await err(`file:${f}`), /holds keys; request ssh-agent instead/);
+			for (const f of [...files.slice(2), path.join(conf, "proxy.env"), path.join(env.BOXERY_HOME, "ssh_config")]) assert.match(await err(`file:${f}`), /boxery's own configuration or the user's credentials\) and can't be granted/);
+			assert.match(await err("file:~/proj/tokens.json"), /proj\/tokens\.json \(→ .*\/\.config\/boxery\/tokens\.json\) is inside/);
+			assert.match(await err("file:~/proj/keys/id_ed25519"), /holds keys/);
+			assert.match(await err("env:BOXERY_MCP_TOKEN"), /\$BOXERY_MCP_TOKEN is boxery's own setting and can't be requested/);
+			assert.equal(h.requests.length, 0, "no prompt for any of them");
+			assert.equal(grantCalls().length, before);
+		} finally {
+			h.close();
+		}
 	});
 
 	test("something already granted is reported without a prompt", async () => {
