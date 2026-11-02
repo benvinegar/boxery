@@ -54,22 +54,11 @@ It works with every MCP-capable coding agent, including **Claude Code**, **Codex
 Paste this into Claude Code, Codex or any coding agent on the machine you want to use:
 
 ```text
-Install boxery (https://github.com/benvinegar/boxery) on this machine and spin up a VM for me.
-
-1. Read https://raw.githubusercontent.com/benvinegar/boxery/master/docs/install.md
-2. Pick the backend for this machine: Lima on macOS, libvirt on Linux with /dev/kvm.
-   If neither fits, stop and ask me whether to use exe.dev or boat.dev.
-3. Install the prerequisites and `npm install -g boxery-vm`, then run
-   `boxery-host init` (with the right --backend) and `boxery-host build-base`,
-   then `boxery setup local`. Ask me before running anything with sudo.
-4. Create a VM with `boxery new demo`, run `uname -a` in it with `boxery run`,
-   and open its desktop with `boxery desktop demo`.
-5. Finally, connect yourself to boxery with `npx add-mcp boxery-vm`
-   (or `pi install npm:boxery-vm` if you are pi), and tell me to restart you
-   so the vm_* tools load.
+Read https://raw.githubusercontent.com/benvinegar/boxery/master/docs/install.md and set up boxery on this machine.
+Then spin up a VM with `boxery new demo` and open its desktop.
 ```
 
-`build-base` takes about 3 minutes. To do it by hand instead, see the [Quick start](#quick-start).
+To do it by hand instead, see the [Quick start](#quick-start).
 
 ## Where the VMs run
 
