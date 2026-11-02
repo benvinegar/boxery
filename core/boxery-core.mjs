@@ -4,7 +4,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -637,23 +637,139 @@ export async function editTool(vm, { path: p, edits, oldText, newText }, { signa
 
 // ---------------------------------------------------------------- copy
 
-export async function copyTool({ from, to }, { current, localCwd = process.cwd(), signal } = {}) {
+// A server that runs on the control plane (HTTP MCP) must not hand an agent that machine's files:
+// boxery's state there holds every VM's proxy token, the LLM keys and the management ssh key.
+export const LOCAL_COPY_DISABLED =
+	"vm_copy local: endpoints are disabled on this server: it runs on the boxery control plane, and local: would be that machine's files (where boxery keeps its credentials), not yours. " +
+	"Copy between VMs (NAME:/path), or ask the user to start the server with --copy-root DIR to allow local: paths inside DIR.";
+
+const isWithin = (p, dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+
+/**
+ * Paths a confined local: endpoint never reads or writes, even inside its root: boxery's own state
+ * (BOXERY_CONF and other ~/.config/boxery* profiles, BOXERY_HOME, registered profile directories)
+ * and the user's keys and agent credentials (~/.ssh, ~/.gnupg, ~/.pi). Each is given lexically and,
+ * when it exists, by its real path.
+ */
+function copyDenied(extra = []) {
+	const home = homedir();
+	const config = path.join(home, ".config");
+	let profiles = [], hosts = [];
+	try { profiles = readdirSync(config).filter((n) => n.startsWith("boxery")).map((n) => path.join(config, n)); } catch {}
+	try { hosts = registeredHosts().map((h) => h.dir); } catch {}
+	const paths = [process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts,
+		...[".ssh", ".gnupg", ".pi"].map((d) => path.join(home, d)), ...extra].filter(Boolean).map((p) => path.resolve(p));
+	return [...new Set(paths.flatMap((p) => { try { return [p, realpathSync(p)]; } catch { return [p]; } }))];
+}
+
+/** realpath of `p`, whose last components may not exist yet. A dangling symlink is refused: a write would follow it. */
+function realPathAllowMissing(p) {
+	const missing = [];
+	for (let cur = p; ; cur = path.dirname(cur)) {
+		try {
+			return path.join(realpathSync(cur), ...missing.reverse());
+		} catch (e) {
+			if (e.code !== "ENOENT" || cur === path.dirname(cur)) throw e;
+			let link = false;
+			try { link = lstatSync(cur).isSymbolicLink(); } catch {}
+			if (link) throw new Error(`${cur} is a symlink to a missing path`);
+			missing.push(path.basename(cur));
+		}
+	}
+}
+
+/** Validate a --copy-root directory → its real path. */
+export function copyRoot(dir, { deny = [] } = {}) {
+	if (typeof dir !== "string" || !dir) throw new Error("--copy-root needs a directory");
+	let real;
+	try {
+		real = realpathSync(path.resolve(dir.replace(/^~(?=\/|$)/, homedir())));
+	} catch {
+		throw new Error(`--copy-root: no such directory: ${dir}`);
+	}
+	if (!statSync(real).isDirectory()) throw new Error(`--copy-root: not a directory: ${dir}`);
+	if (copyDenied(deny).some((d) => isWithin(real, d))) throw new Error(`--copy-root: ${real} is inside boxery's own configuration or a key directory`);
+	return real;
+}
+
+/**
+ * A local: policy confined to `root` (a real directory path). check(p) takes a real path and throws
+ * unless it is inside the root and neither inside nor containing a denied path.
+ */
+function confineLocal({ root, deny = [] }) {
+	const denied = copyDenied(deny);
+	const check = (real, shown = real) => {
+		if (!isWithin(real, root)) throw new Error(`local:${shown} is outside the copy root ${root}`);
+		const hit = denied.find((d) => isWithin(real, d) || isWithin(d, real));
+		if (hit) throw new Error(`local:${shown} is or holds ${hit} (boxery's own configuration or keys), which vm_copy never copies`);
+	};
+	const resolve = (p) => {
+		if (String(p).split("/").includes("..")) throw new Error(`local:${p}: ".." is not allowed in local: paths on this server`);
+		return path.resolve(root, String(p).replace(/^~(?=\/|$)/, homedir()));
+	};
+	return {
+		root,
+		check,
+		// The tar producer archives a symlink named on its command line as a link, so the directory
+		// it runs in must be real; the entry itself is checked by its target too.
+		source(p) {
+			const lexical = resolve(p);
+			let real, dir;
+			try {
+				real = realpathSync(lexical);
+				dir = realpathSync(path.dirname(lexical));
+			} catch {
+				throw new Error(`local:${p}: no such file or directory`);
+			}
+			const named = path.join(dir, path.basename(lexical));
+			check(named, p);
+			check(real, p);
+			return named;
+		},
+		// The destination may not exist yet; its existing part must resolve inside the root.
+		destination(p, basename) {
+			const real = realPathAllowMissing(resolve(p));
+			let isDir = false;
+			try { isDir = statSync(real).isDirectory(); } catch {}
+			check(real, p);
+			if (isDir) check(path.join(real, basename), p);
+			return real;
+		},
+	};
+}
+
+/**
+ * vm_copy. `local` limits local: endpoints: undefined (any path this process can reach; the CLI, pi
+ * and stdio MCP run on the user's own machine), false (refused), or {root, deny} (confined to root:
+ * realpath-checked in both directions, no "..", nothing of boxery's own or the user's keys, and VM →
+ * local copies never merge into or replace an existing directory, so they can't write through a symlink).
+ */
+export async function copyTool({ from, to }, { current, localCwd = process.cwd(), local, signal } = {}) {
 	const host = currentHost();
 	const src = { host, ...parseLoc(from, current) };
 	const dst = { host, ...parseLoc(to, current) };
+	if (local === false && (!src.vm || !dst.vm)) throw new Error(LOCAL_COPY_DISABLED);
+	const confined = local ? confineLocal(local) : null;
 	const localAbs = (s) => path.resolve(localCwd, String(s).replace(/^~(?=\/|$)/, homedir()));
 	// Resolve BOTH endpoints and SSH profiles before creating staging directories or starting work.
 	// The stream transport never consults ambient host/session state, including during cleanup.
-	const endpoint = (loc) => {
-		if (!loc.vm) return { path: localAbs(loc.path), label: "local" };
+	const endpoint = (loc, basename) => {
+		if (!loc.vm) {
+			if (!confined) return { path: localAbs(loc.path), label: "local" };
+			// Re-checked by the transport where it stages and commits (the tree may change meanwhile).
+			return basename === undefined
+				? { path: confined.source(loc.path), label: "local" }
+				: { path: confined.destination(loc.path, basename), label: "local", confine: (real) => confined.check(real) };
+		}
 		assertName(loc.vm);
 		if (!existsSync(loc.host.sshConf)) throw new Error(`boxery not set up (${loc.host.sshConf} missing); run: boxery setup user@host`);
 		return { path: loc.path, vm: loc.vm, sshConf: loc.host.sshConf, label: `${loc.host.name}/${loc.vm}` };
 	};
-	const source = endpoint(src), destination = endpoint(dst);
+	const source = endpoint(src);
+	const destination = endpoint(dst, path.posix.basename(source.path));
 	const bytes = await streamCopy(source, destination, { signal });
-	const fmt = (l) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${l.vm ? l.path : localAbs(l.path)}`;
-	return { text: `copied ${fmt(src)} → ${fmt(dst)} (${bytes} bytes tar)` };
+	const fmt = (l, e) => `${l.vm ? `${l.host.name}/${l.vm}` : "local"}:${e.path}`;
+	return { text: `copied ${fmt(src, source)} → ${fmt(dst, destination)} (${bytes} bytes tar)` };
 }
 
 // ---------------------------------------------------------------- computer use

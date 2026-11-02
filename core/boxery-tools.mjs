@@ -3,8 +3,9 @@
 //
 // Entry: { name, title, description, parameters (plain JSON Schema, incl. `vm`), annotations (MCP
 // hints), outputSchema? (MCP structuredContent), run(vm, args, ctx) → {text, image?, structured?, isError?} }.
-// ctx: { signal, current, localCwd, progress? }. progress(message) reports a status line while the
-// tool runs (MCP progress notifications); front-ends without it pass nothing.
+// ctx: { signal, current, localCwd, localCopy?, progress? }. progress(message) reports a status line while the
+// tool runs (MCP progress notifications); front-ends without it pass nothing. localCopy limits vm_copy's
+// local: endpoints (see copyTool); front-ends that run on the user's own machine pass nothing.
 //   engine: pi runs this tool with its own built-in engine (same rendering/truncation as bash, read, …)
 //   noVm:   the front-end does not resolve a VM; the tool gets every argument, `vm` included
 //           (vm_copy, vm_manage, vm_info, vm_lease)
@@ -122,7 +123,7 @@ export const TOOLS = [
 			"Never use it for credentials (tokens, .npmrc, auth files, .env): a copy lands on the VM's disk and in its snapshots. Request them with vm_grant.",
 		parameters: obj({ from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
 		annotations: { destructiveHint: true, openWorldHint: false },
-		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, localCwd: x.localCwd, signal: x.signal }),
+		run: (_vm, a, x) => core.copyTool(a, { current: a.vm ?? x.current, localCwd: x.localCwd, local: x.localCopy, signal: x.signal }),
 	},
 	{
 		name: "vm_screenshot",

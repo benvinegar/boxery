@@ -78,7 +78,7 @@ VM (Ubuntu 24.04; XFCE desktop unless --headless)
 | Cloud | laptop (stdio) | the laptop or any always-on box | exe.dev, reached through supervised ssh tunnels |
 | Several hosts | one MCP server / controller | each registered with `boxery host add` | per host ([hosts.md](docs/hosts.md)) |
 
-In HTTP mode "local" means the machine running MCP: `vm_copy local:…` and grant values come from that server ([#68](https://github.com/benvinegar/boxery/issues/68) covers confining this).
+In HTTP mode "local" means the machine running MCP: grant values come from that server, and `vm_copy local:…` is refused unless `--copy-root DIR` confines it to one directory there ([MCP server](docs/mcp.md#b-streamable-http-on-the-host-over-tailscale)).
 
 ## How a tool call flows
 
