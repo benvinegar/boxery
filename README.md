@@ -6,14 +6,14 @@
 </h1>
 
 <p align="center">
-  <strong>Self-serve VMs for any coding agent, on any host.</strong><br>
-  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux VMs on your Mac, your own server, or the cloud. A control plane you run keeps your credentials, grants and leases.
+  <strong>Give your coding agent its own Linux computers, hosted anywhere.</strong><br>
+  Claude Code, Codex and any MCP agent can create, fork and throw away full Linux desktop VMs on your own machine, a remote server, or the cloud. Your credentials stay on a host you run.
 </p>
 
 <p align="center">
   <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Backends" src="https://img.shields.io/badge/backends-Lima%20%7C%20libvirt%20%7C%20exe.dev%20(experimental)-555">
+  <img alt="Backends" src="https://img.shields.io/badge/backends-Lima%20%7C%20libvirt%20%7C%20exe.dev%20%7C%20boat.dev%20(experimental)-555">
 </p>
 
 <p align="center">
@@ -40,32 +40,53 @@ It works with every MCP-capable coding agent, including **Claude Code**, **Codex
 
 ## Where the VMs run
 
-Pick a backend per host. Agents see the same tools on all of them, and one MCP server can [route across several hosts](docs/hosts.md) at once.
+boxery has two parts: the **[boxery host](#the-boxery-host)**, a machine you run that keeps your credentials, grants and leases, and the **VMs** your agent drives. The host can run the VMs itself if it has a hypervisor, or drive VMs in the cloud. Pick where you want the VMs to run:
 
-| Where | Backend | Status |
-|---|---|---|
-| Your Mac | [Lima](docs/install.md#macos-host-lima) | Stable |
-| A Linux box with KVM, local or remote | [libvirt](docs/install.md#linux-host-libvirtkvm) | Stable, fastest |
-| A Linux box with KVM, without libvirt | [Cloud Hypervisor](docs/install.md#linux-host-cloud-hypervisor-experimental) | Experimental |
-| The cloud, no hardware needed | [exe.dev](docs/install.md#exedev-experimental) | Experimental |
+| VMs run on | The boxery host runs on | Backend | Status |
+|---|---|---|---|
+| Your Mac | The same Mac | [`lima`](docs/install.md#macos-host-lima) | Stable |
+| A physical Linux machine (KVM) | The same machine | [`libvirt`](docs/install.md#linux-host-libvirtkvm), [`cloud-hypervisor`](docs/install.md#linux-host-cloud-hypervisor-experimental) | libvirt: stable, fastest. Cloud Hypervisor: experimental |
+| exe.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. VPS) | [`exe`](docs/install.md#exedev-experimental) | Experimental |
+| boat.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. VPS) | [`boat`](docs/install.md#boatdev-experimental) | Experimental |
 
-More cloud backends are coming. The [backend contract](host/backends/README.md) is a single bash file, so adding a new provider is a self-contained job.
+**Which one?**
+
+- **To try it out**, use the machine you're on: Lima on a Mac, libvirt on a Linux desktop or laptop. Everything stays local.
+- **For the fastest VMs**, use a physical Linux machine: a home server, an old desktop, or a dedicated server. A VPS works only if it offers nested virtualization (check for `/dev/kvm`), and most don't.
+- **With no hardware of your own**, run the VMs on exe.dev or boat.dev. The host can stay on your local machine, but it keeps a tunnel open to each VM and agents lose their LLM while it sleeps, so for long-running work put it on an always-on machine such as a small VPS.
+
+Agents see the same tools on every backend. One MCP server can [route across several hosts](docs/hosts.md) at once, and one machine can run [two backends side by side](docs/install.md#a-second-backend-on-the-same-machine). More cloud backends are coming. The [backend contract](host/backends/README.md) is a single bash file, so adding a new provider is a self-contained job.
+
+## The boxery host
+
+The host is the part of boxery you run yourself (the `boxery-host` command). Your agent's `vm_*` tools reach it over ssh, and it drives the VMs. It exists because **the VMs are untrusted**: agents run arbitrary code in them, install packages and browse the web. So anything secret or long-lived stays one step away, on the host.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/host-dark.svg">
+    <img src="docs/host-light.svg" alt="Coding agents on your machine reach the trusted boxery host over ssh. The host holds your real LLM keys and API tokens and runs the credential proxy, grants, leases and pool, and images and forks. It creates, forks and wipes untrusted VMs on Lima, libvirt, exe.dev or boat.dev, and each VM holds only a revocable token that the proxy swaps for your real key." width="680">
+  </picture>
+</p>
+
+- **Your credentials never enter a VM.** Agents running inside a VM call LLMs with a revocable per-VM token, and the host's proxy swaps in your real key. Remove the VM and its token is revoked. [Credential proxy →](docs/security.md#credential-proxy)
+- **Access is granted, never assumed.** A VM gets nothing by default. Grant it specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, or particular env vars and files. [Grants →](docs/grants.md)
+- **Many agents, one pool.** The host hands out exclusive, expiring leases and wipes each VM back to a clean image when its lease ends. [Pool →](docs/pool.md)
+- **Backends stay simple.** The host owns images, snapshots, forks and leases, and a backend only creates, copies and deletes VMs. That's why your agent sees the same tools on every backend, and why a new provider is a single bash file. [Backends →](host/backends/README.md)
+
+The host runs on macOS or Linux, on your own machine or a remote one. Every VM is reachable as `NAME.boxery` through it, so `ssh demo.boxery`, VS Code Remote-SSH and Zed work too. More detail: [security model](docs/security.md) · [architecture](ARCHITECTURE.md).
 
 ## Why boxery
 
-- **Same tools on every backend.** Move from your Mac to a KVM server to exe.dev without changing prompts, tools or workflow.
-- **One MCP server, many hosts.** Keep quick work on your Mac, heavy work on a KVM box, and burst to the cloud, all from one server. [Named hosts →](docs/hosts.md)
-- **Credentials stay on the control plane, even with cloud VMs.** VMs never see your LLM keys. Each VM gets a revocable token, and a proxy on the host swaps in the real credential.
-- **Grant access deliberately.** Each VM gets only what you grant it: specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, specific env vars or files. Grants are off by default.
+- **Same tools on every backend.** Move from your local machine to a Linux server to exe.dev or boat.dev without changing prompts, tools or workflow.
+- **One MCP server, many hosts.** Keep quick work on your local machine, heavy work on a Linux server, and burst to the cloud, all from one server. [Named hosts →](docs/hosts.md)
 - **Fork a running VM.** Copy a VM mid-task into several independent VMs so an agent can try three fixes in parallel and keep the one that works. Snapshots and forks are built on one image primitive that every backend implements. [Snapshots & forks →](docs/cli.md#snapshots-and-forks)
 - **Fast, disposable desktops.** On libvirt, a new Ubuntu 24.04 + XFCE VM takes about 13 s, a snapshot about 1 s without pausing the VM, and a fork into several VMs 15–25 s. Tasks that need no GUI can use `boxery new NAME --headless`: no desktop, and no image build needed. [Headless VMs →](docs/cli.md#lifecycle)
 - **Real computer use.** Screenshots, clicks, typing, and Playwright against Chrome on the VM's desktop. You can watch it all in your browser over noVNC.
-- **Share a pool safely.** Several agents can lease VMs from a shared pool with exclusive, expiring leases. A VM is wiped back to a clean image when its lease ends.
 - **A lightweight controller.** The controller is bash 3.2 + ssh, so it runs on stock macOS.
 
 ## Quick start
 
-**1. Set up a host.** Choose one ([full install guide](docs/install.md)):
+**1. Set up the boxery host.** Choose one ([full install guide](docs/install.md)):
 
 ```bash
 # Your Mac (Lima)
@@ -76,17 +97,24 @@ boxery setup local
 ```
 
 ```bash
-# A Linux box with KVM and libvirt; run these on the box
+# A physical Linux machine (KVM) with libvirt; run these on that machine
 npm install -g boxery-vm
 boxery-host init && boxery-host build-base
-# then on your laptop:
-npm install -g boxery-vm && boxery setup you@my-host
+boxery setup local    # if you work on this machine
+# or, from the machine you work on: npm install -g boxery-vm && boxery setup you@my-host
 ```
 
 ```bash
-# exe.dev (experimental); the control plane runs on your Mac or any Linux box
+# Cloud VMs on exe.dev (experimental); the host runs on your local machine or any remote machine
 npm install -g boxery-vm
 boxery-host init --backend exe && boxery-host build-base
+boxery setup local
+```
+
+```bash
+# Cloud VMs on boat.dev (experimental); same, with a boat API key
+npm install -g boxery-vm
+BOAT_API_KEY=boat_… boxery-host init --backend boat && boxery-host build-base
 boxery setup local
 ```
 
@@ -152,9 +180,8 @@ Every integration exposes the same tools:
 | Tool | What it does |
 |---|---|
 | `vm_bash` `vm_read` `vm_write` `vm_edit` | Shell and files in the VM, with the same semantics as pi's built-ins |
-| `vm_jobs` | Long-running commands in the background: start, list, read logs, wait. Jobs survive disconnects |
+| `vm_jobs` | Long-running commands in the background: start, list, read logs, wait, kill, and get the real exit code. Jobs survive disconnects |
 | `vm_copy` | Copy between your machine and VMs, or from one VM to another |
-| `vm_jobs` | Background jobs for long commands: start, poll, kill, get the real exit code |
 | `vm_screenshot` `vm_click` `vm_type` `vm_key` `vm_scroll` | Computer use on the XFCE desktop |
 | `vm_browser` | Playwright code against Chrome on that desktop |
 | `vm_manage` | Create, fork, remove, start/stop, resize, snapshot, revert, and switch VMs |
@@ -170,21 +197,6 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
   <sub>A VM's desktop, watched over noVNC while a laptop agent drives Chrome with <code>vm_browser</code>.</sub>
 </p>
 
-## How it works
-
-```
- your laptop                     control plane (boxery-host)           VMs: Ubuntu 24.04 + XFCE
-┌─────────────────────┐   ssh   ┌─────────────────────────────┐       ┌─────────────────────────┐
-│ Claude Code · Codex │────────►│ VM lifecycle, images, forks │──────►│ Lima      on your Mac   │
-│ Cursor · pi · …     │         │ leases · grants             │──────►│ libvirt   on a KVM box  │
-│   └ vm_* tools      │         │ boxery-proxy: per-VM token  │──────►│ exe.dev   in the cloud  │
-│ boxery CLI          │         │   → real LLM credentials    │       │ …more coming            │
-│ browser ◄── noVNC ──┼─────────┤                             │       └─────────────────────────┘
-└─────────────────────┘         └─────────────────────────────┘
-```
-
-The control plane runs on any Linux box or Mac, including your laptop. It owns everything that has to stay trusted, such as credentials, grants and leases. A backend only creates, copies and deletes VMs. Everything goes over ssh. VMs are reached as `NAME.boxery` through the host, so `ssh demo.boxery`, VS Code Remote-SSH and Zed work too. More detail: [credential proxy](docs/security.md#credential-proxy) · [architecture](ARCHITECTURE.md) · [backends](host/backends/README.md).
-
 ## Documentation
 
 | | |
@@ -193,7 +205,7 @@ The control plane runs on any Linux box or Mac, including your laptop. It owns e
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
-| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, and the backend contract |
+| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
 | [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
@@ -202,7 +214,7 @@ The control plane runs on any Linux box or Mac, including your laptop. It owns e
 
 ## Status
 
-boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap) lists what's next: profiles, network isolation, per-VM budgets.
+boxery is young and moves fast. It's used daily on a single host, and CI covers the controller on Linux and macOS (bash 3.2). The exe.dev, boat.dev and Cloud Hypervisor backends are experimental. Expect rough edges. The [roadmap](ARCHITECTURE.md#roadmap) lists what's next: profiles, network isolation, per-VM budgets.
 
 ## Contributing
 
