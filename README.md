@@ -77,7 +77,7 @@ The host is the part of boxery you run yourself (the `boxery-host` command). You
 </p>
 
 - **Your credentials never enter a VM.** Agents running inside a VM call LLMs with a revocable per-VM token, and the host's proxy swaps in your real key. Remove the VM and its token is revoked. [Credential proxy →](docs/security.md#credential-proxy)
-- **Access is granted, never assumed.** A VM gets nothing by default. Grant it specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, or particular env vars and files. [Grants →](docs/grants.md)
+- **Access is granted, never assumed.** A VM gets nothing by default, not even an LLM. Grant it LLM providers (`llm:chatgpt`, …), specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, or particular env vars and files. [Grants →](docs/grants.md)
 - **Many agents, one pool.** The host hands out exclusive, expiring leases and wipes each VM back to a clean image when its lease ends. [Pool →](docs/pool.md)
 - **Backends stay simple.** The host owns images, snapshots, forks and leases, and a backend only creates, copies and deletes VMs. That's why your agent sees the same tools on every backend, and why a new provider is a single bash file. [Backends →](host/backends/README.md)
 
@@ -214,7 +214,7 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
 | [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
-| [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
+| [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |

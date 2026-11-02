@@ -102,6 +102,8 @@ VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs);
 
 **Run the host on an always-on machine.** The VMs are in the cloud, but the host keeps one ssh tunnel per VM open to exe.dev, and that tunnel carries both the VM's ssh endpoint and the agents' only route to the LLM proxy. When the host sleeps or goes offline, every running agent loses its LLM in the middle of a task, and no controller can reach the VMs. The VMs keep running and the tunnels reconnect by themselves (within seconds) once the host is back. So put `boxery-host --backend exe` on a machine that stays up, such as a home server, a small Linux VPS or a desktop that doesn't sleep, and use your laptop as a controller only (`boxery setup you@that-host`). This keeps the security model: provider credentials stay on that machine and never enter a VM. On a Linux host, turn on linger (`sudo loginctl enable-linger "$USER"`, as above) so the tunnels, which are systemd user units, keep running when you're logged out. If you do run the host on a Mac, keep it awake while agents work (for example `caffeinate -s` on AC power).
 
+**Detach exe.dev's LLM integration first.** New exe.dev accounts attach an `llm` integration to every VM, which would let agents use LLMs without an `llm:` grant. boxery refuses to create or start a VM that can reach one, so run `ssh exe.dev integrations detach llm auto:all` once (and detach any other LLM integrations attached to boxery's VMs). See [the exe backend](../host/backends/README.md#exe-experimental).
+
 `boxery-host ls` shows a running VM whose tunnel isn't connected as `tunnel connecting` (it is retrying) or `tunnel down` (it isn't running; `boxery-host start NAME` brings it back) in place of its address. Commands that need the VM say the same thing rather than waiting for ssh to time out.
 
 ## boat.dev (experimental)
@@ -154,13 +156,13 @@ Next: hook up an agent with the [pi extension](pi-extension.md) or the [MCP serv
 
 ## LLM providers for in-VM agents
 
-pi and opencode come preinstalled in every VM and are already pointed at the host's [credential proxy](security.md#credential-proxy). VMs never hold real keys. You only need these if you run agents **inside** VMs (`boxery attach`, `boxery prompt`). Laptop agents using `vm_*` tools use your laptop's own login.
+pi and opencode come preinstalled in every VM and are already pointed at the host's [credential proxy](security.md#credential-proxy). VMs never hold real keys, and a VM can't use any provider until you grant it: `boxery grant demo llm:chatgpt` (or `boxery new demo --grant llm:chatgpt`). See [Grants](grants.md). You only need these if you run agents **inside** VMs (`boxery attach`, `boxery prompt`). Laptop agents using `vm_*` tools use your laptop's own login.
 
-| Provider | How |
-|---|---|
-| ChatGPT / Codex | Run `pi` on the host once and `/login`. The proxy reuses `~/.pi/agent/auth.json` and refreshes it. |
-| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env` |
-| Ollama | Auto-detected on `127.0.0.1:11434`. Its tool-capable models are configured for pi and opencode. |
+| Provider | Set up on the host | Grant to a VM |
+|---|---|---|
+| ChatGPT / Codex | Run `pi` on the host once and `/login`. The proxy reuses `~/.pi/agent/auth.json` and refreshes it. | `llm:chatgpt` |
+| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env` | `llm:openai`, `llm:anthropic` |
+| Ollama | Auto-detected on `127.0.0.1:11434`. Its tool-capable models are configured for pi and opencode. | `llm:ollama` |
 
 ## Verify
 

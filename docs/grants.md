@@ -2,9 +2,10 @@
 
 ← [Docs](README.md)
 
-By default a VM can't reach anything on your machine. A **grant** gives one VM access to one thing: an HTTPS API, your ssh-agent, an env var, or a file. You control grants from your machine, per VM. They're off by default.
+By default a VM can't reach anything on your machine, including LLM providers. A **grant** gives one VM access to one thing: an LLM provider, an HTTPS API, your ssh-agent, an env var, or a file. You control grants from your machine, per VM. They're off by default.
 
 ```bash
+boxery grant demo llm:chatgpt                         # LLM access through the host proxy: chatgpt | openai | anthropic | ollama
 boxery grant demo github                              # git clone/push + GitHub API over https; the token never enters the VM
 boxery grant demo github --readonly                   # …clone/fetch and API reads only
 boxery grant demo http:registry.npmjs.org --cmd 'npm token get'                 # any HTTPS API (bearer by default)
@@ -22,7 +23,7 @@ You can also grant at creation time, or from pi:
 
 ```bash
 boxery new web --grant ssh-agent --grant file:.env
-pi --vm demo --vm-grant ssh-agent,env:GH_TOKEN,file:.env
+pi --vm demo --vm-grant llm:chatgpt,ssh-agent,env:GH_TOKEN,file:.env
 /vm grant env:GH_TOKEN                                # inside pi, for the current VM
 ```
 
@@ -55,6 +56,7 @@ This is the way to get credentials into a VM on another [host](hosts.md). Grants
 
 ## How it works
 
+- **llm:PROVIDER (host proxy).** The credential is set up on the host (the host pi's ChatGPT login, `proxy.env` keys, or local Ollama) and never enters the VM. The VM's pi/opencode are always configured for the proxy, but the proxy refuses every provider the VM hasn't been granted (403, with the `boxery grant` command to run). The grant list goes to the host with the `http:` routes (`~/.config/boxery/edge/NAME.json`) and is re-read on every request, so `grant` and `revoke` take effect immediately. No `--cmd`: there's no value to fetch from your machine.
 - **http:HOST and github (edge-injected).** The secret never enters the VM.
   - When grants are applied, `--cmd` runs on your machine (`gh auth token` for `github`). The resulting header goes to the host proxy, in `~/.config/boxery/edge/NAME.json` (mode 0600). The VM only gets a URL, `$BOXERY_EDGE/<host>/…`, which carries its per-VM proxy token.
   - The proxy checks the token and allows only granted hosts, over HTTPS (no IPs or ports). It strips the VM's own auth headers and cookies, adds the credential, and logs the call (`boxery proxy-log`). Redirects are never followed with credentials attached.

@@ -17,6 +17,7 @@ import { fail, jsonArray, log, print, readFd, sleep, table } from "./util.mjs";
 
 const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay on the host).
 # ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
+# A VM can use a provider only after it's granted: boxery grant VM llm:chatgpt|openai|anthropic|ollama
 #OPENAI_API_KEY=
 #ANTHROPIC_API_KEY=
 `;

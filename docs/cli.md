@@ -133,7 +133,7 @@ Editors: once the `Include` line `setup` prints is in your `~/.ssh/config` ([Ins
 ### Grants
 
 ```bash
-boxery grant demo ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]
+boxery grant demo llm:PROVIDER | http:HOST --cmd CMD | github | ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]
 boxery revoke demo SPEC… | all
 boxery grants demo [apply | --json]
 ```
@@ -263,6 +263,7 @@ Local grant records (names and paths only; values are never stored or printed).
 | `ssh-agent` | (none) |
 | `env` | `var` (string), `cmd` (string \| null: command that produces the value; `null` = read from the local environment) |
 | `file` | `local` (absolute local path), `remote` (absolute path in the VM) |
+| `llm` | `provider` (`chatgpt`, `openai`, `anthropic`, `ollama`) |
 | `http` | `host`, `auth` (`bearer`, `basic:USER`, `header:NAME`), `readonly` (boolean), `cmd` (command that produces the secret) |
 
 #### `boxery leases --json`
@@ -395,6 +396,6 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 | `~/.boxery/profiles/HOST/grants/NAME` | Grant names and paths (never values) |
 | `~/.boxery/profiles/HOST/leases/` | Your leases and their per-lease ssh keys |
 | `~/.config/boxery/host.env` (host) | Backend and overrides (`BOXERY_BACKEND`, `BOXERY_LIMA_VMTYPE`, …) |
-| `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys |
+| `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys (VMs still need an `llm:` grant to use them) |
 | `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens (per lease on pool VMs) |
 | `~/.config/boxery/leases.db` (host) | Lease state (SQLite) |

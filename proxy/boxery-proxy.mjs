@@ -7,6 +7,9 @@
 //   /ollama/*  -> http://127.0.0.1:11434/*            (no auth)
 //   /edge/<token>/<host>/*  -> https://<host>/*       (headers granted to this VM: `boxery grant VM http:HOST`)
 //
+// LLM routes are deny-by-default: a VM may use a provider only while it holds an `llm:PROVIDER` grant
+// (`boxery grant VM llm:chatgpt`), listed in $CONF/edge/NAME.json as {"llm": ["chatgpt", …]}.
+//
 // Auth from VM: "Authorization: Bearer <token>" or "x-api-key: <token>".
 // <token> is "name:secret" or a JWT-shaped string whose payload carries {"boxery":"name:secret"}
 // (the Codex client derives the account id from a JWT, so we hand it a fake one).
@@ -220,6 +223,11 @@ async function handle(req, res) {
 		log("401", req.method, url.pathname);
 		return;
 	}
+	if (!llmGranted(who.vm, who.lease, routeName)) {
+		res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: `llm:${routeName} is not granted to this VM (boxery grant ${who.vm} llm:${routeName})` }) + "\n");
+		log(who.tag, "403", "not granted", routeName);
+		return;
+	}
 	const subpath = "/" + rest.join("/");
 	if (!allowed(routeName, req.method, subpath)) {
 		res.writeHead(403, { "content-type": "application/json" }).end(`{"error":"not an allowed inference endpoint: ${req.method} /${routeName}${subpath.replace(/["\\]/g, "")}"}\n`);
@@ -302,16 +310,28 @@ const EDGE_MAX_BODY = Number(process.env.BOXERY_PROXY_EDGE_MAX_BODY ?? 1024 * 10
 export const EDGE_HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
 const EDGE_STRIP = new Set(["authorization", "proxy-authorization", "cookie", "x-api-key"]);
 
-/** VM's routes, if they were set for this token's lease (a pool VM's routes carry the lease id).
- *  @param {string} vm @param {string | null} lease @returns {Record<string, any>} HOST → {headers, readonly} (unchecked JSON) */
-function edgeRoutes(vm, lease) {
+/** VM's edge file, if it was set for this token's lease (a pool VM's file carries the lease id): its
+ *  http routes and llm grants end with the lease.
+ *  @param {string} vm @param {string | null} lease @returns {Record<string, any>} {hosts, llm, lease} (unchecked JSON) */
+function edgeFile(vm, lease) {
 	try {
 		const j = JSON.parse(fs.readFileSync(path.join(EDGE_DIR, `${vm}.json`), "utf8"));
-		if ((j?.lease ?? null) !== lease) return {};
-		return j && typeof j.hosts === "object" ? j.hosts : {};
+		if (!j || typeof j !== "object" || (j.lease ?? null) !== lease) return {};
+		return j;
 	} catch {
 		return {};
 	}
+}
+/** @param {string} vm @param {string | null} lease @returns {Record<string, any>} HOST → {headers, readonly} (unchecked JSON) */
+function edgeRoutes(vm, lease) {
+	const { hosts } = edgeFile(vm, lease);
+	return hosts && typeof hosts === "object" && !Array.isArray(hosts) ? hosts : {};
+}
+/** Read on every request, so grants and revokes take effect without a restart. No file → nothing granted.
+ *  @param {string} vm @param {string | null} lease @param {string} provider */
+function llmGranted(vm, lease, provider) {
+	const { llm } = edgeFile(vm, lease);
+	return Array.isArray(llm) && llm.includes(provider);
 }
 
 /** Read-only routes allow fetching (incl. git clone/fetch) but nothing that changes state.

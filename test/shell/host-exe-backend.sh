@@ -35,6 +35,11 @@ echo "$*" >>"$d/edge.log"
 case "$*" in
 "sudo bash -s") n=$(ls "$d" | grep -c '^script\.' || true); cat >"$d/script.$((n + 1))" ;;
 *boxery-exe.ok*) echo "${BUILD_RESULT:-ok}" ;;
+# exe.dev LLM integration probe (exe_llm_guard): LLM_INT=1 attaches llm.int.exe.xyz; REFLECT_LLM=NAME
+# lists another LLM integration through Reflection; LLM_PROBE_CODE overrides the status (000 = unreachable).
+*llm-probe*)
+	if [ -n "${LLM_PROBE_CODE:-}" ]; then echo "llm-probe $LLM_PROBE_CODE"; elif [ -n "${LLM_INT:-}" ]; then echo "llm-probe 200"; else echo "llm-probe 403"; fi
+	[ -z "${REFLECT_LLM:-}" ] || printf '{"integrations":[{"name":"reflection","type":"reflection"},{"name":"%s","type":"llm"}]}\n' "$REFLECT_LLM" ;;
 esac
 exit 0
 STUB
@@ -177,6 +182,21 @@ grep -x 'ListenAddress 127.0.0.1' "$X" >/dev/null && grep -F 'boxery-exe-boot.se
 ! grep -F '/home/agent/.boxery/token' "$X" >/dev/null && grep -F '/home/agent/.boxery/token' "$S/$(V hx)/script.2" >/dev/null && ok "identity (proxy token) comes after, in its own script" || bad "script order"
 "$H" rm hx >/dev/null 2>&1
 
+# --- exe.dev LLM integrations: a VM that can reach one would bypass llm: grants
+grep -F 'llm-probe' "$S/$(V v1)/edge.log" >/dev/null && ok "new checks the VM for exe.dev LLM integrations" || bad "no llm probe on new"
+for c in "LLM_INT=1:llm" "REFLECT_LLM=team-llm:team-llm" "LLM_PROBE_CODE=000:" "LLM_PROBE_CODE=502:"; do
+	envset=${c%%:*}; want=${c#*:}
+	e=$(env "$envset" "$H" new lx 2>&1) && bad "new succeeded with $envset" || {
+		if [[ -n $want ]]; then [[ $e == *"can reach exe.dev LLM integration(s): $want"* && $e == *"ssh exe.dev integrations detach $want auto:all"* ]] && ok "$envset: new refused, names the integration and the fix" || bad "$envset: $e"
+		else [[ $e == *"couldn't check lx for exe.dev LLM integrations"* ]] && ok "$envset: can't tell → refused (fails closed)" || bad "$envset: $e"; fi
+	}
+	! "$H" ls 2>/dev/null | grep -q '^lx ' && [[ -z $(jq -r '.vms[].vm_name' <<<"$(fake-exe ls 2>/dev/null)" | grep -- '-lx$') ]] && ok "$envset: nothing left behind" || bad "$envset: lx left behind"
+done
+expect "stop v2" "$H" stop v2
+e=$(LLM_INT=1 "$H" start v2 2>&1) && bad "start succeeded with an LLM integration attached" ||
+	{ [[ $e == *"refusing to start v2"* && $(st "$(V v2)") == paused && ! -f $UNITS/boxery-exe-bxtest-v-v2.service ]] && ok "start: integration attached later (auto:all) → refused, paused again, no tunnel" || bad "start: $e / $(st "$(V v2)")"; }
+expect "start v2 once detached" "$H" start v2
+
 # --- size / resize
 [[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$ROOT/host/backend.sh" backend_size v1 2>&1)"
 : >"$CALLS"
@@ -261,6 +281,10 @@ new=$(V v1)
 [[ $(cat "$S/$new/data") == v1-work && $(gens v1) == "$new " && $(cat "$E/v1/slot") == 1 && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "disk restored, old VM gone, slot kept, tunnel up" || bad "after revert: $(gens v1)"
 grep -F "$new.exe.xyz" "$E/v1/tunnel.sh" >/dev/null && ok "tunnel follows the new exe.dev name" || bad "tunnel.sh: $(cat "$E/v1/tunnel.sh")"
 expect_fail "revert to an unknown snapshot fails" "$H" revert v1 nope
+# A reimage (revert, pool reset) is a new exe.dev VM: auto:all integrations attach to it too.
+old=$(V v1)
+e=$(LLM_INT=1 "$H" revert v1 s1 2>&1) && bad "revert succeeded with an LLM integration attached" ||
+	{ [[ $e == *"can reach exe.dev LLM integration(s): llm"* && $(V v1) == "$old" && $(gens v1) == "$old " && $(st "$old") == running ]] && ok "reimage: refused copy removed, VM left on its old disk" || bad "reimage guard: $e / $(gens v1)"; }
 
 # --- new --from / fork
 : >"$CALLS"

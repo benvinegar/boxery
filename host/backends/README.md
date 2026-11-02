@@ -215,7 +215,7 @@ ssh exe.dev whoami                  # must print your account, not "Please compl
 
 Security notes:
 - Anyone holding the exe.dev account's ssh key has root in every VM through the edge. Treat that key like host root; give boxery its own with `BOXERY_EXE_KEY` if you share the account. The backend's ssh never forwards the host's agent or X11 into a guest, whatever `~/.ssh/config` says.
-- New exe.dev accounts attach an `llm` integration to every VM (`auto:all`): any guest process can use the account's exe.dev LLM credits at `https://llm.int.exe.xyz`, outside the boxery proxy and its per-VM tokens. Detach it (`ssh exe.dev integrations detach llm auto:all`) if agents should only use the proxy.
+- New exe.dev accounts attach an `llm` integration to every VM (`auto:all`). A guest could use it to reach the account's LLM credits at `https://llm.int.exe.xyz`, outside the boxery proxy and its `llm:` grants. So `new`, `start` and reimages (revert, pool resets) check each VM from the inside before it's usable: `llm.int.exe.xyz` must answer 403/404, and Reflection, if attached, must list no `llm`-type integration. A VM that can reach one is refused (a new or reimaged copy is removed; a started VM is paused again), and so is one that can't be checked. Fix it once per account: `ssh exe.dev integrations detach llm auto:all`, plus any `vm:`/`tag:` attachments `ssh exe.dev integrations list` shows.
 - First connections trust exe.dev's host keys on first use (`$BOXERY_EXE_DIR/known_hosts`). exe.dev documents its fingerprint as `SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo`.
 
 Not verified yet:

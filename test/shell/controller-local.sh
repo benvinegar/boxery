@@ -138,6 +138,45 @@ if "$A" grant e1 env:X --readonly >/dev/null 2>&1; then bad "--readonly on env a
 ! grep -q 'github.com' "$gc" && ok "revoke removes the git rewrite" || bad "gitconfig still has github"
 "$A" revoke e1 all >/dev/null 2>&1; "$A" grants e1 apply --quiet >/dev/null 2>&1
 [[ ! -f $routes ]] && ok "revoke all clears the host routes" || bad "routes left: $(cat "$routes")"
+# --- llm: grants: the host proxy refuses every LLM route unless the VM's grants list the provider
+"$A" grant e1 llm:chatgpt llm:ollama >/dev/null 2>&1 && ok "grant llm:chatgpt llm:ollama" || bad "grant llm: $("$A" grant e1 llm:chatgpt 2>&1)"
+[[ $(jq -c '.llm' "$routes" 2>/dev/null) == '["chatgpt","ollama"]' && $(jq -c '.hosts' "$routes") == '{}' ]] && ok "llm grants reach the host's edge file (no http routes needed)" || bad "llm routes: $(cat "$routes" 2>/dev/null)"
+"$A" grants e1 --json | jq -e 'map(select(.kind == "llm") | .provider) == ["chatgpt", "ollama"]' >/dev/null && ok "grants --json lists llm grants" || bad "grants --json llm: $("$A" grants e1 --json)"
+"$A" grants e1 | grep -q 'llm:chatgpt' && "$A" ls | grep '^e1 ' | grep -q 'llm:chatgpt,llm:ollama' && ok "grants and ls show llm grants" || bad "llm in grants/ls"
+for badspec in llm: llm:gemini llm:ChatGPT "llm:chatgpt x"; do
+	if "$A" grant e1 "$badspec" >/dev/null 2>&1; then bad "accepted $badspec"; else ok "rejected $badspec"; fi
+done
+if "$A" grant e1 llm:openai --cmd 'echo k' >/dev/null 2>&1; then bad "llm grant with --cmd accepted"; else ok "llm grants take no --cmd (credential is on the host)"; fi
+"$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["chatgpt","ollama"]' && $(jq -r '.hosts | keys | join(",")' "$routes") == api.example.com ]] && ok "llm and http grants share the edge file" || bad "mixed: $(cat "$routes")"
+"$A" revoke e1 llm:chatgpt >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["ollama"]' ]] && ok "revoke llm:chatgpt" || bad "after revoke: $(cat "$routes")"
+"$A" revoke e1 http:api.example.com >/dev/null 2>&1
+[[ $(jq -c '.llm' "$routes") == '["ollama"]' && $(jq -c '.hosts' "$routes") == '{}' ]] && ok "revoking the last http grant keeps llm grants" || bad "after http revoke: $(cat "$routes" 2>/dev/null)"
+"$A" revoke e1 llm:ollama >/dev/null 2>&1
+[[ ! -f $routes ]] && ok "revoking the last llm grant clears the host file (no LLM access)" || bad "llm file left: $(cat "$routes")"
+"$A" new e2 --grant llm:anthropic >/dev/null 2>&1; [[ $(jq -c '.llm' "$BOXERY_CONF/edge/e2.json" 2>/dev/null) == '["anthropic"]' ]] && ok "new --grant llm:anthropic" || bad "new --grant llm: $(cat "$BOXERY_CONF/edge/e2.json" 2>/dev/null)"
+"$A" rm e2 >/dev/null 2>&1; [[ ! -f $BOXERY_CONF/edge/e2.json ]] && ok "rm clears llm grants" || bad "llm grants survived rm"
+
+# Version skew: a controller with llm: grants against a host from before them. That host rejects the
+# {"hosts","llm"} payload: the grant is kept locally, the user is warned, and nothing on the host changes.
+if git -C "$ROOT" cat-file -e 2ee0cd7:host/pool.mjs 2>/dev/null; then
+	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/host" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
+	git -C "$ROOT" show 2ee0cd7:host/pool.mjs >"$old/host/pool.mjs"
+	HOME=$tmp/home "$A" host add old local --host-bin "$old/host/boxery-host" >/dev/null 2>&1
+	"$A" --host old grant e1 http:api.example.com --cmd 'echo v1' >/dev/null 2>&1
+	[[ $(jq -r '.hosts["api.example.com"].headers.Authorization' "$routes") == "Bearer v1" ]] && ok "old host: http grants still work" || bad "old host http: $(cat "$routes" 2>/dev/null)"
+	before=$(cat "$routes")
+	out=$("$A" --host old grant e1 llm:chatgpt http:api.example.com --cmd 'echo v2' 2>&1); rc=$?
+	[[ $rc == 0 && $out == *"could not set edge routes for e1 on the host"* ]] && ok "old host: llm grant warns, doesn't fail" || bad "old host: rc=$rc $out"
+	[[ $(cat "$routes") == "$before" ]] && ok "old host: edge file unchanged (no LLM access, and the http update waits)" || bad "old host changed routes: $(cat "$routes")"
+	"$A" --host old revoke e1 llm:chatgpt >/dev/null 2>&1
+	[[ $(jq -r '.hosts["api.example.com"].headers.Authorization' "$routes") == "Bearer v2" ]] && ok "old host: once no llm grant is left, the http update goes through" || bad "old host after revoke: $(cat "$routes")"
+	"$A" --host old revoke e1 all >/dev/null 2>&1
+	"$A" host rm old >/dev/null 2>&1 || true
+	"$A" revoke e1 all >/dev/null 2>&1
+else echo "  - pre-llm host/pool.mjs not in git history; skipping version-skew checks"; fi
+
 "$A" grant e1 http:api.example.com --cmd 'echo v' >/dev/null 2>&1
 "$A" rm e1 >/dev/null 2>&1; [[ ! -f $routes ]] && ok "rm deletes edge routes" || bad "routes survived rm"
 
@@ -164,11 +203,13 @@ else echo "  - node:sqlite unavailable; skipping lease checks"; fi
 
 # --- fork from the controller: forks are pets with their own grants (none, unless --grants)
 "$A" new fk >/dev/null 2>&1
-"$A" grant fk ssh-agent env:FROM_CMD --cmd 'echo computed' >/dev/null 2>&1
+"$A" grant fk ssh-agent env:FROM_CMD --cmd 'echo computed' llm:chatgpt >/dev/null 2>&1
 echo fork-me >"$tmp/vms/fk/home/project/f.txt"
 "$A" fork fk fk1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk1/home/project/f.txt" && ok "fork via controller" || bad "fork"
 [ ! -f "$P/grants/fk1" ] && ! grep -q '^Host fk1.boxery' "$P/ssh_config" && ok "fork does not inherit grants by default" || bad "grants leaked into fork"
+[[ -f $BOXERY_CONF/edge/fk.json && ! -f $BOXERY_CONF/edge/fk1.json ]] && ok "a fork gets no LLM access from its source" || bad "llm grant leaked into fork: $(cat "$BOXERY_CONF/edge/fk1.json" 2>/dev/null)"
 "$A" fork fk fk2 --grants >/dev/null 2>&1 && grep -q '^Host fk2.boxery' "$P/ssh_config" && grep -q '^env	FROM_CMD' "$P/grants/fk2" && ok "fork --grants copies the grant list" || bad "fork --grants"
+[[ $(jq -c .llm "$BOXERY_CONF/edge/fk2.json" 2>/dev/null) == '["chatgpt"]' ]] && ok "fork --grants: the copied llm grant reaches the host" || bad "fork --grants llm: $(cat "$BOXERY_CONF/edge/fk2.json" 2>/dev/null)"
 if "$A" fork fk 'x;id' >/dev/null 2>&1; then bad "invalid fork name accepted"; else ok "invalid fork name rejected"; fi
 "$A" snap fk s1 >/dev/null 2>&1; "$A" new fk3 --from fk@s1 >/dev/null 2>&1 && grep -q fork-me "$tmp/vms/fk3/home/project/f.txt" && ok "new --from via controller" || bad "new --from"
 if "$A" new fk4 --from 'fk;id' >/dev/null 2>&1; then bad "bad --from accepted"; else ok "bad --from rejected"; fi

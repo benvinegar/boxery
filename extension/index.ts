@@ -18,7 +18,7 @@
  * bash/read/write/edit run on pi's own tool engines (same rendering, truncation and edit semantics
  * as the built-ins) over ssh-backed operations.
  *
- *   pi --vm demo [--vm-grant ssh-agent,env:GH_TOKEN,file:.env]
+ *   pi --vm demo [--vm-grant llm:chatgpt,ssh-agent,env:GH_TOKEN,file:.env]
  *   pi --vm new      throwaway VM, removed when pi quits
  *   pi --vm pool     lease a pool VM, released when pi quits
  *   /vm use NAME | new [NAME] | off | ls | rm NAME | desktop [NAME] | grant SPEC… | revoke SPEC… | grants
@@ -84,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.registerFlag("vm-ttl", { description: "boxery: lease length in seconds for --vm pool (renewed automatically while pi runs; default 1800)", type: "string" });
 	pi.registerFlag("vm-grant", {
-		description: "boxery: comma-separated grants for the --vm VM, e.g. ssh-agent,env:GH_TOKEN,file:.env (see `boxery grant`)",
+		description: "boxery: comma-separated grants for the --vm VM, e.g. llm:chatgpt,ssh-agent,env:GH_TOKEN,file:.env (see `boxery grant`)",
 		type: "string",
 	});
 
@@ -165,7 +165,7 @@ export default function (pi: ExtensionAPI) {
 		ctx?.ui?.setStatus?.("boxery", label ? (ctx.ui.theme?.fg?.("accent", label) ?? label) : undefined);
 	}
 
-	/** Grants (ssh-agent / env / file) are owned by the controller CLI; the extension asks it to apply them. */
+	/** Grants (llm / http / ssh-agent / env / file) are owned by the controller CLI; the extension asks it to apply them. */
 	async function applyGrants(name: string, ctx: any, specs: string[] = []) {
 		if (specs.length) {
 			const out = await core.boxeryCli(["grant", name, ...specs], 120_000);
@@ -349,7 +349,7 @@ export default function (pi: ExtensionAPI) {
 					case "revoke": {
 						if (!current) throw new Error("no current VM (/vm use NAME first)");
 						const specs = [arg, ...more].filter(Boolean);
-						if (!specs.length) throw new Error(`usage: /vm ${sub} ssh-agent | env:VAR | file:PATH[=REMOTE] …`);
+						if (!specs.length) throw new Error(`usage: /vm ${sub} llm:PROVIDER | ssh-agent | env:VAR | file:PATH[=REMOTE] …`);
 						say(await core.boxeryCli([sub, current.name, ...specs], 120_000));
 						break;
 					}
