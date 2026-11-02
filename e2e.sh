@@ -58,7 +58,13 @@ echo "== desktop over ssh tunnel"
 "$A" desktop "$VM" --no-open >/tmp/boxery-e2e-desk.$$ 2>&1 & tun=$!
 sleep 3; port=$(grep -o '127.0.0.1:[0-9]*' /tmp/boxery-e2e-desk.$$ | head -1 | cut -d: -f2)
 check "noVNC served on localhost:$port" curl -fsS "http://127.0.0.1:$port/vnc.html"
+grep -Eq "vnc\.html\?[^#]*#password=[A-Za-z0-9]{8} " /tmp/boxery-e2e-desk.$$ && ok "desktop URL carries the session's VNC password in the fragment" || bad "desktop URL: $(cat /tmp/boxery-e2e-desk.$$)"
 kill "$tun" 2>/dev/null || true; tun=""; rm -f /tmp/boxery-e2e-desk.$$
+# The VNC server offers VncAuth (2) only, never None (1); its password file is the agent's, 0600, on tmpfs.
+out=$("$A" run "$VM" python3 -c 'import socket; s = socket.create_connection(("127.0.0.1", 5901)); s.recv(12); s.sendall(b"RFB 003.008\n"); n = s.recv(1)[0]; print(list(s.recv(n)))' 2>/dev/null || true)
+[[ $out == "[2]" ]] && ok "VNC requires a password" || bad "VNC security types: $out"
+out=$("$A" run "$VM" bash -c 'stat -c "%a %U" "/run/user/$(id -u)/boxery-vnc/passwd"' 2>/dev/null || true)
+[[ $out == "600 agent" ]] && ok "VNC password file is the agent's, 0600" || bad "VNC password file: $out"
 
 echo "== laptop pi extension (vm_* tools, with the user's other extensions loaded)"
 if command -v pi >/dev/null; then

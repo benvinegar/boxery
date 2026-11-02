@@ -1,8 +1,8 @@
 #!/bin/bash
-# boxery layer 3/3, desktop: XFCE on :1, TigerVNC + noVNC (localhost only), Firefox, Chrome (Chromium on
-# arm64) and playwright-core for vm_browser, xdotool + ImageMagick for computer use. The heavy layer (~2 min
-# to build), and the only reason a backend needs a built base: headless VMs skip it. Needs the dev-tools
-# layer (node). Runs as root, idempotent.
+# boxery layer 3/3, desktop: XFCE on :1, TigerVNC + noVNC (localhost only, with a password), Firefox, Chrome
+# (Chromium on arm64) and playwright-core for vm_browser, xdotool + ImageMagick for computer use. The heavy
+# layer (~2 min to build), and the only reason a backend needs a built base: headless VMs skip it. Needs the
+# dev-tools layer (node). Runs as root, idempotent.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 # shellcheck source=/dev/null
@@ -53,14 +53,38 @@ google-chrome --version
 mkdir -p /usr/share/novnc
 echo '<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&resize=remote&reconnect=1">' >/usr/share/novnc/index.html
 
+# The VNC password. TigerVNC's VncAuth uses 8 characters at most: 8 random letters and digits, kept on the
+# agent user's tmpfs (/run/user/UID: gone at shutdown, never on the disk). boxery-vnc.service makes one
+# before every start, so the desktop is never open, even if nobody runs `boxery desktop`; `boxery desktop`
+# sets a fresh one for each session (--new) and hands it to noVNC in the URL fragment. Xtigervnc reads the
+# file at each login: a new password applies to the next connection, and connections already open stay.
+cat >/usr/local/bin/boxery-vnc-password <<'EOF'
+#!/bin/sh
+# boxery-vnc-password [--new]: make the desktop's VNC password if there is none; --new replaces it and prints it.
+set -eu
+d=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/boxery-vnc
+umask 077
+mkdir -p "$d" && chmod 700 "$d"
+[ "${1:-}" = --new ] || [ ! -s "$d/passwd" ] || exit 0
+# A bounded read (about 60 usable characters from 256 bytes), every stage reading to the end: tr straight off
+# /dev/urandom into `head -c 8` never ends where SIGPIPE is ignored, as BSD tr then keeps reading after EPIPE.
+p=$(head -c 256 /dev/urandom | LC_ALL=C tr -dc A-Za-z0-9 | cut -c1-8)
+[ ${#p} = 8 ] || { echo "boxery-vnc-password: could not generate a password" >&2; exit 1; }
+printf '%s\n' "$p" | vncpasswd -f >"$d/passwd.new"
+mv -f "$d/passwd.new" "$d/passwd"
+[ "${1:-}" != --new ] || echo "$p"
+EOF
+chmod 755 /usr/local/bin/boxery-vnc-password
+
 # Desktop services for the agent user (systemd user units, started at boot through lingering).
 U=/etc/skel/.config/systemd/user
 mkdir -p "$U"
 cat >"$U/boxery-vnc.service" <<'EOF'
 [Unit]
-Description=boxery: TigerVNC X server :1 (localhost only)
+Description=boxery: TigerVNC X server :1 (localhost only, password required)
 [Service]
-ExecStart=/usr/bin/Xtigervnc :1 -localhost=1 -rfbport 5901 -SecurityTypes None -geometry 1600x1000 -depth 24 -AlwaysShared -desktop boxery
+ExecStartPre=/usr/local/bin/boxery-vnc-password
+ExecStart=/usr/bin/Xtigervnc :1 -localhost=1 -rfbport 5901 -SecurityTypes VncAuth -PasswordFile %t/boxery-vnc/passwd -geometry 1600x1000 -depth 24 -AlwaysShared -desktop boxery
 Restart=always
 RestartSec=2
 [Install]

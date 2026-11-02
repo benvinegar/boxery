@@ -121,6 +121,10 @@ boxery desktop demo                          # XFCE desktop in your browser (noV
 boxery forward demo 3000                     # localhost:3000 → the VM's dev server   [LOCAL_PORT]
 ```
 
+`desktop` forwards a free local port (from 16080) to the VM's noVNC and opens it in your browser (`--no-open` only prints the URL). The VM's VNC server asks for a password. Each `desktop` session sets a new random one over ssh and puts it in the URL's fragment (`vnc.html?…#password=…`), which the browser never sends to the server, so it stays out of logs. It does land in the browser's history. A new session replaces the previous session's password for new logins; a tab that is already connected stays connected. If that tab is disconnected later, it fails to log back in and you run `boxery desktop` again. With the tunnel open, other processes on your machine, and web pages, can reach the noVNC port, but without the password they can't use the desktop.
+
+VMs made from a desktop base built before this change have **no** VNC password. Neither do snapshots or images of those VMs. `boxery desktop` warns when it opens one of them. To fix it, rebuild the base with `boxery build-base` (or `boxery-host build-base` on the host) and create the VMs again. Backends refuse to rebuild the base while VMs or snapshots still depend on it, so remove those first. An older controller can't log in to a VM from a new base: noVNC asks for a password it doesn't have. Update the controller too.
+
 Editors: once the `Include` line `setup` prints is in your `~/.ssh/config` ([Install](install.md#laptop--controller)), connect VS Code, Cursor or Zed via Remote-SSH to `demo.boxery`.
 
 ### Grants

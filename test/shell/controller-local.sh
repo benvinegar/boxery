@@ -273,4 +273,40 @@ sn 0.7.0 v0.7.0-15-gabc 0.7.0 v0.7.0-3-gdef hornet | grep -q 'boxery --host horn
 [ -z "$(sn 0.7.0 v0.7.0 0.8.0 v0.8.0 local)" ] && ok "skew: a newer host is fine" || bad "skew: newer host"
 [ -z "$(sn 0.7.0 '' 0.7.0 '' local)" ] && ok "skew: equal npm releases are fine" || bad "skew: equal"
 
+# --- desktop: the VM's VNC password (image/layers/desktop.sh) and `boxery desktop`'s URL. The ssh stub runs
+# the "VM" side here with the layer's real boxery-vnc-password; vncpasswd is a stand-in that keeps the text.
+D=$ROOT/image/layers/desktop.sh
+grep -q -- '-SecurityTypes VncAuth -PasswordFile %t/boxery-vnc/passwd ' "$D" && ! grep -q 'SecurityTypes None' "$D" &&
+	grep -q '^ExecStartPre=/usr/local/bin/boxery-vnc-password$' "$D" && ok "desktop layer: VNC needs a password, made before every start" || bad "desktop layer: VNC unit"
+"$A" new d1 >/dev/null 2>&1
+url_re='^==> desktop for d1 at http://127\.0\.0\.1:[0-9]+/vnc\.html\?autoconnect=1&resize=remote&reconnect=1'
+old_re="$url_re  " new_re="$url_re#password=[A-Za-z0-9]{8}  "
+rc=0; out=$("$A" desktop d1 --no-open 2>"$tmp/err") || rc=$?
+[ "$rc" = 0 ] && [[ $out =~ $old_re ]] && grep -q "d1's desktop has no VNC password" "$tmp/err" &&
+	ok "desktop, image without the VNC password: no password in the URL, a warning" || bad "desktop, old image: rc=$rc $out $(cat "$tmp/err")"
+awk '/^cat >\/usr\/local\/bin\/boxery-vnc-password <<.EOF.$/{f=1; next} f&&/^EOF$/{exit} f' "$D" >"$tmp/bin/boxery-vnc-password"
+printf '#!/bin/sh\nprintf obf:; cat\n' >"$tmp/bin/vncpasswd"; chmod +x "$tmp/bin/boxery-vnc-password" "$tmp/bin/vncpasswd"
+export XDG_RUNTIME_DIR=$tmp/xdg-run; pf=$tmp/xdg-run/boxery-vnc/passwd
+mode() { if stat -c %a "$1" >/dev/null 2>&1; then stat -c %a "$1"; else stat -f %Lp "$1"; fi; }
+[ -z "$(boxery-vnc-password)" ] && [ "$(mode "$pf")" = 600 ] && [ "$(mode "${pf%/*}")" = 700 ] && grep -Eqx 'obf:[A-Za-z0-9]{8}' "$pf" &&
+	ok "boxery-vnc-password: a random 8-character password, 0600 in a 0700 dir" || bad "vnc password file: $(ls -la "${pf%/*}" 2>&1) $(cat "$pf" 2>&1)"
+cp "$pf" "$tmp/pf0"; boxery-vnc-password; cmp -s "$pf" "$tmp/pf0" && ok "boxery-vnc-password: keeps an existing one (the service restarting)" || bad "a service start replaced the password"
+p=$(boxery-vnc-password --new)
+[[ $p =~ ^[A-Za-z0-9]{8}$ ]] && [ "$(cat "$pf")" = "obf:$p" ] && ok "boxery-vnc-password --new: replaces it and prints it" || bad "--new: $p / $(cat "$pf")"
+rc=0; out=$("$A" desktop d1 --no-open 2>"$tmp/err") || rc=$?
+pw=${out##*#password=}; pw=${pw%% *}
+[ "$rc" = 0 ] && [[ $out =~ $new_re ]] && [ "$(cat "$pf")" = "obf:$pw" ] && [ "$pw" != "$p" ] && [ ! -s "$tmp/err" ] &&
+	ok "desktop: a fresh password for the session, only in the URL fragment" || bad "desktop URL: rc=$rc $out $(cat "$tmp/err")"
+out=$("$A" desktop d1 --no-open 2>/dev/null); pw2=${out##*#password=}; pw2=${pw2%% *}
+[ -n "$pw2" ] && [ "$pw2" != "$pw" ] && [ "$(cat "$pf")" = "obf:$pw2" ] && ok "desktop: the next session replaces it" || bad "second session: $out"
+printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/vncpasswd"
+rc=0; out=$("$A" desktop d1 --no-open 2>&1) || rc=$?
+[ "$rc" != 0 ] && [[ $out != *"==> desktop"* ]] && [ "$(cat "$pf")" = "obf:$pw2" ] && ok "desktop: no tunnel when the password can't be set" || bad "desktop, failing vncpasswd: rc=$rc $out"
+rc=0; out=$("$A" desktop nosuch --no-open 2>&1) || rc=$?
+[ "$rc" != 0 ] && [[ $out != *"==> desktop"* ]] && ok "desktop: no tunnel to an unreachable VM" || bad "desktop nosuch: rc=$rc $out"
+rc=0; out=$("$A" desktop -oProxyCommand=x --no-open 2>&1) || rc=$?
+[ "$rc" != 0 ] && [[ $out == *"invalid VM name"* ]] && ok "desktop: invalid VM name rejected" || bad "desktop, bad name: rc=$rc $out"
+rm -f "$tmp/bin/boxery-vnc-password" "$tmp/bin/vncpasswd"; unset XDG_RUNTIME_DIR
+"$A" rm d1 >/dev/null 2>&1 || true
+
 echo; echo "passed: $pass  failed: $fail"; [ "$fail" -eq 0 ]

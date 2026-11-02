@@ -71,7 +71,7 @@ What boxery adds to the starting image is in three layers, `image/layers/*.sh` (
 |---|---|---|
 | `plumbing` | the `agent` user + sudoers, `boxery-llm.service` (socat bridge to the host LLM proxy; keys stay on the host), sshd `MaxSessions`, core-dump sysctl, cloud-init default user, `/etc/profile.d/boxery.sh`, tmux config, `socat`, `qemu-guest-agent` | ~10 s |
 | `devtools` | git (from the git-core PPA on Ubuntu), build tools, python3, jq, ripgrep, fd, node 24, `pi`, `opencode` | keeps what the image ships: a package only when missing (except git, upgraded from the PPA: Ubuntu 24.04's is 2.43), node only when the image's can't run the job helper (needs 22.18+), an agent CLI only when `agent` can't run the image's own (exeuntu's `pi` links into exedev's home, so it's replaced; see #30). ~30 s |
-| `desktop` | XFCE on `:1`, TigerVNC + noVNC, Firefox, Chrome (Playwright Chromium on arm64) + its AppArmor profile, `playwright-core`, xdotool, ImageMagick, the agent's desktop user services | ~2 min; the only reason for a built base |
+| `desktop` | XFCE on `:1`, TigerVNC (password required: `boxery-vnc-password`) + noVNC, Firefox, Chrome (Playwright Chromium on arm64) + its AppArmor profile, `playwright-core`, xdotool, ImageMagick, the agent's desktop user services | ~2 min; the only reason for a built base |
 
 - **Desktop VMs** (the default) clone the base, which `build-base` makes by applying all three layers once.
 - **Headless VMs** (`new --headless`) call `backend_new … stock`. boxery-host's USERDATA then also carries every layer file (as `write_files`), `/etc/boxery/provision` (`plumbing devtools`), a `users:` entry for `agent` (the stock image's default user isn't agent) and, as the first `runcmd` step, `boxery-provision`. Seeded backends (libvirt, cloud-hypervisor) get all of that from cloud-init. Backends that replay the cloud-config themselves (Lima, exe) must run `sudo /usr/local/sbin/boxery-provision` after writing the files. boxery-host waits for `/var/log/boxery-provision.ok` and shows `/var/log/boxery-provision.log` if it's missing.
@@ -152,7 +152,7 @@ Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_C
 
 ## Guest contract
 
-Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, `boxery-llm.service` reading `/etc/boxery/proxy-upstream`, and cloud-init (for per-instance `bootcmd`; exe and Lima replay it instead). Desktop VMs also have XFCE on `:1` with VNC/noVNC on localhost, xdotool + ImageMagick, a `google-chrome` binary and `/opt/boxery/node_modules/playwright-core`. The layers above provide all of it.
+Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, `boxery-llm.service` reading `/etc/boxery/proxy-upstream`, and cloud-init (for per-instance `bootcmd`; exe and Lima replay it instead). Desktop VMs also have XFCE on `:1` with VNC/noVNC on localhost (VNC needs the password `boxery-vnc-password --new` sets and prints), xdotool + ImageMagick, a `google-chrome` binary and `/opt/boxery/node_modules/playwright-core`. The layers above provide all of it.
 
 ## cloud-hypervisor (experimental)
 
