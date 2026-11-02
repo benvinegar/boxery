@@ -14,7 +14,7 @@
   <a href="#where-the-vms-run">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/works-with-dark.svg">
-      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt and Cloud Hypervisor on Linux; exe.dev and boat.dev in the cloud" width="624">
+      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt and Cloud Hypervisor on Linux; exe.dev and boat.dev in the cloud" width="740">
     </picture>
   </a>
 </p>
