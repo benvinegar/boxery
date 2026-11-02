@@ -43,6 +43,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <em><strong>Early-stage, experimental software.</strong> Expect rough edges and breaking changes between releases.</em>
+</p>
+
 ---
 
 Your agent keeps running where it already runs, with your model login and your setup. boxery gives it **`vm_*` tools** that act on full Ubuntu desktop VMs: shell, files, a real Chrome, and the whole desktop. It can install things, run dev servers, click through UIs and fork itself into parallel attempts, all away from your laptop.
