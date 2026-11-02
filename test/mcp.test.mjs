@@ -666,6 +666,15 @@ describe("grant requests (vm_grant)", () => {
 		assert.equal(grantCalls().length, before);
 	});
 
+	test("llm: grants are requestable like any other", async () => {
+		c.onRequest = () => ({ action: "accept" });
+		const r = await c.tool("vm_grant", { spec: "llm:anthropic", reason: "the proxy said llm:anthropic is not granted" });
+		assert.equal(r.isError, false, r.content[0].text);
+		assert.equal(grantCalls().at(-1), "grant fakevm llm:anthropic");
+		assert.match(c.requests.at(-1).params.message, /^Give VM "fakevm" on host "local" access to:\n\nllm:anthropic: the VM host's anthropic credential/);
+		assert.match(c.requests.at(-1).params.message, /Revoke any time: boxery --host local revoke fakevm llm:anthropic/);
+	});
+
 	test("file specs resolve to an absolute local path and a /home/agent-relative remote", async () => {
 		const f = path.join(realpathSync(dir), "auth.ini");
 		writeFileSync(f, "//registry/:_authToken=x\n", { mode: 0o644 });
@@ -704,6 +713,8 @@ describe("grant requests (vm_grant)", () => {
 		assert.match(await err({ spec: "env:SURELY_UNSET_FOR_BOXERY" }), /isn't set where boxery runs[\s\S]*boxery --host local grant fakevm env:SURELY_UNSET_FOR_BOXERY --cmd/);
 		assert.match(await err({ spec: "ssh-agent", readonly: true }), /readonly applies only to the github grant/);
 		assert.match(await err({ spec: "everything" }), /unknown grant/);
+		assert.match(await err({ spec: "llm:gemini" }), /unknown LLM provider "gemini"/);
+		assert.match(await err({ spec: "llm:chatgpt", readonly: true }), /readonly applies only to the github grant/);
 		assert.equal(c.requests.length, n, "no prompt for a request that can't be granted");
 	});
 

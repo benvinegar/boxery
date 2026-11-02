@@ -10,6 +10,8 @@ BASE_VOL=${BOXERY_BASE_VOL:-boxery-base.qcow2}
 STOCK_VOL=${BOXERY_STOCK_VOL:-boxery-stock.qcow2}   # the plain cloud image headless VMs boot (no build-base)
 BASE_IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
 PREFIX=${BOXERY_DOMAIN_PREFIX:-boxery-}   # libvirt domain prefix; user-facing names omit it
+ISOLATION=${BOXERY_NET_ISOLATION:-on}     # guest network isolation (nwfilter); off = libvirt's open NAT network
+NWFILTER=boxery-guest-isolation           # one filter for every profile; parameters are per interface
 # Pin effective defaults in operation journals, even if host.env changes before recovery.
 export BOXERY_POOL=$POOL BOXERY_POOL_DIR=$POOL_DIR BOXERY_BASE_VOL=$BASE_VOL BOXERY_STOCK_VOL=$STOCK_VOL BOXERY_DOMAIN_PREFIX=$PREFIX BOXERY_NET=$NET
 dom() { echo "$PREFIX$1"; }
@@ -37,6 +39,131 @@ wait_ip() {
 backend_check() {
 	need virsh; need virt-install; need cloud-localds; need qemu-img
 	[[ -r /dev/kvm ]] || die "/dev/kvm not accessible"
+	if isolated; then
+		virsh nwfilter-list >/dev/null 2>&1 || die "libvirt's nwfilter driver isn't available (virtnwfilterd); start it, or set BOXERY_NET_ISOLATION=off to run guests on the open NAT network"
+		net_gateway >/dev/null
+	fi
+}
+
+# ---------------------------------------------------------------- guest network isolation
+# Guests share libvirt's NAT network ($NET, a bridge). Each guest's interface references the nwfilter
+# below, which libvirt instantiates on the host for that interface whenever the domain starts, so it
+# lives in the domain XML: new VMs, forks, reverts, lease resets and reboots all keep it. Root in the
+# guest can't lift it. Same policy as the cloud-hypervisor backend's nftables rules:
+#   - no MAC, IP or ARP spoofing: the guest's IP is the one dnsmasq leased it (CTRL_IP_LEARNING=dhcp,
+#     only DHCP answers from DHCPSERVER count), so a static address or another guest's IP goes nowhere;
+#   - to the host (the bridge address): DHCP and DNS (libvirt's dnsmasq) only;
+#   - no traffic to other guests, the host's other addresses, private, CGNAT/Tailscale, link-local
+#     (cloud metadata), loopback or multicast/broadcast ranges; no IPv6 and no other L2 protocols;
+#   - from outside: only replies, and ssh from the host (connect, wait_ssh, guest setup);
+#   - everything else goes out through libvirt's NAT to the internet.
+# The LLM proxy needs no IP path: it is vsock (CID 2), which nwfilter doesn't see.
+# L3 rules (tcp/udp/all) get conntrack; the L2 root chain must accept IPv4 frames (priority -650, as
+# libvirt's clean-traffic does) for them to be evaluated at all.
+# BOXERY_NET_ISOLATION=off: new VMs get no filter, and `start` removes it from existing ones.
+isolated() {
+	case $ISOLATION in on) return 0 ;; off) return 1 ;; esac
+	die "BOXERY_NET_ISOLATION must be on or off (got '$ISOLATION')"
+}
+ISOLATION_BLOCKED="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/3"
+# The network's own (host) address: its DHCP and DNS server, and where host ssh comes from.
+net_gateway() {
+	local x gw=""
+	x=$(virsh net-dumpxml "$NET" 2>/dev/null) || die "no libvirt network '$NET' (BOXERY_NET)"
+	gw=$(sed -n "/family=.ipv6/d; s/.*<ip address=['\"]\([0-9.]*\)['\"].*/\1/p" <<<"$x" | head -1)
+	[[ -n $gw ]] || die "libvirt network '$NET' has no IPv4 address (BOXERY_NET); isolation needs one, or set BOXERY_NET_ISOLATION=off"
+	# Guest-to-guest traffic is dropped because the network's subnet is in a blocked range.
+	case $gw in 10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) ;;
+	*) die "libvirt network '$NET' ($gw) isn't on a private range, so isolation couldn't keep guests apart; use a 10/8, 172.16/12 or 192.168/16 network, or set BOXERY_NET_ISOLATION=off" ;;
+	esac
+	echo "$gw"
+}
+isolation_filter_xml() { # [UUID]   (libvirt only redefines a filter under its existing UUID)
+	local r p=200
+	echo "<filter name='$NWFILTER' chain='root'>"
+	[[ -z ${1:-} ]] || echo "  <uuid>$1</uuid>"
+	cat <<-'EOF'
+		  <filterref filter='no-mac-spoofing'/>
+		  <filterref filter='no-ip-spoofing'/>
+		  <rule action='accept' direction='inout' priority='-650'><mac protocolid='ipv4'/></rule>
+		  <filterref filter='no-arp-spoofing'/>
+		  <rule action='accept' direction='inout' priority='-500'><mac protocolid='arp'/></rule>
+		  <filterref filter='qemu-announce-self-rarp'/>
+		  <rule action='accept' direction='out' priority='100' statematch='false'><udp srcportstart='68' dstportstart='67' dstipaddr='255.255.255.255'/></rule>
+		  <rule action='accept' direction='in' priority='110' statematch='false'><udp srcipaddr='$DHCPSERVER' srcportstart='67' dstportstart='68'/></rule>
+		  <rule action='accept' direction='out' priority='120'><udp dstipaddr='$DHCPSERVER' srcportstart='68' dstportstart='67'/></rule>
+		  <rule action='accept' direction='out' priority='130'><udp dstipaddr='$DHCPSERVER' dstportstart='53'/></rule>
+		  <rule action='accept' direction='out' priority='140'><tcp dstipaddr='$DHCPSERVER' dstportstart='53'/></rule>
+		  <rule action='accept' direction='in' priority='150'><tcp srcipaddr='$DHCPSERVER' dstportstart='22'/></rule>
+	EOF
+	for r in $ISOLATION_BLOCKED; do
+		echo "  <rule action='drop' direction='out' priority='$p'><all dstipaddr='${r%/*}' dstipmask='${r#*/}'/></rule>"
+		p=$((p + 1))
+	done
+	cat <<-'EOF'
+		  <rule action='accept' direction='out' priority='500'><all/></rule>
+		  <rule action='accept' direction='in' priority='510'><icmp state='RELATED'/></rule>
+		  <rule action='drop' direction='inout' priority='900'><all/></rule>
+		  <filterref filter='no-other-l2-traffic'/>
+		</filter>
+	EOF
+}
+# Define (or update in place: running guests pick up the new rules at once) the filter.
+isolation_define() {
+	local uuid="" x f
+	if x=$(virsh nwfilter-dumpxml "$NWFILTER" 2>/dev/null); then uuid=$(sed -n 's:.*<uuid>\(.*\)</uuid>.*:\1:p' <<<"$x" | head -1); fi
+	f=$(mktemp); isolation_filter_xml "$uuid" >"$f"
+	if ! virsh nwfilter-define "$f" >/dev/null; then rm -f "$f"; die "could not define the $NWFILTER network filter"; fi
+	rm -f "$f"
+}
+isolation_ensure_filter() { isolated || return 0; virsh nwfilter-dumpxml "$NWFILTER" >/dev/null 2>&1 || isolation_define; }
+# virt-install's --network for a new domain (base build, new VM).
+net_arg() {
+	local a="network=$NET,model=virtio"
+	if isolated; then
+		local gw; gw=$(net_gateway) || exit 1
+		a+=",filterref.filter=$NWFILTER,xpath0.create=./filterref/parameter,xpath1.create=./filterref/parameter"
+		a+=",xpath2.set=./filterref/parameter[1]/@name=DHCPSERVER,xpath3.set=./filterref/parameter[1]/@value=$gw"
+		a+=",xpath4.set=./filterref/parameter[2]/@name=CTRL_IP_LEARNING,xpath5.set=./filterref/parameter[2]/@value=dhcp"
+	fi
+	echo "$a"
+}
+# Rewrite DOM's interfaces on $NET in its persistent config: add the filter (isolation on, or the
+# network's gateway changed) or remove it (off). Applies from the next cold start. An interface with
+# another filter is left alone. Returns 1 when nothing changed.
+ensure_isolation() { # DOM
+	local xml new gw="" f; xml=$(virsh dumpxml "$1" --inactive 2>/dev/null) || return 1
+	if isolated; then gw=$(net_gateway) || return 1; fi
+	new=$(isolation_rewrite "$NET" "$NWFILTER" "$gw" <<<"$xml") || return 1   # 1: already as wanted
+	f=$(mktemp); printf '%s\n' "$new" >"$f"
+	if ! virsh define "$f" >/dev/null; then rm -f "$f"; log "could not update network isolation on $1 (left as it was)"; return 1; fi
+	rm -f "$f"
+}
+# NET FILTER GATEWAY (empty = remove) < domain XML > domain XML. Exits 1 (no output) if every interface
+# on NET already is as wanted: FILTER with DHCPSERVER=GATEWAY and DHCP learning, or no FILTER.
+isolation_rewrite() {
+	awk -v net="$1" -v name="$2" -v gw="$3" -v q="'" '
+		function flush(   n, i, ours, other, ok, out, skip) {
+			if (index(block, "<source network=" q net q) == 0) { out_all = out_all block; return }
+			ours = index(block, "<filterref filter=" q name q) > 0
+			other = !ours && index(block, "<filterref ") > 0
+			ok = gw == "" ? !ours : (ours && index(block, "<parameter name=" q "DHCPSERVER" q " value=" q gw q "/>") && index(block, "<parameter name=" q "CTRL_IP_LEARNING" q " value=" q "dhcp" q "/>"))
+			if (other || ok) { out_all = out_all block; return }   # someone else filters it, or nothing to do
+			changed = 1; n = split(block, L, "\n"); out = ""
+			for (i = 1; i < n; i++) {
+				if (skip) { if (L[i] ~ /<\/filterref>/) skip = 0; continue }
+				if (index(L[i], "<filterref filter=" q name q)) { if (L[i] !~ /\/>/) skip = 1; continue }
+				if (L[i] ~ /<\/interface>/ && gw != "")
+					out = out "      <filterref filter=" q name q ">\n        <parameter name=" q "CTRL_IP_LEARNING" q " value=" q "dhcp" q "/>\n        <parameter name=" q "DHCPSERVER" q " value=" q gw q "/>\n      </filterref>\n"
+				out = out L[i] "\n"
+			}
+			out_all = out_all out
+		}
+		/<interface type=.network.>/ { inb = 1; block = "" }
+		inb { block = block $0 "\n"; if ($0 ~ /<\/interface>/) { inb = 0; flush() }; next }
+		{ out_all = out_all $0 "\n" }
+		END { if (!changed) exit 1; printf "%s", out_all }
+	'
 }
 
 backend_init() {
@@ -45,9 +172,17 @@ backend_init() {
 		virsh pool-define-as "$POOL" dir --target "$POOL_DIR" >/dev/null
 		virsh pool-build "$POOL" >/dev/null; virsh pool-start "$POOL" >/dev/null; virsh pool-autostart "$POOL" >/dev/null
 	fi
-	local d n=0
-	while read -r d; do ensure_discard "$d" && n=$((n + 1)); done < <(virsh list --all --name | awk -v p="$PREFIX" 'index($0,p) == 1')
+	if isolated; then isolation_define; fi
+	local d n=0 i=0
+	while read -r d; do
+		ensure_discard "$d" && n=$((n + 1))
+		ensure_isolation "$d" && i=$((i + 1))
+	done < <(virsh list --all --name | awk -v p="$PREFIX" 'index($0,p) == 1')
 	((n == 0)) || log "$n VM(s) will pass discards to the host from their next cold start (stop + start, revert or lease reset)"
+	if ((i > 0)); then
+		if isolated; then log "$i VM(s) get guest network isolation from their next cold start (stop + start, revert or lease reset); until then they are on the open NAT network"
+		else log "$i VM(s) lose guest network isolation from their next cold start (BOXERY_NET_ISOLATION=off)"; fi
+	fi
 }
 
 # Disks pass the guest's discards (online discard, fstrim) to the host, so space freed in the guest is
@@ -118,6 +253,8 @@ backend_build_base() {
 	fi
 	virsh destroy "$name" >/dev/null 2>&1 || true
 	virsh undefine "$name" >/dev/null 2>&1 || true
+	isolation_ensure_filter
+	local net; net=$(net_arg) || exit 1
 	log "uploading base disk"
 	upload_vol "$CACHE/noble.img" "$BASE_VOL" qcow2
 	virsh vol-resize --pool "$POOL" "$BASE_VOL" 20G >/dev/null
@@ -130,7 +267,7 @@ backend_build_base() {
 	log "booting builder VM (installs XFCE, VNC, node, pi, opencode; ~5-10 min)"
 	virt-install --name "$name" --memory 8192 --vcpus 8 --osinfo ubuntu24.04 \
 		--disk "vol=$POOL/$BASE_VOL,bus=virtio,discard=unmap" --disk "vol=$POOL/boxery-base-seed.iso,device=cdrom" \
-		--network "network=$NET,model=virtio" --graphics none \
+		--network "$net" --graphics none \
 		--serial "pty,log.file=$POOL_DIR/build.log" \
 		--events on_reboot=destroy --import --noautoconsole >/dev/null
 	local t=0
@@ -182,6 +319,8 @@ pull_to_base() { # NAME ROOT_VOL
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
 	local name=$1 cpus=$2 mem=$3 disk=$4 userdata=$5 from=${6:-} d; d=$(dom "$1")
+	isolation_ensure_filter
+	local net; net=$(net_arg) || exit 1
 	local tmp; tmp=$(mktemp -d)
 	printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$name" "$(date +%s)" "$name" >"$tmp/meta-data"
 	# DHCP client id = MAC, not the machine-id DUID: a VM made from an image starts with its source's
@@ -202,7 +341,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	new_overlay "$d.qcow2" "$bytes" "$backing"
 	virt-install --name "$d" --memory "$mem" --vcpus "$cpus" --osinfo ubuntu24.04 \
 		--disk "vol=$POOL/$d.qcow2,bus=virtio,discard=unmap" --disk "vol=$POOL/$d-seed.iso,device=cdrom" \
-		--network "network=$NET,model=virtio" \
+		--network "$net" \
 		--vsock cid.auto=yes \
 		--graphics none --console pty,target_type=serial \
 		--channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
@@ -225,6 +364,25 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USE
 	done
 }
 
+# The guest's live ssh host key, read through the qemu guest agent (the hypervisor's channel, not the
+# VM's network): what boxery-host pins for a VM that has no record (hostkeys.mjs). The pinned key if the
+# seed installed one, else the image's own ed25519 key.
+backend_host_key() {
+	local d pid r i out; d=$(dom "$1")
+	pid=$(virsh qemu-agent-command "$d" '{"execute":"guest-exec","arguments":{"path":"/bin/sh","arg":["-c","cat /etc/ssh/boxery_host_ed25519_key.pub 2>/dev/null || cat /etc/ssh/ssh_host_ed25519_key.pub"],"capture-output":true}}' 2>/dev/null |
+		sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p') || return 1
+	[[ -n $pid ]] || return 1
+	for i in $(seq 20); do
+		r=$(virsh qemu-agent-command "$d" "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}" 2>/dev/null) || return 1
+		[[ $r == *'"exited":true'* ]] && break
+		((i < 20)) || return 1; sleep 0.2
+	done
+	[[ $r == *'"exitcode":0'* ]] || return 1
+	out=$(sed -n 's/.*"out-data":"\([A-Za-z0-9+/=]*\)".*/\1/p' <<<"$r" | base64 -d 2>/dev/null) || return 1
+	[[ $out =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*([[:space:]]|$) ]] || return 1
+	echo "${out%%$'\n'*}"
+}
+
 # Where the VM's sshd is reachable from this host: "HOST PORT".
 backend_ssh_endpoint() {
 	exists "$1" || die "no such vm: $1"
@@ -233,7 +391,12 @@ backend_ssh_endpoint() {
 }
 backend_wait_endpoint() { echo "$(wait_ip "$1") 22"; }
 
-backend_start() { ensure_discard "$(dom "$1")" || true; virsh start "$(dom "$1")" >/dev/null; }
+backend_start() {
+	local d; d=$(dom "$1")
+	ensure_discard "$d" || true
+	isolation_ensure_filter; ensure_isolation "$d" || true
+	virsh start "$d" >/dev/null
+}
 backend_stop() { virsh shutdown "$(dom "$1")" >/dev/null; }
 backend_size() {
 	local d; d=$(dom "$1")
@@ -260,7 +423,10 @@ backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
 	fi
 	{ [[ -z $2 ]] || libvirt_set_vcpus "$d" "$c" "$2"; } && { [[ -z $3 ]] || libvirt_set_mem "$d" "$m" "$3"; } &&
 		{ [[ -z $4 ]] || virsh vol-resize --pool "$POOL" "$d.qcow2" "${4}G" >/dev/null; } || rc=$?
-	if [[ $st == running ]]; then virsh start "$d" >/dev/null || die "could not start $name again after resizing it"; fi
+	if [[ $st == running ]]; then
+		isolation_ensure_filter; ensure_isolation "$d" || true
+		virsh start "$d" >/dev/null || die "could not start $name again after resizing it"
+	fi
 	((rc == 0)) || die "resizing $name failed partway; check: virsh dominfo $d"
 }
 
@@ -354,6 +520,7 @@ backend_reimage() { # NAME IMAGE   (keeps the domain: MAC, seed, vsock CID; ends
 	fi
 	new_overlay "$d.qcow2" "$bytes" "$(vol "$img")" || die "could not create $name's disk from $img"
 	ensure_discard "$d" || true
+	isolation_ensure_filter; ensure_isolation "$d" || true
 	virsh start "$d" >/dev/null || die "could not start $name"
 	pull_to_base "$name" "$(root_vol "$(vol "$img")")"
 }

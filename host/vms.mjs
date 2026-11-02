@@ -2,6 +2,7 @@
 // holds the VMs' lifecycle locks for its whole duration (boxery-operations.mjs, docs/lifecycle.md).
 import { randomBytes } from "node:crypto";
 import { captureVm, cleanupVmImages } from "./images.mjs";
+import { deleteHostKey } from "./hostkeys.mjs";
 import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
 import { issueToken, writeSeed } from "./seed.mjs";
 import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
@@ -188,6 +189,7 @@ export async function rm(rt, [name]) {
 	await cleanupVmImages(rt, name);
 	rt.deleteToken(name);
 	rt.clearEdge(name);
+	deleteHostKey(rt.conf, name);
 	rt.done(action);
 	log(`${name} removed with its snapshots (proxy token revoked)`);
 }

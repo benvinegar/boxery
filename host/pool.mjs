@@ -68,11 +68,25 @@ export async function poolRm(rt, [name, force]) {
 
 // ---------------------------------------------------------------- edge grants
 // Per-VM HTTP credential routes for the proxy's /edge/ path (values never enter the VM).
-// stdin: {"HOST": {"headers": {"Name": "value"}, "readonly": bool}, …}   ({} clears)
+// stdin: {"hosts": {"HOST": {"headers": {"Name": "value"}, "readonly": bool}, …}, "llm": ["chatgpt", …]}
+// ({} clears). A bare {"HOST": …} map (older controllers) is read as {"hosts": …}. `llm` lists the
+// LLM proxy routes this VM may use; without it the VM gets no LLM access.
 const DNS_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z]{2,63}$/;
 const RESERVED = new Set(["host", "content-length", "connection", "transfer-encoding", "te", "upgrade", "proxy-connection", "keep-alive", "trailer"]);
 /** @param {unknown} v @returns {v is Record<string, any>} */
 const isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+export const LLM_PROVIDERS = ["chatgpt", "openai", "anthropic", "ollama"];
+
+/** stdin → {hosts, llm}, or null if malformed. "hosts"/"llm" can't be route hosts (no dot), so the forms don't clash.
+ *  @param {unknown} j @returns {{ hosts: EdgeRoutes, llm: string[] } | null} */
+export function parseEdge(j) {
+	if (!isObject(j)) return null;
+	const keys = Object.keys(j);
+	const wrapped = keys.length > 0 && keys.every((k) => k === "hosts" || k === "llm");
+	const hosts = wrapped ? j.hosts ?? {} : j, llm = wrapped ? j.llm ?? [] : [];
+	if (!validRoutes(hosts) || !Array.isArray(llm) || !llm.every((p) => LLM_PROVIDERS.includes(p))) return null;
+	return { hosts, llm: [...new Set(llm)].sort() };
+}
 
 /** Same host/header rules as the proxy: nothing that could smuggle a header or reach an IP/port.
  *  @param {unknown} routes @returns {routes is EdgeRoutes} */
@@ -91,9 +105,10 @@ export async function edgeSet(rt, [name, ...args]) {
 	if (args.length && (args.length !== 2 || args[0] !== "--lease" || !/^l-[0-9a-f]{32}$/.test(args[1]))) fail("usage: edge-set NAME [--lease ID] < routes.json");
 	const want = args[1];
 	if (!await rt.vms.exists(name)) fail(`no such VM: ${name}`);
-	let routes;
-	try { routes = JSON.parse(readFd(0, { limit: 262144 })); } catch { routes = null; }
-	if (!validRoutes(routes)) fail("edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)");
+	let edge;
+	try { edge = parseEdge(JSON.parse(readFd(0, { limit: 262144 }))); } catch { edge = null; }
+	if (!edge) fail(`edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF; llm: ${LLM_PROVIDERS.join("|")})`);
+	const { hosts: routes, llm } = edge;
 	const row = rt.poolRow(name);
 	if (want && row?.lease_id !== want) fail(`edge-set: ${want} is not ${name}'s current lease`);
 	// The lease the proxy will see on this VM's token (none for a lease that began before tokens were per lease).
@@ -101,10 +116,10 @@ export async function edgeSet(rt, [name, ...args]) {
 	const dir = path.join(rt.conf, "edge");
 	mkdirSync(dir, { recursive: true });
 	chmodSync(dir, 0o700);
-	if (!Object.keys(routes).length) { rt.clearEdge(name); log(`${name}: edge routes cleared`); return; }
+	if (!Object.keys(routes).length && !llm.length) { rt.clearEdge(name); log(`${name}: edge routes cleared`); return; }
 	if (row && row.state !== "LEASED") fail(`edge-set: ${name} is a pool VM without an active lease`);
 	const tmp = path.join(dir, `.${name}.${randomBytes(4).toString("hex")}`);
-	writeFileSync(tmp, JSON.stringify({ hosts: routes, ...(lease ? { lease } : {}) }), { mode: 0o600, flag: "wx" });
+	writeFileSync(tmp, JSON.stringify({ hosts: routes, llm, ...(lease ? { lease } : {}) }), { mode: 0o600, flag: "wx" });
 	renameSync(tmp, path.join(dir, `${name}.json`)); // atomic: the proxy never reads a partial file
-	log(`${name}: edge routes → ${Object.keys(routes).sort().join(", ")}`);
+	log(`${name}: edge routes → ${[...Object.keys(routes).sort(), ...llm.map((p) => `llm:${p}`)].join(", ") || "-"}`);
 }

@@ -43,7 +43,8 @@ export function resources(command, args) {
 		}
 	} else if (command === "pool") {
 		if (["add", "rm"].includes(args[0])) names = [assertName(args[1])];
-	} else if (["start", "stop", "resize", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
+	} else if (command === "pin") names = [assertName(args.find((a) => !a.startsWith("-")) ?? "")];
+	else if (["start", "stop", "resize", "rm", "delete", "snap", "snap-rm", "revert", "edge-set"].includes(command)) names = [assertName(args[0])];
 	return [...new Set(names)].sort();
 }
 

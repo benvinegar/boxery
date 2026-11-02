@@ -346,6 +346,33 @@ it("a pool VM's proxy token lives exactly as long as a lease, and its grants bel
 	cleanJournal();
 });
 
+it("a pool VM's llm: grants are host state of the lease: stamped, refused when stale, gone on release", async () => {
+	const file = path.join(conf, "edge", "pool.json");
+	const edge = () => JSON.parse(readFileSync(file, "utf8"));
+	const LLM = '{"llm":["chatgpt"]}';
+	await ok(["new", "pool"]);
+	await ok(["pool", "add", "pool"]);
+	assert.notEqual((await run(["edge-set", "pool"], {}, LLM).result).code, 0, "no llm grant on a free pool VM");
+	assert.equal(existsSync(file), false);
+
+	const alice = (await ok(["acquire", "--holder", "alice"], {}, KEY)).split(" ")[1];
+	await ok(["edge-set", "pool", "--lease", alice], {}, LLM);
+	assert.deepEqual(edge(), { hosts: {}, llm: ["chatgpt"], lease: alice }, "llm-only grants are written, stamped with the lease");
+	await ok(["release", alice]);
+	assert.equal(existsSync(file), false, "release takes the lease's llm grants with it");
+
+	const bob = (await ok(["acquire", "--holder", "bob"], {}, KEY)).split(" ")[1];
+	const stale = await run(["edge-set", "pool", "--lease", alice], {}, LLM).result;
+	assert.notEqual(stale.code, 0, "alice's controller can't grant llm on bob's lease");
+	assert.equal(existsSync(file), false);
+	await ok(["edge-set", "pool", "--lease", bob], {}, '{"llm":["ollama","anthropic"]}');
+	assert.deepEqual(edge(), { hosts: {}, llm: ["anthropic", "ollama"], lease: bob });
+	await ok(["edge-set", "pool", "--lease", bob], {}, '{"llm":[]}');
+	assert.equal(existsSync(file), false, "an empty llm list with no routes clears the file");
+	await ok(["pool", "rm", "pool", "--force"]);
+	cleanJournal();
+});
+
 it("reconcile retries a killed reset immediately rather than waiting for the stale timeout", async () => {
 	await ok(["new", "pool"]); await ok(["pool", "add", "pool"]);
 	const lease = (await ok(["acquire", "--holder", "alice"], {}, KEY)).split(" ")[1];

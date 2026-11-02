@@ -347,7 +347,7 @@ backend_capture() { # NAME IMAGE   (VM may be running; it keeps running)
 	[[ ! -e $img ]] || die "image $2 exists"
 	mkdir -p "$CH_DIR/images"
 	if ch_active "$1"; then
-		vm_ssh_cmd "$(ch_ip "$1")" 22 sync >/dev/null 2>&1 || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
+		vm_ssh_cmd "$1" "$(ch_ip "$1")" 22 sync >/dev/null 2>&1 || log "warning: couldn't sync $1's filesystems; $2 is crash-consistent"
 		ch_remote "$1" pause >/dev/null || die "pausing $1 failed"
 		if ! ch_copy "$d/disk.qcow2" "$img.part"; then
 			ch_remote "$1" resume >/dev/null 2>&1; rm -f "$img.part"; die "copying $1's disk failed"

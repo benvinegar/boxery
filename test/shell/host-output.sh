@@ -72,6 +72,9 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
                             change a VM's size; a running VM is restarted. Disk only grows
   snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
   connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
+  known-hosts NAME          NAME's pinned ssh host key as a known_hosts line (ssh KnownHostsCommand)
+  pin NAME [--from-guest]   re-pin running NAME's ssh host key (hypervisor/loopback channel; --from-guest:
+                            trust what NAME's ssh endpoint answers once)
   proxy-log [N]             recent LLM + edge proxy requests
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
@@ -179,7 +182,7 @@ err "resize without sizes" "boxery-host: usage: resize NAME [--cpus N] [--mem Mi
 err "revert without a snapshot" "boxery-host: usage: revert NAME SNAP" revert a1
 err "rm of a missing VM" "boxery-host: no such vm: nope" rm nope
 err "pool rm of a pet" "boxery-host: b2 is not a pool VM" pool rm b2
-err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF)" edge-set a1 </dev/null
+err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF; llm: chatgpt|openai|anthropic|ollama)" edge-set a1 </dev/null
 err "images with a bad flag" "boxery-host: usage: images [--json]" images bogus
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
 err "ls with an extra argument" "boxery-host: usage: ls [--json]" ls extra

@@ -116,7 +116,7 @@ help|release) : ;;
 add-key) cat >/dev/null ;;
 acquire) cat >/dev/null; printf 'demo l-0123456789abcdef0123456789abcdef %s\n' "$(( $(date +%s) + 600 ))" ;;
 renew) printf '%s %s\n' "$2" "$(( $(date +%s) + 600 ))" ;;
-edge-set) cat >>"$EDGE_LOG" ;;
+edge-set) cat >>"$EDGE_LOG"; [ -z "${EDGE_ARGS:-}" ] || echo "$*" >>"$EDGE_ARGS" ;;
 esac
 STUB
 chmod +x "$leasebin"
@@ -138,6 +138,12 @@ if cmp -s "$p1/leases/$id.key" "$p2/leases/$id.key"; then echo 'lease keys share
 [ -f "$p1/grants/.demo.edge" ]; [ ! -e "$p2/grants/.demo.edge" ]
 grep -q '"readonly":true' "$EDGE_LOG"
 "$CLI" --host lease-two grant demo http:api.example.com --cmd 'printf other-fixture-token' >/dev/null
+# llm grants on a leased VM: sent with the lease id, even without any http grant.
+: >"$EDGE_LOG"; export EDGE_ARGS="$tmp/edge.args"
+"$CLI" --host lease-one revoke demo http:api.example.com >/dev/null
+"$CLI" --host lease-one grant demo llm:ollama >/dev/null
+tail -1 "$EDGE_LOG" | grep -q '"llm":\["ollama"\]'
+grep -qx "edge-set demo --lease $id" "$EDGE_ARGS"
 "$CLI" --host lease-one release demo >/dev/null
 [ ! -e "$p1/leases/$id.key" ]; [ ! -e "$p1/grants/demo" ]; [ ! -e "$p1/grants/.demo.edge" ]
 [ -f "$p2/leases/$id.key" ]; [ -f "$p2/grants/demo" ]; [ -f "$p2/grants/.demo.edge" ]

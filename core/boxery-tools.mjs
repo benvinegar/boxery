@@ -323,14 +323,14 @@ export const TOOLS = [
 		description:
 			"Ask the user to give a VM access to something on their machine, when work there fails without it (a 401 from a package registry, git asking for credentials). " +
 			"The user approves or declines in a prompt you cannot answer; on approval the grant is added and applied. " +
-			"spec: `github` (git over https and the GitHub API; the token stays on the host proxy, never in the VM; readonly:true for clone/fetch and reads), " +
+			"spec: `llm:chatgpt` | `llm:openai` | `llm:anthropic` | `llm:ollama` (an LLM provider through the host proxy; a VM has none until granted, so a 403 'llm:X is not granted' from 127.0.0.1:8088 means request it), `github` (git over https and the GitHub API; the token stays on the host proxy, never in the VM; readonly:true for clone/fetch and reads), " +
 			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable's value from this machine), " +
 			"or `file:LOCAL[=REMOTE]` (LOCAL on this machine; REMOTE relative to /home/agent, default project/<name>; e.g. `file:~/.npmrc=.npmrc`). " +
 			"Prefer `github` for GitHub. Granted values live in the VM's memory, not its disk or snapshots. Request each thing once; if the user declines, don't ask again. " +
 			"Where the client can't prompt, you get the command for the user to run. vm_info {action:'grants'} shows what the VM already has.",
 		parameters: obj(
 			{
-				spec: { type: "string", description: "github | ssh-agent | env:VAR | file:LOCAL[=REMOTE]" },
+				spec: { type: "string", description: "llm:PROVIDER | github | ssh-agent | env:VAR | file:LOCAL[=REMOTE]" },
 				readonly: { type: "boolean", description: "github only: clone/fetch and read-only API calls" },
 				reason: { type: "string", description: "One sentence for the user: what failed and why this fixes it" },
 			},

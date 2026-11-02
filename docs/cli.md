@@ -38,9 +38,12 @@ boxery ls [--json]                           # VMs, with their shape and grants
 boxery start demo | stop demo
 boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
+boxery pin demo [--from-guest]               # re-pin demo's ssh host key (a VM from before keys were pinned)
 ```
 
 **Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
+
+**Host keys.** Every ssh to a VM checks its host key, which is pinned on the host when the VM is made ([security](security.md#vm-host-keys)). A VM made before that, or whose record was lost, fails with "Host key verification failed" until you run `boxery pin NAME`. That reads the key through the hypervisor (libvirt's guest agent) or the host's loopback endpoint (Lima, exe, boat). `--from-guest` instead trusts what the VM's ssh endpoint answers, once. `boxery start NAME` pins it automatically where it can.
 
 `resize` takes any of `--cpus`, `--mem` (MiB) and `--disk` (GiB), the same units as `new`. A running VM is stopped, resized and started again, so its tmux sessions end; its grants are pushed again afterwards. A stopped VM stays stopped. The disk can only grow, and the guest's root filesystem grows on the next boot. Values that are already the VM's current size are ignored, so a resize that changes nothing doesn't restart anything. Like other long-lived VM products (exe.dev, Daytona, EC2), it changes the VM in place; throwaway sandboxes such as E2B are recreated instead.
 
@@ -130,7 +133,7 @@ Editors: once the `Include` line `setup` prints is in your `~/.ssh/config` ([Ins
 ### Grants
 
 ```bash
-boxery grant demo ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]
+boxery grant demo llm:PROVIDER | http:HOST --cmd CMD | github | ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE]
 boxery revoke demo SPEC… | all
 boxery grants demo [apply | --json]
 ```
@@ -178,6 +181,8 @@ shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.js
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
 snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
+known-hosts NAME                NAME's pinned ssh host key as one known_hosts line (ssh KnownHostsCommand; empty if none)
+pin NAME [--from-guest]         re-pin running NAME's ssh host key; prints its SHA256 fingerprint
 proxy-log [N]
 
 pool add NAME | rm NAME [--force] | ls [--json]
@@ -258,6 +263,7 @@ Local grant records (names and paths only; values are never stored or printed).
 | `ssh-agent` | (none) |
 | `env` | `var` (string), `cmd` (string \| null: command that produces the value; `null` = read from the local environment) |
 | `file` | `local` (absolute local path), `remote` (absolute path in the VM) |
+| `llm` | `provider` (`chatgpt`, `openai`, `anthropic`, `ollama`) |
 | `http` | `host`, `auth` (`bearer`, `basic:USER`, `header:NAME`), `readonly` (boolean), `cmd` (command that produces the secret) |
 
 #### `boxery leases --json`
@@ -390,6 +396,6 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 | `~/.boxery/profiles/HOST/grants/NAME` | Grant names and paths (never values) |
 | `~/.boxery/profiles/HOST/leases/` | Your leases and their per-lease ssh keys |
 | `~/.config/boxery/host.env` (host) | Backend and overrides (`BOXERY_BACKEND`, `BOXERY_LIMA_VMTYPE`, …) |
-| `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys |
+| `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys (VMs still need an `llm:` grant to use them) |
 | `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens (per lease on pool VMs) |
 | `~/.config/boxery/leases.db` (host) | Lease state (SQLite) |

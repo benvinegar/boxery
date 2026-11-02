@@ -1,8 +1,11 @@
 name: ci
+# Skip when a change touches only static docs. A change that also touches code runs everything.
 on:
   push:
     branches: [master]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
 permissions:
   contents: read
 jobs:

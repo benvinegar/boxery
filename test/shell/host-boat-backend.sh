@@ -213,6 +213,8 @@ grep -F 'systemd-machine-id-setup' "$I" >/dev/null && grep -F 'echo v1 >/etc/box
 up=$(grep -F '/etc/boxery/proxy-upstream' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' | head -1 | cut -c6- | base64 -d 2>/dev/null || true)
 [[ $up == "TCP:127.0.0.1:18088" ]] && ok "guest proxy upstream is the tunnel's -R end" || bad "upstream: $up"
 [[ $(cat "$E/v1/known_hosts") == "$(ID v1) $(cat "$S/sb/$(ID v1)/hostkey")" ]] && ok "host key from the API pinned under the sandbox id" || bad "known_hosts: $(cat "$E/v1/known_hosts")"
+! grep -F 'boxery_host_ed25519_key' "$I" >/dev/null && [[ $("$ROOT/host/backend.sh" backend_platform_host_key v1) == "$(cat "$S/sb/$(ID v1)/hostkey")" && $(cat "$BOXERY_CONF/host-keys/v1") == "v1.boxery $(cat "$S/sb/$(ID v1)/hostkey")" ]] &&
+	ok "no seeded host key; backend_platform_host_key reports the API's key for boxery-host to pin (#70)" || bad "platform key: $("$ROOT/host/backend.sh" backend_platform_host_key v1 2>&1) / $(cat "$BOXERY_CONF/host-keys/v1" 2>&1)"
 grep -F "ExecStart=$E/v1/tunnel.sh" "$(U v1)" >/dev/null && [[ -f $UNITS/enabled.boxery-boat-bxtest-v1.service && -f $UNITS/boxery-boat-bxtest-v1.service ]] && ok "tunnel: enabled, running user unit" || bad "unit"
 bash -n "$E/v1/tunnel.sh" && ok "tunnel.sh parses" || bad "tunnel.sh syntax"
 : >"$CALLS"; bash "$E/v1/tunnel.sh" && ok "tunnel connects with the pinned key" || bad "tunnel ssh refused"
@@ -251,6 +253,7 @@ expect "start of a starting VM" "$H" start v1
 ! called "/resume" && [[ $(st "$(ID v1)") == ready ]] && ok "… waits for it instead of resuming again" || bad "start while starting: $(cat "$CALLS")"
 ip2=$(cat "$S/sb/$(ID v1)/ip")
 [[ $ip2 != "$ip1" ]] && grep -F "user@$ip2" "$E/v1/tunnel.sh" >/dev/null && [[ $(cat "$E/v1/known_hosts") == "$(ID v1) $(cat "$S/sb/$(ID v1)/hostkey")" && -f $UNITS/boxery-boat-bxtest-v1.service ]] && ok "start re-pins the new machine and rewrites the tunnel" || bad "after start: $(cat "$E/v1/tunnel.sh")"
+[[ $(cat "$BOXERY_CONF/host-keys/v1") == "v1.boxery $(cat "$S/sb/$(ID v1)/hostkey")" ]] && ok "...and boxery-host's record for v1 follows the new machine's key" || bad "host-keys/v1 after start: $(cat "$BOXERY_CONF/host-keys/v1")"
 
 # --- resize: stop + resume with a new type
 : >"$CALLS"

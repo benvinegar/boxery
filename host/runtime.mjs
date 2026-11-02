@@ -7,6 +7,7 @@ import * as leases from "./boxery-leases.mjs";
 import { completeIntent, readToken, recordIntent, updateToken } from "./boxery-operations.mjs";
 import { loadConfig } from "./config.mjs";
 import { createGuest } from "./guest.mjs";
+import { ensureHostKey } from "./hostkeys.mjs";
 import { loadShapes } from "./shapes.mjs";
 import { fail, log } from "./util.mjs";
 /** @import { DatabaseSync } from "node:sqlite" */
@@ -29,8 +30,17 @@ export function createRuntime(env = process.env) {
 		log,
 		vms: createBackend(config.env),
 		guest: createGuest(config),
-		/** Wait for NAME's sshd at EP, asking the backend why it can't be reached (exe: its tunnel). @param {string} name @param {GuestEndpoint} ep @param {number} [tries] */
-		waitSsh: (name, ep, tries) => rt.guest.waitSsh(ep, tries, () => rt.vms.endpointProblem(name)),
+		/** Wait for NAME's sshd at EP, asking the backend why it can't be reached (exe: its tunnel). Before
+		 *  each try, NAME's host key is refreshed or, if it has none, pinned through a trusted channel
+		 *  (hostkeys.mjs); without one, ssh refuses NAME and the timeout says how to pin it.
+		 *  @param {string} name @param {GuestEndpoint} ep @param {number} [tries] */
+		waitSsh: (name, ep, tries) => {
+			/** @type {string | null} */
+			let keyProblem = null;
+			return rt.guest.waitSsh(ep, tries,
+				async () => (await rt.vms.endpointProblem(name)) ?? (keyProblem ? { fatal: false, message: keyProblem } : null),
+				async () => { keyProblem = await ensureHostKey(rt, name, ep); });
+		},
 		db: () => (db ??= leases.open(path.join(config.conf, "leases.db"))),
 		close: () => db?.close(),
 		shapes: () => loadShapes(config.root, config.conf),

@@ -72,7 +72,7 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	writeFileSync(path.join(dir, "vms", "b2", "size"), "4 8192 40");
 	assert.equal(await b.exists("a1"), true);
 	assert.equal(await b.exists("zz"), false);
-	assert.deepEqual(await b.sshEndpoint("a1"), { host: "127.0.0.1", port: "22000" });
+	assert.deepEqual(await b.sshEndpoint("a1"), { host: "127.0.0.1", port: "22000", name: "a1" }); // name: whose host key to check
 	await assert.rejects(b.sshEndpoint("b2", { quiet: true }), (e) => e instanceof BackendError && e.exitCode === 1 && !e.reported);
 	assert.deepEqual(await b.size("b2"), [4, 8192, 40]);
 	await b.call("backend_capture", ["a1", "a1@one"]);
@@ -104,11 +104,15 @@ test("guest: ssh argv, stdin for keys, wait retries, host key creation", async (
 	assert.equal(guest.hostPubkey(), "ssh-ed25519 AAAAnew boxery-host");
 	writeFileSync(path.join(conf, "authorized_keys"), "ssh-ed25519 BBBB laptop\n\nssh-ed25519 AAAAnew boxery-host\n");
 	assert.deepEqual(guest.petKeys(), ["ssh-ed25519 AAAAnew boxery-host", "ssh-ed25519 BBBB laptop"]);
-	const ep = { host: "10.0.0.5", port: "2222" };
+	const ep = { host: "10.0.0.5", port: "2222", name: "a1" };
 	await guest.setKeys(ep, guest.petKeys());
 	assert.equal(readFileSync(path.join(dir, "keys"), "utf8"), "ssh-ed25519 AAAAnew boxery-host\nssh-ed25519 BBBB laptop\n");
 	const line = /** @type {string} */ (readFileSync(log, "utf8").trim().split("\n").at(-1));
 	assert.match(line, /-o IdentityFile=.*mgmt_ed25519 .* -p 2222 agent@10\.0\.0\.5 umask 077;/);
+	// The VM's pinned host key, checked strictly, under its own alias (#70): never accept-anything.
+	assert.match(line, new RegExp(`-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${conf}/host-keys/a1 -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias=a1\\.boxery `));
+	assert.doesNotMatch(line, /StrictHostKeyChecking=no|UserKnownHostsFile=\/dev\/null/);
+	await assert.rejects(guest.run({ host: "10.0.0.5", port: "22" }, "true"), /needs the VM.s name/);
 	assert.equal(await guest.run(ep, "echo hi"), 0);
 	const failing = createGuest({ conf, env: { ...env, SSH_FAIL: "1" } });
 	assert.equal(await failing.run(ep, "true"), 255);

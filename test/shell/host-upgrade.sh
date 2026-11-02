@@ -89,7 +89,7 @@ touch "$tmp/vms/.barriers/held.new.release"
 wait "$held" || true
 if wait "$up"; then ok "upgrade completes once the operation finishes"; else bad "upgrade failed: $(cat "$tmp/up.log")"; fi
 [[ $(ig rev-parse HEAD) == "$v2" ]] && ok "fast-forwarded to origin/master" || bad "HEAD $(ig rev-parse HEAD)"
-! grep -q "Failed\|bus" "$tmp/up.log" && grep -q "restart boxery-proxy.service" "$tmp/systemctl.log" && grep -q "restart boxery-proxy-two.service" "$tmp/systemctl.log" && ok "re-ran init for both profiles (services restarted)" || bad "systemctl: $(cat "$tmp/systemctl.log")"
+! grep -q "Failed\|connect to bus" "$tmp/up.log" && grep -q "restart boxery-proxy.service" "$tmp/systemctl.log" && grep -q "restart boxery-proxy-two.service" "$tmp/systemctl.log" && ok "re-ran init for both profiles (services restarted)" || bad "systemctl: $(cat "$tmp/systemctl.log")"
 grep -q "proxy healthy on :$port" "$tmp/up.log" && grep -q "$p2: .* VMs" "$tmp/up.log" && ok "checked each profile after init" || bad "checks: $(cat "$tmp/up.log")"
 jq -e '.busy and .held' "$p1/tokens.json" >/dev/null && ok "in-flight operation finished normally" || bad "tokens: $(cat "$p1/tokens.json")"
 # sql DB QUERY → the rows as JSON

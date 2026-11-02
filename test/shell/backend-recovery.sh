@@ -28,6 +28,8 @@ log() { :; }
 			esac ;;
 		destroy) mock_state='shut off' ;;
 		start) mock_state=running ;;
+		dumpxml) return 1 ;;   # reimage's discard/isolation updates: nothing to update
+		nwfilter-dumpxml) echo "<filter name='$2'/>" ;;
 		*) die "unexpected virsh command: $*" ;;
 		esac
 	}

@@ -258,7 +258,11 @@ remote_identity_script() { # USERDATA NAME BOOT_SCRIPT HOST_KEYS
 	echo 'BOXERY_KEYS'
 	echo 'chown agent:agent /home/agent/.ssh/authorized_keys; chmod 600 /home/agent/.ssh/authorized_keys'
 	echo 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null 2>&1'
-	if [[ $4 == regen ]]; then echo 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart ssh.service'; fi
+	# The pinned host key boxery-host put in the user-data (host/hostkeys.mjs) was written above with the
+	# other files; sshd must pick it up. Without one (boat: the platform's key is pinned), regenerate the
+	# copied disk's own keys unless the platform gives every machine its own.
+	if grep -q '^  - path: /etc/ssh/boxery_host_ed25519_key$' "$1"; then echo 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart ssh.service'
+	elif [[ $4 == regen ]]; then echo 'rm -f /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null; systemctl restart ssh.service'; fi
 	# Hostname (and /etc/hosts), now and at every boot: the platform resets them.
 	printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/hostname; %s\n' "$2" "$3"
 	echo 'rm -rf /run/user/*/boxery'

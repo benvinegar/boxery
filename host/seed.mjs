@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { hostKeySeedFiles, newHostKey, setHostKey } from "./hostkeys.mjs";
 /** @import { Runtime } from "./runtime.mjs" */
 
 /** A tool-capable model of the host's Ollama. @typedef {{ id: string }} OllamaModel */
@@ -71,9 +72,10 @@ export function baseUserdata(root, layers) {
 
 /** The user-data text. keys: authorized keys; upstream: the backend's guest proxy upstream (socat address).
  * provision (headless VMs on the stock image): layers to apply at first boot, e.g. "plumbing devtools",
- * with layers: their write_files lines.
- * @param {{ name: string, keys: string[], upstream: string, cred: string, ollama?: OllamaModel[], provision?: string, layers?: string[] }} opts */
-export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision = "", layers = [] }) {
+ * with layers: their write_files lines. hostKey: {private, public}, this VM's ssh host key (hostkeys.mjs).
+ * @param {{ name: string, keys: string[], upstream: string, cred: string, ollama?: OllamaModel[], provision?: string, layers?: string[],
+ *   hostKey?: { private: string, public: string } | null }} opts */
+export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision = "", layers = [], hostKey = null }) {
 	const [models, opencode, token] = credentialFiles(cred, ollama);
 	const files = [models, [".pi/agent/settings.json", JSON.stringify(piSettings(), null, 2)], opencode, token];
 	return [
@@ -92,7 +94,13 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		"bootcmd:",
 		"  - [cloud-init-per, instance, boxery-keys, sh, -c, 'rm -f /home/agent/.ssh/authorized_keys']",
 		"  - [cloud-init-per, instance, boxery-machine-id, sh, -c, 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null']",
+		// The pinned host key (hostkeys.mjs): write_files runs in cloud-init's init stage, which is ordered
+		// before ssh.service, so sshd starts with it and presents only it (the image's own ssh_host_* keys
+		// stay unused). runcmd reloads sshd in case it was already running (an image whose sshd starts early).
 		"write_files:",
+		...(hostKey ? hostKeySeedFiles(hostKey).flatMap(([f, content, mode]) => [
+			`  - path: ${f}`, "    owner: root:root", `    permissions: "${mode}"`, "    encoding: b64", `    content: ${Buffer.from(content).toString("base64")}`,
+		]) : []),
 		"  - path: /etc/boxery/proxy-upstream",
 		`    content: ${upstream}`,
 		...(provision ? [...layers, "  - path: /etc/boxery/provision", `    content: ${provision}`] : []),
@@ -103,6 +111,7 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		"runcmd:",
 		// Backends without a cloud-init seed (Lima, exe) run boxery-provision themselves (README: backend_new).
 		...(provision ? ['  - [bash, -c, "/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1"]'] : []),
+		...(hostKey ? ['  - [sh, -c, "systemctl try-reload-or-restart ssh.service || true"]'] : []),
 		'  - [bash, -c, "systemctl restart boxery-llm.service"]',
 		"  - [bash, -c, \"chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'\"]",
 		"",
@@ -119,7 +128,12 @@ export async function writeSeed(rt, name, provision = "") {
 	const secret = randomBytes(24).toString("hex");
 	rt.setToken(name, secret);
 	const file = path.join(dir, "user-data");
-	writeFileSync(file, cloudConfig({ name, keys: rt.guest.petKeys(), upstream: await rt.vms.guestProxyUpstream(), cred: `${name}:${secret}`, ollama: await ollamaModels(), provision, layers: provision ? await rt.vms.layerFiles() : [] }));
+	// A new seed is a new identity: a new host key, recorded before the VM can boot with it (forks and VMs
+	// from images too: their disk carries another VM's). Backends whose platform pins its own key (boat)
+	// record it from the platform instead.
+	const hostKey = await rt.vms.has("backend_platform_host_key") ? null : newHostKey(name);
+	writeFileSync(file, cloudConfig({ name, keys: rt.guest.petKeys(), upstream: await rt.vms.guestProxyUpstream(), cred: `${name}:${secret}`, ollama: await ollamaModels(), provision, layers: provision ? await rt.vms.layerFiles() : [], hostKey }), { mode: 0o600 });
+	if (hostKey) setHostKey(rt.conf, name, hostKey.public);
 	return file;
 }
 

@@ -11,9 +11,17 @@
 </p>
 
 <p align="center">
+  <a href="#where-the-vms-run">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/works-with-dark.svg">
+      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt and Cloud Hypervisor on Linux; exe.dev and boat.dev in the cloud" width="740">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
   <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Backends" src="https://img.shields.io/badge/backends-Lima%20%7C%20libvirt%20%7C%20exe.dev%20%7C%20boat.dev%20(experimental)-555">
 </p>
 
 <p align="center">
@@ -28,7 +36,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.svg">
-    <img src="docs/hero-light.svg" alt="Coding agents on your laptop (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud" width="680">
+    <img src="docs/hero-light.svg" alt="Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud" width="680">
   </picture>
 </p>
 
@@ -69,7 +77,7 @@ The host is the part of boxery you run yourself (the `boxery-host` command). You
 </p>
 
 - **Your credentials never enter a VM.** Agents running inside a VM call LLMs with a revocable per-VM token, and the host's proxy swaps in your real key. Remove the VM and its token is revoked. [Credential proxy →](docs/security.md#credential-proxy)
-- **Access is granted, never assumed.** A VM gets nothing by default. Grant it specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, or particular env vars and files. [Grants →](docs/grants.md)
+- **Access is granted, never assumed.** A VM gets nothing by default, not even an LLM. Grant it LLM providers (`llm:chatgpt`, …), specific HTTPS APIs (GitHub, npm, …) with the token injected by the host so it never enters the VM, your ssh-agent, or particular env vars and files. [Grants →](docs/grants.md)
 - **Many agents, one pool.** The host hands out exclusive, expiring leases and wipes each VM back to a clean image when its lease ends. [Pool →](docs/pool.md)
 - **Backends stay simple.** The host owns images, snapshots, forks and leases, and a backend only creates, copies and deletes VMs. That's why your agent sees the same tools on every backend, and why a new provider is a single bash file. [Backends →](host/backends/README.md)
 
@@ -206,7 +214,7 @@ Every tool takes an optional `vm`, so one agent can fan work out across several 
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
 | [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
-| [Grants](docs/grants.md) | Give a VM GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
+| [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |

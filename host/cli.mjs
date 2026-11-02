@@ -10,6 +10,7 @@ import path from "node:path";
 import * as leases from "./boxery-leases.mjs";
 import { runLifecycle } from "./boxery-lifecycle.mjs";
 import { resources, supervise } from "./boxery-operations.mjs";
+import { knownHosts, pin } from "./hostkeys.mjs";
 import { revert, snap, snapRm, snapsLines } from "./images.mjs";
 import { edgeSet, poolAdd, poolLs, poolRm } from "./pool.mjs";
 import { reconcileVm, replayIntents } from "./recovery.mjs";
@@ -49,6 +50,9 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
                             change a VM's size; a running VM is restarted. Disk only grows
   snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
   connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
+  known-hosts NAME          NAME's pinned ssh host key as a known_hosts line (ssh KnownHostsCommand)
+  pin NAME [--from-guest]   re-pin running NAME's ssh host key (hypervisor/loopback channel; --from-guest:
+                            trust what NAME's ssh endpoint answers once)
   proxy-log [N]             recent LLM + edge proxy requests
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
@@ -158,7 +162,7 @@ const lifecycle = (command) => (rt, args) => runLifecycle(rt, command, args);
 /** @type {Record<string, Command>} */
 const COMMANDS = {
 	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
-	ls, list: ls, shapes, snaps, images, ip,
+	ls, list: ls, shapes, snaps, images, ip, "known-hosts": knownHosts,
 	pool: (rt, [sub = "ls", ...args]) => (sub === "ls" ? poolLs(rt, args) : fail(POOL_USAGE)),
 	"proxy-log": proxyLog,
 	backend: (rt) => print(rt.backend),
@@ -168,7 +172,7 @@ const COMMANDS = {
 // Run in a supervised worker holding the VMs named by boxery-operations.mjs resources().
 /** @type {Record<string, Command>} */
 const MUTATING = {
-	new: newVm, fork, start, stop, resize, rm, delete: rm, snap, "snap-rm": snapRm, revert, "edge-set": edgeSet,
+	new: newVm, fork, start, stop, resize, rm, delete: rm, snap, "snap-rm": snapRm, revert, "edge-set": edgeSet, pin,
 	pool: (rt, [sub, ...args]) => (sub === "add" ? poolAdd(rt, args) : sub === "rm" ? poolRm(rt, args) : fail(POOL_USAGE)),
 };
 // Held-lock callbacks: the lease runtime and drift repair run these under a VM's lock (`__call`).

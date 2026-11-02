@@ -256,6 +256,32 @@ backend_exists() {
 	[[ -n $(exe_vms_of "$1" "$j") ]]
 }
 
+# exe.dev LLM integrations a VM can reach. New exe.dev accounts attach an `llm` integration to every VM
+# (auto:all): a guest could use the account's LLM credits directly, skipping the proxy and its llm:
+# grants. Checked from inside the VM, so it holds however the integration got there (auto:all, a tag, by
+# hand): the default name answers on llm.int.exe.xyz (403 when not attached), and Reflection, when
+# attached, lists LLM integrations under other names. Prints one name per line. Fails closed: returns 1
+# when it can't tell (VM unreachable, or llm.int.exe.xyz answers neither like attached nor like 403/404).
+exe_llm_integrations() { # VM
+	local out code
+	out=$(exe_edge "$1" 'echo "llm-probe $(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://llm.int.exe.xyz/v1/models)"; curl -fsS --max-time 10 https://reflection.int.exe.xyz/integrations 2>/dev/null || true' </dev/null 2>/dev/null) || return 1
+	code=$(sed -n 's/^llm-probe //p' <<<"$out" | head -1)
+	case $code in 2??) echo llm ;; 403 | 404) ;; *) return 1 ;; esac
+	sed '/^llm-probe /d' <<<"$out" | jq -r '.integrations[]? | select(.type == "llm") | .name | select(type == "string" and test("^[A-Za-z0-9._-]{1,64}$"))' 2>/dev/null | sort -u
+}
+# VMs get LLM access only through llm: grants. Fails (with the fix) when the VM can reach an exe.dev LLM
+# integration, or when that can't be checked.
+exe_llm_guard() { # VM NAME
+	local names
+	names=$(exe_llm_integrations "$1") || { log "couldn't check $2 for exe.dev LLM integrations (is it reachable?)"; return 1; }
+	names=$(sort -u <<<"$names" | sed '/^$/d')
+	[[ -z $names ]] && return 0
+	log "$2 can reach exe.dev LLM integration(s): $(paste -sd, - <<<"$names"). That would let it use LLMs without an llm: grant.
+  Detach them from boxery's VMs, e.g.: ssh exe.dev integrations detach $(head -1 <<<"$names") auto:all
+  (check for vm:/tag: attachments too: ssh exe.dev integrations list). Then retry."
+	return 1
+}
+
 # Per-VM identity, as root over the edge (lib/remote.sh). A VM made from another VM's disk also gets its
 # own ssh host keys.
 exe_identity_script() { remote_identity_script "$1" "$2" /usr/local/sbin/boxery-exe-boot.sh regen; }   # USERDATA NAME
@@ -318,6 +344,8 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	# Piped, never written to disk: it carries the proxy token.
 	exe_identity_script "$userdata" "$name" | exe_edge "$vm" 'sudo bash -s' >/dev/null || die "applying $name's identity failed"
 	if [[ $from == stock && -n $EXE_EGRESS ]]; then exe_do egress "$vm" "$EXE_EGRESS" >/dev/null || die "exe.dev egress $vm $EXE_EGRESS failed"; fi
+	# Before the tunnel: a refused VM never becomes usable (the failed new is cleaned up).
+	exe_llm_guard "$vm" "$name" || die "refusing to create $name"
 	j=$(exe_ls) || exit 1
 	exe_tunnel_write "$name" "$j"
 	exe_tunnel_start "$name"
@@ -359,6 +387,11 @@ backend_start() {
 	elif [[ $st != running ]]; then
 		# resume restores a paused VM, or cold-boots a stopped one.
 		exe_do resume "$vm" >/dev/null || die "exe.dev resume $vm failed"
+	fi
+	# Integrations can be attached after a VM was created (auto:all covers existing VMs too).
+	if ! exe_llm_guard "$vm" "$1"; then
+		exe_pause "$vm"
+		die "refusing to start $1 (paused again)"
 	fi
 	exe_tunnel_write "$1" "$j"
 	exe_tunnel_start "$1"
@@ -469,6 +502,11 @@ backend_reimage() {
 	# Copy first, switch after: a failed copy leaves the VM as it was.
 	# shellcheck disable=SC2086
 	exe_cp "$img" "$new" $flags || die "copying $2 failed"
+	# A pool reset makes a new exe.dev VM, which auto:all integrations attach to. Check before switching.
+	if ! exe_llm_guard "$new" "$1"; then
+		exe_do rm "$new" >/dev/null 2>&1 || log "warning: could not remove the refused copy (ssh exe.dev rm $new)"
+		exit 1
+	fi
 	exe_tunnel_stop "$1"
 	echo "$new" >"$d/vm.tmp" && mv "$d/vm.tmp" "$d/vm" || die "could not record $1's new exe.dev VM $new"
 	rm -f "$d/resized"   # the copy booted fresh at the VM's size

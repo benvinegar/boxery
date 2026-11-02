@@ -33,8 +33,8 @@ export { q } from "./shell.mjs";
 /** A resolved vm_copy endpoint as streamCopy takes it. @typedef {{ path: string, label: string, vm?: string, sshConf?: string, confine?: (real: string) => void }} CopyEndpoint */
 /** @typedef {{ current?: string | null, localCwd?: string, local?: LocalConfinement | false, signal?: AbortSignal }} CopyOpts */
 /** @typedef {{ text: string, image: ImageContent, size: { width: number, height: number, screenWidth: number, screenHeight: number } }} Screenshot */
-/** A grant as `boxery grants --json` lists it. @typedef {{ kind: string, var?: string, cmd?: string, host?: string, auth?: string, readonly?: boolean, local?: string, remote?: string }} Grant */
-/** A validated vm_grant request (parseGrantRequest). @typedef {{ kind: "ssh-agent" | "github" | "env" | "file", spec: string, readonly?: boolean, var?: string, local?: string, requested?: string, remote?: string }} GrantSpec */
+/** A grant as `boxery grants --json` lists it. @typedef {{ kind: string, var?: string, cmd?: string, host?: string, auth?: string, readonly?: boolean, local?: string, remote?: string, provider?: string }} Grant */
+/** A validated vm_grant request (parseGrantRequest). @typedef {{ kind: "ssh-agent" | "github" | "env" | "file" | "llm", spec: string, readonly?: boolean, var?: string, provider?: string, local?: string, requested?: string, remote?: string }} GrantSpec */
 /** vm_grant arguments. @typedef {{ spec?: unknown, readonly?: boolean, reason?: unknown }} GrantRequestArgs */
 /** @typedef {"accept" | "decline" | "cancel"} ApprovalAnswer */
 /** @typedef {(message: string) => Promise<ApprovalAnswer | string>} Approve */
@@ -1054,7 +1054,7 @@ export function formatShapes({ default: def, shapes }) {
 	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(w[i]))).join("  ")).join("\n");
 }
 
-const fmtGrant = (/** @type {Grant} */ g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind);
+const fmtGrant = (/** @type {Grant} */ g) => (g.kind === "env" ? `env:${g.var}` : g.kind === "file" ? `file:${g.remote}` : g.kind === "http" ? `http:${g.host}` : g.kind === "llm" ? `llm:${g.provider}` : g.kind);
 
 // The VM's ssh endpoint from the host (HOST:PORT). A running VM whose tunnel isn't up (exe.dev) shows why
 // instead. `addr`: hosts from before ssh_addr.
@@ -1083,7 +1083,9 @@ export function formatGrants(name, grants) {
 				? `env:${g.var}${g.cmd ? `   (from: ${g.cmd})` : ""}`
 				: g.kind === "http"
 					? `http:${g.host}   (${g.auth}${g.readonly ? ", read-only" : ""}; injected by the host proxy, never in the VM)`
-					: `file:${g.local} → ${g.remote}`;
+					: g.kind === "llm"
+						? `llm:${g.provider}   the host proxy's ${g.provider} route (credential stays on the host)`
+						: `file:${g.local} → ${g.remote}`;
 	return [`grants for ${name}:`, ...grants.map((g) => `  ${line(g)}`)].join("\n");
 }
 
@@ -1117,12 +1119,15 @@ export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
 	if (readonly && s !== "github") throw new Error("readonly applies only to the github grant");
 	if (s === "ssh-agent") return { kind: "ssh-agent", spec: s };
 	if (s === "github") return { kind: "github", spec: s, readonly: !!readonly };
+	const llm = /^llm:(chatgpt|openai|anthropic|ollama)$/.exec(s);
+	if (llm) return { kind: "llm", spec: s, provider: llm[1] };
+	if (s.startsWith("llm:")) throw new Error(`unknown LLM provider "${s.slice(4)}" (llm:chatgpt, llm:openai, llm:anthropic or llm:ollama)`);
 	const env = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
 	// boxery's own settings, some of them its credentials (BOXERY_MCP_TOKEN drives every VM over HTTP MCP).
 	if (env?.[1].startsWith("BOXERY_")) throw new Error(`$${env[1]} is boxery's own setting and can't be requested: BOXERY_* variables configure boxery, and some are its credentials`);
 	if (env) return { kind: "env", spec: s, var: env[1] };
 	if (s.startsWith("http:")) throw new Error(`${s} needs a command, run on the user's machine, that prints the secret; only the user can add it (boxery grant VM ${s} --cmd '…'). For GitHub, request the github grant.`);
-	if (!s.startsWith("file:")) throw new Error(`unknown grant "${s}" (ssh-agent, env:VAR, file:LOCAL[=REMOTE] or github)`);
+	if (!s.startsWith("file:")) throw new Error(`unknown grant "${s}" (llm:PROVIDER, ssh-agent, env:VAR, file:LOCAL[=REMOTE] or github)`);
 	const rest = s.slice(5);
 	const eq = rest.indexOf("=");
 	const loc = eq < 0 ? rest : rest.slice(0, eq);
@@ -1154,11 +1159,13 @@ const realOr = (/** @type {string} */ p) => { try { return realpathSync(p); } ca
 const grantedAlready = (/** @type {GrantSpec} */ g, /** @type {Grant[]} */ grants) =>
 	g.kind === "ssh-agent"
 		? grants.some((x) => x.kind === "ssh-agent")
-		: g.kind === "env"
-			? grants.some((x) => x.kind === "env" && x.var === g.var)
-			: g.kind === "file"
-				? grants.some((x) => x.kind === "file" && realOr(/** @type {string} */ (x.local)) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
-				: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
+		: g.kind === "llm"
+			? grants.some((x) => x.kind === "llm" && x.provider === g.provider)
+			: g.kind === "env"
+				? grants.some((x) => x.kind === "env" && x.var === g.var)
+				: g.kind === "file"
+					? grants.some((x) => x.kind === "file" && realOr(/** @type {string} */ (x.local)) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
+					: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
 
 /** ~/… for paths in the user's home: clients truncate long prompt lines. */
 const tildePath = (/** @type {string | undefined} */ p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync(homedir()).length)}` : p);
@@ -1168,6 +1175,7 @@ const tildePath = (/** @type {string | undefined} */ p) => (p && underDir(p, hom
 function grantPrompt(vm, host, g, reason) {
 	const where = `VM "${vm}" on host "${host}"`;
 	const what = {
+		llm: [`llm:${g.provider}: the VM host's ${g.provider} credential, through its proxy.`, "The VM never holds the key, but its agents can spend on it (inference only) until you revoke it."],
 		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
 		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
 		file: [`file: ${tildePath(g.local)}`, ...(g.requested ? [`  (the agent asked for ${tildePath(g.requested)}, which leads here through a symlink)`] : []), `  → in the VM: ~/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],

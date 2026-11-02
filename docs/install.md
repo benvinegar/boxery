@@ -24,7 +24,7 @@ They can be the same machine.
 **Requirements**
 
 - KVM (`/dev/kvm` readable)
-- libvirt on `qemu:///system`, with your user in the `libvirt` group
+- libvirt on `qemu:///system`, with your user in the `libvirt` group, and its nwfilter driver (`virtnwfilterd`, or the monolithic `libvirtd`), which isolates guests
 - `virt-install`, `qemu-img`, `cloud-localds` (from `cloud-image-utils`)
 - `socat`, `nc`
 - Node ≥ 22.13 (the lease store uses `node:sqlite`)
@@ -43,6 +43,19 @@ boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Nod
 ```
 
 `init` symlinks `boxery-host` into `~/.local/bin`. The controller expects it there. The proxy and reaper services point at the installed package path and the node and tools found on your `PATH` at `init` time, so after switching Node versions with nvm/fnm re-run `boxery-host init`. To update boxery itself, see [Upgrading](#upgrading).
+
+**Guest network isolation.** VMs share libvirt's `default` NAT network, and each one's interface carries a libvirt network filter (nwfilter `boxery-guest-isolation`). A guest reaches the internet, and DHCP and DNS on the host's bridge address, and nothing else: not the host's sshd or other services, other guests, your LAN, Tailscale, cloud metadata (`169.254.169.254`) or any other private range, and it can't take another guest's MAC or IP. The LLM proxy goes over vsock, which the filter doesn't touch. Details: [security](security.md#what-a-vm-can-and-cant-reach).
+
+- New VMs, forks, reverts and lease resets get the filter. A VM made before this release gets it from its next cold start: `init` (which `upgrade` runs) adds it to every VM's configuration, and `boxery stop NAME && boxery start NAME` applies it. A VM that is still running keeps the open network until then.
+- Guests that must reach LAN services (a dev database, an internal registry) can't while isolated. To turn isolation off for every VM of this host, set it in `host.env` (or `BOXERY_NET_ISOLATION=off boxery-host init`), then restart the VMs:
+
+  ```bash
+  echo BOXERY_NET_ISOLATION=off >>~/.config/boxery/host.env
+  boxery stop NAME && boxery start NAME     # start removes the filter; new VMs get none
+  ```
+
+  Remove the line (or set `on`) and restart the VMs to turn it back on.
+- `BOXERY_NET` must be a libvirt network with an IPv4 address on a private range (libvirt's `default` is `192.168.122.0/24`); isolation drops guest-to-guest traffic because the network itself is in a blocked range.
 
 ## macOS host (Lima)
 
@@ -88,6 +101,8 @@ boxery setup local                   # or: boxery setup you@this-host
 VM sizes are capped to the Personal plan (2 vCPU, 4 GB, shared by all your VMs); raise `BOXERY_EXE_MAX_CPUS` / `BOXERY_EXE_MAX_MEM` on bigger plans. `stop` pauses a VM. Layout, security notes and what's still unverified: [backends → exe](../host/backends/README.md#exe-experimental).
 
 **Run the host on an always-on machine.** The VMs are in the cloud, but the host keeps one ssh tunnel per VM open to exe.dev, and that tunnel carries both the VM's ssh endpoint and the agents' only route to the LLM proxy. When the host sleeps or goes offline, every running agent loses its LLM in the middle of a task, and no controller can reach the VMs. The VMs keep running and the tunnels reconnect by themselves (within seconds) once the host is back. So put `boxery-host --backend exe` on a machine that stays up, such as a home server, a small Linux VPS or a desktop that doesn't sleep, and use your laptop as a controller only (`boxery setup you@that-host`). This keeps the security model: provider credentials stay on that machine and never enter a VM. On a Linux host, turn on linger (`sudo loginctl enable-linger "$USER"`, as above) so the tunnels, which are systemd user units, keep running when you're logged out. If you do run the host on a Mac, keep it awake while agents work (for example `caffeinate -s` on AC power).
+
+**Detach exe.dev's LLM integration first.** New exe.dev accounts attach an `llm` integration to every VM, which would let agents use LLMs without an `llm:` grant. boxery refuses to create or start a VM that can reach one, so run `ssh exe.dev integrations detach llm auto:all` once (and detach any other LLM integrations attached to boxery's VMs). See [the exe backend](../host/backends/README.md#exe-experimental).
 
 `boxery-host ls` shows a running VM whose tunnel isn't connected as `tunnel connecting` (it is retrying) or `tunnel down` (it isn't running; `boxery-host start NAME` brings it back) in place of its address. Commands that need the VM say the same thing rather than waiting for ssh to time out.
 
@@ -141,13 +156,13 @@ Next: hook up an agent with the [pi extension](pi-extension.md) or the [MCP serv
 
 ## LLM providers for in-VM agents
 
-pi and opencode come preinstalled in every VM and are already pointed at the host's [credential proxy](security.md#credential-proxy). VMs never hold real keys. You only need these if you run agents **inside** VMs (`boxery attach`, `boxery prompt`). Laptop agents using `vm_*` tools use your laptop's own login.
+pi and opencode come preinstalled in every VM and are already pointed at the host's [credential proxy](security.md#credential-proxy). VMs never hold real keys, and a VM can't use any provider until you grant it: `boxery grant demo llm:chatgpt` (or `boxery new demo --grant llm:chatgpt`). See [Grants](grants.md). You only need these if you run agents **inside** VMs (`boxery attach`, `boxery prompt`). Laptop agents using `vm_*` tools use your laptop's own login.
 
-| Provider | How |
-|---|---|
-| ChatGPT / Codex | Run `pi` on the host once and `/login`. The proxy reuses `~/.pi/agent/auth.json` and refreshes it. |
-| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env` |
-| Ollama | Auto-detected on `127.0.0.1:11434`. Its tool-capable models are configured for pi and opencode. |
+| Provider | Set up on the host | Grant to a VM |
+|---|---|---|
+| ChatGPT / Codex | Run `pi` on the host once and `/login`. The proxy reuses `~/.pi/agent/auth.json` and refreshes it. | `llm:chatgpt` |
+| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env` | `llm:openai`, `llm:anthropic` |
+| Ollama | Auto-detected on `127.0.0.1:11434`. Its tool-capable models are configured for pi and opencode. | `llm:ollama` |
 
 ## Verify
 
