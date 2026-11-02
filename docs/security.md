@@ -13,7 +13,7 @@ boxery is built for **one trusted owner running untrusted-ish agents**: the agen
 | ✅ What you [grant](grants.md) | ssh-agent, env vars, files: only while granted |
 | 🔒 `http:`/`github` grant secrets | never: the host proxy injects them per request; the VM can use but not read them |
 | ❌ Your real LLM keys / OAuth tokens | They stay on the host |
-| ❌ Your laptop | No inbound path. ssh goes laptop → host → VM. |
+| ❌ Your laptop | No inbound path. ssh goes laptop → host → VM. With Lima the laptop *is* the host: on macOS a guest reaches the Mac's loopback (`127.0.0.1`) only on the proxy port. See [limits](#known-limits). |
 | ⚠️ The host's sshd | Reachable on the NAT network (keys required). See [limits](#known-limits). |
 
 Inside the VM, everything listens on localhost: the desktop (noVNC on `127.0.0.1:6080`), Chrome's CDP port, and the proxy forwarder. You reach the desktop only through an ssh tunnel (`boxery desktop`).
@@ -32,7 +32,7 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
 1. `boxery-host new` writes the agent configs into the VM:
    - `~/.pi/agent/models.json` overrides `openai-codex.baseUrl` with `http://127.0.0.1:8088/chatgpt/backend-api`. Its `apiKey` is an **unsigned fake JWT** whose payload carries `{"boxery":"<vm>:<secret>"}`. It has to be JWT-shaped because pi derives the ChatGPT account id from the JWT. Ollama models are listed too.
    - `~/.config/opencode/opencode.json` gets a `boxery` OpenAI-compatible provider pointing at `/ollama/v1`.
-2. In the guest, `boxery-llm.service` forwards `127.0.0.1:8088` to the host: over vsock (CID 2) on libvirt, or the user-net gateway on Lima. The host needs no listening port on the VM network.
+2. In the guest, `boxery-llm.service` forwards `127.0.0.1:8088` to the host: over vsock (CID 2) on libvirt, or the user-net gateway on Lima. The host needs no listening port on the VM network. Lima maps that gateway (`192.168.5.2`) to the host's loopback, so on macOS boxery starts each Lima instance under a sandbox that lets it reach only the proxy port there ([limits](#known-limits)).
 3. On the host, `boxery-vsock.service` hands the connection to `boxery-proxy` on `127.0.0.1:8088`.
 4. The proxy checks `<vm>:<secret>` against `~/.config/boxery/tokens.json`. It then strips the VM's auth and injects the real credential: the host pi's ChatGPT/Codex OAuth (refreshed automatically) or keys from `proxy.env`. Routes are allowlisted and size-limited. WebSocket upgrades are refused, so pi uses SSE.
 5. `boxery rm` revokes the token. `boxery proxy-log` shows which VM called which provider.
@@ -40,6 +40,11 @@ VM: pi/opencode ──► 127.0.0.1:8088 ──vsock──► host: boxery-proxy
 ## Known limits
 
 - **Shared NAT network.** VMs share libvirt's `default` network. They can reach the internet and the host's sshd, but not the proxy port. For stricter isolation, give them a dedicated network with nwfilter rules (on the [roadmap](../ARCHITECTURE.md#roadmap)). The experimental [cloud-hypervisor backend](../host/backends/README.md#cloud-hypervisor-experimental) already isolates guests: one routed TAP per VM, and nftables drops guest→host, guest→guest and guest→private-range traffic.
+- **Lima guests and the host's loopback.** Lima NATs the guest's gateway, `192.168.5.2`, to the host's `127.0.0.1`. Left alone, that hands every guest each loopback service on the Mac: Ollama's admin API (`/api/pull`, `/api/delete`, bypassing the proxy's allowlist), the HTTP MCP server, dev databases ([#67](https://github.com/benvinegar/boxery/issues/67)). On macOS, boxery therefore starts every Lima instance under `sandbox-exec` with a Seatbelt profile. Lima's host agent, which carries the guest's network, and the qemu it spawns may then open loopback connections only to the proxy port and to the instance's own ssh port, which leads back to the guest's own sshd. Everything else on `127.0.0.1` (any 127/8 address, TCP and UDP) is refused. The Mac's kernel enforces it, so root in the guest can't lift it. What it doesn't cover:
+  - **Services listening on the Mac's other addresses** (`0.0.0.0`, the LAN or Tailscale IP) stay reachable from guests, as from your LAN. Guest traffic leaves through the Mac's own routing, so guests also reach your LAN and tailnet.
+  - **Instances started outside boxery** (a plain `limactl start boxery-NAME`) and VMs that were already running when you upgraded aren't confined. Restart them with `boxery stop NAME && boxery start NAME`.
+  - **Lima on Linux** has no Seatbelt. Its guests still reach the host's loopback; use libvirt or Cloud Hypervisor there.
+  - A host-side HTTP proxy or DNS resolver on `127.0.0.1` is out of reach for Lima guests too. Confined qemu instances use slirp's DNS forwarder (`192.168.5.3`) instead of Lima's host resolver, which listens on loopback.
 - **Proxy spend.** A guest with root can read its own token and spend through the proxy. That's the same blast radius as handing it an API key, except the token is revocable per VM and logged. Per-VM budgets are planned.
 - **Agents can ask for grants, not take them.** `vm_grant` adds a grant only after you approve a prompt that boxery shows and the agent can't answer. It can't ask for `http:` grants with a `--cmd`, key directories or boxery's own config ([Agents can ask](grants.md#agents-can-ask)). A client hook or setting that auto-accepts MCP elicitations would also auto-accept these.
 - **HTTP MCP runs on the control plane.** `boxery-mcp --http` runs next to the credentials it protects, so its `vm_copy` refuses `local:` endpoints unless you start it with `--copy-root DIR`, which confines them to `DIR` and still refuses boxery's config, `~/.ssh`, `~/.gnupg` and `~/.pi` ([details](mcp.md#b-streamable-http-on-the-host-over-tailscale)). Anyone with the bearer token can drive every VM on that host; keep it on the tailnet behind `--allow-user`.

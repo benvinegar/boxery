@@ -22,6 +22,24 @@ grep -q '^ok$' <<<"$out" && ok "LLM proxy reachable from the guest" || bad "prox
 echo "== isolation"
 code=$("$A" run "$VM" bash -c 'curl -s -o /dev/null -w %{http_code} -H "Authorization: Bearer x:y" 127.0.0.1:8088/ollama/v1/models')
 [[ $code == 401 ]] && ok "forged token rejected" || bad "forged token got $code"
+# The guest reaches the host's proxy, and no other loopback port, at the address its bridge uses (#67).
+# Only for a TCP upstream (Lima: the gateway that maps to the host's 127.0.0.1) with the host on this
+# machine, where this script can open a second loopback listener for the guest to probe.
+up=$("$A" run "$VM" cat /etc/boxery/proxy-upstream 2>/dev/null || true)
+dest=$("$A" host ls --json 2>/dev/null | jq -rs 'flatten | map(select(.default))[0].destination // empty' 2>/dev/null || true)
+if [[ $up =~ ^TCP:([0-9.]+):([0-9]+)$ && ${BASH_REMATCH[1]} != 127.* && $dest == local ]]; then
+	gw=${BASH_REMATCH[1]} pport=${BASH_REMATCH[2]} lf=$(mktemp)
+	(node -e 'const s = require("http").createServer((q, r) => r.end("x")).listen(0, "127.0.0.1", () => console.log(s.address().port))' >"$lf" & echo $! >"$lf.pid")
+	for _ in $(seq 50); do [[ -s $lf ]] && break; sleep 0.1; done
+	lport=$(cat "$lf")
+	r=$("$A" run "$VM" bash -c "for u in $gw:$pport/healthz $gw:$lport/; do curl -s -o /dev/null -w '%{http_code} ' --max-time 5 http://\$u; done" || true)
+	kill "$(cat "$lf.pid")" 2>/dev/null || true; rm -f "$lf" "$lf.pid"
+	read -r pcode lcode <<<"$r" || true
+	[[ $pcode == 200 ]] && ok "proxy reachable at $gw:$pport" || bad "proxy at $gw:$pport: HTTP ${pcode:-?}"
+	[[ $lcode == 000 ]] && ok "another host loopback port ($gw:$lport) is refused" || bad "guest reached the host's 127.0.0.1:$lport through $gw (HTTP ${lcode:-?})"
+else
+	echo "  - loopback probe skipped (upstream ${up:-unknown}, host ${dest:-unknown})"
+fi
 
 echo "== pi (ChatGPT via host proxy)"
 r=$("$A" run "$VM" bash -c 'cd ~/project && timeout 180 pi -p "Reply with exactly: PI_OK" </dev/null 2>&1 | tail -1')

@@ -56,6 +56,8 @@ boxery-host build-base
 boxery setup local
 ```
 
+Lima maps the guest's gateway (`192.168.5.2`) to your Mac's `127.0.0.1`. boxery starts every Lima instance under `sandbox-exec` so that guests reach only the LLM proxy there, not Ollama's admin API, the HTTP MCP server or your dev databases. Services listening on the Mac's other addresses (`0.0.0.0`, LAN, Tailscale) stay reachable from guests, and VMs started outside boxery (`limactl start`) aren't confined: [security → known limits](security.md#known-limits).
+
 Apple Silicon notes:
 
 - The guest is arm64, so `vm_browser` uses Playwright's Chromium instead of Google Chrome. Google ships no Linux arm64 build.

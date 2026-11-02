@@ -54,6 +54,8 @@ log() { :; }
 	[[ $disk == 1 && $mock_state == running ]] || die "reimage could not retry after old disk deletion"
 )
 (
+	# limactl is a shell function here, which sandbox-exec can't run (host-lima-backend.sh covers confinement)
+	export BOXERY_LIMA_CONFINE=0
 	# shellcheck source=host/backends/lima.sh
 	. "$ROOT/host/backends/lima.sh"
 	export LIMA_HOME=$tmp/lima; mkdir -p "$LIMA_HOME"
