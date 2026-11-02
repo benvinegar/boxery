@@ -68,15 +68,23 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 		fail(`no base image; run: boxery-host build-base (or: new ${name} --headless, which needs none)`);
 	}
 	const t0 = Date.now(), secs = () => Math.floor((Date.now() - t0) / 1000);
+	// Opt-in diagnostics stay on stderr and never include seed contents, tokens or SSH commands.
+	const step = async (stage, fn) => {
+		if (rt.env?.BOXERY_TIMINGS !== "1") return fn();
+		const start = performance.now();
+		let ok = false;
+		try { const result = await fn(); ok = true; return result; }
+		finally { process.stderr.write(`[boxery-timing] ${JSON.stringify({ vm: name, stage, ms: Math.round(performance.now() - start), ok })}\n`); }
+	};
 	const action = rt.intent("create", name);
-	const userdata = await writeSeed(rt, name, provision);
-	await rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]);
+	const userdata = await step("seed", () => writeSeed(rt, name, provision));
+	await step("backend-new", () => rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]));
 	setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
 	setVmKind(rt.conf, name, kind);
-	const ep = await rt.vms.waitEndpoint(name);
+	const ep = await step("endpoint", () => rt.vms.waitEndpoint(name));
 	log(`${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
-	await rt.waitSsh(name, ep);
-	await mustRun(rt, ep, "cloud-init status --wait >/dev/null 2>&1; true");
+	await step("ssh", () => rt.waitSsh(name, ep));
+	await step("cloud-init", () => mustRun(rt, ep, "cloud-init status --wait >/dev/null 2>&1; true"));
 	if (provision) {
 		if (await rt.guest.run(ep, "test -f /var/log/boxery-provision.ok") !== 0) {
 			await rt.guest.run(ep, "sudo tail -30 /var/log/boxery-provision.log");
@@ -91,7 +99,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 		try { await setPetKeys(rt, name); } catch { fail(`could not reset ssh keys on ${name}`); }
 		await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"');
 	}
-	if (kind === "desktop" && await rt.guest.run(ep, NOVNC) !== 0) log("warning: noVNC not answering yet");
+	if (kind === "desktop" && await step("desktop", () => rt.guest.run(ep, NOVNC)) !== 0) log("warning: noVNC not answering yet");
 	rt.done(action);
 	log(`${name} ready (${kind}, ${secs()}s)`);
 	return `${name} ${ep.host}:${ep.port}`;

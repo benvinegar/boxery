@@ -43,6 +43,20 @@ virsh() {
 virt-install() { printf 'virt-install %s\n' "$*" >>"$LOG"; touch "$T/dom.$2"; }
 cloud-localds() { touch "${@: -3:1}"; }
 upload_vol() { printf 'upload %s %s\n' "$1" "$2" >>"$LOG"; : >"$V/$2"; }
+# Exercise the real polling loop before the rest of this file replaces it with a ready endpoint.
+if (
+	vm_ip() { if [[ -e $T/ip-polled ]]; then echo 192.0.2.10; else touch "$T/ip-polled"; fi; }
+	sleep() { [[ $1 == 0.25 ]] || exit 1; echo sleep >>"$T/ip-sleeps"; }
+	[[ $(wait_ip test) == 192.0.2.10 ]] && [[ $(wc -l <"$T/ip-sleeps") == 1 ]]
+); then ok "wait_ip probes every 250 ms until an address arrives"; else bad "wait_ip fast probes"; fi
+if (
+	SECONDS=0
+	vm_ip() { :; }
+	sleep() { SECONDS=$((SECONDS + 180)); }
+	wait_ip missing
+) 2>"$T/ip-timeout"; then bad "wait_ip must time out";
+elif grep -q 'timed out waiting for missing' "$T/ip-timeout"; then ok "wait_ip preserves its 180-second deadline";
+else bad "wait_ip timeout diagnostic"; fi
 wait_ip() { echo 192.0.2.10; }
 flock() { :; }   # util-linux; not on macOS
 vol_bytes() { echo 1073741824; }

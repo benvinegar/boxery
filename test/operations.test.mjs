@@ -94,6 +94,27 @@ afterEach(async () => {
 	db.close(); rmSync(dir, { recursive: true, force: true });
 });
 
+it("opt-in create timings are stderr-only, include failed stages and contain no credentials", async () => {
+	const plain = await run(["new", "plain"]).result;
+	assert.equal(plain.code, 0);
+	assert.doesNotMatch(plain.stderr, /boxery-timing/);
+	const result = await run(["new", "timed"], { BOXERY_TIMINGS: "1" }).result;
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /^timed 127\.0\.0\.1:\d+\n$/);
+	const events = result.stderr.split("\n").filter((l) => l.startsWith("[boxery-timing] ")).map((l) => JSON.parse(l.slice(16)));
+	assert.deepEqual(events.map((e) => e.stage), ["seed", "backend-new", "endpoint", "ssh", "cloud-init", "desktop"]);
+	for (const e of events) {
+		assert.deepEqual(Object.keys(e), ["vm", "stage", "ms", "ok"]);
+		assert.equal(e.vm, "timed"); assert.equal(e.ok, true); assert.ok(e.ms >= 0);
+	}
+	assert.ok(!result.stderr.includes(token("timed")));
+	const failed = await run(["new", "broken"], { BOXERY_TIMINGS: "1", BOXERY_FAKE_FAIL_NEW: "1" }).result;
+	assert.notEqual(failed.code, 0);
+	assert.match(failed.stderr, /"stage":"backend-new","ms":\d+,"ok":false/);
+	assert.doesNotMatch(failed.stderr, /"stage":"ssh"/);
+	cleanJournal();
+});
+
 it("duplicate creates serialize preflight and cannot rotate or delete the winning identity", async () => {
 	const first = run(["new", "same"], { BOXERY_FAKE_PAUSE: "new" });
 	await until(() => existsSync(barrier("same", "new")));
