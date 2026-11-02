@@ -21,8 +21,8 @@
 
 <p align="center">
   <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://www.npmjs.com/package/boxery-vm"><img alt="npm" src="https://img.shields.io/npm/v/boxery-vm?logo=npm"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <a href="https://www.npmjs.com/package/boxery-vm"><img alt="npm" src="https://img.shields.io/npm/v/boxery-vm?logo=npm"></a>
   <a href="#where-the-vms-run"><img alt="OS: macOS | Linux" src="https://img.shields.io/badge/os-macOS%20%7C%20Linux-lightgrey"></a>
   <a href="docs/mcp.md"><img alt="MCP 2025-11-25" src="https://img.shields.io/badge/MCP-2025--11--25-6f42c1?logo=modelcontextprotocol&logoColor=white"></a>
 </p>
