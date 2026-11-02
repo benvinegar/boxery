@@ -67,8 +67,15 @@ as_agent() { sudo -u agent -H env -i HOME=/home/agent PATH=/usr/local/sbin:/usr/
 if ! as_agent node --experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript -e '' >/dev/null 2>&1; then
 	ARCH=$(dpkg --print-architecture)   # amd64 | arm64
 	NODE_ARCH=$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)
-	NODE_TGZ=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | awk -v a="linux-$NODE_ARCH.tar.xz" '$2 ~ a"$"{print $2}')
-	curl -fsSL "https://nodejs.org/dist/latest-v24.x/$NODE_TGZ" | tar -xJ -C /usr/local --strip-components=1
+	# Download, check against the release's SHASUMS256.txt, then unpack: never pipe an unchecked tarball into tar.
+	NODE_DL=$(mktemp -d)
+	curl -fsSL -o "$NODE_DL/SHASUMS256.txt" https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt
+	NODE_SUM=$(awk -v a="linux-$NODE_ARCH.tar.xz" '$2 ~ a"$"' "$NODE_DL/SHASUMS256.txt")
+	[ "$(printf '%s\n' "$NODE_SUM" | grep -c .)" = 1 ] || { echo "no single linux-$NODE_ARCH.tar.xz in Node's SHASUMS256.txt" >&2; exit 1; }
+	curl -fsSL -o "$NODE_DL/${NODE_SUM##* }" "https://nodejs.org/dist/latest-v24.x/${NODE_SUM##* }"
+	(cd "$NODE_DL" && printf '%s\n' "$NODE_SUM" | sha256sum -c --quiet -) || { echo "Node tarball failed its checksum" >&2; exit 1; }
+	tar -xJf "$NODE_DL/${NODE_SUM##* }" -C /usr/local --strip-components=1
+	rm -rf "$NODE_DL"
 fi
 as_agent node --version
 
