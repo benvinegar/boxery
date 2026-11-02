@@ -38,7 +38,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.svg">
-    <img src="docs/hero-light.svg" alt="Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud" width="680">
+    <img src="docs/hero-light.svg" alt="Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork, snapshot and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud. VMs are drawn as cubes whose look shows their state" width="680">
   </picture>
 </p>
 
