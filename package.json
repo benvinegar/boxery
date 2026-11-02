@@ -1,7 +1,7 @@
 {
   "name": "boxery-vm",
   "version": "0.8.0",
-  "description": "Self-hosted desktop VMs for coding agents; pi extension + MCP server give laptop agents vm_* tools",
+  "description": "Dev environments your agents spin up themselves, on any provider (local, remote, and cloud); MCP server + pi extension give agents vm_* tools",
   "keywords": [
     "pi-package",
     "mcp",
