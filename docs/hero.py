@@ -17,7 +17,6 @@ THEMES = {
     "light": dict(
         ink="#2C2C2A", muted="#888780", label="#5F5E5A",
         agent=("#F1EFE8", "#D3D1C7", "#B4B2A9", "#B4B2A9"),  # face, side, bottom, stroke
-        tile=("#FFFFFF", "#D3D1C7", "#B4B2A9", "#B4B2A9"),
         bar=("#EEEDFE", "#AFA9EC", "#534AB7", "#AFA9EC"),
         bar_title="#26215C", bar_text="#534AB7",
         host=("#F7F6F2", "#ECEAE3", "#D3D1C7", "#D3D1C7"),
@@ -28,7 +27,6 @@ THEMES = {
     "dark": dict(
         ink="#F1EFE8", muted="#888780", label="#B4B2A9",
         agent=("#2C2C2A", "#1F1F1D", "#161615", "#5F5E5A"),
-        tile=("#3D3D3A", "#262624", "#1C1C1B", "#5F5E5A"),
         bar=("#26215C", "#1B1745", "#120F33", "#534AB7"),
         bar_title="#EEEDFE", bar_text="#CECBF6",
         host=("#1C1C1B", "#151514", "#0E0E0D", "#444441"),
@@ -140,13 +138,11 @@ class Hero:
                  f'V476 A16 16 0 0 1 226 492 H56 A16 16 0 0 1 40 476 V66 A16 16 0 0 1 56 50 Z" fill="none" '
                  f'stroke="{t["muted"]}" stroke-width="1" stroke-dasharray="5 4"/>')
 
-        # the agents: one card, their icons stacked like a hand of tiles
+        # the agents: one card, their icons side by side
         x0, y0 = 120, 64
         self.slab(x0, y0, 440, 60, 6, t["agent"])
-        for i, (name, _, _, vb, icon) in reversed(list(enumerate(AGENTS))):
-            tx = x0 + 18 + i * 26
-            self.slab(tx, y0 + 15, 30, 30, 3, t["tile"])
-            self.add(f'<svg x="{tx + 7:g}" y="{y0 + 22:g}" width="16" height="16" viewBox="{vb}" fill="{t["ink"]}">{icon}</svg>')
+        for i, (name, _, _, vb, icon) in enumerate(AGENTS):
+            self.add(f'<svg x="{x0 + 20 + i * 27:g}" y="{y0 + 21:g}" width="18" height="18" viewBox="{vb}" fill="{t["ink"]}">{icon}</svg>')
         self.text(x0 + 168, y0 + 21, "Your coding agents", 14, t["ink"], 600, "start")
         self.text(x0 + 168, y0 + 40, " · ".join(a[0] for a in AGENTS), 12, t["label"], anchor="start")
         self.arrow(340, 132, 340, 170)
