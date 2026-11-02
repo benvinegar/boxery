@@ -157,7 +157,7 @@ Per-VM proxy tokens are an acknowledged exception. They live in the VM's seed, d
 
 | Backend | Guest → proxy | Isolation today |
 |---|---|---|
-| libvirt | socat → vsock CID 2 → host `boxery-vsock.service` → `127.0.0.1:8088` | libvirt `default` NAT. Guests reach the internet, the host's bridge address (sshd), other guests and routed LAN/Tailscale ranges. No anti-spoofing ([#69](https://github.com/benvinegar/boxery/issues/69)) |
+| libvirt | socat → vsock CID 2 → host `boxery-vsock.service` → `127.0.0.1:8088` | libvirt `default` NAT, with the nwfilter `boxery-guest-isolation` on every guest interface (in the domain XML, so it survives forks, reverts, resets and reboots): no MAC/IP/ARP spoofing (DHCP-snooped address), only DHCP/DNS to the host, private ranges dropped (host, other guests, LAN, Tailscale, metadata), IPv6 dropped. `BOXERY_NET_ISOLATION=off` turns it off |
 | Cloud Hypervisor | vsock, as libvirt | One routed TAP per VM; nftables drops guest→host, guest→guest, spoofed sources and private ranges |
 | Lima | TCP to the user-net gateway `192.168.5.2`, which maps to the **host's loopback** | Lima's user network. On macOS each instance runs under a Seatbelt profile (`sandbox-exec`): on the host's `127.0.0.1` its guest reaches only the proxy and its own ssh port. Services on the Mac's other addresses, and the LAN, stay reachable; Lima on Linux is unconfined ([#67](https://github.com/benvinegar/boxery/issues/67)) |
 | exe.dev | per-VM `ssh -R 127.0.0.1:18088:127.0.0.1:PORT` tunnel from the host | exe.dev's network; only the proxy port is forwarded back |
@@ -186,12 +186,12 @@ Nothing in boxery's own state limits that: lock transactions are short, the prox
 
 ## Roadmap
 
-1. **Hardening** of what exists: Lima on Linux and Lima guests' reach to the Mac's non-loopback addresses ([#67](https://github.com/benvinegar/boxery/issues/67)), confining HTTP-MCP `local:` copies ([#68](https://github.com/benvinegar/boxery/issues/68)), libvirt guest isolation ([#69](https://github.com/benvinegar/boxery/issues/69)), pinned VM host keys ([#70](https://github.com/benvinegar/boxery/issues/70)), proxy header and token hardening ([#73](https://github.com/benvinegar/boxery/issues/73)), HTTP MCP bounds and argument validation ([#21](https://github.com/benvinegar/boxery/issues/21), [#72](https://github.com/benvinegar/boxery/issues/72)), scoped MCP tokens ([#3](https://github.com/benvinegar/boxery/issues/3)), default-deny egress ([#4](https://github.com/benvinegar/boxery/issues/4)), per-VM proxy budgets.
+1. **Hardening** of what exists: Lima on Linux and Lima guests' reach to the Mac's non-loopback addresses ([#67](https://github.com/benvinegar/boxery/issues/67)), confining HTTP-MCP `local:` copies ([#68](https://github.com/benvinegar/boxery/issues/68)), pinned VM host keys ([#70](https://github.com/benvinegar/boxery/issues/70)), proxy header and token hardening ([#73](https://github.com/benvinegar/boxery/issues/73)), HTTP MCP bounds and argument validation ([#21](https://github.com/benvinegar/boxery/issues/21), [#72](https://github.com/benvinegar/boxery/issues/72)), scoped MCP tokens ([#3](https://github.com/benvinegar/boxery/issues/3)), default-deny egress ([#4](https://github.com/benvinegar/boxery/issues/4)), per-VM proxy budgets.
 2. **Lease enforcement:** the restricted host gateway and authenticated holders ([#71](https://github.com/benvinegar/boxery/issues/71)). First decide the pool's shape ([#75](https://github.com/benvinegar/boxery/issues/75)).
 3. **Profiles** (app-agnostic setup on top of images), `--keep`, detach/resume semantics for pi, versioned templates, builder VMs for build-time tokens: [plan](docs/plans/2026-11-01-profiles-and-lease-extensions.md).
 4. **Simplification:** move the controller into Node ([#74](https://github.com/benvinegar/boxery/issues/74)), align the Node requirement ([#77](https://github.com/benvinegar/boxery/issues/77)).
 5. **Backends:** exe.dev polish ([#37](https://github.com/benvinegar/boxery/issues/37)–[#42](https://github.com/benvinegar/boxery/issues/42), [#54](https://github.com/benvinegar/boxery/issues/54)), boat.dev ([#60](https://github.com/benvinegar/boxery/issues/60)), Daytona ([#61](https://github.com/benvinegar/boxery/issues/61)).
-6. **Tests** that need real hypervisors: guest→host and cross-VM isolation, expiry under laptop sleep, secret retention after reset, a run from a real Mac.
+6. **Tests** that need real hypervisors: guest→host and cross-VM isolation (checked by hand on libvirt, [#69](https://github.com/benvinegar/boxery/issues/69); not automated), expiry under laptop sleep, secret retention after reset, a run from a real Mac.
 
 ## Design decisions
 
@@ -203,5 +203,5 @@ Nothing in boxery's own state limits that: lock transactions are short, the prox
 
 ## Review log
 
-- 2026-10-31: independent review (pi subagent, read-only), [docs/reviews/2026-10-31-architecture-review.md](docs/reviews/2026-10-31-architecture-review.md). All 13 findings accepted. Since fixed: proxy allowlist and limits, proxy crash on malformed tokens, SQLite leases with generations and boot-ID fencing, per-lease keys, `build-base` refusing to overwrite a base in use, honest secret-exposure text. Still open: host gateway (#71), network isolation (#69, #4), versioned templates, builder VMs.
+- 2026-10-31: independent review (pi subagent, read-only), [docs/reviews/2026-10-31-architecture-review.md](docs/reviews/2026-10-31-architecture-review.md). All 13 findings accepted. Since fixed: proxy allowlist and limits, proxy crash on malformed tokens, SQLite leases with generations and boot-ID fencing, per-lease keys, `build-base` refusing to overwrite a base in use, honest secret-exposure text. Still open: host gateway (#71), default-deny egress (#4), versioned templates, builder VMs.
 - 2026-11-01: architecture review (Claude Code). Findings filed as [#67](https://github.com/benvinegar/boxery/issues/67)–[#78](https://github.com/benvinegar/boxery/issues/78). This file rewritten to describe only the built system ([#22](https://github.com/benvinegar/boxery/issues/22)).
