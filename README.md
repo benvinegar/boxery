@@ -48,15 +48,15 @@
 
 ---
 
-Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for full Ubuntu desktop VMs: shell, files, a real Chrome and the whole desktop. It works with Claude Code, Codex, Cursor, opencode and any other MCP agent, and has a native [pi](https://pi.dev) extension.
+Your agent keeps running where it already runs. boxery gives it **`vm_*` tools** for Ubuntu VMs, with a full desktop and a real Chrome or headless. It works with Claude Code, Codex, Cursor, opencode and any other MCP agent, and has a native [pi](https://pi.dev) extension.
 
 ## Why boxery
 
-- **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
+- **Disposable VMs on demand.** A full desktop VM in about 13 s on libvirt, or a [headless](docs/cli.md#lifecycle) one with no desktop at all. Snapshot in about 1 s, throw it away when done.
 - **Fork a running VM.** Copy a VM mid-task into several, try three fixes in parallel, keep the one that works.
-- **Fast, disposable desktops.** On libvirt a new desktop VM takes about 13 s and a snapshot about 1 s.
 - **Real computer use.** Screenshots, clicks, typing and Playwright against Chrome, which you can watch live over noVNC.
 - **Same tools everywhere.** Your Mac, a Linux server, or the cloud (exe.dev, boat.dev), even [all at once](docs/hosts.md).
+- **Your credentials never enter a VM.** VMs get a revocable token, and the host swaps in your real key. A VM gets nothing by default, not even an LLM, until you [grant it](docs/grants.md).
 
 ## Quick start
 
@@ -76,7 +76,7 @@ boxery-host init --backend lima && boxery-host build-base
 boxery setup local
 ```
 
-On Linux or in the cloud, see the [install guide](docs/install.md#choosing-a-backend).
+`build-base` builds the desktop image once (about 3 min); skip it if you only want headless VMs. On Linux or in the cloud, see the [install guide](docs/install.md#choosing-a-backend).
 
 Then connect your agent:
 
