@@ -11,9 +11,17 @@
 </p>
 
 <p align="center">
+  <a href="#where-the-vms-run">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/works-with-dark.svg">
+      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt and Cloud Hypervisor on Linux; exe.dev and boat.dev in the cloud" width="740">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
   <a href="https://github.com/benvinegar/boxery/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benvinegar/boxery/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Backends" src="https://img.shields.io/badge/backends-Lima%20%7C%20libvirt%20%7C%20exe.dev%20%7C%20boat.dev%20(experimental)-555">
 </p>
 
 <p align="center">
