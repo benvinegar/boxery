@@ -4,10 +4,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
+import { hostAlias, hostKeyFile } from "./hostkeys.mjs";
 /** @import { Writable } from "node:stream" */
 /** @import { EndpointProblem } from "./backend.mjs" */
 
-/** @typedef {{ host: string, port: string | number }} GuestEndpoint */
+/** @typedef {{ host: string, port: string | number, name?: string }} GuestEndpoint */
 /** @typedef {ReturnType<typeof createGuest>} Guest */
 
 const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
@@ -17,15 +18,22 @@ const WRITE_KEYS = "umask 077; mkdir -p ~/.ssh && cat >~/.ssh/authorized_keys.bo
 /** @param {{ conf: string, env?: NodeJS.ProcessEnv }} opts */
 export function createGuest({ conf, env = process.env }) {
 	const key = path.join(conf, "mgmt_ed25519");
-	const opts = ["-o", "IdentitiesOnly=yes", "-o", `IdentityFile=${key}`, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5"];
+	const opts = ["-o", "IdentitiesOnly=yes", "-o", `IdentityFile=${key}`, "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5"];
+	// The VM's pinned host key (hostkeys.mjs), checked strictly. A VM without a record is refused (ssh:
+	// "No ED25519 host key is known"); there is no way to reach a VM without checking its key.
+	const hostKeyOpts = (/** @type {string | undefined} */ name) => {
+		if (!name) throw new Error("guest ssh needs the VM's name (its pinned host key)");
+		return ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${hostKeyFile(conf, name)}`, "-o", "GlobalKnownHostsFile=/dev/null",
+			"-o", `HostKeyAlias=${hostAlias(name)}`, "-o", "CheckHostIP=no", "-o", "UpdateHostKeys=no"];
+	};
 
-	/** Run COMMAND in the guest at {host, port}; resolves with its exit status (255 = ssh failed).
+	/** Run COMMAND in VM NAME's guest at {host, port}; resolves with its exit status (255 = ssh failed,
+	 *  also when the guest's host key isn't NAME's).
 	 *  @param {GuestEndpoint} ep @param {string} command @param {{ input?: string | null, quiet?: boolean }} [opts]
 	 *  @returns {Promise<number>} */
-	function run({ host, port }, command, { input, quiet = false } = {}) {
+	function run({ host, port, name }, command, { input, quiet = false } = {}) {
 		return new Promise((resolve, reject) => {
-			const child = spawn("ssh", [...opts, "-p", String(port), `agent@${host}`, command], {
+			const child = spawn("ssh", [...opts, ...hostKeyOpts(name), "-p", String(port), `agent@${host}`, command], {
 				env, stdio: [input == null ? "ignore" : "pipe", quiet ? "ignore" : 2, quiet ? "ignore" : 2],
 			});
 			child.on("error", reject);
@@ -59,12 +67,14 @@ export function createGuest({ conf, env = process.env }) {
 		petKeys: () => [...new Set([hostPubkey(), ...registeredKeys()])].filter(Boolean).sort(),
 		/** Wait until sshd answers. tries × 2 s (BOXERY_SSH_WAIT_TRIES, default 180 = 6 min). problem: async
 		 *  () => null | {fatal, message}, asked after each failed try: give up at once when it is fatal (there
-		 *  is no way in), and say why on a timeout.
-		 *  @param {GuestEndpoint} ep @param {number} [tries] @param {() => Promise<EndpointProblem | null>} [problem] */
-		async waitSsh(ep, tries = Number(env.BOXERY_SSH_WAIT_TRIES || 180), problem = async () => null) {
+		 *  is no way in), and say why on a timeout. prepare: run before each try.
+		 *  @param {GuestEndpoint} ep @param {number} [tries] @param {() => Promise<EndpointProblem | null>} [problem]
+		 *  @param {() => Promise<void>} [prepare] */
+		async waitSsh(ep, tries = Number(env.BOXERY_SSH_WAIT_TRIES || 180), problem = async () => null, prepare = async () => {}) {
 			/** @type {EndpointProblem | null} */
 			let why = null;
 			for (let i = 0; i < tries; i++) {
+				await prepare(); // e.g. pin the VM's host key once it can be read (hostkeys.mjs)
 				if (await run(ep, "true", { quiet: true }) === 0) return;
 				why = await problem();
 				if (why?.fatal) throw new Error(why.message);

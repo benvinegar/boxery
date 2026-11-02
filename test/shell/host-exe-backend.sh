@@ -146,6 +146,9 @@ up=$(grep -F '/etc/boxery/proxy-upstream' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' 
 [[ $up == "TCP:127.0.0.1:18088" ]] && ok "guest proxy upstream is the tunnel's -R end" || bad "upstream: $up"
 grep -F 'systemd-machine-id-setup' "$I" >/dev/null && grep -F 'ssh-keygen -A' "$I" >/dev/null && grep -F 'echo v1 >/etc/boxery/hostname' "$I" >/dev/null && ok "fresh machine-id, host keys, hostname" || bad "identity"
 grep -F 'boxery-novnc' "$I" >/dev/null && grep -F 'git init -q' "$I" >/dev/null && ok "runcmd steps: desktop services, ~/project" || bad "runcmd"
+hk=$(grep -F '"/etc/ssh/boxery_host_ed25519_key.pub"' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' | head -1 | cut -c6- | base64 -d 2>/dev/null || true)
+[[ -n $hk && "v1.boxery $hk" == "$(cat "$BOXERY_CONF/host-keys/v1")" ]] && grep -F '"/etc/ssh/sshd_config.d/05-boxery-hostkey.conf"' "$I" >/dev/null &&
+	ok "pinned host key (#70): the seeded key is written and is the one boxery-host recorded" || bad "pinned key: $hk / $(cat "$BOXERY_CONF/host-keys/v1" 2>&1)"
 U=$HOME/.config/systemd/user/boxery-exe-bxtest-v-v1.service
 grep -F "ExecStart=$E/v1/tunnel.sh" "$U" >/dev/null && grep -F 'Restart=always' "$U" >/dev/null && ok "tunnel runs as a restarting user unit" || bad "unit: $(cat "$U")"
 [[ -f $UNITS/enabled.boxery-exe-bxtest-v-v1.service && -f $UNITS/boxery-exe-bxtest-v-v1.service ]] && ok "tunnel enabled (survives host reboots) and running" || bad "unit state"

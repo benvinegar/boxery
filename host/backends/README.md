@@ -2,7 +2,7 @@
 
 `host/boxery-host` is backend-agnostic. It generates each VM's identity (cloud-config with ssh keys, LLM proxy token, pi/opencode config), manages tokens, leases and locks, waits for ssh, and runs the LLM proxy. A backend is a bash file that implements the functions below.
 
-The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh`, `vm_ssh_cmd`, and the variables `ROOT`, `CACHE`, `PROXY_PORT` and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
+The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh NAME HOST [PORT]`, `vm_ssh_cmd NAME HOST PORT CMD…` (both check VM NAME's pinned host key), and the variables `ROOT`, `CACHE`, `PROXY_PORT` and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
 
 ## VMs
 
@@ -31,6 +31,8 @@ boxery-host asks the backend which functions it defines (`host/backend.sh __func
 | `backend_resize` | `resize` fails with "the BACKEND backend cannot resize VMs" |
 | `backend_proxy_bind` | the LLM proxy listens on `127.0.0.1` (no backend overrides it today; for one whose guests reach the proxy over a host interface instead of vsock or a tunnel) |
 | `backend_endpoint_problem` | waits for ssh report only a timeout, not why the VM can't be reached (remote backends: [`remote_endpoint_problem`](#remote-backends)) |
+| `backend_host_key NAME` | the guest's live ed25519 ssh host key (`ssh-ed25519 AAAA…`), read through the hypervisor rather than the VM network. boxery-host pins it for a VM that has no record (made before keys were pinned, or `boxery pin`). libvirt: the qemu guest agent. Without it, only loopback endpoints (Lima, the remote backends' tunnels) are trusted for that, or `pin --from-guest` |
+| `backend_platform_host_key NAME` | for platforms that give every machine its own host key and report it (boat): that key. boxery-host then seeds no key of its own and re-pins this one whenever it waits for ssh |
 
 ### Persisted settings
 
@@ -85,6 +87,7 @@ Measured headless `new` (Lima vz on Apple Silicon, November 2026): 51 s from `li
 A VM made from an image starts with someone else's disk. boxery-host's cloud-config (`boxery_seed`) and post-boot checks take care of the guest side on every backend:
 
 - new hostname, proxy token, pi/opencode config: cloud-config `write_files`/`runcmd`, as for any new VM
+- **a new ssh host key** (`host/hostkeys.mjs`): `write_files` puts it in `/etc/ssh/boxery_host_ed25519_key` with an sshd drop-in (`05-boxery-hostkey.conf`) that makes it sshd's only host key, and boxery-host records the public half. Every ssh to the VM checks it. A backend that replays the cloud-config instead of seeding it must make sshd reload after writing the files (`remote_identity_script` restarts sshd when the user-data carries a key)
 - **`authorized_keys` reset**: a per-instance `bootcmd` deletes it before sshd starts, then cloud-init writes this VM's keys. boxery-host then sets them again over ssh. A fork of a leased VM never accepts the lease holder's key
 - **fresh machine-id**: per-instance `bootcmd`
 - pushed grants (`/run/user/<uid>/boxery`) cleared. It's tmpfs, so it's normally gone already

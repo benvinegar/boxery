@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { discover } from "./boxery-upgrade.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
+import { ensureHostKey, hasHostKey } from "./hostkeys.mjs";
 import { baseUserdata } from "./seed.mjs";
 import { fail, jsonArray, log, print, readFd, sleep, table } from "./util.mjs";
 /** @import { Config } from "./config.mjs" */
@@ -244,6 +245,23 @@ async function startServices(rt, { reaper }) {
 	await sleep(1000);
 }
 
+/** VMs made before host keys were pinned (#70) have no record, and every ssh to them is refused. Pin the
+ *  running ones through a channel their network can't spoof (hostkeys.mjs trustedKey); say which are left
+ *  for `boxery pin`. Best effort: init never fails over it. @param {Runtime} rt */
+async function pinExisting(rt) {
+	let vms;
+	try { vms = await rt.vms.list({ quiet: true }); } catch { return; }
+	const left = [];
+	for (const vm of vms) {
+		if (hasHostKey(rt.conf, vm.name) && !await rt.vms.has("backend_platform_host_key")) continue;
+		if (vm.state !== "running") { if (!hasHostKey(rt.conf, vm.name)) left.push(vm.name); continue; }
+		try {
+			if (await ensureHostKey(rt, vm.name, await rt.vms.sshEndpoint(vm.name, { quiet: true }))) left.push(vm.name);
+		} catch { left.push(vm.name); }
+	}
+	if (left.length) log(`${left.length} VM(s) have no pinned ssh host key yet (${left.join(", ")}): boxery start pins a stopped one; for a running one run boxery pin NAME`);
+}
+
 // ---------------------------------------------------------------- commands
 /** @param {Runtime} rt */
 export async function init(rt) {
@@ -278,6 +296,7 @@ async function initProfile(rt, others) {
 	chmodSync(proxyEnv, 0o600);
 	writeFileSync(path.join(rt.conf, "host.env"), hostEnv(rt, process.execPath));
 	await rt.vms.call("backend_init");
+	await pinExisting(rt);
 	mkdirSync(path.join(homedir(), ".local/bin"), { recursive: true });
 	if (!process.env.BOXERY_CONF) {
 		for (const [link, target] of [["boxery-host", "host/boxery-host"], ["boxery", "controller/boxery"]]) {

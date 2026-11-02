@@ -72,6 +72,9 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
                             change a VM's size; a running VM is restarted. Disk only grows
   snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
   connect NAME [PORT]       stdio to VM port (for ssh ProxyCommand)
+  known-hosts NAME          NAME's pinned ssh host key as a known_hosts line (ssh KnownHostsCommand)
+  pin NAME [--from-guest]   re-pin running NAME's ssh host key (hypervisor/loopback channel; --from-guest:
+                            trust what NAME's ssh endpoint answers once)
   proxy-log [N]             recent LLM + edge proxy requests
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 

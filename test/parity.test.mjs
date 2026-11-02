@@ -52,6 +52,7 @@ const CLI_ONLY = {
 	sessions: "lists the tmux sessions behind attach/prompt",
 	"proxy-log": "host-wide LLM/edge request log, for the user",
 	pool: "host admin",
+	pin: "which ssh host key a VM is trusted with is the user's decision (--from-guest trusts the network once)",
 };
 
 function cliCommands() {

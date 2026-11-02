@@ -212,6 +212,14 @@ boat_wait_ssh() { # DIR
 # A sandbox that just started: wait for it, authorize and pin, wait for ssh.
 boat_attach() { boat_wait_ready "$2" && boat_ssh_setup "$1" "$2" && boat_wait_ssh "$1"; }   # DIR ID
 boat_sync() { boat_run "$1" 'sync' </dev/null >/dev/null 2>&1; }   # DIR
+# The VM's ssh host key as boat's API reported it at the last attach (new, start, reimage). It is the
+# machine's own sshd, which the tunnel's -L end also reaches, so boxery-host pins it for NAME
+# (host/hostkeys.mjs) instead of seeding a key of its own: every resume puts the VM on a new machine.
+backend_platform_host_key() { # NAME
+	local kh; kh=$(boat_dir "$1")/known_hosts
+	[[ -f $kh ]] || return 1
+	awk '{ print $2, $3; exit }' "$kh"
+}
 
 boat_tunnel_write() { # NAME
 	local d a=() l; d=$(boat_dir "$1")

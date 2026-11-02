@@ -364,6 +364,25 @@ backend_list() { # → lines: NAME<TAB>STATE<TAB>SSH<TAB>DISK_BYTES<TAB>DISK_USE
 	done
 }
 
+# The guest's live ssh host key, read through the qemu guest agent (the hypervisor's channel, not the
+# VM's network): what boxery-host pins for a VM that has no record (hostkeys.mjs). The pinned key if the
+# seed installed one, else the image's own ed25519 key.
+backend_host_key() {
+	local d pid r i out; d=$(dom "$1")
+	pid=$(virsh qemu-agent-command "$d" '{"execute":"guest-exec","arguments":{"path":"/bin/sh","arg":["-c","cat /etc/ssh/boxery_host_ed25519_key.pub 2>/dev/null || cat /etc/ssh/ssh_host_ed25519_key.pub"],"capture-output":true}}' 2>/dev/null |
+		sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p') || return 1
+	[[ -n $pid ]] || return 1
+	for i in $(seq 20); do
+		r=$(virsh qemu-agent-command "$d" "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}" 2>/dev/null) || return 1
+		[[ $r == *'"exited":true'* ]] && break
+		((i < 20)) || return 1; sleep 0.2
+	done
+	[[ $r == *'"exitcode":0'* ]] || return 1
+	out=$(sed -n 's/.*"out-data":"\([A-Za-z0-9+/=]*\)".*/\1/p' <<<"$r" | base64 -d 2>/dev/null) || return 1
+	[[ $out =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*([[:space:]]|$) ]] || return 1
+	echo "${out%%$'\n'*}"
+}
+
 # Where the VM's sshd is reachable from this host: "HOST PORT".
 backend_ssh_endpoint() {
 	exists "$1" || die "no such vm: $1"
