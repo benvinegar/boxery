@@ -191,6 +191,7 @@ Nothing in boxery's own state limits that: lock transactions are short, the prox
 4. **Simplification:** move the controller into Node ([#74](https://github.com/benvinegar/boxery/issues/74)), align the Node requirement ([#77](https://github.com/benvinegar/boxery/issues/77)).
 5. **Backends:** exe.dev polish ([#37](https://github.com/benvinegar/boxery/issues/37)–[#42](https://github.com/benvinegar/boxery/issues/42), [#54](https://github.com/benvinegar/boxery/issues/54)), boat.dev ([#60](https://github.com/benvinegar/boxery/issues/60)), Daytona ([#61](https://github.com/benvinegar/boxery/issues/61)).
 6. **Tests** that need real hypervisors: guest→host and cross-VM isolation, expiry under laptop sleep, secret retention after reset, a run from a real Mac.
+7. **Backend-owned templates:** per-driver declarations, profile-local definitions, explicit discovery/selection and native creation. Shared guest checks and backend-private acceleration, not universal base artifacts. [Plan](docs/plans/2026-11-02-portable-bases-and-fast-create.md).
 
 ## Design decisions
 
