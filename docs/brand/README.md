@@ -4,6 +4,8 @@
 
 The mark is a solid cube resting on the floor of an outline cube: a VM inside a host.
 
+For how to use these assets in diagrams, cards and videos (the full palette, type, the isometric style, motion and words), see the [visual style guide](style.md).
+
 | File | Use |
 |---|---|
 | `mark-light.svg`, `mark-dark.svg` | The mark on light or dark backgrounds. |

@@ -1,9 +1,10 @@
 // Render promo.html to an MP4, frame by frame, in headless Chrome.
 //
-//   npx -y -p playwright-core node docs/promo/render.mjs [out.mp4]
+//   node docs/promo/render.mjs [out.mp4]
 //   node docs/promo/render.mjs --stills 2,7,12 [dir]    # PNGs at those times, for review
 //
-// Needs Google Chrome and ffmpeg. PLAYWRIGHT=/path/to/playwright-core overrides the import.
+// Needs Google Chrome, ffmpeg and playwright-core (npm install --no-save playwright-core).
+// PLAYWRIGHT=/path/to/playwright-core/index.mjs imports it from somewhere else.
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
