@@ -54,6 +54,7 @@ const CLI_ONLY = {
 	"proxy-log": "host-wide LLM/edge request log, for the user",
 	pool: "host admin",
 	pin: "which ssh host key a VM is trusted with is the user's decision (--from-guest trusts the network once)",
+	patch: "rewrites a VM's software and may restart it under running agents; the user's to run (vm_info list shows outdated VMs)",
 };
 
 function cliCommands() {

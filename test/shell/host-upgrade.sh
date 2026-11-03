@@ -19,6 +19,7 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$tmp/gitconfig GIT_AUTHOR_NAME=t 
 unset BOXERY_CONF BOXERY_PROXY_PORT BOXERY_PROXY_UNIT
 # Even if a real systemctl were found, it must not reach this user's service manager.
 export XDG_RUNTIME_DIR=$tmp/run DBUS_SESSION_BUS_ADDRESS=unix:path=$tmp/run/no-bus
+export BOXERY_STUB_SERVICES=1   # HOME is a temp dir and systemctl a stub: init may load services
 mkdir -p "$tmp/run"
 git config --global init.defaultBranch master
 git config --global advice.detachedHead false
@@ -109,7 +110,7 @@ tokens=$(cat "$p1/tokens.json") gen=$(sql "$p1/leases.db" "SELECT gen FROM vms W
 # A broken release: init succeeds, then the new host migrates the lease store (schema version 2: a
 # column and a table), rewrites tokens.json and adds an edge grant, but can't list VMs → roll back.
 edit() { node -e 'const fs=require("fs");const [f,a,b]=process.argv.slice(1);const s=fs.readFileSync(f,"utf8");if(!s.includes(a))process.exit(1);fs.writeFileSync(f,s.replace(a,()=>b))' "$@" || bad "test setup: could not edit $1"; }
-edit "$tmp/origin/host/cli.mjs" 'async function ls(rt, [arg]) {' 'async function ls(rt, [arg]) { rt.db(); const fs = await import("node:fs"); fs.writeFileSync(`${rt.conf}/tokens.json`, "{\"v2\":true}"); fs.mkdirSync(`${rt.conf}/edge`, { recursive: true }); fs.writeFileSync(`${rt.conf}/edge/v2.json`, "{}"); fs.writeFileSync(`${rt.conf}/broken.ran`, ""); fail("broken release");'
+edit "$tmp/origin/host/cli.mjs" 'async function ls(rt, args) {' 'async function ls(rt, args) { rt.db(); const fs = await import("node:fs"); fs.writeFileSync(`${rt.conf}/tokens.json`, "{\"v2\":true}"); fs.mkdirSync(`${rt.conf}/edge`, { recursive: true }); fs.writeFileSync(`${rt.conf}/edge/v2.json`, "{}"); fs.writeFileSync(`${rt.conf}/broken.ran`, ""); fail("broken release");'
 edit "$tmp/origin/host/boxery-leases.mjs" 'export const SCHEMA_VERSION = 1;' 'export const SCHEMA_VERSION = 2;'
 edit "$tmp/origin/host/boxery-leases.mjs" '	if (v < 1) db.exec(SCHEMA_V1);' '	if (v < 1) db.exec(SCHEMA_V1); if (v < 2) db.exec("ALTER TABLE vms ADD COLUMN zone TEXT; CREATE TABLE broken_release (x)");'
 og commit -qam broken; og tag v0.7.2

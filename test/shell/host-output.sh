@@ -17,7 +17,7 @@ bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 # run ARGS…: stdout → $tmp/out, stderr → $tmp/err (temp dir → TMP, timestamps → DATE), exit status → $rc
 run() {
 	rc=0; "$H" "$@" >"$tmp/out.raw" 2>"$tmp/err.raw" || rc=$?
-	for f in out err; do sed -E -e "s#$tmp#TMP#g" -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}/DATE/g' -e 's/, [0-9]+s\)$/, Ns)/' -e 's/installed [0-9]+s after/installed Ns after/' "$tmp/$f.raw" >"$tmp/$f"; done
+	for f in out err; do sed -E -e "s#$tmp#TMP#g" -e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}/DATE/g' -e 's/"checked_at":[0-9]+/"checked_at":EPOCH/g' -e 's/, [0-9]+s\)$/, Ns)/' -e 's/installed [0-9]+s after/installed Ns after/' "$tmp/$f.raw" >"$tmp/$f"; done
 }
 # same DESC FILE EXPECTED_RC: compare $tmp/FILE with $tmp/expected, and $rc with EXPECTED_RC
 same() {
@@ -67,7 +67,11 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
                             copy a VM (running or not) into new VMs with their own identity
                             (same size as SRC unless --shape or size flags are given)
   shapes [--json]           VM sizes (built-ins + TMP/conf/shapes.json; * = default)
-  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+  ls [--json] [--refresh]   VMs; --refresh first reads each running VM's guest build record (GUEST column)
+  ip NAME | start NAME | stop NAME | rm NAME
+  patch NAME|--all [--wait S]
+                            update a VM's guest software to this host's image layers (restarts it if the
+                            updates ask to; a pool VM must be free, and its clean image is captured again)
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]
                             change a VM's size; a running VM is restarted. Disk only grows
   snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
@@ -88,15 +92,15 @@ run bogus; same "unknown command → usage, exit 1" out 1
 
 echo "== listings"
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
-a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   -
-b2               shut off   -                  0.5/40GiB    standard   desktop   -
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE      GUEST
+a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   -          unknown
+b2               shut off   -                  0.5/40GiB    standard   desktop   -          unknown
 EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true},
-{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
 ]
 EOF
 run ls --json; same "ls --json (one element per line)" out 0
@@ -111,17 +115,17 @@ echo '{"default":"standard","shapes":{"small":{"cpus":2,"mem":4096,"disk":20},"s
 run shapes --json; same "shapes --json" out 0
 run snap a1 one
 echo "==> snapshot a1@one" >"$tmp/expected"; same "snap logs on stderr" err 0
-printf 'one\tDATE\t1MiB\n' >"$tmp/expected"
+printf 'one\tDATE\t1MiB\t0d\tunknown\n' >"$tmp/expected"
 run snaps a1; same "snaps (tab-separated)" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"one","created":"DATE","size":"1MiB"}
+{"name":"one","created":"DATE","size":"1MiB","age_days":0,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":null,"checked_at":EPOCH}}
 ]
 EOF
 run snaps a1 --json; same "snaps --json" out 0
 cat >"$tmp/expected" <<'EOF'
-IMAGE                                    CREATED              SIZE
-a1@one                                   DATE  1MiB
+IMAGE                                    CREATED              SIZE       AGE   GUEST
+a1@one                                   DATE  1MiB       0d    unknown
 EOF
 run images; same "images" out 0
 run pool add a1
@@ -145,8 +149,8 @@ run ip a1; same "ip" out 0
 rm -rf "$BOXERY_CONF/vm-shapes"; mv "$BOXERY_FAKE_DIR/b2/size" "$tmp/b2.size"
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":{"state":"free","holder":null,"expires_at":null},"shape":"custom","cpus":2,"mem":2048,"desktop":true},
-{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":null,"disk_used":0.5,"tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":{"state":"free","holder":null,"expires_at":null},"shape":"custom","cpus":2,"mem":2048,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":null,"disk_used":0.5,"tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
 ]
 EOF
 run ls --json; same "ls --json: pool lease object; sizes from the backend for VMs without a record, nulls if unreadable" out 0
@@ -155,16 +159,16 @@ same "...and records it as a custom size" a1.rec 0
 [[ ! -e $BOXERY_CONF/vm-shapes/b2.json ]] && ok "...but records nothing for an unreadable size" || bad "b2 recorded: $(cat "$BOXERY_CONF/vm-shapes/b2.json")"
 mv "$tmp/b2.size" "$BOXERY_FAKE_DIR/b2/size"
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
-a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   free
-b2               shut off   -                  0.5/40GiB    custom     desktop   -
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE      GUEST
+a1               running    127.0.0.1:22000    0.5/10GiB    custom     desktop   free       unknown
+b2               shut off   -                  0.5/40GiB    custom     desktop   -          unknown
 EOF
 run ls; same "ls: lowercase lease state; b2's size read and recorded once readable" out 0
 mv "$BOXERY_FAKE_DIR/a1" "$tmp/a1.away"; mv "$BOXERY_FAKE_DIR/b2" "$tmp/b2.away"
 echo "[]" >"$tmp/expected"
 run ls --json; same "ls --json with no VMs → []" out 0
 cat >"$tmp/expected" <<'EOF'
-NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE
+NAME             STATE      SSH                DISK         SHAPE      KIND      LEASE      GUEST
 EOF
 run ls; same "ls with no VMs → header only" out 0
 mv "$tmp/a1.away" "$BOXERY_FAKE_DIR/a1"; mv "$tmp/b2.away" "$BOXERY_FAKE_DIR/b2"
@@ -185,7 +189,7 @@ err "pool rm of a pet" "boxery-host: b2 is not a pool VM" pool rm b2
 err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must be DNS names; header names [A-Za-z0-9-]; no CR/LF; llm: chatgpt|openai|anthropic|ollama)" edge-set a1 </dev/null
 err "images with a bad flag" "boxery-host: usage: images [--json]" images bogus
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
-err "ls with an extra argument" "boxery-host: usage: ls [--json]" ls extra
+err "ls with an extra argument" "boxery-host: usage: ls [--json] [--refresh]" ls extra
 BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: boat cloud-hypervisor exe fake libvirt lima )" ls
 
 echo "== headless"
@@ -199,11 +203,11 @@ EOF
 same "new --headless logs the layers it installs" err 0
 run ls --json
 grep -F '"name":"h3"' "$tmp/out" >"$tmp/h3.json" || true
-echo '{"name":"h3","state":"running","ssh_addr":"127.0.0.1:22002","disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false}' >"$tmp/expected"
+echo '{"name":"h3","state":"running","ssh_addr":"127.0.0.1:22002","disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}' >"$tmp/expected"
 same "ls --json: a headless VM has desktop false" h3.json 0
 run ls
 grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true
-echo "h3               running    127.0.0.1:22002    0.5/40GiB    standard   headless  -" >"$tmp/expected"
+echo "h3               running    127.0.0.1:22002    0.5/40GiB    standard   headless  -          unknown" >"$tmp/expected"
 same "ls: KIND headless" h3.txt 0
 run snap h3 hs
 "$H" new h4 --from h3@hs --headless >/dev/null 2>&1 && ok "new --from a headless image with --headless" || bad "new --from headless image"

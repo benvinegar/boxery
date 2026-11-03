@@ -29,4 +29,6 @@
 - **[Host module boundaries](host-modules.md)**: Node lease policy, runtime adapters, state stores and shell backends.
 - **[Architecture](../ARCHITECTURE.md)**: design notes, roadmap, failure modes.
 - **[Brand assets](brand/README.md)**: logo mark, wordmark lockup, favicons and colors.
+- **[Visual style guide](brand/style.md)**: palette, type, the isometric style, motion and words, for diagrams and video.
+- **[Promo video](promo/README.md)**: the 30 s social video, as code, and how to render it.
 - **[Contributing](../CONTRIBUTING.md)**: test layers and CI.

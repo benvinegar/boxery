@@ -204,6 +204,8 @@ boxery upgrade-host                 # or: boxery --host hornet upgrade-host
 
 Or on the host itself: `boxery-host upgrade [--check]`.
 
+Upgrading the host doesn't touch the software inside existing VMs. When a release changes the image layers, `boxery ls` lists the VMs built with the old ones as `outdated`; `boxery patch NAME` (or `--all`) brings them up to date ([details](cli.md#lifecycle)).
+
 `upgrade` works out how boxery is installed on the host and updates it in place:
 
 - **git checkout** on a branch: `git pull --ff-only` from its upstream. It refuses a checkout with uncommitted changes or local commits. A detached checkout moves to the newest `v*` tag.

@@ -1,9 +1,9 @@
 // One-time host setup: init (state directory, settings, proxy and reaper services), build-base and
 // add-key. Administrative: these run outside the lifecycle lock protocol (docs/lifecycle.md).
 import { spawn } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import path from "node:path";
 import { discover } from "./boxery-upgrade.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
@@ -232,6 +232,18 @@ async function reloadAgent(domain, label, plist) {
 	await run("launchctl", ["bootstrap", domain, plist]); // the last try shows launchctl's error
 }
 
+// launchd's gui/<uid> domain and systemd's user manager belong to the account, not to $HOME. With HOME
+// pointed elsewhere (a test's temp dir), loading this profile's services would replace the account's real
+// ones of the same name (dev.boxery-proxy) with a job whose files are elsewhere, and launchd/systemd would
+// not find them again at the next login. Tests that stub launchctl and systemctl set BOXERY_STUB_SERVICES=1.
+function checkServiceHome() {
+	if (process.env.BOXERY_STUB_SERVICES === "1") return;
+	let account;
+	try { account = userInfo().homedir; } catch { return; } // no passwd entry (some containers): nothing to compare
+	const real = (/** @type {string} */ p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+	if (real(homedir()) !== real(account)) fail(`HOME=${homedir()} is not this account's home (${account}): init installs services for the account, so run it with HOME=${account}`);
+}
+
 /** @param {Runtime} rt @param {{ reaper: boolean }} opts */
 async function startServices(rt, { reaper }) {
 	const bind = await rt.vms.has("backend_proxy_bind") ? (await rt.vms.call("backend_proxy_bind", [], { capture: true })).trim() : "127.0.0.1";
@@ -293,6 +305,7 @@ export async function init(rt) {
 
 /** @param {Runtime} rt @param {HostProfile[]} others */
 async function initProfile(rt, others) {
+	checkServiceHome();
 	// Only a profile's first init: re-running init (or an upgrade) never fails over an existing setup.
 	if (!existsSync(path.join(rt.conf, "host.env"))) checkProfiles(rt, others);
 	need("nc"); need("ps");

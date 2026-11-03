@@ -55,8 +55,9 @@ Workers record intent **after preflight, before side effects**, and clear it onl
 | Reset | Retry only if its original RESETTING generation/epoch still matches; finish FREE or BROKEN |
 | Pool add | Preserve an already registered member; otherwise restore pet access and remove the incomplete clean image |
 | Pool remove | Finish removing membership/clean image and restoring pet access |
+| Pool patch | Reimage the still-free VM from its clean image (the old one, or the patched one if its capture finished); with no clean image, mark it BROKEN |
 
-Start/stop/resize expose the resulting hypervisor state; they do not promise rollback to the old power state or size. An interrupted resize can leave a VM stopped; `boxery start` brings it back. Edge-route publication is an atomic rename; retries set the desired routes again. Token read/modify/rename uses a short SQLite transaction, not a crash-prone mkdir lock.
+Patching a pet VM journals nothing: the layers are idempotent, so an interrupted `patch` is run again. Start/stop/resize expose the resulting hypervisor state; they do not promise rollback to the old power state or size. An interrupted resize can leave a VM stopped; `boxery start` brings it back. Edge-route publication is an atomic rename; retries set the desired routes again. Token read/modify/rename uses a short SQLite transaction, not a crash-prone mkdir lock.
 
 The journal contains names, operation metadata and backend routing settings, not grant secrets or tokens. Seed files remain in a private per-operation work directory until cleanup. This is process-crash recovery, not a guarantee of atomicity across a machine power failure, guest application transactions, or external administrator actions.
 
