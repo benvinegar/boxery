@@ -91,7 +91,7 @@ export async function patchVm(rt, args) {
 	// The layers it has (/etc/boxery/layers); a VM from before that file: its kind's.
 	const fallback = vmKind(rt.conf, name) === "headless" ? "plumbing devtools" : "plumbing devtools desktop";
 	log(`${name}: running its image layers again (log: /var/log/boxery-patch.log in the VM)`);
-	const provision = `sudo bash -c 'set -o pipefail; L=$(tr "\\n" " " 2>/dev/null </etc/boxery/layers); /usr/local/sbin/boxery-provision \${L:-${fallback}} 2>&1 | tee /var/log/boxery-patch.log | { grep --line-buffered "^==> " || true; }'`;
+	const provision = `sudo bash -c 'set -o pipefail; L=$(tr "\\n" " " 2>/dev/null </etc/boxery/layers); /usr/local/sbin/boxery-provision \${L:-${fallback}} 2>&1 | tee /var/log/boxery-patch.log | while IFS= read -r l; do case $l in "==> "*) printf "%s\\n" "$l" ;; esac; done'`;
 	if (await rt.guest.run(ep, provision) !== 0) {
 		await rt.guest.run(ep, "sudo tail -30 /var/log/boxery-patch.log");
 		fail(`patching ${name} failed (log above: /var/log/boxery-patch.log in the VM)`);
