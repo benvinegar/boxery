@@ -2,7 +2,7 @@
 # boat.dev backend tests: boxery-host + host/backends/boat.sh against a fake boat API (no account, no
 # network). A stub curl serves the REST API from directories; a stub ssh records what the backend runs in
 # sandboxes as `user` (checking the pinned host key) and accepts the boxery-host → guest sshd hops
-# (agent@127.0.0.1 through the tunnel). systemctl and nc are stubbed as in host-exe-backend.sh.
+# (agent@127.0.0.1 through the tunnel). systemctl, launchctl and nc are stubbed as in host-exe-backend.sh.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 H=$ROOT/host/boxery-host
@@ -144,7 +144,10 @@ stop) rm -f "$UNITS/$3" ;;
 is-active) [[ -f "$UNITS/$4" ]] ;;
 esac'
 stub nc 'echo "nc $*" >>"$CALLS"'
-export PATH="$tmp/bin:$PATH"
+# init loads the proxy service on macOS too: never through the real launchctl, whose gui/UID domain is
+# this account's (with HOME a temp dir, it replaced the real dev.boxery-proxy job).
+stub launchctl 'echo "launchctl $*" >>"$CALLS"'
+export PATH="$tmp/bin:$PATH" BOXERY_STUB_SERVICES=1
 S=$BOAT_STATE E=$BOXERY_BOAT_DIR/vms
 
 pass=0; fail=0

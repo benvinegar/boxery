@@ -19,6 +19,7 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=$tmp/gitconfig GIT_AUTHOR_NAME=t 
 unset BOXERY_CONF BOXERY_PROXY_PORT BOXERY_PROXY_UNIT
 # Even if a real systemctl were found, it must not reach this user's service manager.
 export XDG_RUNTIME_DIR=$tmp/run DBUS_SESSION_BUS_ADDRESS=unix:path=$tmp/run/no-bus
+export BOXERY_STUB_SERVICES=1   # HOME is a temp dir and systemctl a stub: init may load services
 mkdir -p "$tmp/run"
 git config --global init.defaultBranch master
 git config --global advice.detachedHead false
