@@ -27,9 +27,27 @@ pi --vm demo --vm-grant llm:chatgpt,ssh-agent,env:GH_TOKEN,file:.env
 /vm grant env:GH_TOKEN                                # inside pi, for the current VM
 ```
 
+## Confirmation
+
+New access requires a person by default. `boxery grant`, `agent-forward NAME on`, `new --grant` / `--agent-forward`, and `fork --grants` show what is granted, where it lands, the exposure warning and the revoke command. The CLI reads **only `/dev/tty`**, never stdin; the default is **No**. Piping `yes` does not approve. Without a controlling terminal it exits non-zero and gives agents a command to pass to the user, or suggests `vm_grant`.
+
+Listing, revoking and re-applying existing grants (including on connect, start, resize, revert and VM selection) do not prompt. pi's `/vm grant` and `--vm-grant` use pi's confirm dialog; print mode cannot approve. pi validates grants and checks that a dialog is available before creating a VM or acquiring a lease. `--vm new` asks before creation; a pool request asks for the actual VM after acquiring it and immediately releases the lease on decline or dialog failure. `vm_grant` uses the client's elicitation or dialog. All use the same prompt formatter and grant operations, without running the CLI after approval.
+
+### Headless automation
+
+For cron, CI or pool setup, edit the **selected host profile's** `config` (normally `~/.boxery/profiles/HOST/config`) to add this literal line:
+
+```sh
+GRANT_CONFIRM=off
+```
+
+**This disables CLI grant confirmation protection for that profile. Any agent with a shell can then add grants without a person.** Remove the line to restore confirmation. This is a file-only setting, not an environment variable; there is no confirmation-skipping flag. It does not auto-approve MCP/pi dialogs or disable validation and deny-directory rules. Re-running `setup` rewrites the profile config, so re-check intentional automation settings afterwards.
+
+Confirmation is friction and a clear signal, **not a security boundary** against an agent running as your user: it can fake a terminal (`script`, `expect`, tmux), edit your config, or call internal operations. Do not treat this as isolation from a hostile local agent.
+
 ## Agents can ask
 
-An agent can't grant itself anything, but it can ask. When work in a VM fails for lack of access (`pnpm install` gets a 401, git wants credentials), the `vm_grant` tool asks you in a prompt:
+Through the supported grant front-ends, an agent can ask you for access rather than silently adding it. When work in a VM fails for lack of access (`pnpm install` gets a 401, git wants credentials), the `vm_grant` tool asks you in a prompt:
 
 ```text
 Give VM "demo" on host "hornet" access to:
@@ -43,16 +61,18 @@ Revoke any time: boxery --host hornet revoke demo file:/Users/you/Library/Prefer
 The agent's reason: "pnpm install got a 401 from the registry"
 ```
 
-If you allow it, the tool runs `boxery grant` for you, which applies the grant the same way. If you decline, nothing changes, and the agent is told not to ask again.
+If you allow it, the tool calls the shared grant operation in-process; it does not run `boxery grant` or need a CLI prompt bypass. If you decline, nothing changes, and the agent is told not to ask again.
 
 - **The prompt comes from boxery, not the agent.** In MCP clients it's an [elicitation](https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation), and in pi it's a confirm dialog. Neither is a tool call the agent can answer. A client that can't show one (no form elicitation, a plain-JSON HTTP call, pi in print mode) gets no prompt: the agent gets the exact `boxery grant …` command to pass on to you.
-- **Agents can request `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg`, `~/.pi` (your agent logins) or boxery's own config directories (`~/.config/boxery*`, `$BOXERY_CONF`, `~/.boxery` and every registered host profile), nor `env:BOXERY_*` variables (`BOXERY_MCP_TOKEN` drives every VM). An `env:VAR` request needs `VAR` set where boxery runs.
+- **Agents can request `llm:PROVIDER`, `github` (optionally `readonly`), `ssh-agent`, `env:VAR` and `file:LOCAL[=REMOTE]`.** They can't request `http:` grants or `--cmd`, since those run a command on your machine. They also can't request files under `~/.ssh`, `~/.gnupg`, `~/.pi` (your agent logins) or boxery's own config directories (`~/.config/boxery*`, `$BOXERY_CONF`, `~/.boxery` and every registered host profile), nor `env:BOXERY_*` variables (`BOXERY_MCP_TOKEN` drives every VM). An `env:VAR` request needs `VAR` set where boxery runs. The CLI enforces the same deny directories and `BOXERY_*` restriction, but additionally accepts user-written `http:` grants and `--cmd`.
 - **A requested file is granted by its real path.** If the agent asks for a symlink, the prompt shows the file it leads to, and that is what's stored, so re-pointing the link afterwards changes nothing.
 - One prompt at a time per session. Something already granted is reported without a prompt.
 - The agent's reason is shown last and labelled as the agent's. Judge the request by the lines above it.
 - Claude Code shows the first three lines and folds the rest; expand it to read the warning and the reason.
 
 This is the way to get credentials into a VM on another [host](hosts.md). Grants belong to a host profile, so a VM on `hornet` starts with none of your local VMs' grants. Agents are told never to copy credentials in with `vm_copy` or `vm_write`, because a copy lands on the VM's disk and in its snapshots.
+
+`fork --grants` adds access to new VMs, not just a re-apply: every source grant is revalidated before any fork is created. Missing files or legacy grants now forbidden by the deny-directory rules stop the fork. Revoke those stale grants first, or fork without `--grants` and grant only what the copies need. Each destination needs approval.
 
 ## How it works
 
@@ -69,10 +89,12 @@ This is the way to get credentials into a VM on another [host](hosts.md). Grants
 - **ssh-agent** turns on `ForwardAgent yes` for that VM only. Your private keys never leave your machine, but while you're connected, processes in the VM can ask your agent to sign. Background jobs (`boxery run --bg`, `vm_jobs`) outlive the connection, so they run without the agent; use an `http:`/`github` grant for git in jobs.
 - **env / file**: the local store (`~/.boxery/profiles/HOST/grants/NAME`) holds **names and paths only**. Values are read when grants are applied, then pushed over ssh into `/run/user/<uid>/boxery` in the VM. That's tmpfs, so values never touch the VM's disk and disappear on reboot.
   - Login and interactive shells source the env vars, and so does `vm_bash`.
+  - CLI `env:VAR --cmd …` helpers keep the caller's original stdin and show stderr, so credential helpers can prompt after approval. They have no command timeout; tool calls stay headless. HTTP helpers still read no stdin. stdin never answers the grant confirmation itself.
   - Files are symlinked into place and added to `.git/info/exclude`.
-  - Files are read afresh on every apply. One whose path now leads through a symlink into `~/.ssh`, `~/.gnupg`, `~/.pi` or boxery's own state is skipped with a warning, and its old copy is removed from the VM. A file there that you grant by its own path is still sent.
+  - Files are read afresh on every apply. One whose path now leads through a symlink into `~/.ssh`, `~/.gnupg`, `~/.pi` or boxery's own state is skipped with a warning, and its old copy is removed from the VM. New grants into those directories are refused on both CLI and tool paths. Legacy stored grants named directly inside them retain their old apply behavior; revoke them if they should no longer be available.
 - **Reconciled on every apply.** Grants are re-applied on `grant`, `revoke`, `new`, `start`, `revert`, `attach`, `ssh`, and when pi selects the VM. Each apply makes the VM match the current grants exactly, so revoked values are deleted.
 - `boxery agent-forward NAME on|off` still works as an alias for `grant`/`revoke NAME ssh-agent`.
+- A revoke that matches nothing warns `no grant …` instead of claiming to have removed access. Once a change is saved, cancellation does not interrupt SSH-config/connection reconciliation. If that follow-up fails, boxery explicitly says the change is **saved but not fully applied**; fix the reported error and retry the grant/revoke command.
 
 ## What to grant
 

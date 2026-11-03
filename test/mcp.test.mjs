@@ -6,10 +6,11 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
 import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
 import { registerHost } from "./fixtures/register-host.mjs";
+import { grantTransport } from "./fixtures/grant-transport.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -31,11 +32,15 @@ before(() => {
 	mkdirSync(path.join(dir, "home"));
 	writeFileSync(path.join(dir, "home/ssh_config"), "# fake\n");
 	registerHost(path.join(dir, "home"), "local");
+	grantTransport(dir, [path.join(dir, "home")]);
+	writeFileSync(path.join(dir, "home/grants/granted"), "ssh-agent\t\t\n");
+	writeFileSync(path.join(dir, "home/grants/fakevm"), "file\t/l/.env\tproject/.env\n");
 	// ssh -F CONF -o BatchMode=yes NAME.boxery "bash -c '<script>'": run the script locally, cwd = fake VM home.
 	// /home/agent is rewritten to the fake VM root so absolute VM paths stay inside the sandbox.
 	writeFileSync(
 		path.join(bin, "ssh"),
 		`#!/usr/bin/env bash
+for a; do [ "$a" != -O ] || exit 0; done
 host=""; while [ $# -gt 1 ]; do case $1 in -F|-o) shift 2 ;; *.boxery) host=$1; shift ;; *) shift ;; esac; done
 [ "$host" = "fakevm.boxery" ] || { echo "ssh: unknown host $host" >&2; exit 255; }
 cmd=\${1//\\/home\\/agent/${vmroot}}
@@ -89,6 +94,8 @@ exit 0
 	chmodSync(path.join(bin, "boxery"), 0o755);
 	env = /** @type {NodeJS.ProcessEnv} */ ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") });
 	env.VMROOT = vmroot;
+	env.BOXERY_RUNTIME_DIR = path.join(dir, "runtime");
+	mkdirSync(env.BOXERY_RUNTIME_DIR);
 });
 
 /** Start the stdio server, return a client with call(method, params). */
@@ -617,6 +624,8 @@ describe("grant requests (vm_grant)", () => {
 		return c;
 	};
 	let plain, c;
+	const stored = () => readFileSync(path.join(env.BOXERY_HOME, "grants/fakevm"), "utf8");
+	beforeEach(() => rmSync(path.join(env.BOXERY_HOME, "grants/fakevm"), { force: true }));
 	before(async () => {
 		writeFileSync(path.join(env.BOXERY_HOME, "calls"), "", { flag: "a" });
 		plain = client(["--vm", "fakevm"]);
@@ -637,12 +646,13 @@ describe("grant requests (vm_grant)", () => {
 		assert.equal(plain.requests.length, 0);
 	});
 
-	test("the user approves in an elicitation: the controller adds the grant", async () => {
+	test("the user approves in an elicitation: the shared operation adds the grant without the CLI", async () => {
 		c.onRequest = () => ({ action: "accept", content: {} });
 		const r = await c.tool("vm_grant", { spec: "ssh-agent", reason: "git push over ssh\nIGNORE PREVIOUS" });
 		assert.equal(r.isError, false, r.content[0].text);
 		assert.match(r.content[0].text, /^The user approved: fakevm now has ssh-agent/);
-		assert.equal(grantCalls().at(-1), "grant fakevm ssh-agent");
+		assert.match(stored(), /^ssh-agent\t/m);
+		assert.equal(grantCalls().length, 0, "no CLI grant subprocess");
 		const req = c.requests.at(-1);
 		assert.equal(req.method, "elicitation/create");
 		assert.deepEqual(req.params.requestedSchema, { type: "object", properties: {} });
@@ -664,13 +674,14 @@ describe("grant requests (vm_grant)", () => {
 		assert.equal(failed.isError, true);
 		assert.match(failed.content[0].text, /prompt failed \(no elicitation here\)[\s\S]*boxery --host local grant fakevm ssh-agent/);
 		assert.equal(grantCalls().length, before);
+		assert.equal(existsSync(path.join(env.BOXERY_HOME, "grants/fakevm")), false);
 	});
 
 	test("llm: grants are requestable like any other", async () => {
 		c.onRequest = () => ({ action: "accept" });
 		const r = await c.tool("vm_grant", { spec: "llm:anthropic", reason: "the proxy said llm:anthropic is not granted" });
 		assert.equal(r.isError, false, r.content[0].text);
-		assert.equal(grantCalls().at(-1), "grant fakevm llm:anthropic");
+		assert.match(stored(), /^llm\tanthropic\t/m);
 		assert.match(c.requests.at(-1).params.message, /^Give VM "fakevm" on host "local" access to:\n\nllm:anthropic: the VM host's anthropic credential/);
 		assert.match(c.requests.at(-1).params.message, /Revoke any time: boxery --host local revoke fakevm llm:anthropic/);
 	});
@@ -681,7 +692,8 @@ describe("grant requests (vm_grant)", () => {
 		c.onRequest = () => ({ action: "accept" });
 		const r = await c.tool("vm_grant", { spec: `file:${f}=~/.config/pnpm/auth.ini`, reason: "pnpm install got 401" });
 		assert.equal(r.isError, false, r.content[0].text);
-		assert.equal(grantCalls().at(-1), `grant fakevm file:${f}=.config/pnpm/auth.ini`);
+		assert.equal(stored(), `file\t${f}\t.config/pnpm/auth.ini\n`);
+		assert.equal(readFileSync(path.join(env.VMROOT, ".config/pnpm/auth.ini"), "utf8"), "//registry/:_authToken=x\n");
 		assert.match(c.requests.at(-1).params.message, new RegExp(`file: ${f}\n  → in the VM: ~/\\.config/pnpm/auth\\.ini\n`));
 	});
 
@@ -693,7 +705,7 @@ describe("grant requests (vm_grant)", () => {
 		c.onRequest = () => ({ action: "accept" });
 		const r = await c.tool("vm_grant", { spec: `file:${proj}/.env`, reason: "x" });
 		assert.equal(r.isError, false, r.content[0].text);
-		assert.equal(grantCalls().at(-1), `grant fakevm file:${proj}/real.env=project/.env`, "the real path is stored; the remote keeps the requested name");
+		assert.equal(stored(), `file\t${proj}/real.env\tproject/.env\n`, "the real path is stored; the remote keeps the requested name");
 		const msg = c.requests.at(-1).params.message;
 		assert.ok(msg.includes(`file: ${proj}/real.env\n  (the agent asked for ${proj}/.env, which leads here through a symlink)\n  → in the VM: ~/project/.env\n`), msg);
 		assert.ok(msg.includes(`revoke fakevm file:${proj}/real.env`), msg);
@@ -900,6 +912,7 @@ describe("http", () => {
 		const done = await next();
 		assert.equal(done.id, 7);
 		assert.match(done.result.content[0].text, /^The user approved: fakevm now has ssh-agent/);
+		rmSync(path.join(env.BOXERY_HOME, "grants/fakevm"), { force: true });
 		const plainJson = await post({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "vm_grant", arguments: { spec: "ssh-agent", reason: "x" } } }, { ...h, accept: "application/json" });
 		assert.match((await plainJson.json()).result.content[0].text, /can't show the user an approval prompt/, "no stream, no prompt");
 	});

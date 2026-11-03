@@ -96,6 +96,7 @@ sh -c "$proxy" | grep -q '^CONNECTED:demo.boxery:22$'
 [ ! -e NOT_EXECUTED ]
 "$CLI" host add one local --host-bin /bin/echo >/dev/null
 "$CLI" host add two local --host-bin /bin/echo >/dev/null
+echo 'GRANT_CONFIRM=off' >>"$BOXERY_HOME/profiles/one/config"
 "$CLI" --host one grant demo ssh-agent >/dev/null
 [ -f "$BOXERY_HOME/profiles/one/grants/demo" ]; [ ! -f "$BOXERY_HOME/profiles/two/grants/demo" ]
 one=$("$REAL_SSH" -F "$BOXERY_HOME/profiles/one/ssh_config" -G demo.boxery)
@@ -122,6 +123,7 @@ STUB
 chmod +x "$leasebin"
 "$CLI" host add lease-one local --host-bin "$leasebin" >/dev/null
 "$CLI" host add lease-two local --host-bin "$leasebin" >/dev/null
+for profile in lease-one lease-two; do echo 'GRANT_CONFIRM=off' >>"$BOXERY_HOME/profiles/$profile/config"; done
 id=l-0123456789abcdef0123456789abcdef
 [ "$("$CLI" --host lease-one acquire --ttl 600 2>/dev/null)" = "demo $id" ]
 p1="$BOXERY_HOME/profiles/lease-one"; p2="$BOXERY_HOME/profiles/lease-two"

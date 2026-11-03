@@ -21,6 +21,7 @@ ssh-keygen -q -t ed25519 -N "" -f "$BOXERY_CONF/mgmt_ed25519"
 # --- the controller's ssh_config for a host that pins keys (this checkout, local)
 "$CLI" setup local --host-bin "$H" >/dev/null 2>&1 || { echo "setup failed" >&2; exit 1; }
 P=$BOXERY_HOME/profiles/local
+echo 'GRANT_CONFIRM=off' >>"$P/config" # offline automation fixture
 G=$("$REAL_SSH" -F "$P/ssh_config" -G demo.boxery)
 printf '%s\n' "$G" | grep -qx 'stricthostkeychecking true' && ok "ssh_config: StrictHostKeyChecking yes" || bad "strict: $(printf '%s\n' "$G" | grep stricthost)"
 printf '%s\n' "$G" | grep -Fqx "knownhostscommand \"$H\" known-hosts %H" && ok "ssh_config: the host's pinned key via KnownHostsCommand known-hosts %H" || bad "knownhostscommand: $(printf '%s\n' "$G" | grep knownhostscommand)"

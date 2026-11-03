@@ -64,7 +64,7 @@ boxery snap-rm demo before-refactor
 boxery images                                # every snapshot on the host (with AGE and GUEST, like snaps)
 ```
 
-A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Forks get the source's size (cpus, memory, disk) unless you pass `--shape` or size flags. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
+A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Forks get the source's size (cpus, memory, disk) unless you pass `--shape` or size flags. Grants are per VM and aren't copied unless you pass `--grants`. That option revalidates the source grants and asks for each destination before creating anything; stale files or newly forbidden legacy grants must be revoked first (or omit `--grants`). A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
 
 Snapshots and forks are built on one backend primitive, the image (a copy of a VM's disk named `VM@LABEL`). They hold disk state only, never memory, so secrets pushed by grants (tmpfs) are never captured. `rm` removes a VM's snapshots too. How each backend implements images: [backends](../host/backends/README.md#images-one-primitive-for-snapshots-forks-and-pool-resets).
 
@@ -143,7 +143,9 @@ boxery revoke demo SPEC… | all
 boxery grants demo [apply | --json]
 ```
 
-See [Grants](grants.md).
+Adding access prompts on `/dev/tty`, defaults to No, and fails without a controlling terminal; stdin (including `yes | …`) cannot approve. This includes `agent-forward NAME on`, `new --grant` / `--agent-forward`, and `fork --grants`. Creation-time grants are validated and approved before creating VMs. Listing, applying existing grants, revoking, and `agent-forward NAME off` never prompt. Both CLI and agent tools enforce the same deny directories. Grant commands and grant-enriched inventory (`ls`) require Node on the controller. A grant lookup failure makes `ls --json` fail without emitting partial/malformed JSON.
+
+Headless automation can put the literal line `GRANT_CONFIRM=off` in the selected host profile's `config`. **It disables CLI grant confirmation protection for that profile.** It is not an environment variable or flag and does not auto-approve MCP/pi dialogs. Confirmation is not a boundary against a local agent that can fake a terminal or call internals. See [Grants](grants.md#confirmation).
 
 ### Shared pool
 

@@ -5,11 +5,15 @@ import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
+import { parseGrantRequest, grantPrompt, grantCommand, listGrants, addGrants } from "./grants.mjs";
+export { parseGrantRequest, grantPrompt, listGrants, applyGrants, revokeGrants } from "./grants.mjs";
+export { requestUserGrants, prepareUserGrants, approveGrantSpecs } from "./grant-approval.mjs";
+export { addGrants } from "./grants.mjs";
 export { q } from "./shell.mjs";
 /** @import { ChildProcessWithoutNullStreams } from "node:child_process" */
 /** @import { EditRequest } from "./atomic-edit.mjs" */
@@ -33,8 +37,8 @@ export { q } from "./shell.mjs";
 /** A resolved vm_copy endpoint as streamCopy takes it. @typedef {{ path: string, label: string, vm?: string, sshConf?: string, confine?: (real: string) => void }} CopyEndpoint */
 /** @typedef {{ current?: string | null, localCwd?: string, local?: LocalConfinement | false, signal?: AbortSignal }} CopyOpts */
 /** @typedef {{ text: string, image: ImageContent, size: { width: number, height: number, screenWidth: number, screenHeight: number } }} Screenshot */
-/** A grant as `boxery grants --json` lists it. @typedef {{ kind: string, var?: string, cmd?: string, host?: string, auth?: string, readonly?: boolean, local?: string, remote?: string, provider?: string }} Grant */
-/** A validated vm_grant request (parseGrantRequest). @typedef {{ kind: "ssh-agent" | "github" | "env" | "file" | "llm", spec: string, readonly?: boolean, var?: string, provider?: string, local?: string, requested?: string, remote?: string }} GrantSpec */
+/** A grant as `boxery grants --json` lists it. @typedef {{ kind: string, var?: string, cmd?: string | null, host?: string, auth?: string, readonly?: boolean, local?: string, remote?: string, provider?: string }} Grant */
+/** A validated vm_grant request (parseGrantRequest). @typedef {{ kind: "ssh-agent" | "github" | "http" | "env" | "file" | "llm", spec: string, readonly?: boolean, cmd?: string, auth?: string, host?: string, var?: string, provider?: string, local?: string, requested?: string, remote?: string }} GrantSpec */
 /** vm_grant arguments. @typedef {{ spec?: unknown, readonly?: boolean, reason?: unknown }} GrantRequestArgs */
 /** @typedef {"accept" | "decline" | "cancel"} ApprovalAnswer */
 /** @typedef {(message: string) => Promise<ApprovalAnswer | string>} Approve */
@@ -89,7 +93,15 @@ export function resolveHost(host) {
 	assertHost(name);
 	const dir = registryLine(path.join(BOXERY_HOME, "host-registry", name), true);
 	if (dir == null) throw new Error(`unknown host: ${name}`);
-	if (!path.isAbsolute(dir) || /[\r\n\t]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
+	return profileFromDirectory(name, dir);
+}
+/** Internal CLI bridge: use the exact trusted profile already selected by Bash, not today's registry.
+ * This factory is not exposed through agent tool arguments. @param {string} name @param {string} dir
+ * @returns {HostProfile}
+ */
+export function profileFromDirectory(name, dir) {
+	assertHost(name);
+	if (!path.isAbsolute(dir) || /[\r\n\t\0]/.test(dir)) throw new Error(`invalid profile directory for ${name}`);
 	if (!["config", "ssh_config"].every((f) => existsSync(path.join(dir, f)))) throw new Error(`incomplete profile: ${name}`);
 	const resolved = Object.freeze({ name, dir, sshConf: path.join(dir, "ssh_config") });
 	resolvedHosts.add(resolved);
@@ -105,6 +117,20 @@ export function registeredHosts() {
 	const registry = path.join(BOXERY_HOME, "host-registry");
 	const names = existsSync(registry) ? readdirSync(registry).filter((n) => VALID_HOST.test(n)).sort() : [];
 	return names.map(resolveHost);
+}
+/** Deny-directory inventory for reconciliation: retain valid pointers even to incomplete profiles.
+ * Broken entries must not hide the other profiles or prevent re-applying existing grants.
+ */
+function registeredProfileDirs() {
+	const registry = path.join(BOXERY_HOME, "host-registry");
+	let names;
+	try { names = readdirSync(registry); } catch { return []; }
+	return names.filter((n) => VALID_HOST.test(n)).flatMap((name) => {
+		try {
+			const dir = registryLine(path.join(registry, name));
+			return dir && path.isAbsolute(dir) && !/[\r\n\t\0]/.test(dir) ? [dir] : [];
+		} catch { return []; }
+	});
 }
 const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
 // A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
@@ -710,7 +736,7 @@ export const LOCAL_COPY_DISABLED =
 	"vm_copy local: endpoints are disabled on this server: it runs on the boxery control plane, and local: would be that machine's files (where boxery keeps its credentials), not yours. " +
 	"Copy between VMs (NAME:/path), or ask the user to start the server with --copy-root DIR to allow local: paths inside DIR.";
 
-const isWithin = (/** @type {string} */ p, /** @type {string} */ dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+export const isWithin = (/** @type {string} */ p, /** @type {string} */ dir) => p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
 /**
  * Paths no agent request reaches (a confined local: endpoint, even inside its root; a vm_grant file):
@@ -720,12 +746,12 @@ const isWithin = (/** @type {string} */ p, /** @type {string} */ dir) => p === d
  * ~/.gnupg, whose use ssh-agent stands in for.
  * @param {string[]} [extra] @returns {{ dir: string, keys: boolean }[]}
  */
-function deniedDirs(extra = []) {
+export function deniedDirs(extra = []) {
 	const home = homedir();
 	const config = path.join(home, ".config");
 	let profiles = /** @type {string[]} */ ([]), hosts = /** @type {string[]} */ ([]);
 	try { profiles = readdirSync(config).filter((n) => n.startsWith("boxery")).map((n) => path.join(config, n)); } catch {}
-	try { hosts = registeredHosts().map((h) => h.dir); } catch {}
+	hosts = registeredProfileDirs();
 	const keys = [".ssh", ".gnupg"].map((d) => ({ dir: path.join(home, d), keys: true }));
 	const own = /** @type {string[]} */ ([process.env.BOXERY_CONF, path.join(config, "boxery"), ...profiles, BOXERY_HOME, ...hosts, path.join(home, ".pi"), ...extra]
 		.filter(Boolean)).map((dir) => ({ dir, keys: false }));
@@ -1106,65 +1132,6 @@ export function formatGrants(name, grants) {
 // dialog), which the agent cannot answer. Only what `boxery grant` could add without a --cmd is
 // requestable: a command run on the user's machine is theirs to write.
 
-const quoteWord = (/** @type {string} */ s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : q(s));
-/** Is real path `p` inside `dir`? `dir` is resolved too (macOS: /var → /private/var). */
-const underDir = (/** @type {string} */ p, /** @type {string} */ dir) => {
-	try {
-		dir = realpathSync(dir);
-	} catch {
-		return false; // a directory that doesn't exist holds nothing
-	}
-	return p === dir || p.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
-};
-
-/**
- * Validate a requested grant and resolve it to the exact spec `boxery grant` will store.
- * → {kind, spec, readonly?, var?, local?, requested?, remote?}. LOCAL paths resolve against localCwd
- * (~ = home), then to the real path, which is what gets stored: every apply re-reads the file, and a
- * symlink left in the spec could be re-pointed after the user approved it. `requested` is the path
- * the agent named, when it differs.
- * @param {GrantRequestArgs} [a] @param {{ localCwd?: string }} [opts] @returns {GrantSpec}
- */
-export function parseGrantRequest({ spec, readonly } = {}, { localCwd } = {}) {
-	const s = typeof spec === "string" ? spec.trim() : "";
-	if (readonly && s !== "github") throw new Error("readonly applies only to the github grant");
-	if (s === "ssh-agent") return { kind: "ssh-agent", spec: s };
-	if (s === "github") return { kind: "github", spec: s, readonly: !!readonly };
-	const llm = /^llm:(chatgpt|openai|anthropic|ollama)$/.exec(s);
-	if (llm) return { kind: "llm", spec: s, provider: llm[1] };
-	if (s.startsWith("llm:")) throw new Error(`unknown LLM provider "${s.slice(4)}" (llm:chatgpt, llm:openai, llm:anthropic or llm:ollama)`);
-	const env = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
-	// boxery's own settings, some of them its credentials (BOXERY_MCP_TOKEN drives every VM over HTTP MCP).
-	if (env?.[1].startsWith("BOXERY_")) throw new Error(`$${env[1]} is boxery's own setting and can't be requested: BOXERY_* variables configure boxery, and some are its credentials`);
-	if (env) return { kind: "env", spec: s, var: env[1] };
-	if (s.startsWith("http:")) throw new Error(`${s} needs a command, run on the user's machine, that prints the secret; only the user can add it (boxery grant VM ${s} --cmd '…'). For GitHub, request the github grant.`);
-	if (!s.startsWith("file:")) throw new Error(`unknown grant "${s}" (llm:PROVIDER, ssh-agent, env:VAR, file:LOCAL[=REMOTE] or github)`);
-	const rest = s.slice(5);
-	const eq = rest.indexOf("=");
-	const loc = eq < 0 ? rest : rest.slice(0, eq);
-	if (!loc) throw new Error("usage: file:LOCAL[=REMOTE]");
-	const local = path.resolve(localCwd ?? process.cwd(), loc.replace(/^~(?=\/|$)/, homedir()));
-	let real, st;
-	try {
-		real = realpathSync(local);
-		st = statSync(real);
-	} catch {
-		throw new Error(`no such local file: ${local}`);
-	}
-	if (!st.isFile()) throw new Error(`not a regular file: ${local}`);
-	if (st.size > 1024 * 1024) throw new Error(`file grants are limited to 1 MiB: ${local}`);
-	// Keys, boxery's own credentials (VM ssh keys, proxy tokens) and agent logins are never requestable.
-	const shown = real === local ? local : `${local} (→ ${real})`;
-	// Listed here too because registeredHosts() throws on a broken registry: refuse rather than miss a profile.
-	const hit = deniedDirs(registeredHosts().map((h) => h.dir)).find((d) => isWithin(real, d.dir));
-	if (hit?.keys) throw new Error(`${shown} holds keys; request ssh-agent instead (the keys stay on the user's machine)`);
-	if (hit) throw new Error(`${shown} is inside ${hit.dir} (boxery's own configuration or the user's credentials) and can't be granted`);
-	// REMOTE is relative to /home/agent; accept ~/… and /home/agent/… spellings too.
-	let remote = eq < 0 ? `project/${path.basename(local)}` : rest.slice(eq + 1).replace(/^~\//, "").replace(/^\/home\/agent\//, "");
-	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + real)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to /home/agent)`);
-	return { kind: "file", spec: `file:${real}=${remote}`, local: real, ...(real === local ? {} : { requested: local }), remote };
-}
-
 const realOr = (/** @type {string} */ p) => { try { return realpathSync(p); } catch { return p; } };
 // A stored file grant counts by the file it reads now: the CLI (and older vm_grant) store paths as given.
 const grantedAlready = (/** @type {GrantSpec} */ g, /** @type {Grant[]} */ grants) =>
@@ -1177,33 +1144,6 @@ const grantedAlready = (/** @type {GrantSpec} */ g, /** @type {Grant[]} */ grant
 				: g.kind === "file"
 					? grants.some((x) => x.kind === "file" && realOr(/** @type {string} */ (x.local)) === g.local && x.remote === `${REMOTE_HOME}/${g.remote}`)
 					: ["github.com", "api.github.com"].every((h) => grants.some((x) => x.kind === "http" && x.host === h && (!x.readonly || g.readonly)));
-
-/** ~/… for paths in the user's home: clients truncate long prompt lines. */
-const tildePath = (/** @type {string | undefined} */ p) => (p && underDir(p, homedir()) ? `~${p.slice(realpathSync(homedir()).length)}` : p);
-
-/** What the user is agreeing to, in their terms. The agent's reason comes last and is labelled as such. */
-/** @param {string} vm @param {string} host @param {GrantSpec} g @param {unknown} reason */
-function grantPrompt(vm, host, g, reason) {
-	const where = `VM "${vm}" on host "${host}"`;
-	const what = {
-		llm: [`llm:${g.provider}: the VM host's ${g.provider} credential, through its proxy.`, "The VM never holds the key, but its agents can spend on it (inference only) until you revoke it."],
-		"ssh-agent": ["ssh-agent: your ssh agent is forwarded while you're connected.", "Processes in the VM can ask it to sign (git over ssh, ssh to other machines). Your keys stay on this machine."],
-		env: [`env:${g.var}: the value of $${g.var} on this machine (${hostname()}).`, "It is set in the VM's login shells, from memory (tmpfs). Anything running in the VM can read it."],
-		file: [`file: ${tildePath(g.local)}`, ...(g.requested ? [`  (the agent asked for ${tildePath(g.requested)}, which leads here through a symlink)`] : []), `  → in the VM: ~/${g.remote}`, "Its contents are copied into the VM's memory (tmpfs, never its disk or snapshots). Anything running in the VM can read it."],
-		github: [
-			`github${g.readonly ? " (read-only)" : ""}: git over https and the GitHub API, as this machine's \`gh auth token\`.`,
-			`The token stays on the VM host's proxy; the VM never holds it.${g.readonly ? " Only clone/fetch and GET requests are allowed." : " That includes git push and API writes."}`,
-		],
-	}[g.kind];
-	const why = String(reason ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
-	return [`Give ${where} access to:`, "", ...what, "", `Revoke any time: ${grantCommand("revoke", vm, host, g)}`, ...(why ? ["", `The agent's reason: "${why}"`] : [])].join("\n");
-}
-
-/** @param {"grant" | "revoke"} verb @param {string} vm @param {string} host @param {GrantSpec} g */
-function grantCommand(verb, vm, host, g) {
-	const spec = verb === "revoke" && g.kind === "file" ? `file:${g.local}` : g.spec;
-	return ["boxery", "--host", host, verb, vm, spec, ...(verb === "grant" && g.readonly ? ["--readonly"] : [])].map(quoteWord).join(" ");
-}
 
 /**
  * Wrap a front-end's approve(message) → "accept" | "decline" | "cancel" so a session shows one
@@ -1224,7 +1164,7 @@ export function oneAtATime(approve) {
 }
 
 /**
- * vm_grant: ask the user to grant VM `vm` something, and on approval add it with `boxery grant`.
+ * vm_grant: ask the user to grant VM `vm` something, then apply the shared operation in-process.
  * ctx.approve(message) shows the prompt (absent: the front-end can't prompt, so the user gets the command).
  * @param {string} vm @param {GrantRequestArgs} a @param {{ approve?: Approve, localCwd?: string, signal?: AbortSignal }} [ctx] @returns {Promise<ToolResult>}
  */
@@ -1234,7 +1174,7 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 	const command = grantCommand("grant", vm, host, g);
 	if (g.kind === "env" && process.env[/** @type {string} */ (g.var)] === undefined)
 		return { text: `$${g.var} isn't set where boxery runs, so there is nothing to grant. Ask the user to grant it from a command that prints the value, e.g.:\n  ${command} --cmd '…'`, isError: true };
-	if (grantedAlready(g, await boxeryJson(["grants", vm])))
+	if (grantedAlready(g, listGrants(vm)))
 		return { text: `${vm} already has ${g.spec}; login shells (and vm_bash) have it. If it still fails, the problem is elsewhere: tell the user what you saw.` };
 	const manual = `Ask the user to run this on their machine:\n  ${command}`;
 	if (!approve) return { text: `This client can't show the user an approval prompt, so nothing was granted. ${manual}`, isError: true };
@@ -1248,7 +1188,7 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 	}
 	if (answer !== "accept")
 		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up: carry on without it, or ask them how to proceed.` };
-	const out = await boxeryCli(["grant", vm, g.spec, ...(g.readonly ? ["--readonly"] : [])], 120_000);
+	const out = await addGrants(vm, [g], { signal });
 	return { text: `The user approved: ${vm} now has ${g.spec}. New login shells (vm_bash runs one) pick it up.\n${out}` };
 }
 

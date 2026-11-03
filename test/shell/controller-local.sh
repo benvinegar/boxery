@@ -60,6 +60,8 @@ if "$A" shapes bogus >/dev/null 2>&1; then bad "shapes bogus accepted"; else ok 
 
 printf 'SECRET_FILE=1\n' >"$tmp/dev.env"
 export MY_TOKEN='va lue $with "quotes"'
+# This offline automation fixture explicitly disables interactive confirmation.
+echo 'GRANT_CONFIRM=off' >>"$P/config"
 "$A" grant w1 ssh-agent env:MY_TOKEN env:FROM_CMD --cmd 'echo computed' "file:$tmp/dev.env=project/.env" >/dev/null 2>&1 && ok "grant" || bad "grant"
 ! grep -q 'va lue' "$P/grants/w1" && ok "grant store holds names, not values" || bad "value leaked into grant store"
 grep -q '^Host w1.boxery' "$P/ssh_config" && ok "ssh-agent grant → ForwardAgent for that VM" || bad "ForwardAgent"
@@ -81,13 +83,15 @@ if "$A" grant w1 env:1BAD >/dev/null 2>&1; then bad "invalid env name accepted";
 if "$A" grant w1 file:/nonexistent >/dev/null 2>&1; then bad "missing file accepted"; else ok "missing file rejected"; fi
 if "$A" grant w1 "file:$tmp/dev.env=../../etc/x" >/dev/null 2>&1; then bad "path traversal accepted"; else ok "remote path traversal rejected"; fi
 # Every apply re-reads granted files: a symlink re-pointed after approval at keys or boxery's own
-# state is skipped (and its old copy removed); a key file the user names directly is still sent.
+# state is skipped (and its old copy removed). Exercise legacy path-spelled stores here.
 G() { HOME=$tmp/home "$A" "$@"; }
 mkdir -p "$tmp/home/.pi/agent" "$tmp/benign"
 printf 'PLAIN=1\n' >"$tmp/plain.env"; printf 'BENIGN\n' >"$tmp/benign/id_ed25519"
 printf 'PRIVATE-SSH\n' >"$tmp/home/.ssh/id_ed25519"; printf 'MGMT-KEY\n' >"$BOXERY_CONF/mgmt_ed25519"; printf 'PI-AUTH\n' >"$tmp/home/.pi/agent/auth.json"
 ln -s "$tmp/plain.env" "$tmp/swap.env"; ln -s "$tmp/benign" "$tmp/kdir"
-G grant w1 "file:$tmp/swap.env=project/swap.env" "file:$tmp/kdir/id_ed25519=project/kd" >/dev/null 2>&1
+# New grants are canonical; seed an old store with the original symlink spellings.
+printf 'file\t%s\tproject/swap.env\nfile\t%s\tproject/kd\n' "$tmp/swap.env" "$tmp/kdir/id_ed25519" >>"$P/grants/w1"
+G grants w1 apply >/dev/null 2>&1
 swap=$tmp/vms/w1/home/project/swap.env kd=$tmp/vms/w1/home/project/kd
 grep -q PLAIN "$swap" && grep -q BENIGN "$kd" && ok "file grants through symlinks are applied" || bad "symlinked file grant: $(cat "$swap" "$kd" 2>&1)"
 for target in "$tmp/home/.ssh/id_ed25519" "$BOXERY_CONF/mgmt_ed25519" "$tmp/home/.pi/agent/auth.json"; do
@@ -99,8 +103,7 @@ done
 ln -sfn "$tmp/home/.ssh" "$tmp/kdir"
 out=$(G grants w1 apply 2>&1)
 [[ $out == *"kdir/id_ed25519: now leads through a symlink"*skipped* ]] &&! grep -qs PRIVATE "$kd" && ok "re-pointed directory symlink to ~/.ssh skipped" || bad "directory swap: $out / $(cat "$kd" 2>&1)"
-G grant w1 "file:$tmp/home/.ssh/id_ed25519.pub=project/me.pub" >/dev/null 2>&1
-grep -q AAAAme "$tmp/vms/w1/home/project/me.pub" && ok "a key file the user grants by name is still applied" || bad "explicit ~/.ssh grant not applied"
+if G grant w1 "file:$tmp/home/.ssh/id_ed25519.pub=project/me.pub" >/dev/null 2>&1; then bad "explicit ~/.ssh grant accepted"; else ok "CLI refuses key directories too"; fi
 G revoke w1 "file:$tmp/swap.env" "file:$tmp/kdir/id_ed25519" "file:$tmp/home/.ssh/id_ed25519.pub" >/dev/null 2>&1
 printf '#!/bin/sh\nprintf "pi\\t2\\t1700000000\\t1\\nweird \\"name\\t1\\t1700000001\\t0\\n"\n' >"$tmp/bin/tmux"; chmod +x "$tmp/bin/tmux"
 "$A" sessions w1 --json | jq -e '. == [{name: "pi", windows: 2, created: 1700000000, attached: true}, {name: "weird \"name", windows: 1, created: 1700000001, attached: false}]' >/dev/null && ok "sessions --json (names escaped)" || bad "sessions --json: $("$A" sessions w1 --json 2>&1)"
@@ -171,6 +174,7 @@ if git -C "$ROOT" cat-file -e 2ee0cd7:host/pool.mjs 2>/dev/null; then
 	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/host" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
 	git -C "$ROOT" show 2ee0cd7:host/pool.mjs >"$old/host/pool.mjs"
 	HOME=$tmp/home "$A" host add old local --host-bin "$old/host/boxery-host" >/dev/null 2>&1
+	echo 'GRANT_CONFIRM=off' >>"$BOXERY_HOME/profiles/old/config"
 	"$A" --host old grant e1 http:api.example.com --cmd 'echo v1' >/dev/null 2>&1
 	[[ $(jq -r '.hosts["api.example.com"].headers.Authorization' "$routes") == "Bearer v1" ]] && ok "old host: http grants still work" || bad "old host http: $(cat "$routes" 2>/dev/null)"
 	before=$(cat "$routes")
@@ -259,7 +263,7 @@ STUB2
 chmod +x "$tmp/bin/sshjoin"
 rm -f "$tmp/pwned"
 ( ssh() { "$tmp/bin/sshjoin" "$@"; }; export -f ssh
-  . /dev/stdin <<<"$(sed -n '/^literal()/p; /^literal_args()/p' "$A")"
+  . /dev/stdin <<<"$(sed -n '/^literal()/p; /^literal_args()/p' "$ROOT/controller/profile.sh")"
   cmdline="echo $(literal_args snap w2 "x; touch $tmp/pwned #")"
   sh -c "$cmdline" >/dev/null )
 [ ! -e "$tmp/pwned" ] && ok "remote transport quotes every argument" || bad "INJECTION via remote transport"

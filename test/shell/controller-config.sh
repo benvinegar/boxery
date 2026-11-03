@@ -7,7 +7,7 @@ trap 'rm -rf "$tmp"' EXIT
 export BOXERY_HOME="$tmp/config" HOME="$tmp/home"
 P="$tmp/profile"
 mkdir -p "$BOXERY_HOME" "$HOME/.ssh" "$tmp/bin" "$P"
-printf "HOST='test-host'\n" >"$P/config"; : >"$P/ssh_config"
+printf "HOST='test-host'\nGRANT_CONFIRM=off\n" >"$P/config"; : >"$P/ssh_config"
 bash "$(cd "$(dirname "$0")/../.." && pwd)/controller/boxery" host add test-host --config-dir "$P" >/dev/null
 printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/ssh"
 chmod +x "$tmp/bin/ssh"
@@ -22,6 +22,7 @@ get_forward() { "$SSH" -F "$P/ssh_config" -G "$1.boxery" 2>/dev/null | grep '^fo
 [ "$(get_forward demo)" = 'forwardagent yes' ]
 [ "$(get_forward other)" = 'forwardagent no' ]
 bash "$CLI" setup test-host --key "$tmp/key.pub" >/dev/null
+echo 'GRANT_CONFIRM=off' >>"$P/config" # setup rewrites the config; opt in again for this automation fixture
 [ "$(get_forward demo)" = 'forwardagent yes' ]
 bash "$CLI" agent-forward second on >/dev/null
 bash "$CLI" agent-forward demo off >/dev/null
