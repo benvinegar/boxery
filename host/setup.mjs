@@ -242,6 +242,19 @@ WantedBy=default.target
 	};
 }
 
+/** (Re)load a launch agent. bootout returns before launchd has removed the job, and a bootstrap in that
+ *  window fails with "5: Input/output error": wait for it to go (5 s at most), and retry a failed bootstrap.
+ *  @param {string} domain @param {string} label @param {string} plist */
+export async function reloadAgent(domain, label, plist) {
+	await run("launchctl", ["bootout", `${domain}/${label}`], { silent: true, check: false }); // not loaded yet is fine
+	for (let i = 0; i < 50 && await run("launchctl", ["print", `${domain}/${label}`], { silent: true, check: false }) === 0; i++) await sleep(100);
+	for (let attempt = 1; attempt < 5; attempt++) {
+		if (await run("launchctl", ["bootstrap", domain, plist], { silent: true, check: false }) === 0) return;
+		await sleep(500);
+	}
+	await run("launchctl", ["bootstrap", domain, plist]); // the last try shows launchctl's error
+}
+
 // launchd's gui/<uid> domain and systemd's user manager belong to the account, not to $HOME. With HOME
 // pointed elsewhere (a test's temp dir), loading this profile's services would replace the account's real
 // ones of the same name (dev.boxery-proxy) with a job whose files are elsewhere, and launchd/systemd would
@@ -273,8 +286,7 @@ async function startServices(rt, { reaper }) {
 		mkdirSync(path.join(homedir(), "Library/Logs"), { recursive: true });
 		const uid = /** @type {() => number} */ (process.getuid)();
 		for (const unit of [rt.proxyUnit, ...(reaper ? [rt.reaperUnit] : []), ...(runnersOn ? [rt.runnersUnit] : [])]) {
-			await run("launchctl", ["bootout", `gui/${uid}/dev.${unit}`], { silent: true, check: false }); // not loaded yet is fine
-			await run("launchctl", ["bootstrap", `gui/${uid}`, path.join(homedir(), "Library/LaunchAgents", `dev.${unit}.plist`)]);
+			await reloadAgent(`gui/${uid}`, `dev.${unit}`, path.join(homedir(), "Library/LaunchAgents", `dev.${unit}.plist`));
 		}
 	} else {
 		// The backend's guest → proxy bridge units (may be none).

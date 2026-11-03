@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unli
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import * as leases from "./boxery-leases.mjs";
-import { RUNNERS_TOKEN_TEMPLATE, serviceFiles } from "./setup.mjs";
+import { reloadAgent, RUNNERS_TOKEN_TEMPLATE, serviceFiles } from "./setup.mjs";
 import { fail, log, print, readFd, table, VALID_NAME } from "./util.mjs";
 /** @import { Runtime } from "./runtime.mjs" */
 
@@ -642,12 +642,14 @@ async function service(rt, action) {
 	try {
 		if (process.platform === "darwin") {
 			const uid = /** @type {() => number} */ (process.getuid)();
-			await exec("launchctl", ["bootout", `gui/${uid}/dev.${rt.runnersUnit}`]); // not loaded is fine
 			if (action === "start") {
 				mkdirSync(path.dirname(file), { recursive: true }); mkdirSync(path.join(homedir(), "Library/Logs"), { recursive: true });
 				writeFileSync(file, text);
-				await must("launchctl", ["bootstrap", `gui/${uid}`, file]);
-			} else rmSync(file, { force: true });
+				await reloadAgent(`gui/${uid}`, `dev.${rt.runnersUnit}`, file); // waits out a job launchd is still removing (#132)
+			} else {
+				await exec("launchctl", ["bootout", `gui/${uid}/dev.${rt.runnersUnit}`]); // not loaded is fine
+				rmSync(file, { force: true });
+			}
 		} else if (action === "start") {
 			mkdirSync(path.dirname(file), { recursive: true });
 			writeFileSync(file, text);
