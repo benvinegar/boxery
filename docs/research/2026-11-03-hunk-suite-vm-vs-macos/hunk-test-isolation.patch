@@ -1,0 +1,127 @@
+diff --git a/bunfig.toml b/bunfig.toml
+index 02b8e6ea..310adf02 100644
+--- a/bunfig.toml
++++ b/bunfig.toml
+@@ -6,3 +6,7 @@ minimumReleaseAge = 604800
+ # node_modules/.bun/<name>@<version>/node_modules/<name>. simple-git-hooks resolves its
+ # own package.json one directory too high in that layout, so preserve Hunk's hoisted layout.
+ linker = "hoisted"
++
++[test]
++# Keep tests and spawned hunk processes away from the developer's real config and state dirs.
++preload = ["./test/helpers/user-dirs-preload.ts"]
+diff --git a/packages/hunk/src/extensions/hostRuntimeModules.test.ts b/packages/hunk/src/extensions/hostRuntimeModules.test.ts
+index 54702eea..8bdfaf5f 100644
+--- a/packages/hunk/src/extensions/hostRuntimeModules.test.ts
++++ b/packages/hunk/src/extensions/hostRuntimeModules.test.ts
+@@ -1,4 +1,4 @@
+-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
++import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { pathToFileURL } from "node:url";
+@@ -411,7 +411,7 @@ module.exports = {
+ 
+ describe("rewriteInstalledPackageSpecifiers", () => {
+   test("substitutes the file Bun resolves for an extension and for a dependency", () => {
+-    const root = mkdtempSync(join(tmpdir(), "hunk-host-modules-rewrite-"));
++    const root = realpathSync(mkdtempSync(join(tmpdir(), "hunk-host-modules-rewrite-")));
+     tempDirs.push(root);
+     const entry = join(root, "index.ts");
+     writeFileSync(entry, `export {}\n`);
+@@ -458,7 +458,7 @@ describe("rewriteInstalledPackageSpecifiers", () => {
+   });
+ 
+   test("rewrites an import-only export when Bun cannot resolve the package", () => {
+-    const root = mkdtempSync(join(tmpdir(), "hunk-host-modules-esm-"));
++    const root = realpathSync(mkdtempSync(join(tmpdir(), "hunk-host-modules-esm-")));
+     tempDirs.push(root);
+     const entry = join(root, "index.ts");
+     writeFileSync(entry, `export {}\n`);
+@@ -478,7 +478,7 @@ describe("rewriteInstalledPackageSpecifiers", () => {
+   });
+ 
+   test("rewrites a root-level import condition when exports has no dot key", () => {
+-    const root = mkdtempSync(join(tmpdir(), "hunk-host-modules-esm-root-"));
++    const root = realpathSync(mkdtempSync(join(tmpdir(), "hunk-host-modules-esm-root-")));
+     tempDirs.push(root);
+     const entry = join(root, "index.ts");
+     writeFileSync(entry, `export {}\n`);
+@@ -512,7 +512,7 @@ describe("rewriteInstalledPackageSpecifiers", () => {
+   });
+ 
+   test("rewrites scoped package names and subpaths", () => {
+-    const root = mkdtempSync(join(tmpdir(), "hunk-host-modules-scope-"));
++    const root = realpathSync(mkdtempSync(join(tmpdir(), "hunk-host-modules-scope-")));
+     tempDirs.push(root);
+     const entry = join(root, "index.ts");
+     writeFileSync(entry, `export {}\n`);
+diff --git a/packages/hunk/src/extensions/installedPackageResolution.test.ts b/packages/hunk/src/extensions/installedPackageResolution.test.ts
+index fd675d1f..4d8c1f42 100644
+--- a/packages/hunk/src/extensions/installedPackageResolution.test.ts
++++ b/packages/hunk/src/extensions/installedPackageResolution.test.ts
+@@ -1,5 +1,5 @@
+ import { afterEach, expect, test } from "bun:test";
+-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { pathToFileURL } from "node:url";
+@@ -18,7 +18,7 @@ afterEach(() => {
+ 
+ /** Create a package-resolution fixture independent of the project's own node_modules. */
+ function createTestPackageResolution() {
+-  const root = mkdtempSync(join(tmpdir(), "hunk-package-resolution-"));
++  const root = realpathSync(mkdtempSync(join(tmpdir(), "hunk-package-resolution-")));
+   roots.push(root);
+   return { entry: join(root, "entry.ts"), packageDirectory: createTestExtensionPackages(root) };
+ }
+diff --git a/packages/hunk/src/ui/AppHost.reload.test.tsx b/packages/hunk/src/ui/AppHost.reload.test.tsx
+index aaab6356..c5448df2 100644
+--- a/packages/hunk/src/ui/AppHost.reload.test.tsx
++++ b/packages/hunk/src/ui/AppHost.reload.test.tsx
+@@ -1,5 +1,5 @@
+ import { execSync } from "node:child_process";
+-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
++import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { describe, expect, test } from "bun:test";
+@@ -113,7 +113,7 @@ async function settleHighlights(setup: Awaited<ReturnType<typeof testRender>>) {
+ 
+ /** Create one repository whose config and diff can be reloaded by AppHost. */
+ function createReloadThemeRepository() {
+-  const dir = mkdtempSync(join(tmpdir(), "hunk-reload-themes-"));
++  const dir = realpathSync(mkdtempSync(join(tmpdir(), "hunk-reload-themes-")));
+   const configDir = join(dir, ".hunk");
+   const configPath = join(configDir, "config.toml");
+   const file = join(dir, "test.txt");
+diff --git a/test/helpers/user-dirs-preload.ts b/test/helpers/user-dirs-preload.ts
+new file mode 100644
+index 00000000..50db7eb0
+--- /dev/null
++++ b/test/helpers/user-dirs-preload.ts
+@@ -0,0 +1,23 @@
++import { afterAll } from "bun:test";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++
++/**
++ * Points every `bun test` process at empty user config and state dirs before any test loads.
++ *
++ * Without this, tests and the hunk processes they spawn read the developer's real
++ * `~/.config/hunk` (global config, installed extensions) and `~/.local/state/hunk`, so a
++ * locally installed extension or preference changes results. hunk resolves XDG_CONFIG_HOME
++ * and XDG_STATE_HOME ahead of HOME on every OS, and spawned children inherit them. Tests that
++ * need their own config still assign a fresh dir per file or case and restore this baseline.
++ */
++const isolatedRoot = mkdtempSync(join(tmpdir(), "hunk-test-user-dirs-"));
++
++process.env.XDG_CONFIG_HOME = join(isolatedRoot, "config");
++process.env.XDG_STATE_HOME = join(isolatedRoot, "state");
++
++// Bun runs hooks registered in a preload once around the whole run; it never emits beforeExit.
++afterAll(() => {
++  rmSync(isolatedRoot, { recursive: true, force: true });
++});

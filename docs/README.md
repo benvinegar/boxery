@@ -32,4 +32,5 @@
 - **[Brand assets](brand/README.md)**: logo mark, wordmark lockup, favicons and colors.
 - **[Visual style guide](brand/style.md)**: palette, type, the isometric style, motion and words, for diagrams and video.
 - **[Promo video](promo/README.md)**: the 30 s social video, as code, and how to render it.
+- **[Research](research/README.md)**: measured workloads in boxery VMs against macOS and Docker, with the raw data and how to rerun them.
 - **[Contributing](../CONTRIBUTING.md)**: test layers and CI.
