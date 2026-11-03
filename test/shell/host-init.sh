@@ -6,6 +6,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 H=$ROOT/host/boxery-host
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 export HOME=$tmp/home BOXERY_CONF=$tmp/conf BOXERY_BACKEND=fake BOXERY_FAKE_DIR=$tmp/vms BOXERY_PROXY_PORT=9999 CALLS=$tmp/calls
+export BOXERY_STUB_SERVICES=1   # HOME is a temp dir: init refuses it unless the service managers are stubs (below)
 mkdir -p "$tmp/bin" "$HOME"; : >"$CALLS"
 for c in systemctl launchctl ssh-keygen; do
 	printf '#!/bin/sh\necho "%s $*" >>"$CALLS"\n' "$c" >"$tmp/bin/$c"; chmod +x "$tmp/bin/$c"
@@ -21,6 +22,9 @@ bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 mode() { if stat -f %Lp "$1" >/dev/null 2>&1; then stat -f %Lp "$1"; else stat -c %a "$1"; fi; }
 
 echo "== init"
+# Without BOXERY_STUB_SERVICES a temp HOME is refused before anything is written or loaded: the real
+# launchctl would put this HOME's dev.boxery-proxy in place of the account's own (it did, from a test).
+err=$(env -u BOXERY_STUB_SERVICES "$H" init 2>&1) && bad "init ran with HOME not the account's home" || { [[ $err == *"HOME=$HOME is not this account's home"* && ! -s $CALLS && ! -e $BOXERY_CONF ]] && ok "init refuses a HOME that isn't the account's: no service manager call, nothing written" || bad "error: $err; calls: $(cat "$CALLS")"; }
 out=$(BOXERY_NO_SERVICES=1 BOXERY_NET=isolated "$H" init 2>&1) && ok "init succeeds" || bad "init: $out"
 [[ $out == *"init done. Next: boxery-host build-base"* ]] && ok "init says what's next" || bad "output: $out"
 [[ $(mode "$BOXERY_CONF") == 700 ]] && ok "state directory is 0700" || bad "conf mode $(mode "$BOXERY_CONF")"
