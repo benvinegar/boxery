@@ -153,7 +153,9 @@ boxery renew NAME [--ttl S]
 boxery release NAME                          # VM is reset to its clean snapshot
 boxery leases [--json]                       # your leases
 boxery pool add|rm|ls                        # admin
-boxery runners status|start|stop|config|token   # admin: GitHub Actions runners on pool VMs
+boxery runners once [--repo O/R | --org ORG] [--vms NAME,…] [--labels L,…] [--group ID]
+                                             # local runner: one GitHub Actions job on a fresh pool VM, with your gh login
+boxery runners status|start|stop|config|token   # admin: host runners, the always-on runner service
 ```
 
 See [Shared pool & leases](pool.md) and [GitHub Actions runners](github-runners.md).
@@ -204,7 +206,7 @@ runners status [--json]         configuration, whether a token is set (never its
 runners run                     the runner manager in the foreground (what the service runs)
 ```
 
-`runners` is described in [GitHub Actions runners](github-runners.md); `boxery runners …` on a laptop passes the same arguments (and stdin, for `token`) to the host.
+`runners` is described in [GitHub Actions runners](github-runners.md); `boxery runners …` on your machine passes the same arguments (and stdin, for `token`) to the host, except `runners once`, which runs on your machine with its `gh` login and drives the host's internal `runners __once`.
 
 `reconcile` (also performed by `reap`) recovers abandoned lifecycle operations and checks inventory drift. Conflicting VM mutations are serialized through readiness/key installation, not just disk operations. See [Lifecycle coordination and recovery](lifecycle.md) for crash behavior, backend responsibilities and upgrade precautions.
 

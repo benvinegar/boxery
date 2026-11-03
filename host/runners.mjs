@@ -24,6 +24,12 @@
 // with its name prefix that no adopted runner owns (runners whose VM is gone). `runners stop` makes it give
 // back idle runners and leave busy ones running for the next manager to adopt (their lease expires
 // otherwise); any other SIGTERM is a restart (an upgrade's init) and leaves every lease as it is.
+//
+// Local runners (`boxery runners once` on the controller, `runners __once` here) are the same slot run
+// once: one VM, one runner, one job. The controller registers the runner with its user's own gh login and
+// sends only the JIT config, on stdin, so this side never sees a GitHub credential. Their leases have their
+// own holder (LOCAL_HOLDER) and their runners their own name prefix (LOCAL_PREFIX), so a manager never
+// adopts, releases or deregisters them.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -35,6 +41,9 @@ import { fail, log, print, readFd, table, VALID_NAME } from "./util.mjs";
 /** @import { Runtime } from "./runtime.mjs" */
 
 export const HOLDER = "github-runner";
+// Local runners (localRunner): never adopted (heldBy matches the holder exactly), never cleaned up by a manager.
+export const LOCAL_HOLDER = "github-runner-local", LOCAL_PREFIX = "boxery-local";
+const isLocalName = (/** @type {string} */ name) => name === LOCAL_PREFIX || name.startsWith(`${LOCAL_PREFIX}-`);
 // GitHub's REST API version these calls were written against (docs.github.com/rest, "API versions").
 export const API_VERSION = "2026-03-10";
 export const CONFIG_FILE = "runners.json", TOKEN_FILE = "runners.env", STATE_FILE = "runners-state.json", LOCK_FILE = "runners.lock";
@@ -66,7 +75,8 @@ const TOKEN = /^[A-Za-z0-9_]{20,255}$/;
 
 /** The default runner name prefix: boxery-HOST(-PROFILE), lowercase, at most 24 characters. @param {string | null} profile */
 export function defaultPrefix(profile, host = hostname()) {
-	const h = host.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "host";
+	let h = host.split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "host";
+	if (isLocalName(`boxery-${h}`)) h = `host-${h}`; // boxery-local-… names are local runners'
 	return `boxery-${h}${profile ? `-${profile}` : ""}`.slice(0, 24).replace(/[-.]+$/, "");
 }
 
@@ -88,6 +98,7 @@ export function checkConfig(c) {
 	const api = String(c.api ?? "https://api.github.com").replace(/\/+$/, "");
 	if (!API.test(api)) return `invalid --api '${api}' (https://…, or http:// on loopback)`;
 	if (typeof c.prefix !== "string" || !PREFIX.test(c.prefix)) return "invalid --prefix ([a-z0-9][a-z0-9._-], at most 24 characters)";
+	if (isLocalName(c.prefix)) return `--prefix ${c.prefix} is taken: ${LOCAL_PREFIX}-… names are local runners' (boxery runners once)`;
 	return { ...(c.repo ? { repo: c.repo } : { org: c.org }), vms, count, labels, group, ttl, api, prefix: c.prefix };
 }
 
@@ -182,7 +193,7 @@ export function createGitHub({ api, repo, org, token, fetch = globalThis.fetch, 
 		throw new GitHubError(`${what}: ${res.status}${message ? ` ${message}` : ""}`, { status: res.status, retryAfter: retryAfter(res.headers, Math.floor(now() / 1000)) });
 	}
 	return {
-		/** A single-use runner registration. @param {{ name: string, labels: string[], group: number }} opts
+		/** A single-use runner registration. @param {{ name: string, labels: string[], group: number, vm?: string }} opts (vm: unused here)
 		 *  @returns {Promise<{ id: number, name: string, encoded: string }>} */
 		async generateJitConfig({ name, labels, group }) {
 			const r = await request("POST", "/generate-jitconfig", { name, runner_group_id: group, labels, work_folder: "_work" });
@@ -260,12 +271,14 @@ export const TIMING = /** @type {RunnerTiming} */ ({ poll: 15000, noVm: [5000, 6
 export class RunnerManager {
 	/** @param {{ config: RunnerConfig, github: GitHub, pool: RunnerPool, guest: RunnerGuest, arch: string, log?: (m: string) => unknown,
 	 *   sleep?: (ms: number, signal?: AbortSignal) => Promise<unknown>, now?: () => number, random?: () => string,
-	 *   saveState?: (slots: SlotState[]) => unknown, savedRunners?: Record<string, { runner_id: number | null, runner: string | null }>, timing?: Partial<RunnerTiming> }} deps */
+	 *   saveState?: (slots: SlotState[]) => unknown, savedRunners?: Record<string, { runner_id: number | null, runner: string | null }>, timing?: Partial<RunnerTiming>,
+	 *   once?: boolean }} deps once: a local runner (runOnce()): no back-off, no busy check, its own log lines */
 	constructor({ config, github, pool, guest, arch, log: logFn = log, sleep = realSleep, now = Date.now, random = () => randomBytes(3).toString("hex"),
-		saveState = () => {}, savedRunners = {}, timing = {} }) {
+		saveState = () => {}, savedRunners = {}, timing = {}, once = false }) {
 		this.config = config; this.github = github; this.pool = pool; this.guest = guest;
 		this.labels = runnerLabels(config.labels, arch);
-		this.log = (/** @type {string} */ m) => logFn(`runners: ${m}`);
+		this.once = once;
+		this.log = once ? logFn : (/** @type {string} */ m) => logFn(`runners: ${m}`);
 		this.sleep = sleep; this.now = now; this.random = random; this.saveState = saveState; this.savedRunners = savedRunners;
 		this.timing = { ...TIMING, ...timing };
 		this.stopping = new AbortController();
@@ -327,7 +340,8 @@ export class RunnerManager {
 		try { runners = await this.github.list(); }
 		catch (e) { this.log(`could not list runners to clean up: ${/** @type {Error} */ (e).message}`); return; }
 		for (const r of runners) {
-			if (!String(r.name).startsWith(`${this.config.prefix}-`) || r.status !== "offline" || r.busy || keep.has(r.id)) continue;
+			// Never a local runner's, whatever the prefix: its controller deletes it (checkConfig keeps prefixes apart too).
+			if (!String(r.name).startsWith(`${this.config.prefix}-`) || isLocalName(String(r.name)) || r.status !== "offline" || r.busy || keep.has(r.id)) continue;
 			try { if (await this.github.remove(r.id)) this.log(`deleted stale runner registration ${r.name}`); }
 			catch (e) { this.log(`could not delete ${r.name}: ${/** @type {Error} */ (e).message}`); }
 		}
@@ -415,7 +429,8 @@ export class RunnerManager {
 				} else { s.exited = true; this.log(`${s.vm}: runner ${s.runner ?? ""} finished`.replace("  ", " ")); break; }
 				await this.sleep(this.timing.poll, this.stopping.signal);
 			}
-			if (this.stopped && this.releaseOnStop && !s.exited && !s.lost) keep = await this.busy(s);
+			// A local runner always gives its VM back: nobody would adopt it.
+			if (!this.once && this.stopped && this.releaseOnStop && !s.exited && !s.lost) keep = await this.busy(s);
 		} finally {
 			done.abort();
 			await renewing;
@@ -442,9 +457,11 @@ export class RunnerManager {
 		/** @type {{ id: number, name: string, encoded: string } | null} */
 		let jit = null;
 		while (!jit && !this.stopped && !s.lost) {
-			try { jit = await this.github.generateJitConfig({ name: `${this.config.prefix}-${s.vm}-${this.random()}`, labels: this.labels, group: this.config.group }); }
+			try { jit = await this.github.generateJitConfig({ vm: s.vm, name: `${this.config.prefix}-${s.vm}-${this.random()}`, labels: this.labels, group: this.config.group }); }
 			catch (e) {
 				const err = /** @type {GitHubError} */ (e);
+				// A local runner's controller registers it, and retrying is its call: give up, on every VM.
+				if (this.once) { this.log(`${s.vm}: ${err.message}`); this.stop(); break; }
 				const wait = err.retryAfter != null ? Math.min(err.retryAfter * 1000, 3600000) : backoff;
 				this.log(`${s.vm}: GitHub API error, retrying in ${Math.round(wait / 1000)}s: ${err.message}`);
 				this.phase(i, { phase: `GitHub API error (${err.status || "network"})` });
@@ -459,6 +476,30 @@ export class RunnerManager {
 		catch (e) { this.log(`${s.vm}: could not start runner ${jit.name}: ${/** @type {Error} */ (e).message}`); return false; }
 		this.log(`${s.vm}: runner ${jit.name} waiting for a job`);
 		return true;
+	}
+
+	/** A local runner (`runners __once`): one slot, served once. Leases a free VM among config.vms (one
+	 *  without the runner layer, or not fresh, is given back and the next one tried), registers and starts
+	 *  the runner, waits for it to exit (or stop()), gives the VM back. Never waits for a VM.
+	 *  @returns {Promise<{ outcome: "exited" | "stopped" | "lost" | "failed" | "busy" | "unusable", vm: string | null }>}
+	 *  busy: no free VM; unusable: none of them can run a runner */
+	async runOnce() {
+		for (;;) {
+			const only = this.config.vms.filter((v) => !this.unusable.has(v));
+			if (this.stopped) return { outcome: "stopped", vm: null };
+			if (!only.length) return { outcome: "unusable", vm: null };
+			const lease = await this.pool.acquire(only);
+			if (!lease) return { outcome: "busy", vm: null };
+			/** @type {Slot} */
+			const s = { ...lease, adopted: false, runnerId: null, runner: null, lost: false, exited: false };
+			try { await this.serve(0, s); }
+			catch (e) { this.log(`${s.vm}: ${/** @type {Error} */ (e).message}`); return { outcome: "failed", vm: s.vm }; }
+			if (s.exited) return { outcome: "exited", vm: s.vm };
+			if (s.lost) return { outcome: "lost", vm: s.vm };
+			if (this.stopped) return { outcome: "stopped", vm: s.vm };
+			if (s.runner) return { outcome: "failed", vm: s.vm }; // registered but didn't start, or stopped answering
+			this.unusable.add(s.vm); // no runner layer, or not fresh: try another
+		}
 	}
 
 	/** On shutdown: is S's runner on a job? Then it keeps its VM. Unknown (API down) counts as busy.
@@ -504,13 +545,13 @@ function boxeryHost(rt, args, { input = "", quiet = [] } = {}) {
 }
 const lastLine = (/** @type {string} */ s) => s.trim().split("\n").at(-1)?.replace(/^boxery-host: /, "") ?? "";
 
-/** @param {Runtime} rt @param {number} ttl @returns {RunnerPool} */
-export function hostPool(rt, ttl) {
+/** @param {Runtime} rt @param {number} ttl @param {string} [holder] @returns {RunnerPool} */
+export function hostPool(rt, ttl, holder = HOLDER) {
 	return {
 		async acquire(only) {
 			// The lease key is the host's own management key: it is in every pool VM anyway, and nobody but
 			// the host needs to log in to a runner VM.
-			const r = await boxeryHost(rt, ["acquire", "--holder", HOLDER, "--ttl", String(ttl), "--only", only.join(",")],
+			const r = await boxeryHost(rt, ["acquire", "--holder", holder, "--ttl", String(ttl), "--only", only.join(",")],
 				{ input: `${rt.guest.hostPubkey()}\n`, quiet: [4] });
 			if (r.code === 4) return null;
 			const [vm, lease, expires] = r.out.trim().split(" ");
@@ -527,7 +568,7 @@ export function hostPool(rt, ttl) {
 			const r = await boxeryHost(rt, ["release", lease]);
 			if (r.code !== 0) throw new Error(lastLine(r.err) || `release exited ${r.code}`);
 		},
-		held: () => leases.heldBy(rt.db(), HOLDER),
+		held: () => leases.heldBy(rt.db(), holder),
 	};
 }
 
@@ -596,6 +637,132 @@ async function runManager(rt) {
 	process.on("SIGTERM", term); process.on("SIGINT", int);
 	try { await manager.run(); }
 	finally { process.off("SIGTERM", term); process.off("SIGINT", int); unlock(); }
+}
+
+// ---------------------------------------------------------------- local runners (runners __once)
+// A local runner's lease TTL: renewed at a third of it while this process runs, so a host process that
+// dies mid-job holds the VM for at most this long before the reaper resets it.
+export const ONCE_TTL = 300;
+// No word from the controller for this long (it sends a heartbeat every few seconds): it is gone.
+export const HEARTBEAT = 120000;
+
+/** The controller's side of `runners __once`, on INPUT (stdin): its first non-empty line is "ID JITCONFIG"
+ * (the runner's id and its encoded JIT config), every later line a heartbeat. EOF, an error, or silence for
+ * HEARTBEAT ms means the controller is gone (Ctrl-C, a closed laptop, a dropped connection): GONE is called
+ * once with the reason. @param {NodeJS.ReadableStream} input @param {number} heartbeat @param {(why: string) => void} gone */
+export function controllerLink(input, heartbeat, gone) {
+	let buf = "", ended = false, first = true;
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	let timer;
+	/** @type {(line: string) => void} */
+	let resolve = () => {};
+	/** @type {(e: Error) => void} */
+	let reject = () => {};
+	/** @type {Promise<string>} */
+	const jit = new Promise((res, rej) => { resolve = res; reject = rej; });
+	jit.catch(() => {}); // nobody may be waiting for it
+	const end = (/** @type {string} */ why) => {
+		if (ended) return;
+		ended = true; clearTimeout(timer);
+		reject(new Error(why)); gone(why);
+	};
+	const arm = () => { clearTimeout(timer); timer = setTimeout(() => end(`no word from the controller for ${Math.round(heartbeat / 1000)}s`), heartbeat); };
+	arm();
+	input.setEncoding("utf8");
+	input.on("data", (/** @type {string} */ d) => {
+		if (ended) return;
+		arm();
+		buf += d;
+		for (let i; (i = buf.indexOf("\n")) >= 0;) {
+			const line = buf.slice(0, i).trim();
+			buf = buf.slice(i + 1);
+			if (line && first) { first = false; resolve(line); }
+		}
+		if (buf.length > 65536) end("the controller sent too long a line");
+	});
+	input.on("end", () => end("the controller is gone"));
+	input.on("error", () => end("the controller is gone"));
+	return {
+		/** Resolves with the first line; rejects once the controller is gone. */
+		jit,
+		close() { ended = true; clearTimeout(timer); /** @type {any} */ (input).destroy?.(); },
+	};
+}
+
+/** `runners __once [--vms A,B] [--labels L,…]`: one local runner (`boxery runners once`, docs/github-runners.md).
+ * Leases a pool VM as LOCAL_HOLDER (default VMs: the host runners' configured ones, else the whole pool),
+ * then talks to the controller, which registers the runner with its own gh login:
+ *   stdout: `register VM NAME LABEL,…` (answer: "ID JITCONFIG" on stdin), `started` once the runner waits
+ *   for a job, and last the outcome: exited | stopped | lost | failed. Exit 0 only for exited; 4: no free VM.
+ *   stdin: that answer, then heartbeats; EOF or silence (controllerLink) stops the runner and gives the VM back.
+ * The JIT config is kept in memory and goes to the VM over ssh stdin, as for host runners.
+ * @param {Runtime} rt @param {string[]} args */
+async function localRunner(rt, args) {
+	const opts = { vms: "", labels: "" };
+	for (let i = 0; i < args.length; i += 2) {
+		const k = args[i] === "--vms" ? "vms" : args[i] === "--labels" ? "labels" : null;
+		if (!k || args[i + 1] == null) fail("usage: runners __once [--vms NAME,…] [--labels L,…] (boxery runners once runs it)");
+		opts[k] = args[i + 1];
+	}
+	const labels = opts.labels.split(",").filter(Boolean);
+	if (labels.length > 90 || !labels.every((l) => LABEL.test(l))) fail("labels are [A-Za-z0-9._-], at most 64 characters each");
+	const db = rt.db();
+	const pool = leases.list(db);
+	if (!pool.length) fail("the pool is empty: make runner VMs (boxery new NAME --headless --layers github-runner) and add them (boxery pool add NAME)");
+	const configured = readConfig(rt.conf)?.vms;
+	/** @type {string[]} */
+	const vms = [...new Set(opts.vms ? opts.vms.split(",").filter(Boolean)
+		: Array.isArray(configured) && configured.length ? configured.map(String) : pool.map((r) => r.name))];
+	const outside = vms.filter((v) => !pool.some((r) => r.name === v));
+	if (outside.length) fail(`not pool VMs: ${outside.join(", ")} (boxery pool add NAME)`);
+	const guest = hostGuest(rt);
+	// Skip free VMs without the runner (an agent's pool VM): leasing one only to give it back would reset it.
+	const missing = new Set((await Promise.all(pool.filter((r) => vms.includes(r.name) && r.state === "FREE")
+		.map(async (r) => ((await guest.status(r.name)) === "missing" ? r.name : null)))).filter(Boolean));
+	const emit = (/** @type {string} */ line) => { try { process.stdout.write(`${line}\n`); } catch { /* gone: stdin says so too */ } };
+
+	/** @type {RunnerManager | undefined} */
+	let manager;
+	const link = controllerLink(process.stdin, Number(rt.env.BOXERY_RUNNERS_HEARTBEAT) * 1000 || HEARTBEAT, (why) => {
+		if (manager && !manager.stopped) { log(`${why}: stopping the runner`); manager.stop(); }
+	});
+	/** @type {GitHub} the controller is this runner's GitHub: it registers the runner and deletes it */
+	const github = {
+		async generateJitConfig({ vm, name, labels: l }) {
+			emit(`register ${vm} ${name} ${l.join(",")}`);
+			const m = /^(\d{1,20}) ([A-Za-z0-9+/=]{1,60000})$/.exec(await link.jit);
+			if (!m) throw new GitHubError("the controller sent no runner configuration");
+			return { id: Number(m[1]), name, encoded: m[2] };
+		},
+		list: async () => [], get: async () => null, remove: async () => false,
+	};
+	let started = false;
+	const poll = Number(rt.env.BOXERY_RUNNERS_POLL);
+	const m = new RunnerManager({
+		config: { vms: vms.filter((v) => !missing.has(v)), count: 1, labels, group: 1, ttl: ONCE_TTL, api: "", prefix: LOCAL_PREFIX },
+		github, pool: hostPool(rt, ONCE_TTL, LOCAL_HOLDER), guest, arch: guestArch(rt.env), once: true,
+		saveState: (slots) => { if (!started && slots[0]?.phase === "running") { started = true; emit("started"); } },
+		timing: poll > 0 ? { poll: poll * 1000 } : {},
+	});
+	manager = m;
+	// A controller that went away mid-write: stop, don't die (dying would leave the runner and the lease).
+	const quit = () => m.stop();
+	const signals = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
+	process.stdout.on("error", quit); process.stderr.on("error", () => {});
+	for (const sig of signals) process.on(sig, quit);
+	let result;
+	try { result = await m.runOnce(); }
+	finally { link.close(); for (const sig of signals) process.off(sig, quit); }
+	if (result.outcome === "busy" || result.outcome === "unusable") {
+		const rows = leases.list(db).filter((r) => vms.includes(r.name));
+		const why = rows.map((r) => `${r.name}: ${missing.has(r.name) || m.unusable.has(r.name) ? "no runner" : r.state === "LEASED" ? `leased to ${r.holder}` : r.state.toLowerCase()}`).join(", ");
+		const hint = rows.some((r) => r.holder === HOLDER) ? "; host runners keep their VMs while they run (boxery runners stop frees them)" : "";
+		return fail(result.outcome === "busy"
+			? `no free runner VM (${why})${hint}. Try again when one is free, or pass --vms NAME,… with other pool VMs`
+			: `no pool VM here can run a runner (${why}). Make runner VMs: boxery new NAME --headless --layers github-runner, then boxery pool add NAME`, 4);
+	}
+	emit(result.outcome);
+	if (result.outcome !== "exited") process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------- service and CLI
@@ -712,8 +879,8 @@ async function status(rt, arg) {
 	try { state = Object.fromEntries(JSON.parse(readFileSync(path.join(rt.conf, STATE_FILE), "utf8")).slots.filter((/** @type {SlotState} */ s) => s.vm).map((/** @type {SlotState} */ s) => [s.vm, s])); }
 	catch { /* no manager has run */ }
 	const t = leases.now();
-	let held = /** @type {ReturnType<typeof leases.heldBy>} */ ([]);
-	try { held = leases.heldBy(rt.db(), HOLDER); } catch { fail("lease store error"); }
+	let held = /** @type {ReturnType<typeof leases.heldBy>} */ ([]), local = held;
+	try { held = leases.heldBy(rt.db(), HOLDER); local = leases.heldBy(rt.db(), LOCAL_HOLDER); } catch { fail("lease store error"); }
 	const vms = held.map((r) => ({ name: r.name, lease: r.state.toLowerCase(), expires_in: r.state === "LEASED" && r.expires_at ? r.expires_at - t : null,
 		runner: state[r.name]?.runner ?? null, runner_id: state[r.name]?.runner_id ?? null, phase: state[r.name]?.phase ?? null }));
 	const out = {
@@ -723,6 +890,8 @@ async function status(rt, arg) {
 		token, ...(tokenProblem ? { token_error: tokenProblem } : {}),
 		service: { unit: rt.runnersUnit, state: await serviceState(rt) },
 		vms_leased: vms,
+		// Local runners (boxery runners once): their controllers know the rest.
+		local_runners: local.map((r) => ({ name: r.name, lease: r.state.toLowerCase(), expires_in: r.state === "LEASED" && r.expires_at ? r.expires_at - t : null })),
 	};
 	if (arg === "--json") return print(JSON.stringify(out));
 	const c = typeof checked === "object" && checked ? checked : null;
@@ -732,10 +901,11 @@ async function status(rt, arg) {
 		["token", tokenProblem ?? (token ? `set (${path.join(rt.conf, TOKEN_FILE)})` : "not set (boxery-host runners token < FILE)")],
 		["service", `${rt.runnersUnit}: ${out.service.state}`],
 	]));
-	if (vms.length) {
+	if (vms.length || local.length) {
 		print("");
 		print(table([16, 10, 10, 34], [["NAME", "LEASE", "EXPIRES", "RUNNER", "PHASE"],
-			...vms.map((v) => [v.name, v.lease, v.expires_in == null ? "-" : `${v.expires_in}s`, v.runner ?? "-", v.phase ?? "-"])]));
+			...vms.map((v) => [v.name, v.lease, v.expires_in == null ? "-" : `${v.expires_in}s`, v.runner ?? "-", v.phase ?? "-"]),
+			...out.local_runners.map((v) => [v.name, v.lease, v.expires_in == null ? "-" : `${v.expires_in}s`, `${LOCAL_PREFIX}-${v.name}-…`, "local runner (boxery runners once)"])]));
 	}
 }
 
@@ -754,6 +924,7 @@ export async function runners(rt, [sub = "status", ...args]) {
 		case "run":
 			if (args.length) fail(USAGE);
 			return runManager(rt);
+		case "__once": return localRunner(rt, args); // a local runner: `boxery runners once` on the controller
 		default: return fail(USAGE);
 	}
 }

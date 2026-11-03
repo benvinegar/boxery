@@ -12,7 +12,7 @@ The host runs in Node. Bash remains where it fits: the entry point (`host/boxery
 | `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, everything else to Node (the node `init` recorded) | Any command logic |
 | `host/boxery-host.mjs` + `host/cli.mjs` | Node version check; CLI: argument dispatch, listings and their output formats, supervised mutating commands, private worker entry points | Lease policy, hypervisor commands |
 | `host/setup.mjs` | `init` (state directory, `host.env`, proxy/reaper/runner-manager services), `build-base`, `add-key` | VM lifecycle |
-| `host/runners.mjs` | `runners`: GitHub Actions runner configuration, the GitHub token file, the REST client (JIT configs, registrations) and the runner manager: one lease per runner, through `boxery-host acquire/renew/release` ([GitHub runners](github-runners.md)) | Lease transitions, locks or resets (it is an ordinary lease holder) |
+| `host/runners.mjs` | `runners`: GitHub Actions runner configuration, the GitHub token file, the REST client (JIT configs, registrations), the runner manager (host runners): one lease per runner, through `boxery-host acquire/renew/release`, and `runners __once` (local runners: the same slot served once, with the JIT config from the controller on stdin) ([GitHub runners](github-runners.md)) | Lease transitions, locks or resets (it is an ordinary lease holder) |
 | `host/vms.mjs`, `host/images.mjs`, `host/pool.mjs` | VM, image and pool-membership commands; edge routes | Locking (the supervisor holds locks around them) |
 | `host/seed.mjs` | Per-VM cloud-config: keys, proxy token, agent configs | Delivering it to the guest (backends) |
 | `host/recovery.mjs` | Replaying an abandoned operation's intents; inventory drift | Deciding which operations are abandoned |
@@ -78,7 +78,7 @@ Documented CLI arguments, listing output (tables and JSON), environment override
 - `test/operations.test.mjs`: real dispatcher/supervisor crash tests against the fake backend, plus runtime parsing and callback-boundary checks.
 - `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`, `test/host-setup.test.mjs`: the backend shim, guest ssh, configuration, shapes, seed and service files, without SQLite.
 - `test/shell/host-init.sh`: `init`, `add-key` and `build-base` with stubbed service managers.
-- `test/runners.test.mjs`: the GitHub runner manager's policy with injected pool/guest/GitHub fakes, the REST client against a local stub server, and a full `boxery-host runners run` against the fake backend; `test/shell/host-runners.sh`: the `runners` CLI, the controller passthrough, and the guest layer's `boxery-runner`.
+- `test/runners.test.mjs`: the GitHub runner manager's policy with injected pool/guest/GitHub fakes, the REST client against a local stub server, and a full `boxery-host runners run` against the fake backend; `test/shell/host-runners.sh`: the `runners` CLI, the controller passthrough, and the guest layer's `boxery-runner`; `test/shell/controller-runners-once.sh`: `boxery runners once` end to end with a stub `gh` (the JIT config only ever on stdin, cleanup after a job, Ctrl-C, a refused registration and a killed controller).
 - `test/bench/host-timings.sh`: not a test; mean timings of common commands, to compare before and after a change.
 - `test/shell/*.sh`: controller, backend and CLI integration contracts, including Bash 3.2.
 

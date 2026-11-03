@@ -44,7 +44,7 @@ boxery leases                    # what you hold
 
 `acquire` exits with status 4 if no VM is free before `--wait` runs out.
 
-The host can also lease pool VMs to GitHub Actions: its runner manager holds a lease per runner (holder `github-runner`) on the VMs you give it, and every job runs in a freshly reset VM. See [GitHub Actions runners](github-runners.md).
+Pool VMs can also run GitHub Actions jobs, each in a freshly reset VM: the host's runner manager holds a lease per runner (holder `github-runner`) on the VMs you give it, and `boxery runners once` holds one for a single job (holder `github-runner-local`). See [GitHub Actions runners](github-runners.md).
 
 ## Guarantees
 

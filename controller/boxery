@@ -1241,6 +1241,144 @@ cmd_sessions() { # NAME [--json]
 	esac
 }
 
+# ---------------------------------------------------------------- local runners (boxery runners once)
+# One GitHub Actions runner on a pool VM for one job, registered with this machine's gh login
+# (docs/github-runners.md). The host leases the VM and runs the runner (boxery-host runners __once) but
+# never gets a GitHub credential: only the runner's single-use JIT config, on its stdin (never argv or a
+# file). fd 3 is the host's stdin, a pipe (process substitution: Node on macOS sees no EOF on a FIFO):
+# that config, then a heartbeat every tick. Closing it (Ctrl-C, or this shell dying) makes the host stop
+# the runner and release the VM, which resets it. fd 4 is the host's stdout, a FIFO: `register VM NAME
+# LABELS`, `started`, then the outcome (exited | stopped | lost | failed); EOF once the host is done.
+RUNNERS_ONCE_USAGE="usage: boxery runners once [--repo OWNER/REPO | --org ORG] [--vms NAME,...] [--labels L,...] [--group ID]"
+once_gh() { gh "$@" 3>&- 4<&-; }   # gh must not hold the host's pipes open
+once_gh_error() { tr -d '\000-\010\013-\037' <"$ro_dir/gh.err" 2>/dev/null | sed -n '1,3p' | tr '\n' ' ' | cut -c1-300; }
+cmd_runners_once() {
+	local repo="" org="" vms="" labels="" group="" api scope v line outcome="" busy=0 started=0 n=0 t0 tick rc
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--repo | --org | --vms | --labels | --group) [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value$NL$RUNNERS_ONCE_USAGE" ;;
+		-h | --help) echo "$RUNNERS_ONCE_USAGE"; return 0 ;;
+		*) die "unknown argument: $1$NL$RUNNERS_ONCE_USAGE" ;;
+		esac
+		case $1 in --repo) repo=$2 ;; --org) org=$2 ;; --vms) vms=$2 ;; --labels) labels=$2 ;; --group) group=$2 ;; esac
+		shift 2
+	done
+	[ -z "$repo" ] || [ -z "$org" ] || die "pass one of --repo OWNER/REPO or --org ORG"
+	case $org in *[!A-Za-z0-9-]*) die "invalid organization: $org" ;; esac
+	case $group in
+	'') group=1 ;;
+	*[!0-9]* | 0*) die "--group must be a runner group id (1 = Default)" ;;
+	*) [ -n "$org" ] || die "--group is for --org (a repository's runners are in its Default group)" ;;
+	esac
+	case $labels in *[!A-Za-z0-9._,-]*) die "invalid --labels: $labels (L,... with [A-Za-z0-9._-])" ;; esac
+	for v in $(printf '%s' "$vms" | tr ',' ' '); do valid_vm "$v" || die "invalid VM name: $v"; done
+	command -v gh >/dev/null 2>&1 || die "local runners use the GitHub CLI: install gh (https://cli.github.com), then run: gh auth login"
+	gh auth status --hostname "${GH_HOST:-github.com}" >/dev/null 2>&1 \
+		|| die "gh is not logged in to ${GH_HOST:-github.com}: run gh auth login (local runners use your gh login)"
+	if [ -z "$repo$org" ]; then
+		repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null) && [ -n "$repo" ] \
+			|| die "no GitHub repository here: run this in a clone of one, or pass --repo OWNER/REPO (or --org ORG)"
+	fi
+	if [ -n "$repo" ]; then
+		case $repo in */*/* | /* | */ | *[!A-Za-z0-9._/-]*) die "invalid repository: $repo (OWNER/REPO)" ;; */*) ;; *) die "invalid repository: $repo (OWNER/REPO)" ;; esac
+		api="repos/$repo/actions/runners" scope=$repo
+	else api="orgs/$org/actions/runners" scope="organization $org"; fi
+	tick=${BOXERY_RUNNERS_TICK:-5}; case $tick in '' | *[!0-9]* | 0) tick=5 ;; esac
+
+	# Globals (ro_*): the EXIT trap needs them after this function has returned.
+	ro_dir=$(mktemp -d "${TMPDIR:-/tmp}/boxery-runner.XXXXXX") || die "mktemp failed"
+	mkfifo "$ro_dir/out" || { rm -rf "$ro_dir"; die "mkfifo failed"; }
+	ro_api=$api ro_id="" ro_name="" ro_vm="" ro_stop=0 ro_open=1 ro_failed=""
+	trap 'ro_stop=$((ro_stop + 1))' INT TERM HUP
+	trap runners_once_exit EXIT
+	echo "==> local runner for $scope, with your gh login (nothing is stored on the host)" >&2
+	exec 3> >(h runners __once ${vms:+--vms "$vms"} ${labels:+--labels "$labels"} >"$ro_dir/out")
+	exec 4<"$ro_dir/out"
+	rm -f "$ro_dir/out"
+	while :; do
+		if [ "$ro_stop" -gt 0 ] && [ "$ro_open" = 1 ]; then
+			exec 3>&-; ro_open=0
+			echo "==> stopping the runner${ro_vm:+ and giving $ro_vm back}" >&2
+		fi
+		[ "$ro_stop" -lt 2 ] || break   # a second Ctrl-C: don't wait for the host (it cleans up anyway)
+		line="" t0=$SECONDS rc=0
+		IFS= read -r -t "$tick" line <&4 || rc=$?
+		if [ "$rc" = 0 ]; then
+			case $line in
+			"register "*) runners_once_register "${line#register }" "$group" ;;
+			started) started=1; echo "==> ready: a job with runs-on: [self-hosted, boxery] gets it (Ctrl-C to stop)" >&2 ;;
+			exited | stopped | lost | failed) outcome=$line ;;
+			esac
+			continue
+		fi
+		# EOF: the host is done. Bash 4+ returns > 128 for a timeout; 3.2 returns 1 for both, so there a
+		# read that failed at once was EOF (a timeout takes a tick; an EOF misread as one fails at once next).
+		if [ "$rc" -le 128 ] && { [ "${BASH_VERSINFO[0]}" -ge 4 ] || [ "$SECONDS" = "$t0" ]; }; then break; fi
+		[ "$ro_open" = 0 ] || ( printf '\n' >&3 ) 2>/dev/null || true
+		n=$((n + 1))
+		# Is it on a job yet? Every other tick, until it is (the host can't ask: it has no GitHub credential).
+		if [ "$started" = 1 ] && [ "$busy" = 0 ] && [ "$ro_stop" = 0 ] && [ -n "$ro_id" ] && [ $((n % 2)) = 0 ] \
+			&& [ "$(once_gh api "$ro_api/$ro_id" --jq .busy 2>/dev/null)" = true ]; then
+			busy=1; echo "==> $ro_name is running a job" >&2
+		fi
+	done
+	exec 4<&-
+	runners_once_finish "$outcome" "$busy"
+}
+# runners_once_register "VM NAME LABELS" GROUP: register the runner with gh (generate-jitconfig) and send
+# "ID JITCONFIG" to the host. Without one, close the host's stdin: it gives the VM back.
+runners_once_register() {
+	local vm name labels body out id jit rest=$1
+	vm=${rest%% *} rest=${rest#* } name=${rest%% *} labels=${rest#* }
+	case $name in boxery-local-*) ;; *) name="" ;; esac
+	case $name$labels in *[!A-Za-z0-9._,-]*) name="" ;; esac
+	if ! valid_vm "$vm" || [ -z "$name" ] || [ -z "$labels" ]; then
+		warn "unexpected answer from the host: register $1"; ro_failed=host; exec 3>&-; ro_open=0; return 0
+	fi
+	ro_vm=$vm
+	[ "$ro_open" = 1 ] || return 0   # stopping already
+	echo "==> $vm: registering runner $name (labels $labels)" >&2
+	body=$(printf '{"name":"%s","runner_group_id":%s,"labels":[%s],"work_folder":"_work"}' "$name" "$2" "$(printf '%s' "$labels" | sed 's/[^,][^,]*/"&"/g')")
+	out=$(printf '%s' "$body" | once_gh api -X POST "$ro_api/generate-jitconfig" --input - --jq '"\(.runner.id) \(.encoded_jit_config)"' 2>"$ro_dir/gh.err") || out=""
+	id=${out%% *} jit=${out#* } out=""
+	case $id in '' | *[!0-9]*) id="" ;; esac
+	case $jit in '' | *[!A-Za-z0-9+/=]*) id="" ;; esac
+	if [ -z "$id" ]; then
+		jit=""
+		if [ "$ro_stop" = 0 ]; then
+			warn "GitHub didn't register the runner: $(once_gh_error)"
+			warn "registering a runner needs admin rights on ${ro_api%/actions/runners}; for an organization's: gh auth refresh -s admin:org"
+		fi
+		ro_failed=register; exec 3>&-; ro_open=0; return 0
+	fi
+	ro_id=$id ro_name=$name   # registered: from here on, every way out deletes it
+	if [ "$ro_open" = 1 ]; then ( printf '%s %s\n' "$id" "$jit" >&3 ) 2>/dev/null || true; fi
+	jit=""
+}
+# Delete the registration (gone already after a job: a JIT runner deregisters itself), say how it went, exit.
+runners_once_finish() { # OUTCOME BUSY
+	local outcome=$1 busy=$2 gone=0 rc=1
+	if [ -n "$ro_id" ]; then
+		if once_gh api -X DELETE "$ro_api/$ro_id" >/dev/null 2>"$ro_dir/gh.err"; then
+			[ "$outcome" = exited ] || echo "==> deleted runner registration $ro_name" >&2
+		elif grep -q 'HTTP 404' "$ro_dir/gh.err" 2>/dev/null; then gone=1
+		else warn "could not delete runner $ro_name ($(once_gh_error)); GitHub removes offline runners by itself"; fi
+		ro_id=""
+	fi
+	if [ "$ro_stop" -gt 0 ]; then echo "==> stopped" >&2; rc=130
+	elif [ "$outcome" = exited ] && { [ "$gone" = 1 ] || [ "$busy" = 1 ]; }; then echo "==> done: $ro_name ran its job; $ro_vm is reset" >&2; rc=0
+	elif [ "$outcome" = exited ]; then warn "$ro_name exited without running a job (its registration is deleted)"
+	elif [ -z "$ro_failed" ]; then warn "the local runner ended early${outcome:+ ($outcome)}; see above"; fi
+	rm -rf "$ro_dir"; ro_dir=""
+	exit "$rc"
+}
+# EXIT trap: a way out that skipped runners_once_finish (die, an error) still deletes the registration.
+runners_once_exit() {
+	exec 3>&- 4<&-
+	if [ -n "${ro_id:-}" ]; then once_gh api -X DELETE "$ro_api/$ro_id" >/dev/null 2>&1 || true; fi
+	[ -z "${ro_dir:-}" ] || rm -rf "$ro_dir"
+}
+
 # ---------------------------------------------------------------- versions
 # This controller's version: package.json next to it (bin symlinks resolved), plus git describe in a checkout.
 controller_root() {
@@ -1414,8 +1552,12 @@ usage() {
 		acquire [--ttl S] [--wait S]    lease a VM from the shared pool (prints NAME LEASE_ID)
 		renew NAME [--ttl S]            extend your lease;  release NAME   give it back (VM is reset)
 		leases [--json]                 your leases;  pool add|rm|ls (admin, on the host)
-		runners status|start|stop|config|token   GitHub Actions runners on pool VMs, one job per
-		                                  fresh VM (admin; docs/github-runners.md)
+		runners once [--repo OWNER/REPO | --org ORG] [--vms NAME,...] [--labels L,...] [--group ID]
+		                                local runner: one GitHub Actions job on a fresh pool VM, registered
+		                                  with your gh login; nothing is stored on the host. --repo
+		                                  defaults to this directory's repo (docs/github-runners.md)
+		runners status|start|stop|config|token   host runners: the host keeps runners waiting, with
+		                                  its own GitHub token (admin)
 		grant NAME SPEC... [--cmd CMD]  give a VM access to something on this machine:
 		                                  ssh-agent | env:VAR | file:LOCAL[=REMOTE]
 		                                  http:HOST --cmd CMD [--auth bearer|basic:USER|header:NAME] [--readonly]
@@ -1509,8 +1651,9 @@ renew) cmd_renew "$@" ;;
 release) cmd_release "$@" ;;
 leases) cmd_leases "$@" ;;
 pool) need_host; [ -z "${2:-}" ] || drop_master "$2"; h pool "$@"; [ -z "${2:-}" ] || drop_master "$2" ;;
-# GitHub Actions runners on the host's pool (docs/github-runners.md): passed through; `token` reads stdin
-runners) need_host; h runners "$@" ;;
+# GitHub Actions runners on the host's pool (docs/github-runners.md): `once` (local runners) runs here with
+# this machine's gh login; the rest (host runners) is passed through, and `token` reads stdin
+runners) need_host; if [ "${1:-}" = once ]; then shift; cmd_runners_once "$@"; else h runners "$@"; fi ;;
 grant) cmd_grant "$@" ;;
 revoke) cmd_revoke "$@" ;;
 grants) cmd_grants "$@" ;;
