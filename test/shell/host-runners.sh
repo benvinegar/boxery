@@ -74,9 +74,10 @@ grep -q '^for l in plumbing devtools desktop github-runner; do$' "$ROOT/image/la
 
 echo "== guest helper: boxery-runner"
 g=$tmp/guest; mkdir -p "$g/opt" "$g/gbin"
-# The helper from the layer, pointed at this directory instead of /opt/actions-runner, /run/boxery-runner, /usr/local/sbin.
+# The helper from the layer, pointed at this directory instead of /opt/actions-runner, /run/boxery-runner, /usr/local/sbin,
+# and at the bash on PATH: CI's bash:3.2 container has none at /bin/bash.
 awk '/^cat >\/usr\/local\/sbin\/boxery-runner <<.EOF.$/{f=1; next} /^EOF$/{f=0} f' "$LAYER" \
-	| sed -e "s#^D=/opt/actions-runner S=/run/boxery-runner U=boxery-runner#D=$g/opt S=$g/run U=boxery-runner#" -e "s#/usr/local/sbin/boxery-runner __run#$g/boxery-runner __run#" >"$g/boxery-runner"
+	| sed -e '1s|^#!/bin/bash$|#!/usr/bin/env bash|' -e "s#^D=/opt/actions-runner S=/run/boxery-runner U=boxery-runner#D=$g/opt S=$g/run U=boxery-runner#" -e "s#/usr/local/sbin/boxery-runner __run#$g/boxery-runner __run#" >"$g/boxery-runner"
 chmod +x "$g/boxery-runner"
 bash -n "$g/boxery-runner" && grep -q "^D=$g/opt " "$g/boxery-runner" && ok "the helper extracts and parses" || bad "helper: $(head -5 "$g/boxery-runner")"
 # sudo: run the command (install's -o/-g need root: dropped); systemd-run: start the command in the
