@@ -49,6 +49,6 @@ The wordmark is JetBrains Mono Bold (SIL Open Font License), converted to outlin
 <meta property="og:image" content="https://raw.githubusercontent.com/benvinegar/boxery/master/docs/brand/og-image-dark.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="boxery: Spin up and manage VMs across local, remote and sandbox providers from your agents">
+<meta property="og:image:alt" content="boxery: Easiest way to give your coding agents VMs">
 <meta name="twitter:card" content="summary_large_image">
 ```
