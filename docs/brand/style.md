@@ -7,9 +7,9 @@ How boxery looks and sounds, in diagrams, cards and videos. The README hero ([`d
 ## Principles
 
 - **The cube is a VM.** Everything else in a picture is there to show what happens to the VMs.
-- **Show the real thing.** Use real tool names (`vm_manage`, `vm_bash`), real CLI output, and real timings (a VM in about 13 s, a snapshot in 1 s, three forks in about 19 s). Don't invent features or numbers.
+- **Show the real thing.** Use real tool names, real CLI output and real timings, taken from the code and docs as they are now. Don't invent features or numbers.
 - **One idea at a time.** Each moment of a video, or each part of a diagram, makes one point. Leave anything that needs to be read on screen long enough to read it.
-- **Outcomes over features.** Show what someone gets ("three fixes tried at once", "your key never left the host"), not a list of capabilities.
+- **Outcomes over features.** Show what someone gets from boxery, not a list of what it can do.
 
 ## Colors
 
@@ -36,7 +36,7 @@ Social content uses the dark theme. Green is for things that are boxery or that 
 
 - **JetBrains Mono** for the wordmark, commands, tool calls, CLI output and in-world labels. On a canvas, use the **JetBrains Mono NL** cut: the regular cut turns `==>` and `->` into ligatures.
 - **System sans** (`system-ui, -apple-system, 'Helvetica Neue', Arial`) for headlines and anything said in sentences.
-- Headlines are bold with slightly tight tracking (-1px at 62px). Put the important phrase on its own line in ghost green ("Your coding agent deserves / **its own VMs**").
+- Headlines are bold with slightly tight tracking (-1px at 62px). Put the important phrase on its own line in ghost green.
 
 Sizes on a 1080×1080 frame:
 
@@ -74,12 +74,13 @@ Faces are lit as in the mark: green on top, ink on the left and dark green on th
 
 ### Scenery
 
-- **The host** is a wide, low platform in the host colors that the VMs stand on. Name it with a callout (for example "hornet / your Linux server").
+- **A host** is a wide, low platform in the host colors that the VMs stand on, named with a callout: its name, then what it is ("your Linux server", "your Mac", a cloud provider).
 - **The floor** is a grid of ink lines at 5% opacity, just enough to show the plane.
 - **Callouts** are a 4px ghost-green dot on the object, a 1.5px leader in the dim color, and mono 22 text. The first line is the name and the second line is in secondary text.
 - **Progress bars** are 10px tall with fully rounded ends, on a `#444441` track. Use green for the one that matters and muted grey for the others.
-- **Data moving** (a push, a request) is a dashed ghost-green line with a moving dash offset and a dot at its head.
-- **Secrets** (keys, tokens) are drawn as an ink key sitting on the host, never inside a VM.
+- **Data moving** (a request, a copy, a push) is a dashed ghost-green line with a moving dash offset and a dot at its head.
+- **Secrets** (keys, tokens) are drawn as an ink key sitting on the host, never inside a VM, because that's where boxery keeps them.
+- Anything new a story needs (a browser, a file, a service) is drawn from the same parts: iso tiles and boxes in the panel or host colors, outlines in the dim color, and green only where boxery or a good result is.
 
 ## Layout
 
@@ -87,7 +88,7 @@ Faces are lit as in the mark: green on top, ink on the left and dark green on th
 - A two-tone bar along the bottom edge, green on the left half and dark green on the right, 10px tall in a 1080 frame.
 - Keep 48 to 64px margins and nothing touching the edges. Labels near the right edge are right-aligned.
 - During a story the lockup sits in the top-left corner at half size, so the brand is on screen the whole time without competing.
-- Panels such as the agent's chat are rounded rectangles (20px radius) in the panel face color with a 1.5px stroke. They sit above the isometric world, never over a cube.
+- Panels, such as an agent's chat, are rounded rectangles (20px radius) in the panel face color with a 1.5px stroke. They never cover a cube.
 
 ## Motion
 
@@ -109,9 +110,23 @@ Faces are lit as in the mark: green on top, ink on the left and dark green on th
 
 - Write like a person explaining it to a colleague. Prefer short words and concrete nouns.
 - Avoid AI-product phrasing: "seamlessly", "supercharge", "unleash", "next-level", "effortless", "empower", "revolutionize", and "not just X, it's Y".
-- The agent in a video speaks in short, plain sentences and says what it did and why ("There are three likely causes, so I'll try a fix for each at once.").
+- An agent in a video speaks in short, plain sentences and says what it did and why.
 - The tagline is **Easiest way to give your coding agents VMs**. Use it as written, with no full stop.
+- The opening line is **Your coding agent deserves its own VMs**.
 - The install command is `npx add-mcp boxery-vm`, and the repo is `github.com/modem-dev/boxery`.
+
+## A promo video
+
+Every boxery video has the same opening and close. Only the story in the middle changes.
+
+| Part | Length | What happens |
+|---|---|---|
+| Opening | about 2.3 s | The mark draws in: the outline traces, then the inner cube drops in and bounces. The opening line comes up under it in two lines, with the second line in ghost green. The lockup then glides to the top-left corner as the wordmark appears. |
+| Story | as long as it needs | Any story, told in the isometric world. The lockup stays in the corner throughout. |
+| End card | about 3.9 s | The story fades out, and the lockup glides back to the centre. Then the tagline, the install command (in a green-outlined pill with a green `$`), and the repo with "Open source · MIT" underneath. |
+| Works with | about 3.8 s | The card's text clears, and the lockup moves up. The agents boxery works with come in one at a time, then "and any MCP client". The repo line stays from the end card. |
+
+The opening and close stay the same unless someone decides to change the brand itself. A different story is told within the same style, not with new colors, type or motion.
 
 ## The coding agents boxery works with
 

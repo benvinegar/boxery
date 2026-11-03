@@ -5,10 +5,12 @@
   Open this file in a browser to watch it loop (?t=12.5 freezes on a moment, space pauses).
   render.mjs steps window.renderFrame(t) frame by frame and pipes the result to ffmpeg.
 
-   0.0– 2.3  title: the mark builds, "Your coding agent deserves its own VMs"; the lockup glides to the corner
-   2.3–22.3  the story: you ask for the tests in a VM, the agent makes one, forks it three ways, keeps the fix, pushes
-  22.3–26.2  end card: the lockup glides back, tagline, install command, repo
-  26.2–30.0  works with: the lockup moves up, agent logos
+  Every boxery video has the same opening and close; only the story between them changes.
+   0 → T0          opening: the mark builds over "Your coding agent deserves its own VMs", the lockup glides to the corner
+   T0 → S_END      the story; in this one you ask for the tests in a VM, the agent makes one, forks it three ways,
+                   keeps the fix and pushes
+   S_END → +WW     end card: the lockup glides back, tagline, install command, repo
+   +WW → DUR       works with: the lockup moves up, agent logos
 -->
 <html lang="en">
 <head>
@@ -25,7 +27,7 @@
 <body>
 <canvas id="c" width="1080" height="1080"></canvas>
 <script>
-const W = 1080, H = 1080, DUR = 30;
+const W = 1080, H = 1080;
 const cv = document.getElementById('c');
 const x = cv.getContext('2d');
 
@@ -218,10 +220,12 @@ function background(t) {
   x.fillStyle = COL.dgreen; x.fillRect(W / 2, H - 10, W / 2, 10);
 }
 
-// ---- timeline ----
-const T0 = 2.3;              // the story starts
-const S_END = T0 + 20.0;     // 22.3: the end card
+// ---- timeline: the fixed opening, the story, the fixed close ----
+const T0 = 2.3;              // the opening ends and the story starts
+const STORY = 20.0;          // how long the story runs; the opening and close keep their lengths
+const S_END = T0 + STORY;    // the end card
 const WW = 3.9;              // seconds into the end before the works-with scene
+const DUR = S_END + 7.7;
 
 // ---- the isometric world: a floor grid, the host as a platform, VMs as cubes ----
 let ISO = { ox: 540, oy: 540, u: 60 };
@@ -271,6 +275,8 @@ function key(cx, cy, s, color) {
   x.beginPath(); x.moveTo(-8, 0); x.lineTo(30, 0); x.moveTo(18, 0); x.lineTo(18, 11); x.moveTo(28, 0); x.lineTo(28, 9); x.stroke();
   x.restore();
 }
+
+// ==== the story: everything from here to story() is this video's; a new video replaces it ====
 
 // ---- the agent's chat: what you asked, what it says, the boxery tools it calls ----
 const CHAT = [
@@ -406,12 +412,15 @@ function world(r) {
   }
 }
 
+// The story, r seconds after T0. It has to be gone by STORY, when the lockup glides back.
 function story(r) {
-  if (r < 0 || r > 20.2) return;
-  withAlpha(1 - inout(seg(r, 19.5, 20.0)), () => { world(r); chat(r); });
+  if (r < 0 || r > STORY + 0.2) return;
+  withAlpha(1 - inout(seg(r, STORY - 0.5, STORY)), () => { world(r); chat(r); });
 }
 
-// ---- the lockup, from the title card to the corner to the end card, never cut ----
+// ==== the fixed opening and close, the same in every video ====
+
+// ---- the lockup, from the title to the corner to the end card, never cut ----
 function brand(t) {
   const corner = [64, 66, 0.5, 0], title = [540, 420, 3.4, 32];
   const u = t - S_END, up = inout(seg(u, WW - 0.2, WW + 0.5));

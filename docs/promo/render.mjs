@@ -1,13 +1,15 @@
-// Render promo.html to an MP4, frame by frame, in headless Chrome.
+// Render a video page (promo.html by default) to an MP4, frame by frame, in headless Chrome.
 //
-//   node docs/promo/render.mjs [out.mp4]
-//   node docs/promo/render.mjs --stills 2,7,12 [dir]    # PNGs at those times, for review
+//   node docs/promo/render.mjs [page.html] [out.mp4]
+//   node docs/promo/render.mjs [page.html] --stills 2,7,12 [dir]    # PNGs at those times, for review
+//
+// The page draws its canvas with window.renderFrame(t) and sets window.DUR.
 //
 // Needs Google Chrome, ffmpeg and playwright-core (npm install --no-save playwright-core).
 // PLAYWRIGHT=/path/to/playwright-core/index.mjs imports it from somewhere else.
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const { chromium } = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright-core');
@@ -15,12 +17,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FPS = 30;
 
 const args = process.argv.slice(2);
+const src = resolve(args[0]?.endsWith('.html') ? args.shift() : join(here, 'promo.html'));
+const name = basename(src, '.html') === 'promo' ? 'boxery-promo' : basename(src, '.html');
 const stills = args[0] === '--stills' ? args[1].split(',').map(Number) : null;
-const target = resolve(stills ? args[2] ?? join(here, 'stills') : args[0] ?? join(here, 'boxery-promo.mp4'));
+const target = resolve(stills ? args[2] ?? join(here, 'stills') : args[0] ?? join(dirname(src), `${name}.mp4`));
 
 const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 1 });
-await page.goto(pathToFileURL(join(here, 'promo.html')).href + '?render');
+await page.goto(pathToFileURL(src).href + '?render');
 await page.evaluate(() => document.fonts.ready);
 const canvas = page.locator('canvas');
 const frame = async t => { await page.evaluate(t => window.renderFrame(t), t); return canvas.screenshot({ type: 'png' }); };
