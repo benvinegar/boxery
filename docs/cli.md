@@ -34,7 +34,8 @@ boxery new demo                              # ~13 s   [--shape large] [--cpus N
 boxery new ci-1 --headless                   # no desktop, no build-base needed: ~50 s on Lima (see below)
 boxery build-base                            # the host's desktop base image (one time, ~3 min)
 boxery shapes [--json]                       # VM sizes the host offers (* = default); see Shapes
-boxery ls [--json]                           # VMs, with their shape and grants
+boxery ls [--json] [--refresh]               # VMs, with their shape, grants and guest software (GUEST)
+boxery patch demo | --all [--wait S]         # update a VM's guest software to the host's image layers
 boxery start demo | stop demo
 boxery resize demo --cpus 8 --mem 16384      # [--disk GiB]; restarts a running VM
 boxery rm demo                               # also revokes its LLM proxy token
@@ -44,6 +45,10 @@ boxery pin demo [--from-guest]               # re-pin demo's ssh host key (a VM 
 **Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
 
 **Host keys.** Every ssh to a VM checks its host key, which is pinned on the host when the VM is made ([security](security.md#vm-host-keys)). A VM made before that, or whose record was lost, fails with "Host key verification failed" until you run `boxery pin NAME`. That reads the key through the hypervisor (libvirt's guest agent) or the host's loopback endpoint (Lima, exe, boat). `--from-guest` instead trusts what the VM's ssh endpoint answers, once. `boxery start NAME` pins it automatically where it can.
+
+**Outdated guest software.** A VM keeps the kernel and packages it was built with: nothing updates them after it is made. Every VM records what it was built with in `/etc/boxery/build-info` (date, kernel, a hash of boxery's image layers, and on desktops the Chrome/Chromium and `playwright-core` versions), and the host keeps a copy, read whenever it reaches the VM anyway (`new`, `fork`, `start`, `revert`, `patch`). `ls` shows the result in the GUEST column (`guest` in `--json`): `outdated` when the VM was built from other image layers than the host's current ones (the host was upgraded since), more than 30 days ago (`BOXERY_STALE_DAYS` in the host's `host.env` changes that), or when the guest asks for a reboot (`/var/run/reboot-required`, read when the host last reached it); `current` otherwise; `unknown` for a VM built before build records or never read. `ls` reads only the host's copy, so it stays fast; `ls --refresh` first reads each running VM's record over ssh. `ls` says which VMs are outdated and why on stderr.
+
+`boxery patch NAME` updates a running VM in place: it copies the host's current image layers into the VM, runs the layers the VM has again (security updates and kernel with `apt-get full-upgrade`, and what the layers install outside apt: `playwright-core` and, on arm64, its Chromium; the pi and opencode CLIs; node 24), and restarts the VM if the updates ask to (its tmux sessions end; its grants are pushed again). It takes a few minutes, streams the layers' progress and logs everything to `/var/log/boxery-patch.log` in the VM. `--all` patches every running VM in turn, and says which it skipped (stopped VMs, pool VMs with a lease). A pool VM must be free: `patch` refuses one with a lease, or waits up to `--wait S` seconds for it to end; while it is patched no lease can start on it, and its clean image (`NAME@boxery-clean`) is captured again, so later leases start patched. **Snapshots and images are not patched**: `snaps` and `images` show their age and the guest software they hold, and a VM made or reverted from an outdated one is outdated until you patch it. A VM from a desktop base built before build records shows `unknown`; patching gives it a record. To patch the base itself, rebuild it (`boxery build-base`).
 
 `resize` takes any of `--cpus`, `--mem` (MiB) and `--disk` (GiB), the same units as `new`. A running VM is stopped, resized and started again, so its tmux sessions end; its grants are pushed again afterwards. A stopped VM stays stopped. The disk can only grow, and the guest's root filesystem grows on the next boot. Values that are already the VM's current size are ignored, so a resize that changes nothing doesn't restart anything. Like other long-lived VM products (exe.dev, Daytona, EC2), it changes the VM in place; throwaway sandboxes such as E2B are recreated instead.
 
@@ -56,7 +61,7 @@ boxery snaps demo [--json]
 boxery revert demo before-refactor           # VM keeps its name, address and token
 boxery new demo2 --from demo@before-refactor # a new VM from a snapshot
 boxery snap-rm demo before-refactor
-boxery images                                # every snapshot on the host
+boxery images                                # every snapshot on the host (with AGE and GUEST, like snaps)
 ```
 
 A **fork** is a separate VM with the source's disk (files, installed packages, git state) but not its running processes, and with its own hostname, LLM proxy token, ssh keys and network identity. Forks don't depend on the source: removing either one is fine. Forks get the source's size (cpus, memory, disk) unless you pass `--shape` or size flags. Grants are per VM and aren't copied unless you pass `--grants`. A fork of a leased pool VM is an ordinary VM and never accepts the lease key.
@@ -178,7 +183,8 @@ add-key < key.pub               authorize a controller's ssh key for new VMs
 new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
-ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+ls [--json] [--refresh] | ip NAME | start NAME | stop NAME | rm NAME
+patch NAME|--all [--wait S]     update a VM's guest software to this host's image layers (see Lifecycle)
 snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
 connect NAME [PORT]             stdio to a VM port (ssh ProxyCommand)
 known-hosts NAME                NAME's pinned ssh host key as one known_hosts line (ssh KnownHostsCommand; empty if none)
@@ -231,6 +237,7 @@ VMs on the host, plus the grants this machine has given each one.
 | `cpus` | number \| null | vCPUs (`null` if unknown) |
 | `mem` | number \| null | memory in MiB (`null` if unknown) |
 | `desktop` | boolean | `false` for headless VMs (`new --headless`, or made from a headless VM's image); `true` otherwise, including VMs created before headless VMs existed |
+| `guest` | object | the VM's guest software, from the host's build record (see [Outdated guest software](#lifecycle)): `status` (`current`, `outdated` or `unknown`), `reasons` (why: `layers changed`, `built N days ago`, `reboot required`, `no build record`, `not checked`), `built_at` (epoch seconds), `age_days`, `kernel` (the newest installed), `chrome` and `playwright_core` (desktops; `null` otherwise), `reboot_required`, `checked_at` (when the host last read it; `null` if never). Unknown fields are `null` |
 | `grants` | array | this machine's grants for the VM, same objects as `grants --json` |
 
 #### `boxery shapes --json`
@@ -344,27 +351,29 @@ Registered hosts, by name. Read from local profile files only: no host is contac
 
 #### `boxery snaps NAME --json`
 
-Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `size` is `null` when the backend does not report it.
+Snapshots of a VM, passed through from `boxery-host snaps NAME --json`. `size` is `null` when the backend does not report it. `age_days` is days since it was taken; `guest` is the guest software it holds (its VM's build record when it was taken), the same object as in `ls --json` except that `reboot_required` is `null` (a VM made from an image boots fresh).
 
 ```json
 [
-{"name":"before-refactor","created":"2026-10-31T19:28:31","size":"173MiB"}
+{"name":"before-refactor","created":"2026-10-31T19:28:31","size":"173MiB","age_days":2,"guest":{"status":"current","reasons":[],"built_at":1793300000,"age_days":4,"kernel":"6.8.0-90-generic","chrome":"Google Chrome 141.0.7390.54","playwright_core":"1.57.0","reboot_required":null,"checked_at":1793460000}}
 ]
 ```
+
+The text form is tab-separated: `NAME CREATED SIZE AGE GUEST` (`AGE` like `2d`).
 
 ### Host (`boxery-host`, on the VM host)
 
 #### `boxery-host ls --json`
 
-Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `ssh_addr`, `disk_size`, `disk_used`, `tunnel`, `lease`, `shape`, `cpus`, `mem`, `desktop`. Built in one place from the backend's `backend_list` lines, the recorded VM sizes and the lease store.
+Same objects as `boxery ls --json` without `grants` (grants live on the controller): `name`, `state`, `ssh_addr`, `disk_size`, `disk_used`, `tunnel`, `lease`, `shape`, `cpus`, `mem`, `desktop`, `guest`. Built in one place from the backend's `backend_list` lines, the recorded VM sizes, the lease store and the build records (`--refresh`: read from running VMs first).
 
 #### `boxery-host snaps NAME --json`
 
-`[{"name", "created", "size"}]`, from the backend's `backend_images`.
+`[{"name", "created", "size", "age_days", "guest"}]`, from the backend's `backend_images` and the build records.
 
 #### `boxery-host images --json`
 
-`[{"image", "created", "size"}]`: every image on the host (`VM@SNAP`), from the backend's `backend_images`; empty fields are `null`.
+`[{"image", "created", "size", "age_days", "guest"}]`: every image on the host (`VM@SNAP`), from the backend's `backend_images` and the build records; empty fields are `null`.
 
 #### `boxery-host pool ls --json`
 
@@ -399,3 +408,4 @@ Run it on the host, or from the controller as `boxery pool ls --json`.
 | `~/.config/boxery/proxy.env` (host) | Extra LLM provider keys (VMs still need an `llm:` grant to use them) |
 | `~/.config/boxery/tokens.json` (host) | Per-VM proxy tokens (per lease on pool VMs) |
 | `~/.config/boxery/leases.db` (host) | Lease state (SQLite) |
+| `~/.config/boxery/build-info/` (host) | What each VM and image was built with (`NAME`, `NAME@SNAP`: JSON), for `ls`, `snaps` and `images` |

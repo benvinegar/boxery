@@ -28,22 +28,28 @@ export function createGuest({ conf, env = process.env }) {
 	};
 
 	/** Run COMMAND in VM NAME's guest at {host, port}; resolves with its exit status (255 = ssh failed,
-	 *  also when the guest's host key isn't NAME's).
-	 *  @param {GuestEndpoint} ep @param {string} command @param {{ input?: string | null, quiet?: boolean }} [opts]
-	 *  @returns {Promise<number>} */
-	function run({ host, port, name }, command, { input, quiet = false } = {}) {
+	 *  also when the guest's host key isn't NAME's) and, with capture, its stdout (else it goes to our stderr).
+	 *  @param {GuestEndpoint} ep @param {string} command @param {{ input?: string | null, quiet?: boolean, capture?: boolean }} opts
+	 *  @returns {Promise<{ code: number, out: string }>} */
+	function exec({ host, port, name }, command, { input, quiet = false, capture = false }) {
 		return new Promise((resolve, reject) => {
 			const child = spawn("ssh", [...opts, ...hostKeyOpts(name), "-p", String(port), `agent@${host}`, command], {
-				env, stdio: [input == null ? "ignore" : "pipe", quiet ? "ignore" : 2, quiet ? "ignore" : 2],
+				env, stdio: [input == null ? "ignore" : "pipe", capture ? "pipe" : quiet ? "ignore" : 2, quiet ? "ignore" : 2],
 			});
+			/** @type {Buffer[]} */
+			const chunks = [];
+			child.stdout?.on("data", (/** @type {Buffer} */ d) => chunks.push(d));
 			child.on("error", reject);
-			child.on("close", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
+			child.on("close", (code, signal) => resolve({ code: code ?? (signal ? 128 : 1), out: Buffer.concat(chunks).toString("utf8") }));
 			if (input != null) {
 				/** @type {Writable} */ (child.stdin).on("error", () => {}); // a guest that exits early must not crash us (EPIPE)
 				/** @type {Writable} */ (child.stdin).end(input);
 			}
 		});
 	}
+	/** Run COMMAND in the guest; resolves with its exit status. @param {GuestEndpoint} ep @param {string} command
+	 *  @param {{ input?: string | null, quiet?: boolean }} [opts] @returns {Promise<number>} */
+	const run = async (ep, command, opts = {}) => (await exec(ep, command, opts)).code;
 
 	/** This host's public key; the key pair is created on first use (works without an ssh-agent). */
 	function hostPubkey() {
@@ -61,6 +67,9 @@ export function createGuest({ conf, env = process.env }) {
 
 	return {
 		run,
+		/** Run COMMAND in the guest and collect its stdout (its stderr is discarded).
+		 *  @param {GuestEndpoint} ep @param {string} command @param {{ input?: string | null }} [opts] */
+		output: (ep, command, { input } = {}) => exec(ep, command, { input, quiet: true, capture: true }),
 		hostPubkey,
 		registeredKeys,
 		/** Pet VMs accept the host and every registered controller. */

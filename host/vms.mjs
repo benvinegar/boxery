@@ -1,6 +1,7 @@
 // VM lifecycle commands: new, fork, rm, start, stop, resize. Each runs inside a supervised worker that
 // holds the VMs' lifecycle locks for its whole duration (boxery-operations.mjs, docs/lifecycle.md).
 import { randomBytes } from "node:crypto";
+import { deleteBuildRecord, refreshBuild } from "./build-info.mjs";
 import { captureVm, cleanupVmImages } from "./images.mjs";
 import { deleteHostKey } from "./hostkeys.mjs";
 import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
@@ -101,6 +102,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 		await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"');
 	}
 	if (kind === "desktop" && await rt.guest.run(ep, NOVNC) !== 0) log("warning: noVNC not answering yet");
+	await refreshBuild(rt, name, ep); // what it was built with (from an image or fork: its source's software)
 	rt.done(action);
 	log(`${name} ready (${kind}, ${secs()}s)`);
 	return `${name} ${ep.host}:${ep.port}`;
@@ -171,6 +173,7 @@ export async function fork(rt, args) {
 		}
 	});
 	await rt.vms.call("backend_image_rm", [image]);
+	deleteBuildRecord(rt.conf, image);
 	rt.done(cleanup);
 	log(`forked ${src} → ${dsts.join(" ")} in ${secs()}s`);
 	if (rc) throw Object.assign(new Error("fork failed"), { exitCode: rc, reported: true });
@@ -184,7 +187,7 @@ export async function rm(rt, [name]) {
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	const action = rt.intent("remove", name);
 	await rt.vms.call("backend_rm", [name]);
-	deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name);
+	deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); deleteBuildRecord(rt.conf, name, true);
 	// Forks and image readers hold this source's lock until all copies are independent.
 	await cleanupVmImages(rt, name);
 	rt.deleteToken(name);
@@ -198,7 +201,9 @@ export async function rm(rt, [name]) {
 export async function start(rt, [name]) {
 	validName(name);
 	await rt.vms.call("backend_start", [name]);
-	await rt.waitSsh(name, await rt.vms.waitEndpoint(name));
+	const ep = await rt.vms.waitEndpoint(name);
+	await rt.waitSsh(name, ep);
+	await refreshBuild(rt, name, ep); // a restart may have been what the guest's updates were waiting for
 	if (!rt.poolRow(name)) {
 		await setPetKeys(rt, name);
 		if (typeof rt.token(name) !== "string") await issueToken(rt, name); // left the pool while stopped

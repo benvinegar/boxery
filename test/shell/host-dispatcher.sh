@@ -33,8 +33,8 @@ b64=$(awk '/path: \/home\/agent\/.pi\/agent\/models.json/{f=1} f&&/content:/{pri
 echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://127.0.0.1:8088/chatgpt/backend-api"' >/dev/null && ok "pi models.json points at the guest-side proxy" || bad "models.json"
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
-"$H" ls | grep -q '^a1 *running *127.0.0.1:22[0-9]* .* -$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
-"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", ssh_addr: .[0].ssh_addr, disk_size: 10, disk_used: 0.5, tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true} and (.[0].ssh_addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
+"$H" ls | grep -Eq '^a1 *running *127.0.0.1:22[0-9]* .* - +[a-z]+$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", ssh_addr: .[0].ssh_addr, disk_size: 10, disk_used: 0.5, tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true, guest: .[0].guest} and (.[0].guest.status | IN("current", "outdated", "unknown")) and (.[0].ssh_addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
@@ -130,7 +130,7 @@ done
 grep -A1 'path: /etc/boxery/provision$' "$ud" | grep -q 'content: plumbing devtools$' && ok "headless seed asks for plumbing + devtools only" || bad "provision list"
 awk '/^runcmd:/{f=1;next} f&&/^  - /{print; exit}' "$ud" | grep -q 'boxery-provision' && ok "provisioning is the first runcmd step (before boxery-llm restarts)" || bad "runcmd order"
 "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].desktop == false' >/dev/null && ok "ls --json: desktop false" || bad "ls --json: $("$H" ls --json)"
-"$H" ls | grep -q '^hl .* headless  *-$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
+"$H" ls | grep -Eq '^hl .* headless +- +[a-z]+$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
 ! grep -q '^users:' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'boxery-provision' "$BOXERY_FAKE_DIR/a2/user-data" && ok "desktop seeds are unchanged (no users:, no layers)" || bad "desktop seed changed"
 "$H" snap hl s1 >/dev/null 2>&1
 out=$("$H" new hl2 --from hl@s1 2>&1) && [[ $(cat "$BOXERY_FAKE_DIR/hl2/from") == hl@s1 ]] && ! grep -q boxery-provision "$BOXERY_FAKE_DIR/hl2/user-data" && ok "new --from a headless image: no base, no reprovisioning" || bad "from headless image: $out"
