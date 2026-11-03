@@ -367,7 +367,7 @@ for d in "$BOXERY_FAKE_DIR"/*/; do
   if [ "$(cat "$d/port" 2>/dev/null)" = "$port" ]; then
     mkdir -p "$d/home"; h="$d/home"
     case "$*" in
-      *"boxery-runner start"*) cat >"$h/.runner-jit"; touch "$h/.runner-started"; echo "start $(basename "$d")" >>"$BOXERY_FAKE_DIR/../guest.log"; exit 0 ;;
+      *"boxery-runner start"*) cat >"$h/.runner-jit.part" && mv "$h/.runner-jit.part" "$h/.runner-jit"; touch "$h/.runner-started"; echo "start $(basename "$d")" >>"$BOXERY_FAKE_DIR/../guest.log"; exit 0 ;;
       *"boxery-runner status"*) [ -e "$h/.runner-done" ] && exit 1; [ -e "$h/.runner-started" ] && exit 0; exit 2 ;;
       *"boxery-runner stop"*) echo "stop $(basename "$d")" >>"$BOXERY_FAKE_DIR/../guest.log"; exit 0 ;;
     esac
