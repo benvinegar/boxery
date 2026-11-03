@@ -2,7 +2,9 @@
 # boxery layer 2/3, dev tools and agents: git, build tools, node 24, pi, opencode, ripgrep. Runs as root,
 # idempotent. Keeps what the starting image already ships (exeuntu has most of it): a package is only
 # installed when missing, node only when the one there can't run boxery's job helper (type stripping:
-# 22.18+ / 23.6+), and an agent CLI only when the agent user can't run the one that's there.
+# 22.18+ / 23.6+), and an agent CLI only when the agent user can't run the one that's there. Running it
+# again (boxery patch) updates what boxery installed: node 24 to the latest 24.x, and the agent CLIs npm
+# manages to their latest releases (apt packages update in plumbing's full-upgrade).
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 # shellcheck source=/dev/null
@@ -64,26 +66,40 @@ as_agent() { sudo -u agent -H env -i HOME=/home/agent PATH=/usr/local/sbin:/usr/
 
 # Node 24 LTS, unless the image's node will do. Probe the capability, not the version: background jobs
 # (core/boxery-jobs.ts) run under Node's type stripping, which a node 22.0-22.17 or 23.0-23.5 can't do.
-if ! as_agent node --experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript -e '' >/dev/null 2>&1; then
-	ARCH=$(dpkg --print-architecture)   # amd64 | arm64
-	NODE_ARCH=$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)
+# The node 24 this installed is kept at the latest 24.x: /etc/boxery/node-installed marks it (an older VM
+# has no mark: its /usr/local node is ours unless the image is exeuntu, which has an exedev user).
+NODE_DL=$(mktemp -d)
+curl -fsSL -o "$NODE_DL/SHASUMS256.txt" https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt
+ARCH=$(dpkg --print-architecture)   # amd64 | arm64
+NODE_ARCH=$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)
+NODE_SUM=$(awk -v a="linux-$NODE_ARCH.tar.xz" '$2 ~ a"$"' "$NODE_DL/SHASUMS256.txt")
+[ "$(printf '%s\n' "$NODE_SUM" | grep -c .)" = 1 ] || { echo "no single linux-$NODE_ARCH.tar.xz in Node's SHASUMS256.txt" >&2; exit 1; }
+NODE_LATEST=$(printf '%s\n' "${NODE_SUM##* }" | cut -d- -f2)   # node-v24.x.y-linux-ARCH.tar.xz → v24.x.y
+have=$(/usr/local/bin/node --version 2>/dev/null || true)
+if [ ! -e /etc/boxery/node-installed ] && id exedev >/dev/null 2>&1; then have=""; fi
+if ! as_agent node --experimental-strip-types --disable-warning=ExperimentalWarning --input-type=module-typescript -e '' >/dev/null 2>&1 ||
+	{ [ "${have%%.*}" = v24 ] && [ "$have" != "$NODE_LATEST" ]; }; then
 	# Download, check against the release's SHASUMS256.txt, then unpack: never pipe an unchecked tarball into tar.
-	NODE_DL=$(mktemp -d)
-	curl -fsSL -o "$NODE_DL/SHASUMS256.txt" https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt
-	NODE_SUM=$(awk -v a="linux-$NODE_ARCH.tar.xz" '$2 ~ a"$"' "$NODE_DL/SHASUMS256.txt")
-	[ "$(printf '%s\n' "$NODE_SUM" | grep -c .)" = 1 ] || { echo "no single linux-$NODE_ARCH.tar.xz in Node's SHASUMS256.txt" >&2; exit 1; }
 	curl -fsSL -o "$NODE_DL/${NODE_SUM##* }" "https://nodejs.org/dist/latest-v24.x/${NODE_SUM##* }"
 	(cd "$NODE_DL" && printf '%s\n' "$NODE_SUM" | sha256sum -c --quiet -) || { echo "Node tarball failed its checksum" >&2; exit 1; }
 	tar -xJf "$NODE_DL/${NODE_SUM##* }" -C /usr/local --strip-components=1
-	rm -rf "$NODE_DL"
+	mkdir -p /etc/boxery && touch /etc/boxery/node-installed
 fi
+rm -rf "$NODE_DL"
 as_agent node --version
 
 # Coding agents. exeuntu ships an opencode, and a pi that links into exedev's home (unusable by agent):
-# npm won't overwrite either, so a CLI the agent can't run is removed first.
+# npm won't overwrite either, so a CLI the agent can't run is removed first. One that runs is kept, and
+# updated to the latest release if it is npm's global install of that same package (what this installs).
 for pair in pi:@earendil-works/pi-coding-agent opencode:opencode-ai; do
 	cmd=${pair%%:*} pkg=${pair#*:}
-	as_agent "$cmd" --version >/dev/null 2>&1 && { echo "keeping the image's $cmd ($(command -v "$cmd"))"; continue; }
+	if as_agent "$cmd" --version >/dev/null 2>&1; then
+		case $(readlink -f "$(command -v "$cmd")") in
+		"$(npm root -g)/$pkg/"*) npm install -g "$pkg@latest" ;;
+		*) echo "keeping the image's $cmd ($(command -v "$cmd"))" ;;
+		esac
+		continue
+	fi
 	rm -f "/usr/local/bin/$cmd"
 	npm install -g "$pkg"
 	as_agent "$cmd" --version >/dev/null 2>&1 || { echo "$cmd doesn't run after installing $pkg" >&2; exit 1; }

@@ -3,6 +3,7 @@
 // VM's lifecycle lock; the held-lock entry points below check that lock before acting.
 import { createInterface } from "node:readline";
 import * as leases from "./boxery-leases.mjs";
+import { copyBuildRecord } from "./build-info.mjs";
 import { reconcileAbandoned, supervise } from "./boxery-operations.mjs";
 import { restoreVm } from "./images.mjs";
 import { LeaseWorkflows } from "./lease-workflows.mjs";
@@ -74,7 +75,11 @@ export async function runLifecycle(rt, command, args) {
 		clearEdge: async (/** @type {string} */ name) => rt.clearEdge(nameOf(name)),
 		issueToken: (/** @type {string} */ name, /** @type {string} */ lease) => issueToken(rt, nameOf(name), leaseOf(lease)),
 		revokeToken: async (/** @type {string} */ name) => rt.deleteToken(nameOf(name)),
-		restore: (/** @type {string} */ name, /** @type {string} */ label) => restoreVm(rt.vms, nameOf(name), label, { quiet: true }),
+		/** @param {string} name @param {string} label */
+		async restore(name, label) {
+			await restoreVm(rt.vms, nameOf(name), label, { quiet: true });
+			copyBuildRecord(rt.conf, `${name}@${label}`, name); // back to the clean image's software
+		},
 		waitReady: async (/** @type {string} */ name) => rt.waitSsh(nameOf(name), await rt.vms.waitEndpoint(nameOf(name), { quiet: true }), Number(rt.env.BOXERY_SSH_WAIT_TRIES || 45)),
 		/** @param {string} name */
 		async stepClock(name) {

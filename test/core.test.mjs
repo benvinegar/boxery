@@ -88,18 +88,25 @@ test("guidance mentions the current VM and the local/VM split", () => {
 
 test("formatVms / formatGrants render the --json shapes", () => {
 	const vms = [
-		{ name: "a1", state: "running", ssh_addr: "10.0.0.2:22", disk_size: 40, disk_used: 1.04, lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [] },
+		{ name: "a1", state: "running", ssh_addr: "10.0.0.2:22", disk_size: 40, disk_used: 1.04, lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [], guest: { status: "current", reasons: [] } },
 		{ name: "pool-1", state: "running", ssh_addr: null, disk_size: null, disk_used: null, lease: { state: "leased", holder: "me@x", expires_at: 1 }, grants: [{ kind: "ssh-agent" }, { kind: "file", local: "/l/.env", remote: "/home/agent/project/.env" }] },
 		{ name: "x1", state: "running", ssh_addr: "127.0.0.1:22401", disk_size: 20, disk_used: null, tunnel: "up", lease: null, shape: "custom", desktop: true, grants: [] },
 	];
 	const lines = core.formatVms(vms).split("\n");
-	assert.match(lines[0], /^NAME +STATE +SSH +DISK +SHAPE +KIND +LEASE +GRANTS$/);
-	assert.match(lines[1], /^a1 +running +10\.0\.0\.2:22 +1\.0\/40GiB +large +headless +- +-$/, "DISK is used/size in GiB");
-	assert.match(lines[2], /^pool-1 +running +- +- +- +desktop +leased +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts)");
+	assert.match(lines[0], /^NAME +STATE +SSH +DISK +SHAPE +KIND +LEASE +GUEST +GRANTS$/);
+	assert.match(lines[1], /^a1 +running +10\.0\.0\.2:22 +1\.0\/40GiB +large +headless +- +current +-$/, "DISK is used/size in GiB");
+	assert.match(lines[2], /^pool-1 +running +- +- +- +desktop +leased +- +ssh-agent,file:\/home\/agent\/project\/\.env$/, "VMs without a recorded shape show -; without desktop: a desktop (older hosts); without guest: -");
+	assert.equal(lines.length, 4, "no note when nothing is outdated");
 	assert.match(lines[3], /^x1 +running +127\.0\.0\.1:22401 +20GiB +custom /, "only the size when usage is unknown");
 	assert.equal(core.formatVms([]), "(no VMs)");
 	const old = core.formatVms([{ name: "o1", state: "running", addr: "10.0.0.3", lease: { state: "FREE" }, grants: [] }]).split("\n");
-	assert.match(old[1], /^o1 +running +10\.0\.0\.3 +- +- +desktop +free +-$/, "hosts from before ssh_addr and lowercase lease states");
+	assert.match(old[1], /^o1 +running +10\.0\.0\.3 +- +- +desktop +free +-$/, "hosts from before ssh_addr, lowercase lease states and build records");
+	const stale = core.formatVms([{ name: "s1", state: "running", guest: { status: "outdated", reasons: ["layers changed", "reboot required"] } }]).split("\n");
+	assert.match(stale[1], /^s1 +running +.* outdated +-$/);
+	assert.equal(stale[2], "outdated guest software: s1 (layers changed, reboot required). Tell the user; they can update it with: boxery patch NAME");
+	assert.equal(core.formatSnaps("s1", [{ name: "one", created: "2026-10-01T10:00:00", size: "1MiB", age_days: 32, guest: { status: "outdated" } }, { name: "old", created: "x", age_days: null }]),
+		"one\t2026-10-01T10:00:00\t1MiB\t32d\toutdated\nold\tx\t-\t-\t-");
+	assert.equal(core.formatSnaps("s1", [{ name: "pre", created: "x", size: "1MiB" }]), "pre\tx\t1MiB", "hosts from before build records");
 	const exe = [
 		{ name: "e1", state: "running", ssh_addr: null, tunnel: "connecting", grants: [] },
 		{ name: "e2", state: "paused", ssh_addr: null, tunnel: "down", grants: [] },

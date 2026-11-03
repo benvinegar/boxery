@@ -55,6 +55,7 @@ const CLI_ONLY = {
 	pool: "host admin",
 	runners: "host admin: GitHub Actions runners on the pool, with a GitHub token that stays on the host",
 	pin: "which ssh host key a VM is trusted with is the user's decision (--from-guest trusts the network once)",
+	patch: "rewrites a VM's software and may restart it under running agents; the user's to run (vm_info list shows outdated VMs)",
 };
 
 function cliCommands() {

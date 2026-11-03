@@ -1180,20 +1180,21 @@ cmd_leases() { # [--json]   local leases
 	[ $json = 1 ] || [ $found = 1 ] || echo "(no leases)"
 }
 
-cmd_ls() { # [--json]
-	if [ "${1:-}" = --json ]; then ls_json; return; fi
-	[ -z "${1:-}" ] || die "usage: boxery ls [--json]"
-	out=$(h ls) || exit $?
+cmd_ls() { # [--json] [--refresh]
+	local json="" refresh=""
+	for a in "$@"; do case $a in --json) json=1 ;; --refresh) refresh=--refresh ;; *) die "usage: boxery ls [--json] [--refresh]" ;; esac; done
+	if [ -n "$json" ]; then ls_json $refresh; return; fi
+	out=$(h ls $refresh) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		n=${line%% *}
-		if [ "$n" = NAME ]; then printf '%-90s %s\n' "$line" GRANTS
-		else printf '%-90s %s\n' "$line" "$(grants_summary "$n")"; fi
+		if [ "$n" = NAME ]; then printf '%-100s %s\n' "$line" GRANTS
+		else printf '%-100s %s\n' "$line" "$(grants_summary "$n")"; fi
 	done
 }
 
 # The host prints one array element per line; add this machine's grants to each VM.
-ls_json() {
-	out=$(h ls --json) || exit $?
+ls_json() { # [--refresh]
+	out=$(h ls --json "$@") || exit $?
 	case $out in '['*) ;; *) die "host returned no JSON for 'ls --json' (update boxery-host on $HOST)" ;; esac
 	printf '%s\n' "$out" | while IFS= read -r line; do
 		case $line in
@@ -1205,6 +1206,24 @@ ls_json() {
 		*) printf '%s\n' "$line" ;;
 		esac
 	done
+}
+
+# Patching restarts a VM when its updates ask to: like start, the shared connection is stale afterwards
+# and pushed (tmpfs) grants are gone, so they are pushed again.
+cmd_patch() { # NAME|--all [--wait S]
+	local names n rc=0
+	case ${1:-} in
+	--all) names=$(h ls 2>/dev/null | awk 'NR > 1 && $2 == "running" { print $1 }') || exit $? ;;
+	*) need_vm "${1:-}"; names=$1 ;;
+	esac
+	for n in $names; do drop_master "$n"; done
+	h patch "$@" || rc=$?
+	for n in $names; do
+		valid_vm "$n" || continue
+		drop_master "$n"
+		if has_pushed_grants "$n"; then grants_apply "$n" --quiet || true; fi
+	done
+	return $rc
 }
 
 cmd_sessions() { # NAME [--json]
@@ -1352,7 +1371,12 @@ usage() {
 		                                --headless --layers github-runner: a GitHub Actions runner VM
 		build-base                      build the host's desktop base image (one-time, ~3 min)
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
-		ls [--json]                     list VMs (with their shape and grants)
+		ls [--json] [--refresh]         list VMs (with their shape, grants and guest software: GUEST is
+		                                  current, outdated or unknown; --refresh reads it from running VMs)
+		patch NAME|--all [--wait S]     update a VM's guest software to the host's image layers (security
+		                                  updates, browsers, agent CLIs; restarts it if they ask to). A pool
+		                                  VM must be free (--wait S for its lease to end); its clean image is
+		                                  captured again. Snapshots keep their old software
 		rm NAME                         destroy VM (revokes its LLM token)
 		start|stop NAME
 		resize NAME [--cpus N] [--mem MiB] [--disk GiB]
@@ -1464,6 +1488,7 @@ pin) need_host; need_vm "${1:-}"; case ${2:-} in '' | --from-guest) ;; *) die "u
 build-base) need_host; [ $# -eq 0 ] || die "usage: boxery build-base"; h build-base ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
+patch) need_host; cmd_patch "$@" ;;
 snaps) need_host; need_vm "${1:-}"; h snaps "$@" ;;
 proxy-log) need_host; h "$cmd" "$@" ;;
 version) cmd_version "$@" ;;

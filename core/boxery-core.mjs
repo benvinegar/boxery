@@ -38,11 +38,12 @@ export { q } from "./shell.mjs";
 /** vm_grant arguments. @typedef {{ spec?: unknown, readonly?: boolean, reason?: unknown }} GrantRequestArgs */
 /** @typedef {"accept" | "decline" | "cancel"} ApprovalAnswer */
 /** @typedef {(message: string) => Promise<ApprovalAnswer | string>} Approve */
-/** A VM as `boxery ls --json` lists it (docs/cli.md); `addr` is from hosts before ssh_addr. @typedef {{ name: string, state?: string | null, ssh_addr?: string | null, addr?: string | null, disk_size?: number | null, disk_used?: number | null, tunnel?: string | null, lease?: { state?: string, [k: string]: any } | null, shape?: string | null, cpus?: number | null, mem?: number | null, desktop?: boolean, grants?: Grant[] }} VmInfo */
+/** A VM as `boxery ls --json` lists it (docs/cli.md); `addr` is from hosts before ssh_addr. @typedef {{ name: string, state?: string | null, ssh_addr?: string | null, addr?: string | null, disk_size?: number | null, disk_used?: number | null, tunnel?: string | null, lease?: { state?: string, [k: string]: any } | null, shape?: string | null, cpus?: number | null, mem?: number | null, desktop?: boolean, grants?: Grant[], guest?: GuestInfo }} VmInfo */
+/** Guest software status from the host's build records (docs/cli.md, `guest`). @typedef {{ status: string, reasons?: string[], built_at?: string | null, age_days?: number | null, [k: string]: any }} GuestInfo */
 /** @typedef {{ cpus: number, mem: number, disk: number }} Shape */
 /** @typedef {{ default?: string, shapes: Record<string, Shape> }} Shapes */
-/** @typedef {{ name: string, created?: string | null, size?: string | number | null }} SnapInfo */
-/** @typedef {{ image: string, created?: string | null, size?: string | number | null }} ImageInfo */
+/** @typedef {{ name: string, created?: string | null, size?: string | number | null, age_days?: number | null, guest?: GuestInfo }} SnapInfo */
+/** @typedef {{ image: string, created?: string | null, size?: string | number | null, age_days?: number | null, guest?: GuestInfo }} ImageInfo */
 /** @typedef {{ version: string, describe?: string }} VersionInfo */
 /** @typedef {{ controller: VersionInfo, host: (VersionInfo & { name: string, install: string }) | null, behind?: boolean }} Versions */
 /** vm_manage arguments. @typedef {{ action?: string, vm?: string | null, snapshot?: string, to?: string | string[], shape?: string | null, from?: string, cpus?: number, mem?: number, disk?: number, headless?: boolean, [k: string]: unknown }} ManageArgs */
@@ -1029,16 +1030,20 @@ export function formatVersions({ controller, host, behind }) {
 	return lines.join("\n");
 }
 
+// Age in days and the guest software an image holds (hosts from before build records send neither).
+const fmtImageAge = (/** @type {SnapInfo | ImageInfo} */ s) => (s.age_days === undefined && s.guest === undefined ? ""
+	: `\t${s.age_days == null ? "-" : `${s.age_days}d`}\t${s.guest?.status ?? "-"}`);
+
 /** @param {string} name @param {SnapInfo[]} snaps */
 export function formatSnaps(name, snaps) {
 	if (!snaps.length) return `no snapshots of ${name}`;
-	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}`).join("\n");
+	return snaps.map((s) => `${s.name}\t${s.created ?? "-"}\t${s.size ?? "-"}${fmtImageAge(s)}`).join("\n");
 }
 
 /** @param {ImageInfo[]} images */
 export function formatImages(images) {
 	if (!images.length) return "no images (snapshots) on the host";
-	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}`).join("\n");
+	return images.map((i) => `${i.image}\t${i.created ?? "-"}\t${i.size ?? "-"}${fmtImageAge(i)}`).join("\n");
 }
 
 /** @param {unknown} s @returns {string} */
@@ -1068,9 +1073,15 @@ export function formatVms(vms) {
 	if (!vms.length) return "(no VMs)";
 	const kind = (/** @type {VmInfo} */ v) => (v.desktop === false ? "headless" : "desktop"); // no field: a host from before headless VMs
 	const lease = (/** @type {VmInfo} */ v) => v.lease?.state?.toLowerCase() ?? "-"; // hosts from before lowercase lease states
-	const rows = [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", "GRANTS"], ...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), fmtDisk(v), v.shape ?? "-", kind(v), lease(v), (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
+	const guest = vms.some((v) => v.guest) ? (/** @type {VmInfo} */ v) => [v.guest?.status ?? "-"] : () => []; // hosts from before build records: no column
+	const rows = [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", ...(vms.some((v) => v.guest) ? ["GUEST"] : []), "GRANTS"],
+		...vms.map((v) => [v.name, v.state ?? "-", fmtAddr(v), fmtDisk(v), v.shape ?? "-", kind(v), lease(v), ...guest(v), (v.grants ?? []).map(fmtGrant).join(",") || "-"])];
 	const w = rows[0].map((_, i) => Math.max(...rows.map((r) => String(r[i]).length)));
-	return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
+	const table = rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : String(c).padEnd(w[i]))).join("  ")).join("\n");
+	const outdated = vms.filter((v) => v.guest?.status === "outdated");
+	if (!outdated.length) return table;
+	// Patching restarts VMs and is the user's call: agents only point it out.
+	return `${table}\noutdated guest software: ${outdated.map((v) => `${v.name} (${(v.guest?.reasons ?? []).join(", ")})`).join("; ")}. Tell the user; they can update it with: boxery patch NAME`;
 }
 
 /** @param {string} name @param {Grant[]} grants */

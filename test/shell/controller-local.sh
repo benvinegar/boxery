@@ -45,8 +45,15 @@ grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key wi
 "$A" shapes --json | jq -e '.default == "standard" and .shapes.large.cpus == 8' >/dev/null && ok "shapes --json via controller" || bad "shapes: $("$A" shapes --json 2>&1)"
 if "$A" new w4 --shape 'x;id' >/dev/null 2>&1; then bad "invalid --shape accepted"; else ok "invalid --shape rejected by the controller"; fi
 "$A" new hc --headless >/dev/null 2>&1 && [ "$(cat "$tmp/vms/hc/from")" = stock ] && ok "new --headless passed to the host" || bad "new --headless"
-"$A" ls --json | grep '"name":"hc"' | grep -q '"desktop":false,"grants":' && ok "ls --json: desktop false, with grants" || bad "ls --json headless: $("$A" ls --json)"
+"$A" ls --json | grep '"name":"hc"' | grep '"desktop":false,' | grep -q ',"grants":\[' && ok "ls --json: desktop false, with grants" || bad "ls --json headless: $("$A" ls --json)"
 "$A" ls | grep -q '^hc .* headless ' && ok "ls shows KIND" || bad "ls KIND: $("$A" ls)"
+"$A" ls --refresh --json | jq -e 'map(select(.name == "hc"))[0] | .guest.status == "unknown" and (.grants | type) == "array"' >/dev/null && ok "ls --refresh --json: guest status, with grants" || bad "ls --refresh: $("$A" ls --refresh --json 2>&1)"
+"$A" ls --refresh 2>/dev/null | grep -q '^hc .* headless .* unknown  *-$' && ok "ls --refresh: GUEST before GRANTS" || bad "ls --refresh: $("$A" ls --refresh 2>&1)"
+if "$A" ls --bogus >/dev/null 2>&1; then bad "ls --bogus accepted"; else ok "ls rejects unknown flags"; fi
+for a in "" "x;id" "--wait"; do
+	# shellcheck disable=SC2086
+	if "$A" patch $a >/dev/null 2>&1; then bad "patch $a accepted"; else ok "patch ${a:-(nothing)}: refused"; fi
+done
 "$A" rm hc >/dev/null 2>&1 || true
 if "$A" shapes bogus >/dev/null 2>&1; then bad "shapes bogus accepted"; else ok "shapes rejects extra args"; fi
 "$A" rm w2 >/dev/null 2>&1; "$A" rm w3 >/dev/null 2>&1

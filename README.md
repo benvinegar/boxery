@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  Spin up and manage VMs across local, remote and sandbox providers from your agents.
+  Easiest way to give your coding agents VMs
 </p>
 
 <p align="center">

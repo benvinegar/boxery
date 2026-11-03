@@ -10,16 +10,18 @@ import path from "node:path";
 import * as leases from "./boxery-leases.mjs";
 import { runLifecycle } from "./boxery-lifecycle.mjs";
 import { resources, supervise } from "./boxery-operations.mjs";
+import { ageDays, buildRecord, guestChecker, refreshBuild } from "./build-info.mjs";
 import { knownHosts, pin } from "./hostkeys.mjs";
 import { revert, snap, snapRm, snapsLines } from "./images.mjs";
 import { edgeSet, poolAdd, poolLs, poolRm } from "./pool.mjs";
+import { parsePatchArgs, patchAll, patchVm, waitForLease } from "./patch.mjs";
 import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { runners } from "./runners.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { addKey, buildBase, init, profiles } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
 import { addVmShape, vmShapes } from "./shapes.mjs";
-import { fail, jsonArray, print, readFd, table, validName } from "./util.mjs";
+import { fail, jsonArray, log, print, readFd, table, validName } from "./util.mjs";
 import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
 /** @import { LeaseListEntry } from "./boxery-leases.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
@@ -47,7 +49,11 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
                             copy a VM (running or not) into new VMs with their own identity
                             (same size as SRC unless --shape or size flags are given)
   shapes [--json]           VM sizes (built-ins + ${conf}/shapes.json; * = default)
-  ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
+  ls [--json] [--refresh]   VMs; --refresh first reads each running VM's guest build record (GUEST column)
+  ip NAME | start NAME | stop NAME | rm NAME
+  patch NAME|--all [--wait S]
+                            update a VM's guest software to this host's image layers (restarts it if the
+                            updates ask to; a pool VM must be free, and its clean image is captured again)
   resize NAME [--cpus N] [--mem MiB] [--disk GiB]
                             change a VM's size; a running VM is restarted. Disk only grows
   snap NAME [SNAP] | snaps NAME [--json] | snap-rm NAME SNAP | revert NAME SNAP | images [--json]
@@ -83,9 +89,9 @@ async function backfillSize(rt, name) {
 	} catch { return null; } // one VM's size must not break the listing
 }
 /** The `ls --json` objects (docs/cli.md). Lease states are lowercase here, like VM states; the lease
- *  store's own states (FREE, LEASED, …) stay internal.
+ *  store's own states (FREE, LEASED, …) stay internal. refresh: read running VMs' build records first.
  *  @param {Runtime} rt */
-async function lsJson(rt) {
+async function lsJson(rt, refresh = false) {
 	/** @type {LeaseListEntry[]} */
 	let pool = [];
 	try { pool = leases.list(rt.db()); } catch { /* listing VMs must not depend on the lease store */ }
@@ -93,12 +99,18 @@ async function lsJson(rt) {
 	const sizes = /** @type {Record<string, ShapeRecord | null>} */ (vmShapes(rt.conf)), kinds = vmKinds(rt.conf);
 	const vms = await rt.vms.list();
 	await Promise.all(vms.filter((vm) => !sizes[vm.name]).map(async (vm) => { sizes[vm.name] = await backfillSize(rt, vm.name); }));
+	if (refresh) {
+		await Promise.all(vms.filter((vm) => ["running", "idle"].includes(vm.state)).map(async (vm) => {
+			try { await refreshBuild(rt, vm.name, await rt.vms.sshEndpoint(vm.name, { quiet: true })); } catch { /* unreachable: keep what's known */ }
+		}));
+	}
+	const guest = guestChecker(rt);
 	const nz = (/** @type {string} */ v) => (v === "" ? null : v);
 	return vms.map((vm) => {
 		const sz = sizes[vm.name];
 		return { name: vm.name, state: nz(vm.state), ssh_addr: nz(vm.ssh), disk_size: gib(vm.diskBytes) ?? sz?.disk ?? null, disk_used: gib(vm.diskUsedBytes),
 			tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null, shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null,
-			desktop: kinds[vm.name] !== "headless" };
+			desktop: kinds[vm.name] !== "headless", guest: guest(buildRecord(rt.conf, vm.name)) };
 	});
 }
 /** @typedef {Awaited<ReturnType<typeof lsJson>>[number]} LsEntry */
@@ -108,12 +120,17 @@ const fmtSsh = (/** @type {LsEntry} */ v) => (v.state === "running" && v.tunnel 
 const fmtDisk = (/** @type {LsEntry} */ v) => (v.disk_size == null && v.disk_used == null ? "-"
 	: `${v.disk_used == null ? "" : `${v.disk_used.toFixed(1)}/`}${v.disk_size ?? "?"}GiB`);
 /** @param {Runtime} rt @param {string[]} args */
-async function ls(rt, [arg]) {
-	const vms = await lsJson(rt);
-	if (arg === "--json") return print(jsonArray(vms));
-	if (arg) fail("usage: ls [--json]");
-	print(table([16, 10, 18, 12, 10, 9], [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE"],
-		...vms.map((v) => [v.name, v.state ?? "-", fmtSsh(v), fmtDisk(v), v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-"])]));
+async function ls(rt, args) {
+	if (args.some((a) => !["--json", "--refresh"].includes(a))) fail("usage: ls [--json] [--refresh]");
+	const refresh = args.includes("--refresh");
+	const vms = await lsJson(rt, refresh);
+	if (args.includes("--json")) return print(jsonArray(vms));
+	print(table([16, 10, 18, 12, 10, 9, 10], [["NAME", "STATE", "SSH", "DISK", "SHAPE", "KIND", "LEASE", "GUEST"],
+		...vms.map((v) => [v.name, v.state ?? "-", fmtSsh(v), fmtDisk(v), v.shape ?? "-", v.desktop ? "desktop" : "headless", v.lease?.state ?? "-", v.guest.status])]));
+	const outdated = vms.filter((v) => v.guest.status === "outdated");
+	if (outdated.length) log(`outdated guest software: ${outdated.map((v) => `${v.name} (${v.guest.reasons.join(", ")})`).join("; ")}. Update with: boxery patch NAME|--all`);
+	const unchecked = vms.filter((v) => v.guest.checked_at == null && ["running", "idle"].includes(v.state ?? ""));
+	if (unchecked.length && !refresh) log(`guest software not checked yet: ${unchecked.map((v) => v.name).join(", ")} (ls --refresh reads it)`);
 }
 
 /** @param {Runtime} rt @param {string[]} args */
@@ -125,23 +142,32 @@ function shapes(rt, [arg]) {
 		...Object.entries(s.shapes).map(([n, v]) => [n + (n === s.default ? " *" : ""), v.cpus, v.mem, v.disk])]));
 }
 
+// An image's age (days since it was captured), and the guest software it holds (its VM's at capture).
+const fmtAge = (/** @type {number | null} */ d) => (d == null ? "-" : `${d}d`);
+/** @param {Runtime} rt */
+const imageGuest = (rt) => {
+	const guest = guestChecker(rt);
+	return (/** @type {string} */ image) => guest(buildRecord(rt.conf, image), { image: true });
+};
+
 /** @param {Runtime} rt @param {string[]} args */
 async function snaps(rt, [name, arg]) {
 	validName(name);
-	if (arg === "--json") {
-		return print(jsonArray((await snapsLines(rt, name)).map(([n, created, size]) =>
-			({ name: n, created, size: size === "-" ? null : size }))));
-	}
-	if (arg) fail("usage: snaps NAME [--json]");
-	for (const l of await snapsLines(rt, name)) print(l.join("\t"));
+	if (arg && arg !== "--json") fail("usage: snaps NAME [--json]");
+	const guest = imageGuest(rt);
+	const rows = (await snapsLines(rt, name)).map(([n, created, size]) => ({ name: n, created, size: size === "-" ? null : size, age_days: ageDays(created), guest: guest(`${name}@${n}`) }));
+	if (arg === "--json") return print(jsonArray(rows));
+	for (const r of rows) print([r.name, r.created, r.size ?? "-", fmtAge(r.age_days), r.guest.status].join("\t"));
 }
 
 /** @param {Runtime} rt @param {string[]} args */
 async function images(rt, [arg]) {
-	const imgs = await rt.vms.images();
-	if (arg === "--json") return print(jsonArray(imgs.map((i) => ({ image: i.image, created: i.created || null, size: i.size && i.size !== "-" ? i.size : null }))));
-	if (arg) fail("usage: images [--json]");
-	print(table([40, 20], [["IMAGE", "CREATED", "SIZE"], ...imgs.map((i) => [i.image, i.created, i.size])]));
+	if (arg && arg !== "--json") fail("usage: images [--json]");
+	const guest = imageGuest(rt);
+	const imgs = (await rt.vms.images()).map((i) => ({ image: i.image, created: i.created || null, size: i.size && i.size !== "-" ? i.size : null,
+		age_days: ageDays(i.created), guest: guest(i.image) }));
+	if (arg === "--json") return print(jsonArray(imgs));
+	print(table([40, 20, 10, 5], [["IMAGE", "CREATED", "SIZE", "AGE", "GUEST"], ...imgs.map((i) => [i.image, i.created ?? "", i.size ?? "-", fmtAge(i.age_days), i.guest.status])]));
 }
 
 /** @param {Runtime} rt @param {string[]} args */
@@ -169,6 +195,7 @@ const COMMANDS = {
 	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
 	ls, list: ls, shapes, snaps, images, ip, "known-hosts": knownHosts,
 	pool: (rt, [sub = "ls", ...args]) => (sub === "ls" ? poolLs(rt, args) : fail(POOL_USAGE)),
+	patch: patchAll, // patch NAME runs supervised (MUTATING); --all supervises one VM at a time
 	"proxy-log": proxyLog,
 	backend: (rt) => print(rt.backend),
 	acquire: lifecycle("acquire"), renew: lifecycle("renew"), release: lifecycle("release"),
@@ -179,7 +206,7 @@ const COMMANDS = {
 // Run in a supervised worker holding the VMs named by boxery-operations.mjs resources().
 /** @type {Record<string, Command>} */
 const MUTATING = {
-	new: newVm, fork, start, stop, resize, rm, delete: rm, snap, "snap-rm": snapRm, revert, "edge-set": edgeSet, pin,
+	new: newVm, fork, start, stop, resize, rm, delete: rm, snap, "snap-rm": snapRm, revert, "edge-set": edgeSet, pin, patch: patchVm,
 	pool: (rt, [sub, ...args]) => (sub === "add" ? poolAdd(rt, args) : sub === "rm" ? poolRm(rt, args) : fail(POOL_USAGE)),
 };
 // Held-lock callbacks: the lease runtime and drift repair run these under a VM's lock (`__call`).
@@ -192,7 +219,8 @@ const CALLBACKS = {
 	lease_reset: lifecycle("reset"), // takes the lock itself
 	_reconcile_vm: (rt, [name]) => reconcileVm(rt, name),
 };
-const supervised = (/** @type {string} */ command, /** @type {string[]} */ args) => Object.hasOwn(MUTATING, command) && (command !== "pool" || ["add", "rm"].includes(args[0]));
+const supervised = (/** @type {string} */ command, /** @type {string[]} */ args) => Object.hasOwn(MUTATING, command) && (command !== "pool" || ["add", "rm"].includes(args[0]))
+	&& (command !== "patch" || !args.includes("--all"));
 
 // A worker does nothing until its supervisor has committed the worker's identity (fd 3 gets a line).
 // A supervisor that dies first closes the pipe without authorizing side effects.
@@ -223,6 +251,7 @@ async function main(argv) {
 		}
 		if (command === "__recover") return await replayIntents(rt);
 		if (supervised(command, args)) {
+			if (command === "patch") { const { name, wait } = parsePatchArgs(args); if (wait) await waitForLease(rt, name, wait); }
 			const names = resources(command, args);
 			process.exitCode = await supervise({ conf: rt.conf, names, command, args: ["__dispatch", command, ...args], env: rt.operationEnv() });
 			return;
