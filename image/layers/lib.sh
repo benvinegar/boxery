@@ -7,6 +7,11 @@ pkgs() {
 	local p missing=()
 	for p in "$@"; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || missing+=("$p"); done
 	((${#missing[@]})) || return 0
-	if [ ! -e /run/boxery-apt-updated ]; then apt-get update -qq && touch /run/boxery-apt-updated; fi
+	apt_update_once
 	apt-get install -y -q --no-install-recommends "${missing[@]}"
+}
+
+# One `apt-get update` per provisioning run (/run is a tmpfs: the next boot starts over).
+apt_update_once() {
+	[ -e /run/boxery-apt-updated ] || { apt-get update -qq && touch /run/boxery-apt-updated; }
 }

@@ -12,6 +12,13 @@ export DEBIAN_FRONTEND=noninteractive
 id agent >/dev/null 2>&1 || useradd -m -s /bin/bash -c "boxery agent" -G sudo,adm agent
 echo "agent ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-boxery-agent; chmod 440 /etc/sudoers.d/90-boxery-agent
 
+# Security updates (kernel included) before anything else: the starting image can be months old (the cloud
+# image is downloaded once and cached; Lima's template and exeuntu lag too), and pkgs only adds what's
+# missing. A desktop base's clones boot the new kernel; a headless VM runs it from its first restart.
+# The lock timeout waits out unattended-upgrades, which a cloud image may start during first boot.
+apt_update_once
+apt-get -y -q -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade
+
 # socat: the guest end of the LLM proxy. qemu-guest-agent: libvirt freezes filesystems for snapshots.
 pkgs socat tmux git curl ca-certificates qemu-guest-agent
 
@@ -51,8 +58,10 @@ MaxSessions 64
 MaxStartups 64:30:128
 EOF
 
-# Reduce accidental persistence of secrets (see ARCHITECTURE.md, Secrets).
-echo 'kernel.core_pattern=|/bin/false' >/etc/sysctl.d/60-boxery.conf
+# Reduce accidental persistence of secrets (see ARCHITECTURE.md, Secrets). No MPTCP: nothing in a boxery VM
+# needs it, and an MPTCP listener is the known path to CVE-2026-98432 (TCP handshake use-after-free, unfixed
+# in Ubuntu 24.04's 6.8 kernel as of 2026-11-02).
+printf '%s\n' 'kernel.core_pattern=|/bin/false' 'net.mptcp.enabled=0' >/etc/sysctl.d/60-boxery.conf
 sysctl -q -p /etc/sysctl.d/60-boxery.conf 2>/dev/null || true   # not allowed in some containers/VMs; applies at next boot
 systemctl disable --now apport.service 2>/dev/null || true
 

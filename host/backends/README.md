@@ -71,7 +71,7 @@ What boxery adds to the starting image is in three layers, `image/layers/*.sh` (
 
 | Layer | What | Notes |
 |---|---|---|
-| `plumbing` | the `agent` user + sudoers, `boxery-llm.service` (socat bridge to the host LLM proxy; keys stay on the host), sshd `MaxSessions`, core-dump sysctl, cloud-init default user, `/etc/profile.d/boxery.sh`, tmux config, `socat`, `qemu-guest-agent` | ~10 s |
+| `plumbing` | the `agent` user + sudoers, `boxery-llm.service` (socat bridge to the host LLM proxy; keys stay on the host), security updates (`apt-get full-upgrade`, kernel included), sshd `MaxSessions`, sysctls (no core dumps, no MPTCP), cloud-init default user, `/etc/profile.d/boxery.sh`, tmux config, `socat`, `qemu-guest-agent` | ~10 s, plus the upgrade: up to a few minutes on an old starting image |
 | `devtools` | git (from the git-core PPA on Ubuntu), build tools, python3, jq, ripgrep, fd, node 24, `pi`, `opencode` | keeps what the image ships: a package only when missing (except git, upgraded from the PPA: Ubuntu 24.04's is 2.43), node only when the image's can't run the job helper (needs 22.18+), an agent CLI only when `agent` can't run the image's own (exeuntu's `pi` links into exedev's home, so it's replaced; see #30). ~30 s |
 | `desktop` | XFCE on `:1`, TigerVNC (password required: `boxery-vnc-password`) + noVNC, Firefox, Chrome (Playwright Chromium on arm64) + its AppArmor profile, `playwright-core`, xdotool, ImageMagick, the agent's desktop user services | ~2 min; the only reason for a built base |
 
