@@ -39,8 +39,8 @@ function scaledSleep(events) {
  *  none free; after the list, none). jobPolls: status polls a started runner stays "running".
  *  stopAfterReleases: stop the manager after this many releases.
  * @param {{ config?: any, leases?: any[], jobPolls?: number, held?: any[], list?: any[], saved?: any, initial?: Record<string, string>,
- *   stopAfterReleases?: number, timing?: any, github?: any }} [opts] */
-function fixture({ config = CONFIG, leases = [{ vm: "ci-1", lease: "l-1" }], jobPolls = 2, held = [], list = [], saved = {}, initial = {}, stopAfterReleases = 1, timing = {}, github = {} } = {}) {
+ *   stopAfterReleases?: number, timing?: any, github?: any, once?: boolean }} [opts] */
+function fixture({ config = CONFIG, leases = [{ vm: "ci-1", lease: "l-1" }], jobPolls = 2, held = [], list = [], saved = {}, initial = {}, stopAfterReleases = 1, timing = {}, github = {}, once = false } = {}) {
 	const events = [], logs = [];
 	const queue = [...leases];
 	/** @type {Record<string, { started: boolean, polls: number }>} */
@@ -80,7 +80,7 @@ function fixture({ config = CONFIG, leases = [{ vm: "ci-1", lease: "l-1" }], job
 	};
 	manager = new R.RunnerManager({
 		config, github: gh, pool, guest, arch: "x64", log: (m) => logs.push(m), sleep: scaledSleep(events), random: () => "abc123",
-		savedRunners: saved, timing,
+		savedRunners: saved, timing, once,
 	});
 	const kinds = (...want) => events.filter((e) => want.includes(e[0]));
 	return { manager, events, logs, kinds, vm };
@@ -218,6 +218,80 @@ it("a restart (stop without release) leaves every lease for the next manager", a
 	assert.ok(f.logs.some((l) => /ci-1: restarting; left for the next manager/.test(l)));
 });
 
+// ---------------------------------------------------------------- local runners (runOnce, `runners __once`)
+const LOCAL = { ...CONFIG, vms: ["ci-1", "ci-2"], labels: [], prefix: "boxery-local" };
+const tick = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
+
+it("a local runner: lease → registration (by the controller) → runner → exit → release, once", async () => {
+	const f = fixture({ config: LOCAL, once: true, stopAfterReleases: 99 });
+	assert.deepEqual(await f.manager.runOnce(), { outcome: "exited", vm: "ci-1" });
+	assert.deepEqual(f.kinds("acquire", "generate", "start", "release").map((e) => e[0]), ["acquire", "generate", "start", "release"]);
+	const gen = f.kinds("generate")[0][1];
+	assert.equal(gen.vm, "ci-1", "the controller is told which VM");
+	assert.equal(gen.name, "boxery-local-ci-1-abc123");
+	assert.deepEqual(gen.labels, ["self-hosted", "linux", "x64", "boxery"]);
+	assert.equal(unb64(unb64(f.kinds("start")[0][2])[".runner"]).DisableUpdate, true, "self-update off, as for host runners");
+	assert.deepEqual(f.kinds("get", "list"), [], "no busy check, no registration cleanup");
+	assert.ok(f.logs.every((l) => !l.startsWith("runners: ")), "its own log lines");
+});
+
+it("a local runner skips a VM without the runner layer, and never waits for a free one", async () => {
+	const f = fixture({ config: LOCAL, once: true, leases: [{ vm: "ci-1", lease: "l-1" }, null], initial: { "ci-1": "missing" }, stopAfterReleases: 99 });
+	assert.deepEqual(await f.manager.runOnce(), { outcome: "busy", vm: null });
+	assert.deepEqual(f.kinds("acquire").map((e) => e[1]), [["ci-1", "ci-2"], ["ci-2"]]);
+	assert.deepEqual(f.kinds("release").map((e) => e[1]), ["l-1"]);
+	assert.ok(!f.events.some((e) => e[0] === "sleep" && e[1] !== RENEW_SLEEP), "no back-off");
+	const g = fixture({ config: { ...LOCAL, vms: ["ci-1"] }, once: true, initial: { "ci-1": "missing" }, stopAfterReleases: 99 });
+	assert.deepEqual(await g.manager.runOnce(), { outcome: "unusable", vm: null });
+});
+
+it("a local runner stopped while it waits (Ctrl-C, the controller gone): runner stopped, VM released, no busy check", async () => {
+	const f = fixture({ config: LOCAL, once: true, jobPolls: 1000, stopAfterReleases: 99 });
+	const running = f.manager.runOnce();
+	while (!f.kinds("status").some((e) => e[2] === "running")) await tick(5);
+	f.manager.stop();
+	assert.deepEqual(await running, { outcome: "stopped", vm: "ci-1" });
+	assert.deepEqual(f.kinds("get"), [], "a local runner's VM is never left for a next manager");
+	assert.deepEqual(f.kinds("stop", "release").map((e) => e[0]), ["stop", "release"]);
+});
+
+it("a local runner whose registration fails: no retry, no other VM, the VM released", async () => {
+	const f = fixture({ config: LOCAL, once: true, leases: [{ vm: "ci-1", lease: "l-1" }, { vm: "ci-2", lease: "l-2" }], stopAfterReleases: 99,
+		github: { generateJitConfig: async () => { throw new R.GitHubError("the controller is gone"); } } });
+	assert.deepEqual(await f.manager.runOnce(), { outcome: "stopped", vm: "ci-1" });
+	assert.equal(f.kinds("acquire").length, 1);
+	assert.deepEqual(f.kinds("start"), []);
+	assert.deepEqual(f.kinds("release").map((e) => e[1]), ["l-1"]);
+	assert.ok(f.logs.some((l) => /ci-1: the controller is gone/.test(l)));
+});
+
+it("controllerLink: the first line is the runner config, later lines are heartbeats; EOF or silence means gone", async () => {
+	const { PassThrough } = await import("node:stream");
+	/** @type {string[]} */
+	const gone = [];
+	const a = new PassThrough();
+	const link = R.controllerLink(a, 80, (why) => gone.push(why));
+	a.write("\n"); // a heartbeat before the config
+	a.write("42 ZW5j");
+	await tick(50);
+	a.write("Yw==\n\n"); // the rest of the line, then a heartbeat: never 80 ms of silence
+	assert.equal(await link.jit, "42 ZW5jYw==");
+	await tick(50); a.write("\n"); await tick(50);
+	assert.deepEqual(gone, []);
+	a.end();
+	await tick(10);
+	assert.deepEqual(gone, ["the controller is gone"]);
+	link.close();
+
+	const quiet = new PassThrough();
+	/** @type {string[]} */
+	const gone2 = [];
+	const link2 = R.controllerLink(quiet, 40, (why) => gone2.push(why));
+	await assert.rejects(link2.jit, /no word from the controller/);
+	assert.equal(gone2.length, 1);
+	link2.close();
+});
+
 // ---------------------------------------------------------------- pure helpers
 it("disableUpdates sets DisableUpdate in .runner (any case, BOM), and passes on configs it doesn't know", () => {
 	const runner = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify({ AgentName: "a", disableUpdate: false }))]).toString("base64");
@@ -239,6 +313,10 @@ it("checkConfig: one of repo/org, runner VMs, count ≤ VMs, safe labels, https 
 		[{ repo: "o/r", vms: ["ci-1"], api: "http://github.example.com", prefix: "p" }, /--api/], [{ repo: "o/r", vms: ["ci-1"], prefix: "Bad!" }, /--prefix/],
 	])) assert.match(R.checkConfig(bad), why);
 	assert.equal(R.defaultPrefix(null, "Build-Box.example.com"), "boxery-build-box");
+	// boxery-local-… names are local runners': no host runner prefix may produce them.
+	assert.equal(R.defaultPrefix(null, "local"), "boxery-host-local");
+	assert.equal(R.defaultPrefix(null, "localhost"), "boxery-localhost");
+	for (const p of ["boxery-local", "boxery-local-x"]) assert.match(R.checkConfig({ repo: "o/r", vms: ["ci-1"], prefix: p }), /local runners/);
 	assert.equal(R.defaultPrefix("ci", "h"), "boxery-h-ci");
 	assert.ok(R.defaultPrefix(null, "x".repeat(60)).length <= 24);
 	assert.deepEqual(R.runnerLabels(["Linux", "gpu", "GPU"], "arm64"), ["self-hosted", "linux", "arm64", "boxery", "gpu"]);
@@ -462,5 +540,41 @@ it("end to end: boxery-host runners run serves jobs on a pool VM, survives a cra
 			assert.ok(!out.includes(jit), "a log carries a JIT config");
 		}
 		assert.ok(gh.requests.every((r) => !JSON.stringify(r.body ?? "").includes(TOKEN) && !r.url.includes(TOKEN)));
+	} finally { db.close(); gh.server.close(); }
+});
+
+it("end to end: the host manager leaves local runners alone (their leases aren't adopted or released, their registrations not deleted)", async () => {
+	const gh = await stubGitHub({
+		"GET /repos/o/r/actions/runners": () => [200, { total_count: 2, runners: [
+			{ id: 77, name: "boxery-local-ci-2-aaaaaa", status: "offline", busy: false }, // a local runner's, just registered
+			{ id: 99, name: "boxery-ci-9-bbbbbb", status: "offline", busy: false }, // the manager's own, stale
+		] }],
+		"POST /repos/o/r/actions/runners/generate-jitconfig": (_req, body) => [201, { runner: { id: 101, name: body.name }, encoded_jit_config: jitConfig(body.name) }],
+		"GET /repos/o/r/actions/runners/:id": () => [200, { id: 0, busy: false, status: "online" }],
+		"DELETE /repos/o/r/actions/runners/:id": () => [204, null],
+	});
+	const db = L.open(path.join(conf, "leases.db"));
+	try {
+		for (const n of ["ci-1", "ci-2"]) { await ok(["new", n]); await ok(["pool", "add", n]); }
+		// A local runner (`boxery runners once`) holds ci-2, and its runner runs: what the manager would adopt, were it its own.
+		const [, lease] = (await ok(["acquire", "--holder", R.LOCAL_HOLDER, "--ttl", "600", "--only", "ci-2"], `${KEY}\n`)).trim().split(" ");
+		mkdirSync(path.join(vms, "ci-2", "home"), { recursive: true });
+		writeFileSync(path.join(vms, "ci-2", "home", ".runner-started"), "");
+		// prefix "boxery": "boxery-local-…" starts with "boxery-", and still isn't the manager's to delete.
+		await ok(["runners", "config", "--repo", "o/r", "--vms", "ci-1,ci-2", "--api", gh.api, "--prefix", "boxery", "--ttl", "60"]);
+		await ok(["runners", "token"], `${TOKEN}\n`);
+		const m = run(["runners", "run"]);
+		await until(() => existsSync(path.join(vms, "ci-1", "home", ".runner-jit")), "the manager's runner on ci-1");
+		assert.deepEqual(gh.requests.filter((r) => r.method === "DELETE").map((r) => r.url), ["/repos/o/r/actions/runners/99"]);
+		assert.doesNotMatch(m.output(), /ci-2: |ci-2 (leased|reset)/, "the manager never adopted, released or reset ci-2");
+		writeFileSync(path.join(conf, R.STOP_FILE), "stop\n"); // `runners stop`: give back what is idle
+		m.kill("SIGTERM");
+		assert.equal((await m.result).code, 0);
+		const row = L.get(db, "ci-2");
+		assert.deepEqual([row?.state, row?.holder, row?.lease_id], ["LEASED", R.LOCAL_HOLDER, lease], "the local runner's lease is as it was");
+		assert.equal(L.get(db, "ci-1")?.state, "FREE");
+		const status = JSON.parse(await ok(["runners", "status", "--json"]));
+		assert.deepEqual(status.local_runners.map((/** @type {any} */ v) => [v.name, v.lease]), [["ci-2", "leased"]]);
+		assert.deepEqual(status.vms_leased, []);
 	} finally { db.close(); gh.server.close(); }
 });
