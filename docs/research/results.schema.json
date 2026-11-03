@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/modem-dev/boxery/blob/master/docs/research/results.schema.json",
+  "title": "boxery research finding",
+  "description": "One study's raw runs, the environments they ran in, and what we concluded. Every finding under docs/research/<id>/results.json follows this shape.",
+  "type": "object",
+  "required": ["schema_version", "id", "title", "date", "question", "answer", "subject", "host", "environments", "runs", "summary", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": 1 },
+    "id": {
+      "description": "Matches the folder name: the UTC date the study finished, then a short slug.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}-[a-z0-9-]+$"
+    },
+    "title": { "type": "string" },
+    "date": { "type": "string", "format": "date" },
+    "period": {
+      "description": "When the first and last kept runs happened, in UTC.",
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" }
+      }
+    },
+    "question": { "type": "string" },
+    "answer": { "type": "string" },
+    "subject": {
+      "description": "What was measured: a public repo at an exact commit, and the command that was timed.",
+      "type": "object",
+      "required": ["name", "repo", "commit", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "repo": { "type": "string", "format": "uri" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "patch": {
+          "description": "A patch in this finding's folder, applied on top of the commit for some environments (see each environment's `tree`).",
+          "type": ["string", "null"]
+        },
+        "command": { "type": "string" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tests": { "description": "How many tests the suite has.", "type": "integer" },
+        "notes": { "type": "string" }
+      }
+    },
+    "host": { "$ref": "#/$defs/machine" },
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/environment" }
+    },
+    "runs": {
+      "description": "Every run, including the ones we threw out. Throw-outs have valid: false and say why.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/run" }
+    },
+    "summary": {
+      "description": "Means of the valid runs, one row per environment and setting. Derived from runs.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/summaryRow" }
+    },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "caveats": { "type": "array", "items": { "type": "string" } },
+    "artifacts": {
+      "description": "Files in this finding's folder, by role.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "seconds": { "type": "number", "minimum": 0 },
+    "machine": {
+      "description": "Hardware and OS, without host names, user names, serial numbers or paths. scripts/machine-info.sh prints the first fields.",
+      "type": "object",
+      "required": ["chip", "cpu_cores", "memory_gib", "os"],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "chip": { "type": "string" },
+        "cpu_cores": { "type": "integer" },
+        "cpu_core_groups": {
+          "description": "Cores per performance level, fastest first, where the OS reports them.",
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "memory_gib": { "type": "number" },
+        "os": { "type": "string" },
+        "kernel": { "type": "string" },
+        "arch": { "type": "string" },
+        "power": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["id", "label", "kind", "boxery", "tree"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "label": { "type": "string" },
+        "kind": { "enum": ["metal", "vm", "container"] },
+        "boxery": { "description": "True when boxery created and sized this VM.", "type": "boolean" },
+        "runtime": { "description": "What ran it, with versions.", "type": "string" },
+        "guest": { "description": "The guest OS and kernel, for a VM or container.", "type": "string" },
+        "cpus": { "description": "CPUs the workload could see (nproc).", "type": "integer" },
+        "memory_gib": { "description": "Memory the workload could use.", "type": "number" },
+        "limits": { "description": "How the CPUs and memory were limited, as passed to the tool.", "type": "string" },
+        "repo_location": { "description": "Where the checkout lived, and how it got there.", "type": "string" },
+        "tree": { "description": "clean: the commit as is. patched: the commit plus subject.patch.", "enum": ["clean", "patched"] },
+        "tools": { "type": "object", "additionalProperties": { "type": "string" } },
+        "notes": { "type": "string" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["env", "run", "real_s", "user_s", "sys_s", "valid"],
+      "additionalProperties": false,
+      "properties": {
+        "env": { "description": "An environment id.", "type": "string" },
+        "setting": { "description": "What was varied within the environment, such as a shard count.", "type": "string" },
+        "run": { "type": "integer", "minimum": 1 },
+        "ended_at": { "type": "string", "format": "date-time" },
+        "real_s": { "$ref": "#/$defs/seconds" },
+        "user_s": { "$ref": "#/$defs/seconds" },
+        "sys_s": { "$ref": "#/$defs/seconds" },
+        "tests": {
+          "type": "object",
+          "required": ["pass", "skip", "fail"],
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "type": "integer" },
+            "skip": { "type": "integer" },
+            "fail": { "type": "integer" }
+          }
+        },
+        "valid": { "type": "boolean" },
+        "note": { "type": "string" }
+      }
+    },
+    "summaryRow": {
+      "type": "object",
+      "required": ["env", "runs", "real_s", "user_s", "sys_s"],
+      "additionalProperties": false,
+      "properties": {
+        "env": { "type": "string" },
+        "setting": { "type": "string" },
+        "runs": { "description": "How many valid runs the means cover.", "type": "integer", "minimum": 1 },
+        "real_s": { "$ref": "#/$defs/seconds" },
+        "real_range_s": { "type": "array", "items": { "$ref": "#/$defs/seconds" }, "minItems": 2, "maxItems": 2 },
+        "user_s": { "$ref": "#/$defs/seconds" },
+        "sys_s": { "$ref": "#/$defs/seconds" },
+        "kernel_share": { "description": "sys / (user + sys).", "type": "number", "minimum": 0, "maximum": 1 },
+        "vs_metal": { "description": "Metal real_s divided by this real_s, at the same setting.", "type": "number" }
+      }
+    }
+  }
+}

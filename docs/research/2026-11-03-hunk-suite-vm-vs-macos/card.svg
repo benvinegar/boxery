@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1125" width="2000" height="1125" role="img" aria-label="hunk's 5,211-test suite on one M5 Max Mac: 112 s on macOS, 84 s in a 2 CPU · 4 GB boxery VM and 86 s in Docker; 81 s in a 4 CPU · 8 GB boxery VM and 86 s in Docker; 78 s in a 8 CPU · 16 GB boxery VM and 80 s in Docker">
+  <defs><pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse" x="8" y="2.5"><circle cx="16" cy="16" r="1.6" fill="#F1EFE8"/></pattern></defs>
+  <rect width="2000" height="1125" fill="#2C2C2A"/>
+  <rect width="2000" height="1125" fill="url(#dots)" opacity="0.07"/>
+  <rect x="0" y="1113" width="1000" height="12" fill="#1D9E75"/>
+  <rect x="1000" y="1113" width="1000" height="12" fill="#0F6E56"/>
+
+  <svg x="104" y="84" width="241" height="64" viewBox="0 0 241 64"><polygon points="32,5 55.38,18.5 55.38,45.5 32,59 8.62,45.5 8.62,18.5" fill="none" stroke="#F1EFE8" stroke-width="4" stroke-linejoin="round"/><polygon points="32,24.07 44.12,31.07 32,38.07 19.88,31.07" fill="#1D9E75"/><polygon points="19.88,31.07 32,38.07 32,52.07 19.88,45.07" fill="#F1EFE8"/><polygon points="32,38.07 44.12,31.07 44.12,45.07 32,52.07" fill="#0F6E56"/><path fill="#F1EFE8" transform="translate(78 45) scale(0.047273)" d="M350 10Q292 10 253.0 -19.0Q214 -48 199 -100V0H77V-730H202V-576L198 -450Q214 -502 253.5 -531.0Q293 -560 350 -560Q431 -560 480.0 -503.0Q529 -446 529 -349V-200Q529 -104 479.5 -47.0Q430 10 350 10ZM303 -98Q351 -98 377.5 -124.0Q404 -150 404 -204V-346Q404 -400 377.5 -426.0Q351 -452 303 -452Q255 -452 228.5 -423.0Q202 -394 202 -341V-209Q202 -156 228.5 -127.0Q255 -98 303 -98ZM860 9Q754 9 692.0 -50.5Q630 -110 630 -211V-339Q630 -441 692.0 -500.0Q754 -559 860 -559Q966 -559 1028.0 -500.0Q1090 -441 1090 -339V-211Q1090 -110 1028.0 -50.5Q966 9 860 9ZM860 -100Q910 -100 937.5 -127.5Q965 -155 965 -207V-343Q965 -395 937.5 -422.5Q910 -450 860 -450Q810 -450 782.5 -422.5Q755 -395 755 -343V-207Q755 -155 782.5 -127.5Q810 -100 860 -100ZM1156 0 1348 -284 1169 -550H1310L1395 -415Q1403 -403 1410.0 -388.0Q1417 -373 1420 -364Q1424 -373 1430.5 -388.0Q1437 -403 1445 -415L1530 -550H1672L1493 -284L1684 0H1542L1447 -151Q1439 -163 1431.5 -178.5Q1424 -194 1420 -203Q1416 -194 1409.0 -178.5Q1402 -163 1394 -151L1298 0ZM1981 10Q1911 10 1859.0 -17.0Q1807 -44 1778.5 -93.5Q1750 -143 1750 -210V-340Q1750 -407 1778.5 -456.5Q1807 -506 1859.0 -533.0Q1911 -560 1981 -560Q2050 -560 2101.5 -533.0Q2153 -506 2181.5 -457.5Q2210 -409 2210 -344V-244H1870V-206Q1870 -150 1899.0 -121.5Q1928 -93 1981 -93Q2020 -93 2047.5 -106.5Q2075 -120 2080 -146H2204Q2191 -75 2130.0 -32.5Q2069 10 1981 10ZM1870 -344V-325L2090 -326V-345Q2090 -402 2062.0 -433.0Q2034 -464 1981 -464Q1926 -464 1898.0 -432.5Q1870 -401 1870 -344ZM2337 0V-550H2459V-443Q2469 -497 2508.5 -528.5Q2548 -560 2611 -560Q2695 -560 2742.0 -506.0Q2789 -452 2789 -355V-303H2664V-349Q2664 -399 2638.0 -425.5Q2612 -452 2564 -452Q2514 -452 2488.0 -422.0Q2462 -392 2462 -337V0ZM2965 180 3043 -30 2836 -550H2968L3074 -269Q3083 -244 3092.0 -214.5Q3101 -185 3105 -160Q3108 -185 3116.5 -214.5Q3125 -244 3134 -269L3232 -550H3364L3096 180Z"/></svg>
+  <text x="1880" y="130" text-anchor="end" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="30" fill="#888780">hunk test suite · <tspan fill="#F1EFE8" font-weight="600">5,211</tspan> tests · M5 Max</text>
+
+  <text x="120" y="262" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="88" font-weight="700" letter-spacing="-2" fill="#F1EFE8">Same machine, <tspan fill="#5DCAA5">faster in Linux VMs.</tspan></text>
+
+  <text x="680" y="380" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="22" letter-spacing="4" fill="#888780">WALL TIME</text>
+  <rect x="858" y="362" width="20" height="20" rx="4" fill="#5F5E5A"/>
+  <text x="888" y="380" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="26" fill="#B4B2A9">app</text>
+  <rect x="956" y="362" width="20" height="20" rx="4" fill="#888780"/>
+  <text x="986" y="380" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="26" fill="#B4B2A9">kernel share of CPU time</text>
+
+  <text x="120" y="472" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif"><tspan font-size="34" font-weight="600" fill="#F1EFE8">macOS</tspan><tspan dx="14" font-size="30" fill="#888780">no VM</tspan></text>
+  <rect x="680" y="444" width="621" height="32" rx="6" fill="#5F5E5A"/>
+  <rect x="1304" y="444" width="441" height="32" rx="6" fill="#888780"/>
+  <text x="1524.5" y="468" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">41%</text>
+  <text x="1769" y="475" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#F1EFE8">112s</text>
+
+  <text x="120" y="626" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="600" fill="#F1EFE8">2 CPU · 4 GB</text>
+  <svg x="408" y="575" width="30" height="30" viewBox="0 0 64 64"><polygon points="32,5 55.38,18.5 55.38,45.5 32,59 8.62,45.5 8.62,18.5" fill="none" stroke="#F1EFE8" stroke-width="4" stroke-linejoin="round"/><polygon points="32,24.07 44.12,31.07 32,38.07 19.88,31.07" fill="#1D9E75"/><polygon points="19.88,31.07 32,38.07 32,52.07 19.88,45.07" fill="#F1EFE8"/><polygon points="32,38.07 44.12,31.07 44.12,45.07 32,52.07" fill="#0F6E56"/></svg>
+  <text x="444" y="599" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#5DCAA5">boxery <tspan fill="#888780">(Lima)</tspan></text>
+  <rect x="680" y="574" width="686" height="32" rx="6" fill="#1D9E75"/>
+  <rect x="1369" y="574" width="108" height="32" rx="6" fill="#5DCAA5"/>
+  <text x="1423" y="598" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">14%</text>
+  <text x="1501" y="605" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#5DCAA5">84s</text>
+  <text x="444" y="651" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#B4B2A9">Docker</text>
+  <rect x="680" y="626" width="692" height="32" rx="6" fill="#5F5E5A"/>
+  <rect x="1375" y="626" width="125" height="32" rx="6" fill="#888780"/>
+  <text x="1437.5" y="650" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">15%</text>
+  <text x="1524" y="657" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#F1EFE8">86s</text>
+
+  <text x="120" y="788" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="600" fill="#F1EFE8">4 CPU · 8 GB</text>
+  <svg x="408" y="737" width="30" height="30" viewBox="0 0 64 64"><polygon points="32,5 55.38,18.5 55.38,45.5 32,59 8.62,45.5 8.62,18.5" fill="none" stroke="#F1EFE8" stroke-width="4" stroke-linejoin="round"/><polygon points="32,24.07 44.12,31.07 32,38.07 19.88,31.07" fill="#1D9E75"/><polygon points="19.88,31.07 32,38.07 32,52.07 19.88,45.07" fill="#F1EFE8"/><polygon points="32,38.07 44.12,31.07 44.12,45.07 32,52.07" fill="#0F6E56"/></svg>
+  <text x="444" y="761" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#5DCAA5">boxery <tspan fill="#888780">(Lima)</tspan></text>
+  <rect x="680" y="736" width="656" height="32" rx="6" fill="#1D9E75"/>
+  <rect x="1339" y="736" width="115" height="32" rx="6" fill="#5DCAA5"/>
+  <text x="1396.5" y="760" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">15%</text>
+  <text x="1478" y="767" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#5DCAA5">81s</text>
+  <text x="444" y="813" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#B4B2A9">Docker</text>
+  <rect x="680" y="788" width="663" height="32" rx="6" fill="#5F5E5A"/>
+  <rect x="1346" y="788" width="150" height="32" rx="6" fill="#888780"/>
+  <text x="1421" y="812" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">18%</text>
+  <text x="1520" y="819" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#F1EFE8">86s</text>
+
+  <text x="120" y="950" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="600" fill="#F1EFE8">8 CPU · 16 GB</text>
+  <svg x="408" y="899" width="30" height="30" viewBox="0 0 64 64"><polygon points="32,5 55.38,18.5 55.38,45.5 32,59 8.62,45.5 8.62,18.5" fill="none" stroke="#F1EFE8" stroke-width="4" stroke-linejoin="round"/><polygon points="32,24.07 44.12,31.07 32,38.07 19.88,31.07" fill="#1D9E75"/><polygon points="19.88,31.07 32,38.07 32,52.07 19.88,45.07" fill="#F1EFE8"/><polygon points="32,38.07 44.12,31.07 44.12,45.07 32,52.07" fill="#0F6E56"/></svg>
+  <text x="444" y="923" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#5DCAA5">boxery <tspan fill="#888780">(Lima)</tspan></text>
+  <rect x="680" y="898" width="619" height="32" rx="6" fill="#1D9E75"/>
+  <rect x="1302" y="898" width="119" height="32" rx="6" fill="#5DCAA5"/>
+  <text x="1361.5" y="922" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">16%</text>
+  <text x="1445" y="929" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#5DCAA5">78s</text>
+  <text x="444" y="975" font-family="'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace" font-size="26" fill="#B4B2A9">Docker</text>
+  <rect x="680" y="950" width="591" height="32" rx="6" fill="#5F5E5A"/>
+  <rect x="1274" y="950" width="170" height="32" rx="6" fill="#888780"/>
+  <text x="1359" y="974" text-anchor="middle" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#2C2C2A">22%</text>
+  <text x="1468" y="981" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="40" font-weight="700" letter-spacing="-1" fill="#F1EFE8">80s</text>
+
+  <text x="1880" y="1068" text-anchor="end" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#5F5E5A">2 test shards everywhere · mean of 2 runs · Docker's 8-CPU run had Docker Desktop's 7.65 GB</text>
+</svg>

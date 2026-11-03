@@ -1,0 +1,919 @@
+{
+  "$schema": "../results.schema.json",
+  "schema_version": 1,
+  "id": "2026-11-03-hunk-suite-vm-vs-macos",
+  "title": "hunk's test suite: macOS vs boxery VMs vs Docker",
+  "date": "2026-11-03",
+  "period": {
+    "start": "2026-11-03T04:05:16Z",
+    "end": "2026-11-03T19:59:43Z"
+  },
+  "question": "On one Mac, is a large TypeScript test suite faster on macOS itself, in a boxery (Lima) Linux VM, or in Docker, and how much does the VM's size matter?",
+  "answer": "Every Linux VM beat macOS: 78–86 s against 112 s. Size barely mattered: 2 CPUs were within 6 s of 8. At matched sizes boxery's Lima VMs were 2–4 s faster than Docker.",
+  "subject": {
+    "name": "hunk",
+    "repo": "https://github.com/modem-dev/hunk",
+    "commit": "503efd5aa664e78241139ee9f02ae7942e811d95",
+    "patch": "hunk-test-isolation.patch",
+    "command": "bun run test",
+    "env": {
+      "HUNK_TEST_SHARDS": "2"
+    },
+    "tests": 5211,
+    "notes": "bun run test runs scripts/test/run-test-suite.ts, which splits the suite into 2 parallel bun test processes on Linux and runs 1 on macOS unless HUNK_TEST_SHARDS is set. We pinned 2 shards everywhere for the main comparison. The patch points the tests at empty XDG config and state dirs and resolves macOS's /var symlink in 3 tests. It only changes tests."
+  },
+  "host": {
+    "model": "Mac17,7",
+    "chip": "Apple M5 Max",
+    "cpu_cores": 18,
+    "cpu_core_groups": [
+      6,
+      12
+    ],
+    "memory_gib": 128,
+    "os": "macOS 26.6.1 (25G76)",
+    "kernel": "25.6.0",
+    "arch": "arm64",
+    "power": "AC",
+    "notes": "Docker Desktop and three other idle boxery VMs were running throughout, the same for every run."
+  },
+  "environments": [
+    {
+      "id": "macos",
+      "label": "macOS, no VM",
+      "kind": "metal",
+      "boxery": false,
+      "runtime": "macOS 26.6.1",
+      "cpus": 18,
+      "memory_gib": 128,
+      "repo_location": "APFS, the developer's checkout",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.50.1 (Apple Git-155, via the /usr/bin/git xcrun shim)",
+        "node": "24.22.1"
+      }
+    },
+    {
+      "id": "macos-real-git",
+      "label": "macOS, Command Line Tools git first on PATH",
+      "kind": "metal",
+      "boxery": false,
+      "runtime": "macOS 26.6.1",
+      "cpus": 18,
+      "memory_gib": 128,
+      "repo_location": "APFS, the developer's checkout",
+      "tree": "clean",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.50.1 (Apple Git-155, called directly)",
+        "node": "24.22.1"
+      },
+      "notes": "Exploratory: /usr/bin/git is an xcrun shim that costs about 8 ms per call, against 2.4 ms for the real binary."
+    },
+    {
+      "id": "lima-small",
+      "label": "boxery (Lima) small: 2 vCPU, 4 GiB",
+      "kind": "vm",
+      "boxery": true,
+      "runtime": "boxery 0.9.0, Lima 2.1.1, vmType vz (Apple Virtualization)",
+      "guest": "Ubuntu 24.04.4 LTS, Linux 6.8.0-106-generic",
+      "cpus": 2,
+      "memory_gib": 4,
+      "limits": "boxery resize --cpus 2 --mem 4096",
+      "repo_location": "the VM's own ext4 disk (80 GiB), copied in as a tarball; no mounts from macOS",
+      "tree": "clean",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "lima-standard",
+      "label": "boxery (Lima) standard: 4 vCPU, 8 GiB",
+      "kind": "vm",
+      "boxery": true,
+      "runtime": "boxery 0.9.0, Lima 2.1.1, vmType vz (Apple Virtualization)",
+      "guest": "Ubuntu 24.04.4 LTS, Linux 6.8.0-106-generic",
+      "cpus": 4,
+      "memory_gib": 8,
+      "limits": "boxery resize --cpus 4 --mem 8192",
+      "repo_location": "the VM's own ext4 disk (80 GiB), copied in as a tarball; no mounts from macOS",
+      "tree": "clean",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "lima-large",
+      "label": "boxery (Lima) large: 8 vCPU, 16 GiB",
+      "kind": "vm",
+      "boxery": true,
+      "runtime": "boxery 0.9.0, Lima 2.1.1, vmType vz (Apple Virtualization)",
+      "guest": "Ubuntu 24.04.4 LTS, Linux 6.8.0-106-generic",
+      "cpus": 8,
+      "memory_gib": 16,
+      "limits": "boxery resize --cpus 8 --mem 16384",
+      "repo_location": "the VM's own ext4 disk (80 GiB), copied in as a tarball; no mounts from macOS",
+      "tree": "clean",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "docker-2cpu",
+      "label": "Docker, 2 CPUs, 4 GiB",
+      "kind": "container",
+      "boxery": false,
+      "runtime": "Docker Desktop 4.66.1 (engine 29.3.1, containerd snapshotter); its VM: 18 CPUs, 7.65 GiB",
+      "guest": "ubuntu:24.04 image on Linux 6.12.76-linuxkit",
+      "cpus": 2,
+      "memory_gib": 4,
+      "limits": "docker run --cpuset-cpus 0-1 --memory 4g",
+      "repo_location": "an image layer (overlayfs), added from a tarball",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "docker-4cpu",
+      "label": "Docker, 4 CPUs, 8 GiB",
+      "kind": "container",
+      "boxery": false,
+      "runtime": "Docker Desktop 4.66.1 (engine 29.3.1, containerd snapshotter); its VM: 18 CPUs, 7.65 GiB",
+      "guest": "ubuntu:24.04 image on Linux 6.12.76-linuxkit",
+      "cpus": 4,
+      "memory_gib": 7.65,
+      "limits": "docker run --cpuset-cpus 0-3 --memory 8g (more than the VM has, so the VM's 7.65 GiB is the real limit)",
+      "repo_location": "an image layer (overlayfs), added from a tarball",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "docker-8cpu",
+      "label": "Docker, 8 CPUs, 7.65 GiB",
+      "kind": "container",
+      "boxery": false,
+      "runtime": "Docker Desktop 4.66.1 (engine 29.3.1, containerd snapshotter); its VM: 18 CPUs, 7.65 GiB",
+      "guest": "ubuntu:24.04 image on Linux 6.12.76-linuxkit",
+      "cpus": 8,
+      "memory_gib": 7.65,
+      "limits": "docker run --cpuset-cpus 0-7 (no memory flag: Docker Desktop's VM has 7.65 GiB, not 16)",
+      "repo_location": "an image layer (overlayfs), added from a tarball",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "docker-18cpu",
+      "label": "Docker, all 18 CPUs, 7.65 GiB",
+      "kind": "container",
+      "boxery": false,
+      "runtime": "Docker Desktop 4.66.1 (engine 29.3.1, containerd snapshotter); its VM: 18 CPUs, 7.65 GiB",
+      "guest": "ubuntu:24.04 image on Linux 6.12.76-linuxkit",
+      "cpus": 18,
+      "memory_gib": 7.65,
+      "limits": "docker run, no limits",
+      "repo_location": "an image layer (overlayfs), added from a tarball",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    },
+    {
+      "id": "docker-18cpu-bind",
+      "label": "Docker, all 18 CPUs, repo bind-mounted from macOS",
+      "kind": "container",
+      "boxery": false,
+      "runtime": "Docker Desktop 4.66.1 (engine 29.3.1, containerd snapshotter); its VM: 18 CPUs, 7.65 GiB",
+      "guest": "ubuntu:24.04 image on Linux 6.12.76-linuxkit",
+      "cpus": 18,
+      "memory_gib": 7.65,
+      "limits": "docker run -v <checkout>:/home/tester/hunk, no limits",
+      "repo_location": "a macOS folder bind-mounted into the container, with node_modules installed from inside it",
+      "tree": "patched",
+      "tools": {
+        "bun": "1.4.3",
+        "git": "2.56.0 (git-core PPA)",
+        "node": "24.22.2"
+      }
+    }
+  ],
+  "runs": [
+    {
+      "env": "macos",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T04:12:24Z",
+      "real_s": 108.77,
+      "user_s": 60.19,
+      "sys_s": 41.44,
+      "tests": {
+        "pass": 5104,
+        "skip": 55,
+        "fail": 52
+      },
+      "valid": false,
+      "note": "Clean tree. 52 tests failed because the suite loaded an extension from the developer's own ~/.config; the patch's XDG isolation fixes it."
+    },
+    {
+      "env": "macos",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T04:14:15Z",
+      "real_s": 111.38,
+      "user_s": 62.98,
+      "sys_s": 43.27,
+      "tests": {
+        "pass": 5104,
+        "skip": 55,
+        "fail": 52
+      },
+      "valid": false,
+      "note": "Clean tree, same 52 failures as run 1."
+    },
+    {
+      "env": "macos",
+      "setting": "2 shards",
+      "run": 3,
+      "ended_at": "2026-11-03T19:57:51Z",
+      "real_s": 111.36,
+      "user_s": 59.84,
+      "sys_s": 42.31,
+      "tests": {
+        "pass": 5154,
+        "skip": 55,
+        "fail": 2
+      },
+      "valid": true,
+      "note": "Patched tree. The 2 failures are macOS-only (a directory-symlink test, and a file-watcher test that is flaky on macOS)."
+    },
+    {
+      "env": "macos",
+      "setting": "2 shards",
+      "run": 4,
+      "ended_at": "2026-11-03T19:59:43Z",
+      "real_s": 112.91,
+      "user_s": 61.53,
+      "sys_s": 43.52,
+      "tests": {
+        "pass": 5155,
+        "skip": 55,
+        "fail": 1
+      },
+      "valid": true
+    },
+    {
+      "env": "macos",
+      "setting": "1 shard",
+      "run": 1,
+      "ended_at": "2026-11-03T04:07:58Z",
+      "real_s": 162.38,
+      "user_s": 64.32,
+      "sys_s": 43.75,
+      "tests": {
+        "pass": 5105,
+        "skip": 55,
+        "fail": 51
+      },
+      "valid": false,
+      "note": "Clean tree, leaked user extension (see the 2-shard runs)."
+    },
+    {
+      "env": "macos",
+      "setting": "1 shard",
+      "run": 2,
+      "ended_at": "2026-11-03T04:10:35Z",
+      "real_s": 156.58,
+      "user_s": 60.36,
+      "sys_s": 40.27,
+      "tests": {
+        "pass": 5102,
+        "skip": 55,
+        "fail": 54
+      },
+      "valid": false,
+      "note": "Clean tree, leaked user extension."
+    },
+    {
+      "env": "macos",
+      "setting": "1 shard",
+      "run": 3,
+      "ended_at": "2026-11-03T04:47:21Z",
+      "real_s": 150.4,
+      "user_s": 58.44,
+      "sys_s": 41.15,
+      "tests": {
+        "pass": 5147,
+        "skip": 55,
+        "fail": 9
+      },
+      "valid": false,
+      "note": "XDG isolation only: 8 tests still failed on macOS's /var -> /private/var symlink."
+    },
+    {
+      "env": "macos",
+      "setting": "1 shard",
+      "run": 4,
+      "ended_at": "2026-11-03T04:54:26Z",
+      "real_s": 154.09,
+      "user_s": 59.95,
+      "sys_s": 42.1,
+      "tests": {
+        "pass": 5154,
+        "skip": 55,
+        "fail": 2
+      },
+      "valid": true,
+      "note": "Patched tree."
+    },
+    {
+      "env": "macos-real-git",
+      "setting": "1 shard",
+      "run": 1,
+      "ended_at": "2026-11-03T04:38:25Z",
+      "real_s": 125.34,
+      "user_s": 45.6,
+      "sys_s": 26.64,
+      "tests": {
+        "pass": 5143,
+        "skip": 55,
+        "fail": 13
+      },
+      "valid": false,
+      "note": "Exploratory, before the patch, with 13 failures, so not comparable as is. It suggests the git shim costs about 25-30 s of the 1-shard macOS time."
+    },
+    {
+      "env": "lima-large",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T04:24:20Z",
+      "real_s": 78.26,
+      "user_s": 60.54,
+      "sys_s": 11.62,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-large",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T04:25:37Z",
+      "real_s": 77.73,
+      "user_s": 59.46,
+      "sys_s": 11.2,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard",
+      "run": 1,
+      "ended_at": "2026-11-03T04:20:43Z",
+      "real_s": 148.46,
+      "user_s": 61.64,
+      "sys_s": 12.37,
+      "tests": {
+        "pass": 5167,
+        "skip": 43,
+        "fail": 1
+      },
+      "valid": true,
+      "note": "The first suite run in a freshly made VM."
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard",
+      "run": 2,
+      "ended_at": "2026-11-03T04:23:01Z",
+      "real_s": 138.06,
+      "user_s": 60.89,
+      "sys_s": 11.69,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard, JUnit reporter",
+      "run": 1,
+      "ended_at": "2026-11-03T04:33:31Z",
+      "real_s": 115.86,
+      "user_s": 58.4,
+      "sys_s": 11.18,
+      "tests": {
+        "pass": 5167,
+        "skip": 43,
+        "fail": 1
+      },
+      "valid": true,
+      "note": "bun run test --reporter=junit, used to compare per-file times."
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard, JUnit reporter",
+      "run": 2,
+      "ended_at": "2026-11-03T04:35:27Z",
+      "real_s": 115.9,
+      "user_s": 58.57,
+      "sys_s": 11.17,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-small",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T05:25:09Z",
+      "real_s": 83.89,
+      "user_s": 57.94,
+      "sys_s": 9.36,
+      "tests": {
+        "pass": 5167,
+        "skip": 43,
+        "fail": 2
+      },
+      "valid": true,
+      "note": "One flaky failure, plus one test file that failed to load once."
+    },
+    {
+      "env": "lima-small",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T05:26:33Z",
+      "real_s": 83.91,
+      "user_s": 58.39,
+      "sys_s": 9.01,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-standard",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T05:28:14Z",
+      "real_s": 80.31,
+      "user_s": 60.42,
+      "sys_s": 10.47,
+      "tests": {
+        "pass": 5167,
+        "skip": 43,
+        "fail": 1
+      },
+      "valid": true
+    },
+    {
+      "env": "lima-standard",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T05:29:37Z",
+      "real_s": 82.67,
+      "user_s": 64.59,
+      "sys_s": 11.33,
+      "tests": {
+        "pass": 5168,
+        "skip": 43,
+        "fail": 0
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-18cpu",
+      "setting": "2 shards",
+      "run": 1,
+      "real_s": 65.94,
+      "user_s": 48.39,
+      "sys_s": 25.55,
+      "tests": {
+        "pass": 5144,
+        "skip": 44,
+        "fail": 489
+      },
+      "valid": false,
+      "note": "First image: macOS tar had added AppleDouble ._ files, which bun tried to load as tests, and the image had no npm. 489 failures, so the run looks faster than it was."
+    },
+    {
+      "env": "docker-18cpu",
+      "setting": "2 shards",
+      "run": 2,
+      "real_s": 66.1,
+      "user_s": 49.61,
+      "sys_s": 24.62,
+      "tests": {
+        "pass": 5144,
+        "skip": 44,
+        "fail": 489
+      },
+      "valid": false,
+      "note": "Same broken image as run 1."
+    },
+    {
+      "env": "docker-18cpu",
+      "setting": "2 shards",
+      "run": 3,
+      "ended_at": "2026-11-03T14:45:12Z",
+      "real_s": 80.05,
+      "user_s": 62.92,
+      "sys_s": 31.69,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true,
+      "note": "Fixed image. The 2 failures happen in every Docker run and take milliseconds."
+    },
+    {
+      "env": "docker-18cpu",
+      "setting": "2 shards",
+      "run": 4,
+      "ended_at": "2026-11-03T14:46:33Z",
+      "real_s": 80.84,
+      "user_s": 65.17,
+      "sys_s": 28.39,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-18cpu-bind",
+      "setting": "2 shards",
+      "run": 1,
+      "real_s": 86.45,
+      "user_s": 63.98,
+      "sys_s": 39.05,
+      "tests": {
+        "pass": 5144,
+        "skip": 44,
+        "fail": 23
+      },
+      "valid": false,
+      "note": "First image had no npm: 20 npm-dependent tests failed fast."
+    },
+    {
+      "env": "docker-18cpu-bind",
+      "setting": "2 shards",
+      "run": 2,
+      "real_s": 78.89,
+      "user_s": 52.76,
+      "sys_s": 35.88,
+      "tests": {
+        "pass": 5145,
+        "skip": 44,
+        "fail": 22
+      },
+      "valid": false,
+      "note": "Same image as run 1."
+    },
+    {
+      "env": "docker-18cpu-bind",
+      "setting": "2 shards",
+      "run": 3,
+      "ended_at": "2026-11-03T14:48:09Z",
+      "real_s": 92.29,
+      "user_s": 69.78,
+      "sys_s": 37.98,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-18cpu-bind",
+      "setting": "2 shards",
+      "run": 4,
+      "ended_at": "2026-11-03T14:49:40Z",
+      "real_s": 90.66,
+      "user_s": 66.2,
+      "sys_s": 36.79,
+      "tests": {
+        "pass": 5164,
+        "skip": 44,
+        "fail": 3
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-2cpu",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T15:35:14Z",
+      "real_s": 86.34,
+      "user_s": 59.65,
+      "sys_s": 10.94,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-2cpu",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T15:36:41Z",
+      "real_s": 86.2,
+      "user_s": 60.34,
+      "sys_s": 10.55,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-4cpu",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T15:38:08Z",
+      "real_s": 86.52,
+      "user_s": 71.3,
+      "sys_s": 16.62,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-4cpu",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T15:39:33Z",
+      "real_s": 85.27,
+      "user_s": 68.01,
+      "sys_s": 14.7,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-8cpu",
+      "setting": "2 shards",
+      "run": 1,
+      "ended_at": "2026-11-03T15:40:55Z",
+      "real_s": 81.74,
+      "user_s": 65.15,
+      "sys_s": 18.96,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    },
+    {
+      "env": "docker-8cpu",
+      "setting": "2 shards",
+      "run": 2,
+      "ended_at": "2026-11-03T15:42:15Z",
+      "real_s": 79.04,
+      "user_s": 60.91,
+      "sys_s": 17.28,
+      "tests": {
+        "pass": 5165,
+        "skip": 44,
+        "fail": 2
+      },
+      "valid": true
+    }
+  ],
+  "summary": [
+    {
+      "env": "macos",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 112.13,
+      "real_range_s": [
+        111.36,
+        112.91
+      ],
+      "user_s": 60.69,
+      "sys_s": 42.92,
+      "kernel_share": 0.414,
+      "vs_metal": 1
+    },
+    {
+      "env": "macos",
+      "setting": "1 shard",
+      "runs": 1,
+      "real_s": 154.09,
+      "real_range_s": [
+        154.09,
+        154.09
+      ],
+      "user_s": 59.95,
+      "sys_s": 42.1,
+      "kernel_share": 0.413,
+      "vs_metal": 1
+    },
+    {
+      "env": "lima-large",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 78,
+      "real_range_s": [
+        77.73,
+        78.26
+      ],
+      "user_s": 60,
+      "sys_s": 11.41,
+      "kernel_share": 0.16,
+      "vs_metal": 1.44
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard",
+      "runs": 2,
+      "real_s": 143.26,
+      "real_range_s": [
+        138.06,
+        148.46
+      ],
+      "user_s": 61.27,
+      "sys_s": 12.03,
+      "kernel_share": 0.164,
+      "vs_metal": 1.08
+    },
+    {
+      "env": "lima-large",
+      "setting": "1 shard, JUnit reporter",
+      "runs": 2,
+      "real_s": 115.88,
+      "real_range_s": [
+        115.86,
+        115.9
+      ],
+      "user_s": 58.48,
+      "sys_s": 11.18,
+      "kernel_share": 0.16
+    },
+    {
+      "env": "lima-small",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 83.9,
+      "real_range_s": [
+        83.89,
+        83.91
+      ],
+      "user_s": 58.16,
+      "sys_s": 9.18,
+      "kernel_share": 0.136,
+      "vs_metal": 1.34
+    },
+    {
+      "env": "lima-standard",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 81.49,
+      "real_range_s": [
+        80.31,
+        82.67
+      ],
+      "user_s": 62.51,
+      "sys_s": 10.9,
+      "kernel_share": 0.148,
+      "vs_metal": 1.38
+    },
+    {
+      "env": "docker-18cpu",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 80.44,
+      "real_range_s": [
+        80.05,
+        80.84
+      ],
+      "user_s": 64.05,
+      "sys_s": 30.04,
+      "kernel_share": 0.319,
+      "vs_metal": 1.39
+    },
+    {
+      "env": "docker-18cpu-bind",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 91.47,
+      "real_range_s": [
+        90.66,
+        92.29
+      ],
+      "user_s": 67.99,
+      "sys_s": 37.38,
+      "kernel_share": 0.355,
+      "vs_metal": 1.23
+    },
+    {
+      "env": "docker-2cpu",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 86.27,
+      "real_range_s": [
+        86.2,
+        86.34
+      ],
+      "user_s": 60,
+      "sys_s": 10.75,
+      "kernel_share": 0.152,
+      "vs_metal": 1.3
+    },
+    {
+      "env": "docker-4cpu",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 85.89,
+      "real_range_s": [
+        85.27,
+        86.52
+      ],
+      "user_s": 69.66,
+      "sys_s": 15.66,
+      "kernel_share": 0.184,
+      "vs_metal": 1.31
+    },
+    {
+      "env": "docker-8cpu",
+      "setting": "2 shards",
+      "runs": 2,
+      "real_s": 80.39,
+      "real_range_s": [
+        79.04,
+        81.74
+      ],
+      "user_s": 63.03,
+      "sys_s": 18.12,
+      "kernel_share": 0.223,
+      "vs_metal": 1.39
+    }
+  ],
+  "findings": [
+    "Every Linux environment beat macOS on the same machine at 2 shards: 78–86 s with the repo on the guest's own disk, and 91 s with it mounted from macOS, against 112 s. That is 18–30% less time.",
+    "The tests' own CPU time was about the same everywhere (58–71 s of user time). The difference is in the kernel: macOS spent 43 s there, boxery's Lima VMs 9–12 s. Starting processes is much cheaper on Linux, and the suite starts a lot of them (git, bun, node).",
+    "VM size barely mattered. Going from 2 to 8 vCPUs saved 6 s in Lima and 6 s in Docker. A small boxery VM (2 vCPU, 4 GiB) is enough for this suite.",
+    "At matched sizes, boxery's Lima VMs were 2–4 s faster than Docker (84/81/78 s against 86/86/80 s). Docker's container layer costs almost nothing at 2 CPUs (11 s of kernel time against Lima's 9 s), but its kernel time grew with the CPUs it was given (11, 16, 18, 30 s), while Lima's stayed at 9–12 s.",
+    "Mounting the repo from macOS into Docker cost about 11 s (91.5 s against 80.4 s), and still beat macOS.",
+    "Running the bare macOS suite at 1 shard took 154 s; letting it use 2 shards brought it to 112 s. hunk only shards by default on Linux."
+  ],
+  "caveats": [
+    "One machine, two runs per configuration. The 1-shard Lima runs varied by 10 s (138–148 s), and the first was the first run in a new VM.",
+    "macOS skips 12 more tests than Linux (55 against 43): session end-to-end tests that only run on Linux. That makes macOS do slightly less work, not more.",
+    "macOS and Docker used the patched tree, Lima the clean commit. The patch only changes tests (temporary config dirs, resolved temp paths), and Lima had no user config to leak.",
+    "Docker Desktop's VM had 7.65 GiB, so the 4- and 8-CPU containers had less memory than the matching boxery VMs. The 4 GiB boxery VM was within 6 s of the 16 GiB one, so memory doesn't look like the bottleneck.",
+    "Every Docker run failed the same 2 tests (an adapter-registration test and a file-watcher test). They fail in milliseconds and don't change the times.",
+    "The macOS 2-shard baseline was measured at the end of the day, about 15 hours after the Lima runs. The morning's 2-shard runs (109 and 111 s) agree with it but had leaked-extension failures."
+  ],
+  "artifacts": {
+    "write-up": "README.md",
+    "card": "card.svg",
+    "dockerfile": "Dockerfile",
+    "patch": "hunk-test-isolation.patch"
+  }
+}
