@@ -21,6 +21,12 @@ const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay o
 #OPENAI_API_KEY=
 #ANTHROPIC_API_KEY=
 `;
+// runners.env: the GitHub runner manager's token (host/runners.mjs reads it; never sent to a VM).
+export const RUNNERS_TOKEN_TEMPLATE = `# GitHub token for boxery's runner manager (boxery-host runners; docs/github-runners.md). Stays on the host.
+# A fine-grained token: repository "Administration: read and write" for a repo's runners, or
+# organization "Self-hosted runners: read and write" for an org's. Set it with: boxery-host runners token < FILE
+#GITHUB_TOKEN=
+`;
 
 const which = (/** @type {string} */ cmd) => (process.env.PATH ?? "").split(":").some((d) => {
 	try { accessSync(path.join(d || ".", cmd), constants.X_OK); return true; } catch { return false; }
@@ -172,10 +178,11 @@ export function servicePath(node, system, searchPath = process.env.PATH ?? "") {
 }
 
 /** {file: contents} for this platform. bind: the proxy's listen address (backend_proxy_bind or loopback).
- * @param {Pick<Config, "conf" | "root" | "proxyPort" | "proxyUnit" | "reaperUnit" | "backend">} config
+ * The runner manager's file (runnersUnit) is installed but not enabled: `boxery-host runners start` does that.
+ * @param {Pick<Config, "conf" | "root" | "proxyPort" | "proxyUnit" | "reaperUnit" | "runnersUnit" | "backend">} config
  * @param {{ node: string, bind: string, home?: string, platform?: NodeJS.Platform, searchPath?: string }} opts
  * @returns {Record<string, string>} */
-export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, backend }, { node, bind, home = homedir(), platform = process.platform, searchPath }) {
+export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, runnersUnit, backend }, { node, bind, home = homedir(), platform = process.platform, searchPath }) {
 	const pathEnv = (/** @type {string} */ extra) => servicePath(node, `/usr/local/bin:${extra}`, searchPath);
 	if (platform === "darwin") {
 		const agents = path.join(home, "Library/LaunchAgents"), logs = path.join(home, "Library/Logs");
@@ -184,6 +191,9 @@ export function serviceFiles({ conf, root, proxyPort, proxyUnit, reaperUnit, bac
 				{ BOXERY_PROXY_PORT: proxyPort, BOXERY_PROXY_BIND: bind, BOXERY_CONF: conf }, "<key>KeepAlive</key><true/><key>RunAtLoad</key><true/>", path.join(logs, `${proxyUnit}.log`)),
 			[path.join(agents, `dev.${reaperUnit}.plist`)]: plist(`dev.${reaperUnit}`, [path.join(root, "host/boxery-host"), "reap"],
 				{ BOXERY_CONF: conf, PATH: pathEnv("/opt/homebrew/bin:/usr/bin:/bin") }, "<key>StartInterval</key><integer>60</integer>", path.join(logs, `${reaperUnit}.log`)),
+			// launchd loads every agent in LaunchAgents at login, so this one is only there while it's started.
+			[path.join(agents, `dev.${runnersUnit}.plist`)]: plist(`dev.${runnersUnit}`, [path.join(root, "host/boxery-host"), "runners", "run"],
+				{ BOXERY_CONF: conf, PATH: pathEnv("/opt/homebrew/bin:/usr/bin:/bin") }, "<key>KeepAlive</key><true/><key>RunAtLoad</key><true/><key>ExitTimeOut</key><integer>180</integer>", path.join(logs, `${runnersUnit}.log`)),
 		};
 	}
 	const units = path.join(home, ".config/systemd/user");
@@ -216,13 +226,26 @@ AccuracySec=10s
 [Install]
 WantedBy=timers.target
 `,
+		// KillMode=mixed: SIGTERM reaches the manager only; the acquire/release it waits for finish (180 s at most).
+		[path.join(units, `${runnersUnit}.service`)]: `[Unit]
+Description=boxery: GitHub Actions runners on pool VMs (boxery-host runners)
+[Service]
+Environment=BOXERY_CONF=${conf} BOXERY_BACKEND=${backend} PATH=${pathEnv("/usr/bin:/bin:/usr/sbin:/sbin")}
+ExecStart=${root}/host/boxery-host runners run
+Restart=on-failure
+RestartSec=30
+KillMode=mixed
+TimeoutStopSec=180
+[Install]
+WantedBy=default.target
+`,
 	};
 }
 
 /** (Re)load a launch agent. bootout returns before launchd has removed the job, and a bootstrap in that
  *  window fails with "5: Input/output error": wait for it to go (5 s at most), and retry a failed bootstrap.
  *  @param {string} domain @param {string} label @param {string} plist */
-async function reloadAgent(domain, label, plist) {
+export async function reloadAgent(domain, label, plist) {
 	await run("launchctl", ["bootout", `${domain}/${label}`], { silent: true, check: false }); // not loaded yet is fine
 	for (let i = 0; i < 50 && await run("launchctl", ["print", `${domain}/${label}`], { silent: true, check: false }) === 0; i++) await sleep(100);
 	for (let attempt = 1; attempt < 5; attempt++) {
@@ -248,15 +271,21 @@ function checkServiceHome() {
 async function startServices(rt, { reaper }) {
 	const bind = await rt.vms.has("backend_proxy_bind") ? (await rt.vms.call("backend_proxy_bind", [], { capture: true })).trim() : "127.0.0.1";
 	const files = serviceFiles(rt, { node: process.execPath, bind });
+	// The runner manager (host/runners.mjs) runs only once `runners start` turned it on. Re-running init (an
+	// upgrade) restarts it if it runs, so it runs the new code. On macOS its agent exists only while started.
+	const runnersFile = Object.keys(files).find((f) => path.basename(f).startsWith(process.platform === "darwin" ? `dev.${rt.runnersUnit}.` : `${rt.runnersUnit}.`));
+	const runnersOn = reaper && (process.platform === "darwin" ? Boolean(runnersFile && existsSync(runnersFile))
+		: (await run("systemctl", ["--user", "is-active", "--quiet", `${rt.runnersUnit}.service`], { silent: true, check: false })) === 0);
 	for (const [file, text] of Object.entries(files)) {
-		if (!reaper && file.includes(rt.reaperUnit)) continue;
+		if (!reaper && (file.includes(rt.reaperUnit) || file === runnersFile)) continue;
+		if (process.platform === "darwin" && file === runnersFile && !runnersOn) continue;
 		mkdirSync(path.dirname(file), { recursive: true });
 		writeFileSync(file, text);
 	}
 	if (process.platform === "darwin") {
 		mkdirSync(path.join(homedir(), "Library/Logs"), { recursive: true });
 		const uid = /** @type {() => number} */ (process.getuid)();
-		for (const unit of [rt.proxyUnit, ...(reaper ? [rt.reaperUnit] : [])]) {
+		for (const unit of [rt.proxyUnit, ...(reaper ? [rt.reaperUnit] : []), ...(runnersOn ? [rt.runnersUnit] : [])]) {
 			await reloadAgent(`gui/${uid}`, `dev.${unit}`, path.join(homedir(), "Library/LaunchAgents", `dev.${unit}.plist`));
 		}
 	} else {
@@ -268,6 +297,9 @@ async function startServices(rt, { reaper }) {
 		await run("systemctl", ["--user", "enable", "--now", `${rt.proxyUnit}.service`, ...extra], { quiet: true });
 		await run("systemctl", ["--user", "restart", `${rt.proxyUnit}.service`, ...extra]);
 		if (reaper) await run("systemctl", ["--user", "enable", "--now", `${rt.reaperUnit}.timer`], { quiet: true });
+		// --no-block: an upgrade runs init under the host-wide lock; don't wait for the manager's shutdown
+		// (a SIGTERM that isn't `runners stop` leaves its leases for the next manager: host/runners.mjs).
+		if (runnersOn) await run("systemctl", ["--user", "restart", "--no-block", `${rt.runnersUnit}.service`]);
 	}
 	await sleep(1000);
 }
@@ -319,9 +351,11 @@ async function initProfile(rt, others) {
 	if (!existsSync(keys)) writeFileSync(keys, "");
 	chmodSync(keys, 0o600);
 	rt.guest.hostPubkey();
-	const proxyEnv = path.join(rt.conf, "proxy.env");
-	if (!existsSync(proxyEnv)) writeSecret(proxyEnv, PROXY_ENV);
-	chmodSync(proxyEnv, 0o600);
+	for (const [name, template] of [["proxy.env", PROXY_ENV], ["runners.env", RUNNERS_TOKEN_TEMPLATE]]) {
+		const file = path.join(rt.conf, name);
+		if (!existsSync(file)) writeSecret(file, template);
+		chmodSync(file, 0o600);
+	}
 	writeFileSync(path.join(rt.conf, "host.env"), hostEnv(rt, process.execPath));
 	await rt.vms.call("backend_init");
 	await pinExisting(rt);

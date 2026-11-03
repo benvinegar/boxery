@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { hostEnv, servicePath, serviceFiles } from "../host/setup.mjs";
 
-const config = { conf: "/h/.config/boxery", root: "/opt/boxery", proxyPort: "8088", proxyUnit: "boxery-proxy", reaperUnit: "boxery-reaper", backend: "libvirt" };
+const config = { conf: "/h/.config/boxery", root: "/opt/boxery", proxyPort: "8088", proxyUnit: "boxery-proxy", reaperUnit: "boxery-reaper", runnersUnit: "boxery-runners", backend: "libvirt" };
 
 test("host.env: backend, proxy, node, and only the settings that are set", () => {
 	const text = hostEnv({ ...config, env: { BOXERY_POOL: "pool2", BOXERY_NET: "", LIMA_HOME: "/l", BOXERY_CH_SUDO: "", PATH: "/x" } }, "/n/bin/node");
@@ -16,7 +16,14 @@ test("host.env: backend, proxy, node, and only the settings that are set", () =>
 
 test("systemd user units on Linux", () => {
 	const files = serviceFiles(config, { node: "/n/bin/node", bind: "0.0.0.0", home: "/h", platform: "linux", searchPath: "" });
-	assert.deepEqual(Object.keys(files), ["/h/.config/systemd/user/boxery-proxy.service", "/h/.config/systemd/user/boxery-reaper.service", "/h/.config/systemd/user/boxery-reaper.timer"]);
+	assert.deepEqual(Object.keys(files), ["/h/.config/systemd/user/boxery-proxy.service", "/h/.config/systemd/user/boxery-reaper.service", "/h/.config/systemd/user/boxery-reaper.timer",
+		"/h/.config/systemd/user/boxery-runners.service"]);
+	const runners = files["/h/.config/systemd/user/boxery-runners.service"];
+	assert.match(runners, /^ExecStart=\/opt\/boxery\/host\/boxery-host runners run$/m);
+	assert.match(runners, /^Environment=BOXERY_CONF=\/h\/\.config\/boxery BOXERY_BACKEND=libvirt PATH=/m);
+	// SIGTERM to the manager only, so the acquire/release it waits for can finish; restarted if it crashes.
+	assert.match(runners, /^KillMode=mixed$/m);
+	assert.match(runners, /^Restart=on-failure$/m);
 	const proxy = files["/h/.config/systemd/user/boxery-proxy.service"];
 	assert.match(proxy, /^ExecStart=\/n\/bin\/node \/opt\/boxery\/proxy\/boxery-proxy\.mjs$/m);
 	assert.match(proxy, /^Environment=BOXERY_PROXY_BIND=0\.0\.0\.0$/m);
@@ -36,6 +43,8 @@ test("launchd agents on macOS", () => {
 	const reaper = files["/h/Library/LaunchAgents/dev.boxery-reaper.plist"];
 	assert.ok(reaper.includes("<string>/opt/boxery/host/boxery-host</string><string>reap</string>"));
 	assert.ok(reaper.includes("<key>StartInterval</key><integer>60</integer>"));
+	const runners = files["/h/Library/LaunchAgents/dev.boxery-runners.plist"];
+	assert.ok(runners.includes("<string>/opt/boxery/host/boxery-host</string><string>runners</string><string>run</string>"));
 });
 
 test("the reaper's PATH finds the backend's tools where they are (limactl in ~/.local/bin)", () => {

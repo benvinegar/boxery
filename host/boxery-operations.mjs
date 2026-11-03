@@ -32,7 +32,7 @@ export function resources(command, args) {
 	let names = [];
 	if (["new", "fork"].includes(command)) {
 		for (let i = 0; i < args.length; i++) {
-			if (["--cpus", "--mem", "--disk", "--shape"].includes(args[i])) { i++; continue; }
+			if (["--cpus", "--mem", "--disk", "--shape"].includes(args[i]) || (command === "new" && args[i] === "--layers")) { i++; continue; }
 			if (command === "new" && args[i] === "--headless") continue;
 			if (args[i] === "--from") {
 				const image = args[++i];

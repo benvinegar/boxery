@@ -133,6 +133,7 @@ You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo
 | [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
+| [GitHub Actions runners](docs/github-runners.md) | Ephemeral self-hosted runners: every job in a freshly reset pool VM |
 | [Security model](docs/security.md) | Credential proxy, isolation, what a VM can and can't reach |
 | [Architecture](ARCHITECTURE.md) | Design, roadmap, and failure modes |
 

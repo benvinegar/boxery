@@ -16,6 +16,7 @@ import { revert, snap, snapRm, snapsLines } from "./images.mjs";
 import { edgeSet, poolAdd, poolLs, poolRm } from "./pool.mjs";
 import { parsePatchArgs, patchAll, patchVm, waitForLease } from "./patch.mjs";
 import { reconcileVm, replayIntents } from "./recovery.mjs";
+import { runners } from "./runners.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { addKey, buildBase, init, profiles } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
@@ -40,8 +41,9 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
                             profile using it and check them; waits for in-flight operations, rolls back on failure
   build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
-  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless [--layers github-runner]]
                             --headless: no desktop; boots the stock image, no build-base needed
+                            --layers: optional image layers too (github-runner: a GitHub Actions runner VM)
   new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
   fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
                             copy a VM (running or not) into new VMs with their own identity
@@ -63,8 +65,11 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
   pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
-  acquire --holder H [--ttl S] [--wait S]    lease a free pool VM (lease ssh pubkey on stdin)
+  acquire --holder H [--ttl S] [--wait S] [--only NAME,…]   lease a free pool VM (lease ssh pubkey on stdin)
   renew LEASE [--ttl S] | release LEASE | reap | reconcile
+
+  runners status [--json] | start | stop | token < FILE | config [--repo O/R | --org ORG] [--vms NAME,…] …
+                            GitHub Actions runners, one job per freshly reset pool VM (docs/github-runners.md)
 `;
 const POOL_USAGE = "usage: pool add NAME | rm NAME [--force] | ls [--json]";
 
@@ -195,6 +200,8 @@ const COMMANDS = {
 	backend: (rt) => print(rt.backend),
 	acquire: lifecycle("acquire"), renew: lifecycle("renew"), release: lifecycle("release"),
 	reap: lifecycle("reap"), reconcile: lifecycle("reconcile"),
+	// Not supervised: the manager is a lease holder like any other; its leases go through acquire/release.
+	runners,
 };
 // Run in a supervised worker holding the VMs named by boxery-operations.mjs resources().
 /** @type {Record<string, Command>} */

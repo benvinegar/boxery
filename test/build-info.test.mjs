@@ -34,10 +34,11 @@ const fresh = (/** @type {object} */ over = {}) => ({ built_at: "2026-10-30T08:0
 
 test("the host's layers hash is the one the guest writes (lib.sh layers_hash), per set of layers", () => {
 	const provision = path.join(LAYERS, "provision.sh");
-	for (const layers of [["plumbing", "devtools"], ["plumbing", "devtools", "desktop"]]) {
+	for (const layers of [["plumbing", "devtools"], ["plumbing", "devtools", "desktop"], ["plumbing", "devtools", "github-runner"]]) {
 		assert.equal(guest("layers_hash", [LAYERS, provision, ...layers]).trim(), layersHash(ROOT, layers), layers.join(" "));
 	}
 	assert.notEqual(layersHash(ROOT, ["plumbing", "devtools"]), layersHash(ROOT, ["plumbing", "devtools", "desktop"]));
+	assert.notEqual(layersHash(ROOT, ["plumbing", "devtools"]), layersHash(ROOT, ["plumbing", "devtools", "github-runner"]), "a runner VM's hash covers the runner layer");
 	assert.equal(layersHash(ROOT, ["desktop", "plumbing", "devtools"]), layersHash(ROOT, ["plumbing", "devtools", "desktop"]), "in layer order, whatever the record's order");
 });
 

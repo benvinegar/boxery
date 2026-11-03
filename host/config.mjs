@@ -53,6 +53,8 @@ export function loadConfig(env = process.env) {
 		proxyPort: merged.BOXERY_PROXY_PORT || "8088",
 		proxyUnit,
 		reaperUnit: merged.BOXERY_REAPER_UNIT || proxyUnit.replace("proxy", "reaper"),
+		// The GitHub Actions runner manager (host/runners.mjs): installed by init, started by `runners start`.
+		runnersUnit: proxyUnit.replace("proxy", "runners"),
 		cache: merged.BOXERY_CACHE || path.join(homedir(), ".cache/boxery"),
 	};
 }

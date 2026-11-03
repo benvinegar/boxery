@@ -19,6 +19,7 @@
 
 - **[Grants](grants.md)**: give a VM your ssh-agent, env vars, or files.
 - **[Shared pool & leases](pool.md)**: several agents share a pool of VMs safely.
+- **[GitHub Actions runners](github-runners.md)**: ephemeral self-hosted runners, one job per freshly reset pool VM.
 - **[File transfers](copy.md)**: streaming `vm_copy`, destination semantics and cancellation.
 
 ## Reference

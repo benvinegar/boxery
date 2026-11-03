@@ -15,7 +15,7 @@ import path from "node:path";
 /** What listings show (docs/cli.md, `guest`; times in epoch seconds). @typedef {{ status: "current" | "outdated" | "unknown", reasons: string[], built_at: number | null,
  *   age_days: number | null, kernel: string | null, chrome: string | null, playwright_core: string | null, reboot_required: boolean | null, checked_at: number | null }} GuestStatus */
 
-export const LAYERS = ["plumbing", "devtools", "desktop"];
+export const LAYERS = ["plumbing", "devtools", "desktop", "github-runner"];
 export const STALE_DAYS = 30; // default for BOXERY_STALE_DAYS
 const READ = "cat /etc/boxery/build-info 2>/dev/null; test -e /var/run/reboot-required && echo reboot_required=1; true";
 const DAY = 86_400_000;

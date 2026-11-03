@@ -10,7 +10,7 @@
  * @typedef {{
  *   get(name: string): { name: string, gen: number, epoch: string, state: string, lease_id: string | null } | null,
  *   find(leaseId: string): { name: string } | null,
- *   claim(holder: string, ttl: number, pubkey: string): Claim | null,
+ *   claim(holder: string, ttl: number, pubkey: string, only?: string[]): Claim | null,
  *   commit(name: string, gen: Gen): boolean,
  *   beginReset(leaseId: string): ResetTicket,
  *   finish(name: string, gen: Gen, state: "FREE" | "BROKEN"): boolean,
@@ -52,12 +52,13 @@ export class LeaseWorkflows {
 		return row?.gen === Number(gen) && row.epoch === epoch && row.state === state ? row : null;
 	}
 
-	/** @param {{ holder: string, ttl?: number, wait?: number, pubkey: string }} opts */
-	async acquire({ holder, ttl = 1800, wait = 0, pubkey }) {
+	/** only: claim one of these VMs and no other.
+	 *  @param {{ holder: string, ttl?: number, wait?: number, pubkey: string, only?: string[] }} opts */
+	async acquire({ holder, ttl = 1800, wait = 0, pubkey, only }) {
 		const deadline = this.now() + wait;
 		let reaped = false, claim;
 		for (;;) {
-			claim = this.store.claim(holder, ttl, pubkey);
+			claim = only ? this.store.claim(holder, ttl, pubkey, only) : this.store.claim(holder, ttl, pubkey);
 			if (claim) break;
 			if (!reaped) {
 				reaped = true;

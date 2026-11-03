@@ -66,7 +66,8 @@ VM (Ubuntu 24.04; XFCE desktop unless --headless)
 | `host/boxery-host` + `host/*.mjs` | control plane | Backend-agnostic VM manager. Bash entry point; `connect` stays in Bash so the ProxyCommand never pays Node startup; everything else is Node. Ownership per module: [host-modules.md](docs/host-modules.md) |
 | `host/backends/*.sh` | control plane | Hypervisor effects only, one allowlisted function per process, arguments as argv ([contract](host/backends/README.md)). libvirt and Lima are stable; Cloud Hypervisor and exe.dev are experimental |
 | `proxy/boxery-proxy.mjs` | control plane | Credential proxy: checks the per-VM token, applies per-route method/path allowlists, body/concurrency/time limits, injects the real credential, refuses WebSocket upgrades (clients use SSE) |
-| `image/layers/*.sh`, `image/base-user-data.yaml` | guest | What boxery adds to Ubuntu: `plumbing` (agent user, proxy bridge, sshd/sysctl/tmux), `devtools` (git from the git-core PPA, Node 24, pi, opencode, …), `desktop` (XFCE, TigerVNC/noVNC, Chrome, Playwright). Desktop VMs clone a base built once with all three; headless VMs apply the first two at first boot |
+| `image/layers/*.sh`, `image/base-user-data.yaml` | guest | What boxery adds to Ubuntu: `plumbing` (agent user, proxy bridge, sshd/sysctl/tmux), `devtools` (git from the git-core PPA, Node 24, pi, opencode, …), `desktop` (XFCE, TigerVNC/noVNC, Chrome, Playwright). Desktop VMs clone a base built once with all three; headless VMs apply the first two at first boot, plus optional ones (`--layers github-runner`: the pinned GitHub Actions runner) |
+| `host/runners.mjs` | control plane | GitHub Actions runner manager (`boxery-host runners`, a user service): keeps N ephemeral JIT runners waiting, one per leased pool VM; each job's VM is reset after it. The GitHub token stays on the host ([docs/github-runners.md](docs/github-runners.md)) |
 
 ## Deployment shapes
 
@@ -95,6 +96,7 @@ In HTTP mode "local" means the machine running MCP: grant values come from that 
 | | `host-keys/NAME` (each VM's pinned ssh host key, one known_hosts line) | Written with the seed, removed by `rm`; read by `boxery-host known-hosts` |
 | | `tokens.json` (VM → proxy secret; a leased pool VM's carries its lease id), `edge/NAME.json` (HTTP grant headers, stamped with the lease on a pool VM), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
 | | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `vm-kind/`, `work/OP/` (seeds, removed after the operation) | |
+| | `runners.json` (GitHub runner configuration), `runners.env` (the GitHub token), `runners-state.json` (what each runner slot is doing), `runners.lock` | `0600`; the token never leaves the host ([GitHub runners](docs/github-runners.md)) |
 | | `pre-upgrade/`: `leases.db`, `tokens.json`, `edge/`, `vm-shapes/`, `vm-kind/` as they were before the last `upgrade` | Restored if the upgrade rolls back; kept for recovery by hand ([install](docs/install.md#upgrading)) |
 | Hypervisor | VMs, images (`VM@LABEL`), seeds | Owned by the backend |
 | Guest | `~/.boxery/token`, agent configs, `/run/user/UID/boxery/` (pushed grants, tmpfs) | Token rotates on every new VM and every lease; grants are gone on reset or reboot |
@@ -149,6 +151,7 @@ FREE ──acquire──▶ ACQUIRING ──▶ LEASED ──release / expiry / 
 | HTTP API tokens (GitHub, npm, …) | control plane, `edge/NAME.json` | `boxery grant NAME http:HOST --cmd …` / `github`. Values are resolved on the controller, pushed to the host, and injected per request at `/edge/`. The guest reaches them via git `insteadOf` and npm registry config. On a pool VM, bound to the lease. Cleared on `rm` and lease reset |
 | `env:` / `file:` grants | VM tmpfs (`/run/user/UID/boxery`, files `0400`) | Pushed by the controller over ssh and reconciled on grant/revoke, new, start, revert, attach, ssh, and when pi selects the VM |
 | ssh agent | the laptop | Per-VM `ForwardAgent` while connected |
+| GitHub runner token | control plane, `runners.env` | `boxery-host runners token`. Used only by the runner manager to ask GitHub for a single-use JIT runner config per job; only that config enters the runner VM (over ssh stdin), and the lease's reset removes it |
 
 Agents can list grants but never create them ([grants.md](docs/grants.md)).
 

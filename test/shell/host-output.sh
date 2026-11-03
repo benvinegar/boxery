@@ -60,8 +60,9 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
                             profile using it and check them; waits for in-flight operations, rolls back on failure
   build-base                build the golden desktop image (one-time; headless VMs don't need it)
   add-key < key.pub         authorize a controller's ssh key for new VMs
-  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless]
+  new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless [--layers github-runner]]
                             --headless: no desktop; boots the stock image, no build-base needed
+                            --layers: optional image layers too (github-runner: a GitHub Actions runner VM)
   new NAME --from IMAGE     boot a new VM from an image (e.g. demo@s1; keeps its desktop or not)
   fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
                             copy a VM (running or not) into new VMs with their own identity
@@ -83,8 +84,11 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
   pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
-  acquire --holder H [--ttl S] [--wait S]    lease a free pool VM (lease ssh pubkey on stdin)
+  acquire --holder H [--ttl S] [--wait S] [--only NAME,…]   lease a free pool VM (lease ssh pubkey on stdin)
   renew LEASE [--ttl S] | release LEASE | reap | reconcile
+
+  runners status [--json] | start | stop | token < FILE | config [--repo O/R | --org ORG] [--vms NAME,…] …
+                            GitHub Actions runners, one job per freshly reset pool VM (docs/github-runners.md)
 EOF
 run help; same "help" out 0
 run; same "no command → usage" out 0
@@ -180,7 +184,7 @@ err "snaps with a bad flag" "boxery-host: usage: snaps NAME [--json]" snaps a1 b
 err "invalid snapshot name" "boxery-host: invalid snapshot name 'x;id'" snap a1 'x;id'
 err "non-numeric size" "boxery-host: --mem must be a number" new a3 --mem '1;id'
 err "invalid VM name" "boxery-host: invalid VM name: A1" new A1
-err "new without a name" "boxery-host: usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless]" new
+err "new without a name" "boxery-host: usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless [--layers L,…]]" new
 err "connect to a non-ssh port" "boxery-host: connect: only the ssh port is supported (forward other ports over ssh)" connect a1 80
 err "resize without sizes" "boxery-host: usage: resize NAME [--cpus N] [--mem MiB] [--disk GiB]" resize a1
 err "revert without a snapshot" "boxery-host: usage: revert NAME SNAP" revert a1

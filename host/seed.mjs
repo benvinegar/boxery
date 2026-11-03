@@ -61,7 +61,8 @@ export async function ollamaModels() {
 
 // ---------------------------------------------------------------- image layers (image/layers/)
 // plumbing (every VM) → devtools → desktop. The desktop base build applies all three; a headless VM boots
-// the backend's stock image and applies plumbing + devtools at first boot. Both carry every layer's file
+// the backend's stock image and applies plumbing + devtools at first boot, plus any optional layer it asked
+// for (`new --headless --layers github-runner`). Both carry every layer's file
 // and the runner (boxery-provision) as write_files entries: `layers`, from host/backend.sh __layer_files.
 /** The desktop build's cloud-config: image/base-user-data.yaml with the layers at its marker line.
  *  @param {string} root @param {string[]} layers */

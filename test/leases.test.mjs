@@ -50,6 +50,16 @@ it("claims hand out distinct VMs, least-recently-used first, and null when exhau
 	assert.equal(L.claim(db, "h", 600, KEY), null);
 });
 
+it("claim --only: one of the listed VMs or none (the runner manager never takes an agent's VM); heldBy finds a holder's rows", () => {
+	assert.equal(L.claim(db, "github-runner", 600, KEY, ["p3", "nope"]).name, "p3");
+	assert.equal(L.claim(db, "github-runner", 600, KEY, ["p3"]), null, "p3 is taken; p1 and p2 are not candidates");
+	assert.equal(L.claim(db, "someone", 600, KEY).name, "p1", "no list: any free VM");
+	assert.throws(() => L.claim(db, "h", 600, KEY, ["Bad Name"]), /invalid VM list/);
+	assert.throws(() => L.claim(db, "h", 600, KEY, []), /invalid VM list/);
+	assert.deepEqual(L.heldBy(db, "github-runner").map((r) => [r.name, r.state, /^l-/.test(r.lease_id)]), [["p3", "ACQUIRING", true]]);
+	assert.deepEqual(L.heldBy(db, "nobody"), []);
+});
+
 it("TTL is clamped to [60s, 8h]", () => {
 	assert.equal(L.claim(db, "h", 1, KEY).expires_at, T0 + L.TTL_MIN);
 	assert.equal(L.claim(db, "h", 10 ** 9, KEY).expires_at, T0 + L.TTL_MAX);

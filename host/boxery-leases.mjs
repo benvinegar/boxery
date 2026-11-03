@@ -253,17 +253,28 @@ export function remove(db, name, force = false) {
 	});
 }
 
-/** FREE → ACQUIRING for the least recently used free VM. Returns null when the pool is exhausted. */
-/** @param {DatabaseSync} db @param {string | undefined} holder @param {unknown} ttl @param {string | undefined} pubkey @returns {Claim | null} */
-export function claim(db, holder, ttl, pubkey) {
+/** Every row a holder has, in any state, with its lease id: what a restarted lease holder still owns
+ *  (the GitHub runner manager, host/runners.mjs). @param {DatabaseSync} db @param {string} holder */
+export function heldBy(db, holder) {
+	return /** @type {Pick<LeaseRow, "name" | "state" | "gen" | "lease_id" | "expires_at">[]} */ (db
+		.prepare("SELECT name, state, gen, lease_id, expires_at FROM vms WHERE holder = ? ORDER BY name").all(holder));
+}
+
+/** FREE → ACQUIRING for the least recently used free VM. Returns null when the pool is exhausted.
+ * only: one of these VMs and no other (the runner manager serves the VMs that carry the GitHub runner,
+ * never an agent's pool VM). */
+/** @param {DatabaseSync} db @param {string | undefined} holder @param {unknown} ttl @param {string | undefined} pubkey @param {string[]} [only] @returns {Claim | null} */
+export function claim(db, holder, ttl, pubkey, only) {
 	if (!HOLDER.test(holder ?? "")) throw new Error(`invalid holder "${holder}"`);
 	if (!PUBKEY.test(pubkey ?? "")) throw new Error("invalid ssh public key");
+	if (only && !(Array.isArray(only) && only.length && only.every((n) => VALID_NAME.test(n)))) throw new Error("invalid VM list");
 	const t = now();
 	const exp = t + clampTtl(ttl);
 	return tx(db, () => {
 		const r = /** @type {Pick<LeaseRow, "name" | "gen" | "epoch"> | undefined} */ (db.prepare(`SELECT name, gen, epoch FROM vms WHERE state = 'FREE'
 			AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE resource=vms.name)
-			ORDER BY updated_at, name LIMIT 1`).get());
+			AND (?1 IS NULL OR name IN (SELECT value FROM json_each(?1)))
+			ORDER BY updated_at, name LIMIT 1`).get(only ? JSON.stringify(only) : null));
 		if (!r) return null;
 		const lease = `l-${randomBytes(16).toString("hex")}`;
 		db.prepare(

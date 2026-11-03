@@ -34,8 +34,9 @@ export function parseOptions(args, defaults, flags) {
 		const key = flags[args[i]];
 		const value = args[++i];
 		if (value == null) throw new Error(`${args[i - 1]} needs a value`);
-		if (key !== "holder" && !/^\d+$/.test(value)) throw new Error(`${args[i - 1]} must be a number`);
-		result[key] = key === "holder" ? value : Number(value);
+		const text = ["holder", "only"].includes(key); // the rest are numbers
+		if (!text && !/^\d+$/.test(value)) throw new Error(`${args[i - 1]} must be a number`);
+		result[key] = text ? value : Number(value);
 	}
 	return /** @type {T} */ (result);
 }
@@ -97,8 +98,9 @@ export async function runLifecycle(rt, command, args) {
 	flows = new LeaseWorkflows({ store, backend, journal, lock, reclaim, now, sleep, log: rt.log });
 	switch (command) {
 		case "acquire": {
-			const options = parseOptions(args, { holder: "", ttl: 1800, wait: 0 }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait" });
-			const claim = await flows.acquire({ ...options, pubkey: await publicKey() });
+			// --only A,B: lease one of these pool VMs and no other (the GitHub runner manager, host/runners.mjs).
+			const { only, ...options } = parseOptions(args, { holder: "", ttl: 1800, wait: 0, only: "" }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait", "--only": "only" });
+			const claim = await flows.acquire({ ...options, ...(only ? { only: only.split(",").map(nameOf) } : {}), pubkey: await publicKey() });
 			process.stdout.write(`${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
 			break;
 		}
