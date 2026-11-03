@@ -109,7 +109,7 @@ tokens=$(cat "$p1/tokens.json") gen=$(sql "$p1/leases.db" "SELECT gen FROM vms W
 # A broken release: init succeeds, then the new host migrates the lease store (schema version 2: a
 # column and a table), rewrites tokens.json and adds an edge grant, but can't list VMs → roll back.
 edit() { node -e 'const fs=require("fs");const [f,a,b]=process.argv.slice(1);const s=fs.readFileSync(f,"utf8");if(!s.includes(a))process.exit(1);fs.writeFileSync(f,s.replace(a,()=>b))' "$@" || bad "test setup: could not edit $1"; }
-edit "$tmp/origin/host/cli.mjs" 'async function ls(rt, [arg]) {' 'async function ls(rt, [arg]) { rt.db(); const fs = await import("node:fs"); fs.writeFileSync(`${rt.conf}/tokens.json`, "{\"v2\":true}"); fs.mkdirSync(`${rt.conf}/edge`, { recursive: true }); fs.writeFileSync(`${rt.conf}/edge/v2.json`, "{}"); fs.writeFileSync(`${rt.conf}/broken.ran`, ""); fail("broken release");'
+edit "$tmp/origin/host/cli.mjs" 'async function ls(rt, args) {' 'async function ls(rt, args) { rt.db(); const fs = await import("node:fs"); fs.writeFileSync(`${rt.conf}/tokens.json`, "{\"v2\":true}"); fs.mkdirSync(`${rt.conf}/edge`, { recursive: true }); fs.writeFileSync(`${rt.conf}/edge/v2.json`, "{}"); fs.writeFileSync(`${rt.conf}/broken.ran`, ""); fail("broken release");'
 edit "$tmp/origin/host/boxery-leases.mjs" 'export const SCHEMA_VERSION = 1;' 'export const SCHEMA_VERSION = 2;'
 edit "$tmp/origin/host/boxery-leases.mjs" '	if (v < 1) db.exec(SCHEMA_V1);' '	if (v < 1) db.exec(SCHEMA_V1); if (v < 2) db.exec("ALTER TABLE vms ADD COLUMN zone TEXT; CREATE TABLE broken_release (x)");'
 og commit -qam broken; og tag v0.7.2

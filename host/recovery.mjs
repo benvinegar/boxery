@@ -5,10 +5,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import * as leases from "./boxery-leases.mjs";
+import { copyBuildRecord, deleteBuildRecord } from "./build-info.mjs";
 import { runLifecycle } from "./boxery-lifecycle.mjs";
 import { actions, completeIntent } from "./boxery-operations.mjs";
 import { deleteHostKey } from "./hostkeys.mjs";
-import { cleanupVmImages, deleteSnapshot, revertVm } from "./images.mjs";
+import { cleanupVmImages, deleteSnapshot, restoreVm, revertVm } from "./images.mjs";
 import { deleteVmKind } from "./kinds.mjs";
 import { deleteVmShape } from "./shapes.mjs";
 import { fail, POOL_SNAP } from "./util.mjs";
@@ -34,11 +35,13 @@ export async function replayIntents(rt) {
 			case "create":
 				await rt.vms.call("backend_cleanup_new", [name]);
 				deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
+				deleteBuildRecord(rt.conf, name);
 				break;
 			case "remove":
 				await rt.vms.call("backend_cleanup_new", [name]);
 				await cleanupVmImages(rt, name); // rm can have crashed between deleting the VM and its images
 				deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
+				deleteBuildRecord(rt.conf, name, true);
 				break;
 			case "capture": await rt.vms.call("backend_recover_capture", [name, data[1], data[2]]); break;
 			case "fork-image": await rt.vms.call("backend_cleanup_image", [name]); break;
@@ -58,6 +61,20 @@ export async function replayIntents(rt) {
 					await rt.vms.call("backend_cleanup_image", [`${name}@${POOL_SNAP}`]);
 					await setPetKeys(rt, name);
 				} else rt.deleteToken(name);
+				break;
+			// A pool VM's patch (patch.mjs) changed its disk and replaces its clean image. Put the VM back to its
+			// clean image, whichever that is now (the old one, or the new one if the capture finished); without
+			// one (the crash fell between removing the old and capturing the new) it can't be reset: BROKEN.
+			case "pool-patch":
+				if (leases.get(db, name)) {
+					if (await rt.vms.imageExists(`${name}@${POOL_SNAP}`)) {
+						await restoreVm(rt.vms, name, POOL_SNAP);
+						copyBuildRecord(rt.conf, `${name}@${POOL_SNAP}`, name);
+					} else {
+						leases.markMissing(db, name);
+						rt.log(`${name}: patch interrupted without a clean image → BROKEN (pool rm ${name}, patch it, pool add ${name})`);
+					}
+				}
 				break;
 			case "pool-rm":
 				if (leases.get(db, name)) leases.remove(db, name, true);
@@ -104,4 +121,5 @@ export async function reconcileVm(rt, name) {
 		rt.log(`${name} missing from backend → BROKEN`);
 	}
 	rt.deleteToken(name); rt.clearEdge(name); deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); deleteHostKey(rt.conf, name);
+	deleteBuildRecord(rt.conf, name);
 }

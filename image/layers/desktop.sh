@@ -22,31 +22,43 @@ if ! dpkg-query -W -f='${Status}' firefox 2>/dev/null | grep -q 'install ok inst
 	apt-get update -qq && apt-get install -y -q firefox
 fi
 
-# Browser for CDP/Playwright control. amd64: Google Chrome deb. arm64 (Apple Silicon/Lima): Google ships no
-# Linux arm64 Chrome and Ubuntu's chromium is a snap, so use Playwright's Chromium build, exposed as
-# `google-chrome` (below, after playwright-core).
-if [ "$(dpkg --print-architecture)" = amd64 ] && ! command -v google-chrome >/dev/null; then
+# Browser for CDP/Playwright control. amd64: Google Chrome deb (its apt repo keeps it updated: plumbing's
+# full-upgrade). arm64 (Apple Silicon/Lima): Google ships no Linux arm64 Chrome and Ubuntu's chromium is a
+# snap, so use Playwright's Chromium build, exposed as `google-chrome` (below, after playwright-core).
+ARCH=$(dpkg --print-architecture)
+if [ "$ARCH" = amd64 ] && ! command -v google-chrome >/dev/null; then
 	curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 	apt-get install -y -q /tmp/chrome.deb && rm -f /tmp/chrome.deb
 fi
 
-# Playwright client used by the laptop extension's vm_browser tool (talks CDP to the desktop Chrome)
-[ -f /opt/boxery/node_modules/playwright-core/index.mjs ] || npm install --prefix /opt/boxery playwright-core
+# Playwright client used by the laptop extension's vm_browser tool (talks CDP to the desktop Chrome). The
+# latest release on every run, so running this layer again (boxery patch) updates it.
+npm install --prefix /opt/boxery playwright-core@latest
 ls /opt/boxery/node_modules/playwright-core/index.mjs
-# Ubuntu restricts user namespaces by executable path. Chrome's deb has a distro profile, but Playwright's
-# ARM64 Chromium needs its own so the browser can keep its sandbox enabled.
-cat >/etc/apparmor.d/boxery-chromium <<'EOF'
+if [ "$ARCH" != amd64 ]; then
+	# The Chromium build this playwright-core pins (a no-op if it's there already), then point google-chrome
+	# and the AppArmor profile at it and remove older builds. Ubuntu restricts user namespaces by executable
+	# path: Chrome's deb has a distro profile, Playwright's Chromium needs its own to keep its sandbox on.
+	B=/opt/boxery/browsers
+	PLAYWRIGHT_BROWSERS_PATH=$B node /opt/boxery/node_modules/playwright-core/cli.js install --with-deps chromium
+	REV=$(node -p 'require("/opt/boxery/node_modules/playwright-core/browsers.json").browsers.find((b) => b.name === "chromium").revision')
+	CH=$(ls -d "$B/chromium-$REV"/chrome-linux*/chrome | head -1)
+	cat >/etc/apparmor.d/boxery-chromium <<EOF
 abi <abi/4.0>,
 include <tunables/global>
-profile boxery-chromium /opt/boxery/browsers/chromium-*/chrome-linux*/chrome flags=(unconfined) {
+profile boxery-chromium $CH flags=(unconfined) {
   userns,
 }
 EOF
-if ! command -v google-chrome >/dev/null; then
-	PLAYWRIGHT_BROWSERS_PATH=/opt/boxery/browsers node /opt/boxery/node_modules/playwright-core/cli.js install --with-deps chromium
-	CH=$(ls -d /opt/boxery/browsers/chromium-*/chrome-linux*/chrome | head -1)
-	printf '#!/bin/sh\nexec %s "$@"\n' "$CH" >/usr/local/bin/google-chrome && chmod +x /usr/local/bin/google-chrome
 	apparmor_parser -r /etc/apparmor.d/boxery-chromium
+	printf '#!/bin/sh\nexec %s "$@"\n' "$CH" >/usr/local/bin/google-chrome.new && chmod +x /usr/local/bin/google-chrome.new
+	mv -f /usr/local/bin/google-chrome.new /usr/local/bin/google-chrome
+	# A browser still running an older build would crash at its next new process: stop it (vm_browser starts it again).
+	for old in "$B"/chromium-* "$B"/chromium_headless_shell-*; do
+		[ -d "$old" ] && [ "${old##*-}" != "$REV" ] || continue
+		pkill -f "^$old/" 2>/dev/null || true
+		rm -rf "$old"
+	done
 fi
 google-chrome --version
 
