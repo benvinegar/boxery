@@ -1,0 +1,504 @@
+<!doctype html>
+<!--
+  boxery 30 s social promo, 1080×1080: a coding agent's view of using boxery, drawn in the brand's isometric style.
+
+  Open this file in a browser to watch it loop (?t=12.5 freezes on a moment, space pauses).
+  render.mjs steps window.renderFrame(t) frame by frame and pipes the result to ffmpeg.
+
+   0.0– 2.3  title: the mark builds, "Your coding agent deserves its own VMs"; the lockup glides to the corner
+   2.3–22.3  the story: you ask for the tests in a VM, the agent makes one, forks it three ways, keeps the fix, pushes
+  22.3–26.2  end card: the lockup glides back, tagline, install command, repo
+  26.2–30.0  works with: the lockup moves up, agent logos
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>boxery promo</title>
+<style>
+  html, body { margin: 0; background: #1F1F1D; }
+  body { display: grid; place-items: center; min-height: 100vh; }
+  canvas { width: min(100vw, 100vh); height: min(100vw, 100vh); display: block; }
+  body.render canvas { width: 1080px; height: 1080px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1080"></canvas>
+<script>
+const W = 1080, H = 1080, DUR = 30;
+const cv = document.getElementById('c');
+const x = cv.getContext('2d');
+
+// Brand colors (docs/brand/README.md) and the dark theme of docs/hero.py.
+const COL = {
+  bg: '#2C2C2A', ink: '#F1EFE8', muted: '#888780', label: '#B4B2A9', dim: '#5F5E5A',
+  green: '#1D9E75', dgreen: '#0F6E56', ghost: '#5DCAA5', vmtext: '#9FE1CB',
+  card: ['#1F1F1D', '#181817', '#121211', '#5F5E5A'],   // face, side, bottom, stroke
+  host: ['#232321', '#1A1A19', '#131312', '#444441'],
+  well: '#1A1A19',
+};
+const SANS = "system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif";
+const MONO = "'JetBrains Mono NL', 'JetBrains Mono', ui-monospace, Menlo, monospace";  // NL: no ligatures, so ==> stays as typed
+const C = Math.cos(Math.PI / 6), S = 0.5;   // isometric unit vectors, as in the mark
+
+// ---- timing ----
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const out = t => 1 - Math.pow(1 - clamp(t), 3);
+const inout = t => { t = clamp(t); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const back = t => { t = clamp(t); const c1 = 1.4, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const bounce = t => {
+  t = clamp(t); const n = 7.5625, d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375;
+  return n * (t -= 2.625 / d) * t + 0.984375;
+};
+
+// ---- primitives ----
+function poly(p, fill, stroke, lw = 2) {
+  x.beginPath(); x.moveTo(p[0][0], p[0][1]);
+  for (let i = 1; i < p.length; i++) x.lineTo(p[i][0], p[i][1]);
+  x.closePath();
+  if (fill) { x.fillStyle = fill; x.fill(); }
+  if (stroke) { x.strokeStyle = stroke; x.lineWidth = lw; x.lineJoin = 'round'; x.stroke(); }
+}
+
+function text(s, X, Y, o = {}) {
+  const { size = 28, color = COL.ink, weight = 400, font = SANS, align = 'center', alpha = 1, ls = 0, maxW } = o;
+  if (alpha <= 0) return;
+  let sz = size;
+  x.font = `${weight} ${sz}px ${font}`;
+  x.letterSpacing = `${ls}px`;
+  if (maxW) while (x.measureText(s).width > maxW && sz > 10) { sz -= 1; x.font = `${weight} ${sz}px ${font}`; }
+  x.save(); x.globalAlpha *= alpha;
+  x.fillStyle = color; x.textAlign = align; x.textBaseline = 'alphabetic';
+  x.fillText(s, X, Y);
+  x.restore();
+  x.letterSpacing = '0px';
+}
+
+function measure(s, size, weight = 400, font = SANS) {
+  x.font = `${weight} ${size}px ${font}`;
+  return x.measureText(s).width;
+}
+
+function rrect(X, Y, w, h, r, fill, stroke, lw = 2, dash) {
+  x.beginPath(); x.roundRect(X, Y, w, h, r);
+  if (fill) { x.fillStyle = fill; x.fill(); }
+  if (stroke) { x.strokeStyle = stroke; x.lineWidth = lw; if (dash) x.setLineDash(dash); x.stroke(); x.setLineDash([]); }
+}
+
+function withAlpha(a, fn) { if (a <= 0) return; x.save(); x.globalAlpha *= a; fn(); x.restore(); }
+
+// ---- cubes, each from its bottom-front vertex (bx, by) with edge e ----
+function faces(bx, by, e) {
+  const tf = [bx, by - e], tl = [bx - C * e, by - S * e - e], tr = [bx + C * e, by - S * e - e];
+  const bl = [bx - C * e, by - S * e], br = [bx + C * e, by - S * e], tb = [bx, by - 2 * e];
+  return { top: [tf, tr, tb, tl], left: [[bx, by], bl, tl, tf], right: [[bx, by], br, tr, tf], bl, br, tl, tr, tb, tf };
+}
+
+// A running VM: the mark's solid cube. pop scales it in about its centre.
+function cube(bx, by, e, o = {}) {
+  const { alpha = 1, pop = 1, top = COL.green, left = COL.ink, right = COL.dgreen, lift = 0 } = o;
+  if (alpha <= 0 || pop <= 0) return;
+  x.save(); x.globalAlpha *= alpha;
+  x.translate(bx, by - e - lift); x.scale(pop, pop); x.translate(-bx, -(by - e));
+  const f = faces(bx, by, e);
+  poly(f.top, top); poly(f.left, left); poly(f.right, right);
+  x.restore();
+}
+
+// An empty or thrown-away VM: the cube's outline, dashed.
+function ghost(bx, by, e, o = {}) {
+  const { alpha = 1, dash = [7, 6], color = COL.ghost, lw = 2 } = o;
+  if (alpha <= 0) return;
+  const f = faces(bx, by, e);
+  x.save(); x.globalAlpha *= alpha; x.setLineDash(dash);
+  poly([[bx, by], f.bl, f.tl, f.tb, f.tr, f.br], null, color, lw);
+  x.beginPath(); x.moveTo(bx, by); x.lineTo(bx, by - e); x.lineTo(f.tl[0], f.tl[1]);
+  x.moveTo(bx, by - e); x.lineTo(f.tr[0], f.tr[1]); x.stroke();
+  x.restore();
+}
+
+function check(cx, cy, r, prog, color = COL.green) {
+  if (prog <= 0) return;
+  x.save(); x.globalAlpha *= clamp(prog * 2);
+  x.beginPath(); x.arc(cx, cy, r * back(prog), 0, Math.PI * 2); x.fillStyle = color; x.fill();
+  x.strokeStyle = COL.ink; x.lineWidth = r * 0.22; x.lineCap = 'round'; x.lineJoin = 'round';
+  const p = seg(prog, 0.3, 1);
+  const a = [cx - r * 0.42, cy + r * 0.02], b = [cx - r * 0.1, cy + r * 0.34], c = [cx + r * 0.45, cy - r * 0.32];
+  x.beginPath(); x.moveTo(...a);
+  if (p < 0.4) x.lineTo(lerp(a[0], b[0], p / 0.4), lerp(a[1], b[1], p / 0.4));
+  else { x.lineTo(...b); const q = (p - 0.4) / 0.6; x.lineTo(lerp(b[0], c[0], q), lerp(b[1], c[1], q)); }
+  x.stroke(); x.restore();
+}
+
+function cross(cx, cy, r, prog) {
+  if (prog <= 0) return;
+  x.save(); x.globalAlpha *= clamp(prog * 2);
+  x.beginPath(); x.arc(cx, cy, r * back(prog), 0, Math.PI * 2); x.fillStyle = '#444441'; x.fill();
+  x.strokeStyle = COL.label; x.lineWidth = r * 0.2; x.lineCap = 'round';
+  const k = r * 0.32 * out(seg(prog, 0.3, 1));
+  x.beginPath(); x.moveTo(cx - k, cy - k); x.lineTo(cx + k, cy + k); x.moveTo(cx + k, cy - k); x.lineTo(cx - k, cy + k); x.stroke();
+  x.restore();
+}
+
+// ---- the mark and wordmark, from docs/brand/lockup-dark.svg ----
+const HEX = [[32, 5], [55.38, 18.5], [55.38, 45.5], [32, 59], [8.62, 45.5], [8.62, 18.5]];
+const MTOP = [[32, 24.07], [44.12, 31.07], [32, 38.07], [19.88, 31.07]];
+const MLEFT = [[19.88, 31.07], [32, 38.07], [32, 52.07], [19.88, 45.07]];
+const MRIGHT = [[32, 38.07], [44.12, 31.07], [44.12, 45.07], [32, 52.07]];
+const WORD = new Path2D("M350 10Q292 10 253.0 -19.0Q214 -48 199 -100V0H77V-730H202V-576L198 -450Q214 -502 253.5 -531.0Q293 -560 350 -560Q431 -560 480.0 -503.0Q529 -446 529 -349V-200Q529 -104 479.5 -47.0Q430 10 350 10ZM303 -98Q351 -98 377.5 -124.0Q404 -150 404 -204V-346Q404 -400 377.5 -426.0Q351 -452 303 -452Q255 -452 228.5 -423.0Q202 -394 202 -341V-209Q202 -156 228.5 -127.0Q255 -98 303 -98ZM860 9Q754 9 692.0 -50.5Q630 -110 630 -211V-339Q630 -441 692.0 -500.0Q754 -559 860 -559Q966 -559 1028.0 -500.0Q1090 -441 1090 -339V-211Q1090 -110 1028.0 -50.5Q966 9 860 9ZM860 -100Q910 -100 937.5 -127.5Q965 -155 965 -207V-343Q965 -395 937.5 -422.5Q910 -450 860 -450Q810 -450 782.5 -422.5Q755 -395 755 -343V-207Q755 -155 782.5 -127.5Q810 -100 860 -100ZM1156 0 1348 -284 1169 -550H1310L1395 -415Q1403 -403 1410.0 -388.0Q1417 -373 1420 -364Q1424 -373 1430.5 -388.0Q1437 -403 1445 -415L1530 -550H1672L1493 -284L1684 0H1542L1447 -151Q1439 -163 1431.5 -178.5Q1424 -194 1420 -203Q1416 -194 1409.0 -178.5Q1402 -163 1394 -151L1298 0ZM1981 10Q1911 10 1859.0 -17.0Q1807 -44 1778.5 -93.5Q1750 -143 1750 -210V-340Q1750 -407 1778.5 -456.5Q1807 -506 1859.0 -533.0Q1911 -560 1981 -560Q2050 -560 2101.5 -533.0Q2153 -506 2181.5 -457.5Q2210 -409 2210 -344V-244H1870V-206Q1870 -150 1899.0 -121.5Q1928 -93 1981 -93Q2020 -93 2047.5 -106.5Q2075 -120 2080 -146H2204Q2191 -75 2130.0 -32.5Q2069 10 1981 10ZM1870 -344V-325L2090 -326V-345Q2090 -402 2062.0 -433.0Q2034 -464 1981 -464Q1926 -464 1898.0 -432.5Q1870 -401 1870 -344ZM2337 0V-550H2459V-443Q2469 -497 2508.5 -528.5Q2548 -560 2611 -560Q2695 -560 2742.0 -506.0Q2789 -452 2789 -355V-303H2664V-349Q2664 -399 2638.0 -425.5Q2612 -452 2564 -452Q2514 -452 2488.0 -422.0Q2462 -392 2462 -337V0ZM2965 180 3043 -30 2836 -550H2968L3074 -269Q3083 -244 3092.0 -214.5Q3101 -185 3105 -160Q3108 -185 3116.5 -214.5Q3125 -244 3134 -269L3232 -550H3364L3096 180Z");
+
+// Agent logos, from docs/hero.py.
+const AGENTS = [{"name": "Claude Code", "vb": [0.0, 0.0, 24.0, 24.0], "paths": [{"d": "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"}]}, {"name": "Codex", "vb": [0.0, 0.0, 24.0, 24.0], "paths": [{"d": "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"}]}, {"name": "Cursor", "vb": [88.0, 66.0, 336.0, 380.0], "paths": [{"d": "m415.348 156.575-151.504-87.4699c-4.865-2.8094-10.868-2.8094-15.733 0l-151.4964 87.4699c-4.0897 2.361-6.6146 6.728-6.6146 11.458v176.383c0 4.73 2.5249 9.097 6.6146 11.459l151.5034 87.469c4.865 2.81 10.868 2.81 15.733 0l151.504-87.469c4.09-2.362 6.615-6.729 6.615-11.459v-176.383c0-4.73-2.525-9.097-6.615-11.458zm-9.517 18.528-146.254 253.319c-.989 1.707-3.599 1.01-3.599-.967v-165.871c0-3.314-1.771-6.38-4.645-8.044l-143.644-82.932c-1.707-.989-1.01-3.599.967-3.599h292.51c4.153 0 6.749 4.502 4.672 8.101h-.007z", "evenodd": true}]}, {"name": "opencode", "vb": [0.0, 6.0, 24.0, 30.0], "paths": [{"d": "M18 30H6V18H18V30Z", "opacity": 0.35}, {"d": "M18 12H6V30H18V12ZM24 36H0V6H24V36Z"}]}, {"name": "pi", "vb": [165.0, 165.0, 470.0, 470.0], "paths": [{"d": "M165.29 165.29H517.36V400H400V282.65H165.29Z"}, {"d": "M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"}, {"d": "M517.36 400H634.72V634.72H517.36Z"}]}];
+AGENTS.forEach(a => a.paths.forEach(p => { p.path = new Path2D(p.d); }));
+
+// A logo fitted into a size×size box centred on (cx, cy), like an <svg viewBox> would.
+function agentIcon(a, cx, cy, size, color = COL.ink) {
+  const [vx, vy, vw, vh] = a.vb, k = size / Math.max(vw, vh);
+  x.save(); x.translate(cx - vw * k / 2, cy - vh * k / 2); x.scale(k, k); x.translate(-vx, -vy);
+  x.fillStyle = color;
+  for (const p of a.paths) { x.save(); if (p.opacity) x.globalAlpha *= p.opacity; x.fill(p.path, p.evenodd ? 'evenodd' : 'nonzero'); x.restore(); }
+  x.restore();
+}
+
+// Draws the lockup with its point (ox, 32) in lockup units at (cx, cy).
+// hex: outline drawn 0..1, drop: inner cube landed 0..1, word: wordmark revealed 0..1.
+function lockup(cx, cy, s, o = {}) {
+  const { hex = 1, drop = 1, word = 1, ox = 120.5, alpha = 1 } = o;
+  if (alpha <= 0) return;
+  x.save(); x.globalAlpha *= alpha;
+  x.translate(cx, cy); x.scale(s, s); x.translate(-ox, -32);
+  if (hex > 0) {
+    x.setLineDash([162 * hex, 400]);
+    poly(HEX, null, COL.ink, 4);
+    x.setLineDash([]);
+  }
+  if (drop > 0) {
+    x.save();
+    x.globalAlpha *= clamp(drop * 3);
+    x.translate(0, -34 * (1 - bounce(drop)));
+    poly(MTOP, COL.green); poly(MLEFT, COL.ink); poly(MRIGHT, COL.dgreen);
+    x.restore();
+  }
+  if (word > 0) {
+    x.save();
+    x.beginPath(); x.rect(70, -10, 175 * out(word), 90); x.clip();
+    x.globalAlpha *= clamp(word * 1.5);
+    x.translate(78 + (1 - out(word)) * -10, 45); x.scale(0.047273, 0.047273);
+    x.fillStyle = COL.ink; x.fill(WORD);
+    x.restore();
+  }
+  x.restore();
+}
+
+// ---- background: the social card's faded dot grid and the two-tone bottom bar ----
+const bgLayer = document.createElement('canvas');
+bgLayer.width = W; bgLayer.height = H;
+{
+  const b = bgLayer.getContext('2d');
+  b.fillStyle = COL.bg; b.fillRect(0, 0, W, H);
+  const dots = document.createElement('canvas'); dots.width = W; dots.height = H;
+  const d = dots.getContext('2d');
+  d.fillStyle = COL.ink;
+  for (let yy = 16; yy < H; yy += 32) for (let xx = 16; xx < W; xx += 32) { d.beginPath(); d.arc(xx, yy, 1.6, 0, Math.PI * 2); d.fill(); }
+  d.globalCompositeOperation = 'destination-in';
+  const g = d.createRadialGradient(W / 2, H / 2, W * 0.18, W / 2, H / 2, W * 0.78);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+  d.fillStyle = g; d.fillRect(0, 0, W, H);
+  b.globalAlpha = 0.2; b.drawImage(dots, 0, 0); b.globalAlpha = 1;
+}
+
+function background(t) {
+  x.drawImage(bgLayer, 0, 0);
+  x.fillStyle = COL.green; x.fillRect(0, H - 10, W / 2, 10);
+  x.fillStyle = COL.dgreen; x.fillRect(W / 2, H - 10, W / 2, 10);
+}
+
+// ---- timeline ----
+const T0 = 2.3;              // the story starts
+const S_END = T0 + 20.0;     // 22.3: the end card
+const WW = 3.9;              // seconds into the end before the works-with scene
+
+// ---- the isometric world: a floor grid, the host as a platform, VMs as cubes ----
+let ISO = { ox: 540, oy: 540, u: 60 };
+const P = (gx, gy, gz = 0) => [ISO.ox + (gx - gy) * C * ISO.u, ISO.oy + (gx + gy) * S * ISO.u - gz * ISO.u];
+
+function floorGrid(n0, n1, alpha) {
+  x.save(); x.strokeStyle = COL.ink; x.lineWidth = 1; x.globalAlpha *= alpha;
+  for (let i = n0; i <= n1; i++) {
+    x.beginPath(); x.moveTo(...P(i, n0)); x.lineTo(...P(i, n1)); x.stroke();
+    x.beginPath(); x.moveTo(...P(n0, i)); x.lineTo(...P(n1, i)); x.stroke();
+  }
+  x.restore();
+}
+
+// An iso box: its top, the face toward +gy (left on screen) and the face toward +gx (right).
+function isoBox(gx, gy, gz, w, d, h, [top, left, right], stroke) {
+  poly([P(gx, gy + d, gz), P(gx + w, gy + d, gz), P(gx + w, gy + d, gz + h), P(gx, gy + d, gz + h)], left, stroke, 1.5);
+  poly([P(gx + w, gy, gz), P(gx + w, gy + d, gz), P(gx + w, gy + d, gz + h), P(gx + w, gy, gz + h)], right, stroke, 1.5);
+  poly([P(gx, gy, gz + h), P(gx + w, gy, gz + h), P(gx + w, gy + d, gz + h), P(gx, gy + d, gz + h)], top, stroke, 1.5);
+}
+function isoTile(gx, gy, gz, w, d, fill, stroke) { poly([P(gx, gy, gz), P(gx + w, gy, gz), P(gx + w, gy + d, gz), P(gx, gy + d, gz)], fill, stroke, 1.5); }
+// A VM of size s standing on (gx, gy, gz), drawn from its bottom-front vertex like cube() and ghost().
+function isoCube(gx, gy, gz, s, o) { const [bx, by] = P(gx + s, gy + s, gz); cube(bx, by, s * ISO.u, o); }
+function isoGhost(gx, gy, gz, s, o) { const [bx, by] = P(gx + s, gy + s, gz); ghost(bx, by, s * ISO.u, o); }
+
+// An in-world label: a dot on the thing, a leader, mono text.
+function callout(from, to, lines, alpha = 1, align = 'left') {
+  withAlpha(alpha, () => {
+    x.strokeStyle = COL.dim; x.lineWidth = 1.5;
+    x.beginPath(); x.moveTo(...from); x.lineTo(...to); x.stroke();
+    x.beginPath(); x.arc(...from, 4, 0, Math.PI * 2); x.fillStyle = COL.ghost; x.fill();
+    lines.forEach(([s, o], i) => text(s, to[0] + (align === 'left' ? 10 : -10), to[1] + 8 + i * 30, { size: 22, font: MONO, weight: 500, align, ...o }));
+  });
+}
+
+function bar(cx, cy, w, frac, color, alpha = 1) {
+  withAlpha(alpha, () => {
+    rrect(cx - w / 2, cy, w, 10, 5, '#444441');
+    rrect(cx - w / 2, cy, Math.max(10, w * clamp(frac)), 10, 5, color);
+  });
+}
+
+function key(cx, cy, s, color) {
+  x.save(); x.translate(cx, cy); x.scale(s, s);
+  x.strokeStyle = color; x.lineWidth = 6; x.lineCap = 'round'; x.lineJoin = 'round';
+  x.beginPath(); x.arc(-22, 0, 14, 0, Math.PI * 2); x.stroke();
+  x.beginPath(); x.moveTo(-8, 0); x.lineTo(30, 0); x.moveTo(18, 0); x.lineTo(18, 11); x.moveTo(28, 0); x.lineTo(28, 9); x.stroke();
+  x.restore();
+}
+
+// ---- the agent's chat: what you asked, what it says, the boxery tools it calls ----
+const CHAT = [
+  { t: 0.3, you: 'Run the test suite in a VM.' },
+  { t: 1.5, say: ['On it.'] },
+  { t: 1.8, tool: ['vm_manage', 'new ci'], done: 3.0, out: 'ci ready (desktop, 13s)' },
+  { t: 3.4, tool: ['vm_bash', 'pnpm test'], done: 5.5, out: r => r < 5.5 ? `${Math.round(211 * seg(r, 3.6, 5.4))}/214 passed…` : '211 passed · 3 failed' },
+  { t: 6.1, say: ['3 tests fail in auth/. There are three likely', "causes, so I'll try a fix for each at once."] },
+  { t: 7.4, tool: ['vm_manage', 'snap ci before-fix'], done: 8.1, out: 'snapshot ci@before-fix (1s)' },
+  { t: 8.6, tool: ['vm_manage', 'fork ci fix-a fix-b fix-c'], done: 10.3, out: 'forked ci → fix-a fix-b fix-c in 19s' },
+  { t: 12.9, say: ['fix-b works: all 214 pass. I removed the other two.'] },
+  { t: 14.4, you: 'Push it.' },
+  { t: 15.0, tool: ['vm_bash', 'git push'], done: 16.4, out: 'pushed; your GitHub key stayed on the host', good: true },
+  { t: 16.9, say: ['Opened PR #212.'] },
+];
+const CH = { top: 112, max: 364, pad: 30 };
+const rowH = it => it.you ? 68 : it.say ? 36 * it.say.length + 22 : 82;
+
+function chat(r) {
+  let H = 0;
+  const shown = [];
+  for (const it of CHAT) {
+    const k = out(seg(r, it.t, it.t + 0.35));
+    if (k <= 0) continue;
+    shown.push([it, k, H]);
+    H += rowH(it) * k;
+  }
+  if (!shown.length) return;
+  const ph = Math.min(H, CH.max) + CH.pad * 2 - 18, scroll = Math.max(0, H - CH.max);
+  withAlpha(shown[0][1], () => rrect(48, CH.top, W - 96, ph, 20, '#1F1F1D', COL.card[3], 1.5));
+  x.save(); x.beginPath(); x.rect(48, CH.top + 4, W - 96, ph - 8); x.clip();
+  for (const [it, k, y0] of shown) {
+    const y = CH.top + CH.pad + 26 + y0 - scroll + 12 * (1 - k);
+    // rows scrolling off the top fade as they go
+    const a = k * clamp((y - CH.top - 10) / 40);
+    withAlpha(a, () => {
+      if (it.you) {
+        const n = Math.ceil(it.you.length * seg(r, it.t, it.t + 0.5)), s = it.you.slice(0, Math.max(1, n));
+        const w = measure(s, 27, 500) + 48;
+        rrect(W - 80 - w, y - 34, w, 52, 26, '#3A3A38');
+        text(s, W - 80 - 24, y + 1, { size: 27, weight: 500, align: 'right' });
+      } else if (it.say) {
+        x.beginPath(); x.arc(92, y - 9, 8, 0, Math.PI * 2); x.fillStyle = COL.ink; x.fill();
+        it.say.forEach((ln, i) => text(ln, 116, y + i * 36, { size: 27, align: 'left' }));
+      } else {
+        const done = r >= it.done;
+        const blink = done ? 1 : 0.35 + 0.65 * Math.abs(Math.sin(r * 5));
+        text('●', 86, y, { size: 18, color: COL.green, font: MONO, align: 'left', alpha: blink });
+        text(it.tool[0], 116, y, { size: 23, font: MONO, weight: 700, align: 'left' });
+        text(it.tool[1], 116 + measure(it.tool[0] + ' ', 23, 700, MONO), y, { size: 23, font: MONO, align: 'left', color: COL.label });
+        const o = typeof it.out === 'function' ? it.out(r) : done ? it.out : 'running' + '.'.repeat(1 + Math.floor(r * 4) % 3);
+        text('└ ' + o, 132, y + 34, { size: 22, font: MONO, align: 'left', color: done && it.good ? COL.ghost : done ? COL.label : COL.muted });
+      }
+    });
+  }
+  x.restore();
+}
+
+// ---- what the tool calls do, on the host ----
+const PL = 8.2, Z = 0.3, VS = 1.5;                         // platform size and height, VM size
+const FORKS = [[2.7, 6.3, 'fix-a', 0.62], [4.5, 4.5, 'fix-b', 1], [6.3, 2.7, 'fix-c', 0.45]];   // a row across the front
+const WIN = 1;
+
+function world(r) {
+  const zoom = inout(seg(r, 8.6, 9.6));
+  ISO.u = lerp(54, 46, zoom); ISO.ox = 540; ISO.oy = 800 - (PL / 2) * ISO.u;   // the platform's centre stays put
+  const wa = out(seg(r, 0, 0.6));
+  withAlpha(wa, () => {
+    floorGrid(-3, 11, 0.05);
+    isoBox(0, 0, 0, PL, PL, Z, COL.host.slice(0, 3), COL.host[3]);
+  });
+  callout(P(0, PL, 0.15), [64, 880], [['hornet'], ['your Linux server', { color: COL.label }]], wa * (1 - out(seg(r, 8.4, 8.8))));
+
+  // ci: arrives in the middle, then steps back to make room for its forks
+  const step = inout(seg(r, 8.7, 9.4));
+  const cg = lerp((PL - VS) / 2, 0.3, step);
+  const spin = seg(r, 2.85, 3.3);
+  isoGhost(cg, cg, Z, VS, { alpha: out(seg(r, 1.9, 2.3)) * (1 - spin) });
+  // its snapshot slides out behind it
+  const sn = out(seg(r, 7.5, 8.1));
+  if (sn > 0) isoGhost(cg - 0.5 * sn, cg - 0.5 * sn, Z, VS, { dash: [3, 4], alpha: 0.7 * sn });
+  isoCube(cg, cg, Z, VS, { pop: back(spin), alpha: clamp(spin * 3) });
+  {
+    const [cx, cy] = P(cg + VS, cg + VS, Z), fa = out(seg(r, 3.5, 3.8)) * (1 - seg(r, 8.4, 8.8));
+    bar(cx, cy + 34, 200, (211 / 214) * seg(r, 3.6, 5.4), COL.green, fa);
+    text(r < 5.5 ? 'ci · pnpm test' : 'ci · 3 failed', cx, cy + 74, { size: 22, font: MONO, weight: 500, color: COL.vmtext, alpha: fa });
+    text('ci', P(cg, cg + VS, Z)[0] - 14, P(cg, cg + VS, Z)[1] - 10, { size: 22, font: MONO, weight: 500, color: COL.vmtext, align: 'right', alpha: out(seg(r, 9.4, 9.8)) });
+  }
+
+  // the forks slide out of ci into a row, run, and all but one are thrown away
+  const decide = seg(r, 13.0, 13.6);
+  const from = 0.3;
+  FORKS.forEach(([gx, gy], i) => {
+    const ln = seg(r, 9.9 + i * 0.1, 10.3 + i * 0.1);
+    if (ln <= 0) return;
+    const a = P(from + VS, from + VS, Z), b = P(lerp(from + VS, gx + 0.2, ln), lerp(from + VS, gy + 0.2, ln), Z);
+    x.save(); x.strokeStyle = COL.muted; x.lineWidth = 2; x.globalAlpha *= i === WIN ? 1 : 1 - decide * 0.6;
+    x.beginPath(); x.moveTo(...a); x.lineTo(...b); x.stroke(); x.restore();
+  });
+  FORKS.forEach(([gx, gy, name, fr], i) => {
+    const m = out(seg(r, 9.2 + i * 0.15, 9.9 + i * 0.15));
+    if (m <= 0) return;
+    const fx = lerp(from, gx, m), fy = lerp(from, gy, m);
+    const lose = i === WIN ? 0 : decide;
+    if (i === WIN) isoTile(gx - 0.3, gy - 0.3, Z, VS + 0.6, VS + 0.6, `rgba(29,158,117,${0.2 * decide})`, decide > 0 ? COL.ghost : null);
+    isoCube(fx, fy, Z, VS, { alpha: clamp(m * 2) * (1 - lose), lift: i === WIN ? 6 * out(decide) : 0 });
+    isoGhost(fx, fy, Z, VS, { dash: [3, 5], alpha: 0.7 * lose });
+    const [cx, cy] = P(fx + VS, fy + VS, Z);
+    const la = out(seg(r, 10.2, 10.6)) * (1 - lose * 0.5);
+    bar(cx, cy + 30, 92, fr * seg(r, 10.4, i === WIN ? 12.4 : 12.6), i === WIN ? COL.green : COL.muted, la);
+    text(name, cx, cy + 68, { size: 22, font: MONO, weight: i === WIN && decide > 0.3 ? 700 : 500, color: i === WIN && decide > 0.3 ? COL.ink : COL.vmtext, alpha: la });
+    const res = seg(r, 12.9 + i * 0.08, 13.3 + i * 0.08);
+    if (i === WIN) check(cx + 64, cy + 35, 15, res); else cross(cx + 64, cy + 35, 13, res);
+  });
+
+  // git push: fix-b asks the host, the host adds your key and sends it on to GitHub
+  const ka = out(seg(r, 14.5, 14.9));
+  if (ka > 0) {
+    withAlpha(ka, () => isoTile(6.6, 0.2, Z, 1.3, 1.3, '#2C2C2A', COL.dim));
+    const [kx, ky] = P(7.25, 0.85, Z);
+    withAlpha(ka, () => key(kx + 4, ky - 18, 0.85, COL.ink));
+    callout([kx + 30, ky - 30], [790, 600], [['your GitHub key'], ['stays on the host', { color: COL.label }]], ka);
+    const [gx, gy] = P(FORKS[WIN][0] + VS / 2, FORKS[WIN][1] + VS / 2, Z + VS), gh = [1000, ky + 120];
+    const leg1 = inout(seg(r, 15.2, 15.8)), leg2 = inout(seg(r, 15.8, 16.4)), fade = 1 - seg(r, 17.6, 18.2);
+    x.save(); x.strokeStyle = COL.ghost; x.lineWidth = 2.5; x.setLineDash([7, 6]); x.lineDashOffset = -r * 40; x.globalAlpha *= fade;
+    if (leg1 > 0) { x.beginPath(); x.moveTo(gx, gy); x.lineTo(lerp(gx, kx, leg1), lerp(gy, ky - 18, leg1)); x.stroke(); }
+    if (leg2 > 0) { x.beginPath(); x.moveTo(kx, ky - 18); x.lineTo(lerp(kx, gh[0], leg2), lerp(ky - 18, gh[1], leg2)); x.stroke(); }
+    x.restore();
+    const p = leg2 > 0 ? [lerp(kx, gh[0], leg2), lerp(ky - 18, gh[1], leg2)] : [lerp(gx, kx, leg1), lerp(gy, ky - 18, leg1)];
+    if (leg1 > 0 && leg2 < 1) { x.beginPath(); x.arc(...p, 7, 0, Math.PI * 2); x.fillStyle = COL.ghost; x.fill(); }
+    text('github.com', gh[0], gh[1] + 34, { size: 22, font: MONO, weight: 500, color: COL.label, align: 'right', alpha: out(seg(r, 15.9, 16.3)) });
+    check(gh[0] + 24, gh[1], 15, seg(r, 16.4, 16.8));
+  }
+}
+
+function story(r) {
+  if (r < 0 || r > 20.2) return;
+  withAlpha(1 - inout(seg(r, 19.5, 20.0)), () => { world(r); chat(r); });
+}
+
+// ---- the lockup, from the title card to the corner to the end card, never cut ----
+function brand(t) {
+  const corner = [64, 66, 0.5, 0], title = [540, 420, 3.4, 32];
+  const u = t - S_END, up = inout(seg(u, WW - 0.2, WW + 0.5));
+  const end = [540, lerp(380, 220, up), lerp(2.9, 2.1, up), 120.5];
+  const [a, b, k] = t < S_END ? [title, corner, inout(seg(t, 1.9, 2.6))] : [corner, end, inout(seg(u, 0, 0.8))];
+  const v = a.map((p, i) => lerp(p, b[i], k));
+  const glow = t < S_END ? out(seg(t, 0.2, 1.2)) * (1 - seg(t, 1.8, 2.4)) : out(seg(u, 0.3, 1.4));
+  if (glow > 0) {
+    const g = x.createRadialGradient(v[0], v[1], 10, v[0], v[1], 440);
+    g.addColorStop(0, `rgba(29,158,117,${0.15 * glow})`); g.addColorStop(1, 'rgba(29,158,117,0)');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
+  }
+  lockup(v[0], v[1], v[2], { ox: v[3], hex: inout(seg(t, 0.15, 0.75)), drop: seg(t, 0.45, 1.15), word: t < S_END ? seg(t, 2.5, 2.9) : 1 });
+}
+
+function title(t) {
+  const a = out(seg(t, 0.7, 1.2)) * (1 - seg(t, 1.7, 2.1));
+  text('Your coding agent deserves', 540, 680 + 16 * (1 - a), { size: 62, weight: 700, alpha: a, ls: -1 });
+  text('its own VMs', 540, 756 + 16 * (1 - a), { size: 62, weight: 700, alpha: a, ls: -1, color: COL.ghost });
+}
+
+// ---- end: the card, then the lockup moves up for the agents it works with ----
+function outro(t) {
+  const u = t - S_END;
+  if (u < 0) return;
+  const a = k => out(seg(u, 0.7 + k * 0.25, 1.2 + k * 0.25));
+  withAlpha(1 - seg(u, WW - 0.45, WW - 0.1), () => {
+    text('Easiest way to give your coding agents VMs', 540, 588 + 14 * (1 - a(0)), { size: 50, weight: 700, alpha: a(0), ls: -1, maxW: 960 });
+    withAlpha(a(1), () => {
+      const cmd = 'npx add-mcp boxery-vm', sz = 34;
+      const w = measure(cmd, sz, 500, MONO) + measure('$ ', sz, 700, MONO) + 72, h = 84, Y = 670 + 14 * (1 - a(1));
+      rrect(540 - w / 2, Y, w, h, 16, COL.card[0], COL.green, 2);
+      const tx = 540 - w / 2 + 36;
+      text('$', tx, Y + 55, { size: sz, color: COL.green, weight: 700, font: MONO, align: 'left' });
+      text(cmd, tx + measure('$ ', sz, 700, MONO), Y + 55, { size: sz, weight: 500, font: MONO, align: 'left' });
+    });
+  });
+  // the repo stays through both
+  text('github.com/modem-dev/boxery', 540, 935 + 10 * (1 - a(2)), { size: 28, color: COL.ghost, weight: 500, font: MONO, alpha: a(2) });
+  text('Open source · MIT', 540, 978 + 10 * (1 - a(2)), { size: 22, color: COL.muted, alpha: a(2) });
+
+  const v = k => out(seg(u, WW + 0.35 + k * 0.12, WW + 0.8 + k * 0.12));
+  text('Works with the coding agents you already use', 540, 432 + 14 * (1 - v(0)), { size: 40, weight: 700, alpha: v(0), ls: -0.5, maxW: 960 });
+  AGENTS.forEach((ag, i) => {
+    const p = v(i + 1), cx = 540 + (i - 2) * 190, cy = 580 + 16 * (1 - p);
+    withAlpha(p, () => {
+      agentIcon(ag, cx, cy, 72);
+      text(ag.name, cx, cy + 86, { size: 26, weight: 600 });
+    });
+  });
+  text('and any MCP client', 540, 770 + 10 * (1 - v(7)), { size: 28, color: COL.label, alpha: v(7) });
+}
+
+// ---- frame ----
+function renderFrame(t) {
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.setLineDash([]);
+  background(t);
+  story(t - T0);
+  if (t < T0) title(t);
+  brand(t);
+  outro(t);
+  // fade in from black on the first frames, so the loop has a clean start
+  const fi = 1 - seg(t, 0, 0.35);
+  if (fi > 0) { x.fillStyle = `rgba(20,20,19,${fi})`; x.fillRect(0, 0, W, H); }
+}
+window.renderFrame = renderFrame;
+window.DUR = DUR;
+
+// ---- playback ----
+const params = new URLSearchParams(location.search);
+if (params.has('render')) {
+  document.body.classList.add('render');
+} else {
+  let paused = params.has('t'), t0 = performance.now() - (parseFloat(params.get('t')) || 0) * 1000, held = 0;
+  addEventListener('keydown', ev => {
+    if (ev.code !== 'Space') return;
+    paused = !paused;
+    if (paused) held = performance.now(); else t0 += performance.now() - held;
+  });
+  const loop = () => {
+    const now = paused ? (held || performance.now()) : performance.now();
+    if (paused && !held) held = now;
+    renderFrame(((now - t0) / 1000) % DUR);
+    requestAnimationFrame(loop);
+  };
+  document.fonts.ready.then(loop);
+}
+</script>
+</body>
+</html>
