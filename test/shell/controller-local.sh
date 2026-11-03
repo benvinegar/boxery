@@ -70,7 +70,9 @@ envsh=$tmp/run/boxery/env.sh
 link=$tmp/vms/w1/home/project/.env
 [[ -L $link ]] && grep -q SECRET_FILE "$link" && ok "file grant linked into project" || bad "file link"
 grep -qx '/.env' "$tmp/vms/w1/home/project/.git/info/exclude" && ok "file grant git-excluded" || bad "exclude"
-"$A" grants w1 --json | jq -e --arg l "$tmp/dev.env" '. == [{kind: "ssh-agent"}, {kind: "env", var: "MY_TOKEN", cmd: null}, {kind: "env", var: "FROM_CMD", cmd: "echo computed"}, {kind: "file", local: $l, remote: "/home/agent/project/.env"}]' >/dev/null && ok "grants --json" || bad "grants --json: $("$A" grants w1 --json)"
+# File grants store real paths: macOS's /var temp directory is an alias for /private/var.
+grant_local="$(CDPATH='' cd -P "$tmp" && pwd -P)/dev.env"
+"$A" grants w1 --json | jq -e --arg l "$grant_local" '. == [{kind: "ssh-agent"}, {kind: "env", var: "MY_TOKEN", cmd: null}, {kind: "env", var: "FROM_CMD", cmd: "echo computed"}, {kind: "file", local: $l, remote: "/home/agent/project/.env"}]' >/dev/null && ok "grants --json" || bad "grants --json: $("$A" grants w1 --json)"
 "$A" ls --json | jq -e '.[] | select(.name == "w1") | .state == "running" and (.grants | map(.kind) == ["ssh-agent", "env", "env", "file"])' >/dev/null && ok "ls --json merges local grants" || bad "ls --json: $("$A" ls --json)"
 "$A" revoke w1 env:MY_TOKEN "file:$tmp/dev.env" >/dev/null 2>&1
 if (unset MY_TOKEN; . "$envsh"; [[ -z ${MY_TOKEN:-} && $FROM_CMD == computed ]]) && [[ ! -e $link && ! -L $link ]]; then ok "revoke removes exactly the revoked items"; else bad "revoke: env=$(cat "$envsh") link=$(ls -la "$link" 2>&1)"; fi

@@ -1,13 +1,14 @@
 // Real CLI + controlling-terminal tests; all profiles, stores and transports are temporary.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, beforeEach, test } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
 import { grantTransport } from "./fixtures/grant-transport.mjs";
-const root = mkdtempSync(path.join(tmpdir(), "boxery-grant-test-"));
+// Match canonical file-grant paths even when the OS temp directory is itself a symlink (macOS).
+const root = realpathSync(mkdtempSync(path.join(tmpdir(), "boxery-grant-test-")));
 const profile = path.join(root, "profile"), bin = path.join(root, "bin");
 mkdirSync(bin);
 const registryRoot = path.join(root, "registry");
@@ -137,6 +138,20 @@ test("both paths enforce deny directories, aliases and BOXERY_* variables, even 
 		await assert.rejects(core.grantRequest("demo", { spec }, { approve: async () => { throw new Error("must not prompt"); } }), /can't be (granted|requested)/);
 	}
 	assert.equal(existsSync(store), false);
+});
+
+test("CLI and tool file grants canonicalize parent-directory aliases", async () => {
+	const source = path.join(root, "grant-source"), alias = path.join(root, "grant-directory-alias");
+	mkdirSync(source); symlinkSync(source, alias);
+	const real = path.join(source, "dev.env"), requested = path.join(alias, "dev.env");
+	writeFileSync(real, "A=1\n");
+	const parsed = core.parseGrantRequest({ spec: `file:${requested}` });
+	assert.equal(parsed.local, real);
+	assert.equal(parsed.requested, requested);
+	writeFileSync(path.join(profile, "config"), config + "GRANT_CONFIRM=off\n");
+	const applied = await headless(["grant", "demo", `file:${requested}`]);
+	assert.equal(applied.code, 0, applied.output);
+	assert.equal(readFileSync(store, "utf8"), `file\t${real}\tproject/dev.env\n`);
 });
 
 test("a requested symlink stays pinned to the approved real path", async () => {
