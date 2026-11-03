@@ -22,7 +22,7 @@ before(() => {
 	const vmroot = path.join(dir, "vm");
 	const tar = execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim();
 	mkdirSync(bin);
-	guestFixture(dir); // flock/stat shims only on macOS; no new guest dependency.
+	guestFixture(dir, { emulateFlock: true }); // Exercise macOS's flock shim on Linux too; stat shim stays macOS-only.
 	// Capture the actual wire archive: macOS extraction consumes AppleDouble entries, while Linux
 	// extraction leaves them as ._* files. Checking just the extracted fake VM would miss the bug.
 	// A directory holding .crafted.tar produces that archive instead (hostile-VM tests).
