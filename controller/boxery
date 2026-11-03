@@ -1246,14 +1246,14 @@ cmd_sessions() { # NAME [--json]
 # (docs/github-runners.md). The host leases the VM and runs the runner (boxery-host runners __once) but
 # never gets a GitHub credential: only the runner's single-use JIT config, on its stdin (never argv or a
 # file). fd 3 is the host's stdin, a pipe (process substitution: Node on macOS sees no EOF on a FIFO):
-# that config, then a heartbeat every tick. Closing it (Ctrl-C, or this shell dying) makes the host stop
+# that config, then a heartbeat every few seconds. Closing it (Ctrl-C, or this shell dying) makes the host stop
 # the runner and release the VM, which resets it. fd 4 is the host's stdout, a FIFO: `register VM NAME
 # LABELS`, `started`, then the outcome (exited | stopped | lost | failed); EOF once the host is done.
 RUNNERS_ONCE_USAGE="usage: boxery runners once [--repo OWNER/REPO | --org ORG] [--vms NAME,...] [--labels L,...] [--group ID]"
 once_gh() { gh "$@" 3>&- 4<&-; }   # gh must not hold the host's pipes open
 once_gh_error() { tr -d '\000-\010\013-\037' <"$ro_dir/gh.err" 2>/dev/null | sed -n '1,3p' | tr '\n' ' ' | cut -c1-300; }
 cmd_runners_once() {
-	local repo="" org="" vms="" labels="" group="" api scope v line outcome="" busy=0 started=0 n=0 t0 tick rc
+	local repo="" org="" vms="" labels="" group="" api scope v line outcome="" busy=0 started=0 n=0 t0 poll rc
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--repo | --org | --vms | --labels | --group) [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value$NL$RUNNERS_ONCE_USAGE" ;;
@@ -1283,7 +1283,8 @@ cmd_runners_once() {
 		case $repo in */*/* | /* | */ | *[!A-Za-z0-9._/-]*) die "invalid repository: $repo (OWNER/REPO)" ;; */*) ;; *) die "invalid repository: $repo (OWNER/REPO)" ;; esac
 		api="repos/$repo/actions/runners" scope=$repo
 	else api="orgs/$org/actions/runners" scope="organization $org"; fi
-	tick=${BOXERY_RUNNERS_TICK:-5}; case $tick in '' | *[!0-9]* | 0) tick=5 ;; esac
+	# Seconds between asking GitHub whether the runner has a job.
+	poll=${BOXERY_RUNNERS_BUSY_POLL:-10}; case $poll in '' | *[!0-9]* | 0) poll=10 ;; esac
 
 	# Globals (ro_*): the EXIT trap needs them after this function has returned.
 	ro_dir=$(mktemp -d "${TMPDIR:-/tmp}/boxery-runner.XXXXXX") || die "mktemp failed"
@@ -1302,7 +1303,7 @@ cmd_runners_once() {
 		fi
 		[ "$ro_stop" -lt 2 ] || break   # a second Ctrl-C: don't wait for the host (it cleans up anyway)
 		line="" t0=$SECONDS rc=0
-		IFS= read -r -t "$tick" line <&4 || rc=$?
+		IFS= read -r -t 1 line <&4 || rc=$?   # 1 s: bash 3.2 runs the Ctrl-C trap only once read returns
 		if [ "$rc" = 0 ]; then
 			case $line in
 			"register "*) runners_once_register "${line#register }" "$group" ;;
@@ -1312,12 +1313,12 @@ cmd_runners_once() {
 			continue
 		fi
 		# EOF: the host is done. Bash 4+ returns > 128 for a timeout; 3.2 returns 1 for both, so there a
-		# read that failed at once was EOF (a timeout takes a tick; an EOF misread as one fails at once next).
+		# read that failed at once was EOF (a timeout takes a second; an EOF misread as one fails at once next).
 		if [ "$rc" -le 128 ] && { [ "${BASH_VERSINFO[0]}" -ge 4 ] || [ "$SECONDS" = "$t0" ]; }; then break; fi
-		[ "$ro_open" = 0 ] || ( printf '\n' >&3 ) 2>/dev/null || true
 		n=$((n + 1))
-		# Is it on a job yet? Every other tick, until it is (the host can't ask: it has no GitHub credential).
-		if [ "$started" = 1 ] && [ "$busy" = 0 ] && [ "$ro_stop" = 0 ] && [ -n "$ro_id" ] && [ $((n % 2)) = 0 ] \
+		if [ "$ro_open" = 1 ] && [ $((n % 5)) = 0 ]; then ( printf '\n' >&3 ) 2>/dev/null || true; fi   # the heartbeat
+		# Is it on a job yet? Until it is (the host can't ask: it has no GitHub credential).
+		if [ "$started" = 1 ] && [ "$busy" = 0 ] && [ "$ro_stop" = 0 ] && [ -n "$ro_id" ] && [ $((n % poll)) = 0 ] \
 			&& [ "$(once_gh api "$ro_api/$ro_id" --jq .busy 2>/dev/null)" = true ]; then
 			busy=1; echo "==> $ro_name is running a job" >&2
 		fi
