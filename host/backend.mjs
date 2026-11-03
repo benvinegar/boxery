@@ -76,6 +76,8 @@ function run(env, fn, args, { capture = false, quiet = false, status = false, ex
 
 /** The backend selected by env (BOXERY_BACKEND, or host.env). See host/backends/README.md. */
 export function createBackend(env = process.env) {
+	// Reuse the host launcher's selected Node even in non-interactive SSH sessions without it on PATH.
+	env = { ...env, BOXERY_NODE: process.execPath };
 	/** @type {string[] | undefined} */
 	let functions;
 	/** @param {string} fn @param {Array<string | number>} [args] @param {CallOptions} [options] */

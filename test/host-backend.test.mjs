@@ -89,6 +89,23 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	assert.equal(await b.guestProxyUpstream(), "TCP:fake-gateway:8088");
 });
 
+test("Lima starts and renders cloud-config with the host's Node when PATH node is unavailable", async () => {
+	stub("node", 'echo "node unavailable on PATH" >&2; exit 127');
+	stub("limactl", 'case "$1" in list) ;; start) printf "%s\\n" "$*" >"$START_LOG" ;; esac');
+	stub("sandbox-exec", 'shift 2; exec "$@"');
+	stub("ssh", 'case "$*" in *"sudo bash -s") cat >"$RENDERED" ;; esac');
+	const userdata = path.join(dir, "user-data.yaml");
+	const rendered = path.join(dir, "rendered.sh");
+	const startLog = path.join(dir, "start.log");
+	writeFileSync(userdata, "write_files:\n  - path: /tmp/hello\n    content: hello\n");
+	const b = createBackend({ ...env, BOXERY_BACKEND: "lima", BOXERY_LIMA_CONFINE: "1",
+		BOXERY_LIMA_VMTYPE: "vz", BASE_USERDATA: userdata, RENDERED: rendered, START_LOG: startLog });
+	await b.call("backend_build_base");
+	assert.match(readFileSync(startLog, "utf8"), /--ssh-port [1-9][0-9]* /);
+	assert.match(readFileSync(rendered, "utf8"), /echo aGVsbG8= \| base64 -d > "\/tmp\/hello"/);
+	assert.equal(existsSync(`${userdata}.files.sh`), false);
+});
+
 test("a failing backend call keeps its exit status and says whether it reported the error", async () => {
 	const b = createBackend({ ...env, BOXERY_FAKE_FAIL_CAPTURE: "1" });
 	fakeVm("a1");
