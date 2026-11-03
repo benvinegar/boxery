@@ -426,7 +426,7 @@ export async function infoAction(a, { host, current }) {
 		}
 		case "grants": {
 			const vm = target();
-			const grants = await core.boxeryJson(["grants", vm]);
+			const grants = core.listGrants(vm);
 			return { text: core.formatGrants(vm, grants), structured: { vm, grants } };
 		}
 		case "snaps": {
@@ -461,7 +461,7 @@ export async function manageAction(a, { session: s, host, progress }) {
 		case "use": {
 			const vm = core.needVm(a);
 			await core.ensureVm(vm, progress);
-			const unapplied = await core.boxeryCli(["grants", vm, "apply", "--quiet"], 120_000).then(() => "", (e) => `\ngrants not applied: ${e.message}`);
+			const unapplied = await core.applyGrants(vm).then(() => "", (e) => `\ngrants not applied: ${e.message}`);
 			s.adopt(vm, host);
 			return { text: `current VM: ${vm}${unapplied}` };
 		}

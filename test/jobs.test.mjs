@@ -591,7 +591,7 @@ describe("background jobs", { skip }, () => {
 		const missing = await cli(["wait", "fakevm", r.stdout.trim()], {}, lonely);
 		assert.equal(missing.code, 1);
 		assert.equal(missing.stderr.trim().split("\n").length, 1, missing.stderr);
-		assert.match(missing.stderr, /core\/boxery-jobs\.ts/);
+		assert.match(missing.stderr, /profile\.sh/);
 	});
 
 	// ------------------------------------------------------------ MCP

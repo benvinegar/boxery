@@ -158,12 +158,25 @@ export default function (pi: ExtensionAPI) {
 		const host = sessionHost();
 		const ttl = Math.min(core.LEASE_TTL.max, Math.max(core.LEASE_TTL.min, Math.round(Number(pi.getFlag("vm-ttl") ?? core.LEASE_TTL.default) || core.LEASE_TTL.default)));
 		ctx?.ui?.notify?.("boxery: leasing a VM from the pool…", "info");
-		const { name } = await core.withHost(host, async () => {
+		return core.withHost(host, async () => {
+			const approve = grantApprover(ctx);
+			const specs = grants.length ? core.prepareUserGrants("VM", grants, approve) : [];
 			const l = await leases.acquire({ ttl, wait: 60 });
-			if (grants.length) await applyGrants(l.name, ctx, grants);
-			return l;
+			let adopted = false;
+			try {
+				// A pool VM's actual name is known only after acquisition; decline/error releases it now.
+				if (specs.length && !await core.approveGrantSpecs(l.name, specs, approve)) {
+					ctx?.ui?.notify?.("Grant declined; the lease was returned without adding access.", "info");
+					return false;
+				}
+				if (specs.length) ctx?.ui?.notify?.(await core.addGrants(l.name, specs), "info");
+				setCurrent({ name: l.name, host, ephemeral: false }, ctx);
+				adopted = true;
+				return true;
+			} finally {
+				if (!adopted) await leases.release(l.name);
+			}
 		});
-		setCurrent({ name, host, ephemeral: false }, ctx);
 	}
 
 	function setCurrent(c: typeof current, ctx: any, persist = true) {
@@ -182,23 +195,27 @@ export default function (pi: ExtensionAPI) {
 		ctx?.ui?.setStatus?.("boxery", label ? (ctx.ui.theme?.fg?.("accent", label) ?? label) : undefined);
 	}
 
-	/** Grants (llm / http / ssh-agent / env / file) are owned by the controller CLI; the extension asks it to apply them. Runs on the current host context. */
-	async function applyGrants(name: string, ctx: any, specs: string[] = []) {
-		if (specs.length) {
-			const out = await core.boxeryCli(["grant", name, ...specs], 120_000);
-			ctx?.ui?.notify?.(`boxery: ${out.split("\n").filter((l: string) => !l.startsWith("==> granted")).join(" ").replace(/==> /g, "")}`, "info");
-		} else {
-			await core.boxeryCli(["grants", name, "apply", "--quiet"], 120_000).catch((e: any) => ctx?.ui?.notify?.(`boxery: ${e.message}`, "warning"));
-		}
-	}
-
 	async function useVm(name: string, ctx: any, ephemeral = false, grants: string[] = []) {
 		const host = sessionHost();
-		await core.withHost(host, async () => {
-			await core.ensureVm(name, (m: string) => ctx?.ui?.notify?.(m, "info"));
-			await applyGrants(name, ctx, grants);
+		return core.withHost(host, async () => {
+			const approve = grantApprover(ctx);
+			const specs = grants.length ? core.prepareUserGrants(name, grants, approve) : [];
+			if (specs.length && !await core.approveGrantSpecs(name, specs, approve)) {
+				ctx?.ui?.notify?.("Grant declined; nothing was created or granted.", "info");
+				return false;
+			}
+			try {
+				await core.ensureVm(name, (m: string) => ctx?.ui?.notify?.(m, "info"));
+			} catch (e) {
+				if (ephemeral) await core.boxeryCli(["rm", name], 120_000).catch(() => {});
+				throw e;
+			}
+			// Track cleanup ownership before any later grant/application error can occur.
+			setCurrent({ name, host, ephemeral }, ctx);
+			if (specs.length) ctx?.ui?.notify?.(await core.addGrants(name, specs), "info");
+			else await core.applyGrants(name).catch((e: any) => ctx?.ui?.notify?.(`boxery: ${e.message}`, "warning"));
+			return true;
 		});
-		setCurrent({ name, host, ephemeral }, ctx);
 	}
 
 	/** A current VM that is about to be removed stops being current first (leases are released instead). */
@@ -297,8 +314,8 @@ export default function (pi: ExtensionAPI) {
 			// fresh extension instance; they use what that session recorded (or no VM) and never create VMs.
 			if (flag && event.reason === "startup") {
 				const grants = String(pi.getFlag("vm-grant") ?? "").split(",").map((g) => g.trim()).filter(Boolean);
-				if (flag === "pool") await acquireLease(ctx, grants);
-				else await (flag === "new" ? useVm(core.newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
+				const adopted = await (flag === "pool" ? acquireLease(ctx, grants) : flag === "new" ? useVm(core.newName(), ctx, true, grants) : useVm(flag, ctx, false, grants));
+				if (!adopted) return;
 				ctx.ui?.notify?.(`boxery: current VM "${current!.name}" on host "${current!.host.name}". vm_* tools work there; built-in tools stay local.`, "info");
 				return;
 			}
@@ -400,12 +417,12 @@ export default function (pi: ExtensionAPI) {
 							if (!current) throw new Error("no current VM (/vm use NAME first)");
 							const specs = [arg, ...more].filter(Boolean);
 							if (!specs.length) throw new Error(`usage: /vm ${sub} llm:PROVIDER | ssh-agent | env:VAR | file:PATH[=REMOTE] …`);
-							say(await core.boxeryCli([sub, current.name, ...specs], 120_000));
+							say(sub === "grant" ? await core.requestUserGrants(current.name, specs, grantApprover(ctx)) : await core.revokeGrants(current.name, specs));
 							break;
 						}
 						case "grants":
 							if (!current && !arg) throw new Error("usage: /vm grants [NAME]");
-							say(core.formatGrants(arg || current!.name, await core.boxeryJson(["grants", core.assertName(arg || current!.name)])));
+							say(core.formatGrants(arg || current!.name, core.listGrants(core.assertName(arg || current!.name))));
 							break;
 						case "desktop": {
 							const name = arg || current?.name;

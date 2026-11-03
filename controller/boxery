@@ -1,217 +1,18 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2088 # tilde strings below intentionally refer to target home
-# boxery: controller CLI. Runs on your laptop (macOS or Linux). Needs only ssh (+ a browser).
+# boxery: controller CLI. Runs on your laptop (macOS or Linux). Grants/copy/jobs also need Node.
 # Bash 3.2 compatible (stock macOS).
 set -eu
 
-# Registry: host-registry/NAME contains one absolute profile directory; default-host contains NAME.
-# Every host is a registered NAME; BOXERY_HOME itself is only the registry root.
-ROOT_DIR="${BOXERY_HOME:-$HOME/.boxery}"
-REGISTRY="$ROOT_DIR/host-registry"
-TAB=$(printf '\t')
-NL='
-'
-
-die() { echo "boxery: $*" >&2; exit 1; }
-warn() { echo "boxery: $*" >&2; }
-# ---------------------------------------------------------------- JSON output (no jq on the controller)
-# Field names are stable; see docs/cli.md. Arrays are printed one element per line, like boxery-host.
-json_text() { # STRING → "escaped"  (\ " tab newline escaped; other control characters dropped). For secrets use json_str.
-	printf '"%s"' "$(printf '%s' "$1" | LC_ALL=C tr -d '\001-\010\013-\037' |
-		sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$TAB/\\\\t/g" | awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }')"
-}
-json_str_or_null() { if [ -n "$1" ]; then json_text "$1"; else printf null; fi; }
-json_num_or_null() { case $1 in '' | *[!0-9-]*) printf null ;; *) printf '%s' "$1" ;; esac; }
-json_array() { # element per line on stdin → JSON array
-	awk 'NR == 1 { printf "[\n%s", $0; next } { printf ",\n%s", $0 } END { print (NR ? "\n]" : "[]") }'
-}
-has_flag() { f=$1; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
-# Create lock file PATH or fail if it exists: bash's noclobber open is O_EXCL. Not `mkdir`: uutils
-# coreutils (Ubuntu 26.04's mkdir) lets several racing `mkdir DIR` all succeed. Release with rm -f.
-take_lock() { (set -C; : >"$1") 2>/dev/null; }
-
-valid_alias() { valid_vm "${1:-}"; }
-need_alias() { valid_alias "${1:-}" || die "invalid host name: ${1:-}"; }
-# Only an absent path means "no selection"; symlinks (even dangling ones) are metadata.
-metadata_present() { [ -e "$1" ] || [ -L "$1" ]; }
-# Registry files are regular, readable data files, never shell snippets or symlinks.
-one_line() {
-	local line extra
-	[ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || die "invalid registry file: $1 (expected readable regular file, not symlink)"
-	{ IFS= read -r line && ! IFS= read -r extra && [ -z "$extra" ]; } <"$1" || die "invalid registry file: $1"
-	# Bash variables cannot retain NUL bytes. Compare the original bytes, not just the parsed line.
-	cmp -s "$1" <(printf '%s\n' "$line") || die "invalid registry file: $1 (noncanonical bytes)"
-	printf '%s\n' "$line"
-}
-# The default host's NAME, or nothing when none is selected.
-default_host() {
-	metadata_present "$ROOT_DIR/default-host" || return 0
-	local name; name=$(one_line "$ROOT_DIR/default-host")
-	profile_dir "$name" >/dev/null
-	printf '%s\n' "$name"
-}
-plain_path() { case $1 in *"$NL"*|*"$TAB"*|*$(printf '\r')*) die "paths cannot contain line breaks or tabs" ;; esac; }
-profile_dir() {
-	need_alias "$1"
-	metadata_present "$REGISTRY/$1" || die "unknown host: $1"
-	dir=$(one_line "$REGISTRY/$1")
-	case $dir in /*) ;; *) die "invalid profile directory for $1" ;; esac
-	plain_path "$dir"
-	[ -f "$dir/config" ] && [ -f "$dir/ssh_config" ] || die "incomplete profile: $1 ($dir)"
-	printf '%s\n' "$dir"
-}
-# select_profile NAME [DIR]: DIR (MCP/pi pass the directory they resolved) skips the registry lookup.
-select_profile() {
-	selected=${1:-}
-	if [ -z "$selected" ]; then selected=$(default_host); fi
-	[ -n "$selected" ] || die "no host configured; run: boxery setup user@host|local (or boxery host use NAME)"
-	if [ -n "${2:-}" ]; then
-		CONF_DIR=$2
-		case $CONF_DIR in /*) ;; *) die "invalid profile directory: $CONF_DIR" ;; esac
-		plain_path "$CONF_DIR"
-	else CONF_DIR=$(profile_dir "$selected"); fi
-	set_profile_paths "$CONF_DIR"
-	# Configs are trusted, user-owned shell files. Never source registry pointers as shell code.
-	# shellcheck source=/dev/null
-	[ ! -f "$CONF_FILE" ] || . "$CONF_FILE"
-}
-set_profile_paths() {
-	CONF_DIR=$1; CONF_FILE="$1/config"; SSH_CONF="$1/ssh_config"; GRANTS_DIR="$1/grants"; LEASES_DIR="$1/leases"
-	HOST=""; HOST_BIN='~/.local/bin/boxery-host'; HOST_PROFILE=""; IDENTITY=""
-}
-# Literal shell serialization (unlike printf %q, never allows a leading ~ to expand on source).
-literal() { local s=$1; s=${s//\'/\'\\\'\'}; printf "'%s'" "$s"; }
-valid_dest() { case $1 in ''|-*|*[!A-Za-z0-9_.@:%+-]*) return 1 ;; esac; }
-check_target() {
-	valid_dest "$HOST" || die "invalid ssh destination: $HOST"
-	case $HOST_BIN in ''|-*) die "invalid host executable path" ;; esac
-	plain_path "$HOST_BIN"
-	[ -z "$HOST_PROFILE" ] || valid_vm "$HOST_PROFILE" || die "invalid host profile: $HOST_PROFILE"
-}
-# Expand only a leading ~ or ~/, on the remote machine; everything else is literal.
-remote_path() { case $1 in '~') printf '"$HOME"' ;; '~/'*) printf '"$HOME"/%s' "$(literal "${1#\~/}")" ;; *) literal "$1" ;; esac; }
-remote_bin() { remote_path "$HOST_BIN"; }
-# HOST_PROFILE: a second profile on the host (boxery-host --profile NAME), passed as an argument.
-profile_args() { [ -z "$HOST_PROFILE" ] || printf ' --profile %s' "$HOST_PROFILE"; }
-# argv → one remote command line that the remote shell splits back into exactly these words.
-literal_args() { local out="" a; for a in "$@"; do out="$out $(literal "$a")"; done; printf '%s' "${out# }"; }
-# Double-quoted local-shell arguments also pass OpenSSH's ProxyCommand quote validator.
-shell_double() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//\$/\\\$}; s=${s//\`/\\\`}; printf '"%s"' "$s"; }
-ssh_value() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//%/%%}; printf '"%s"' "$s"; }
-# Include applies glob expansion after SSH-config parsing; preserve literal path characters.
-ssh_include_value() {
-	local s=$1
-	s=${s//\\/\\\\}; s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
-	ssh_value "$s"
-}
-
-valid_snap() { case "${1:-}" in [A-Za-z0-9]*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; esac; [ ${#1} -le 64 ]; }
-valid_vm() { case "${1:-}" in [a-z]*) ;; *) return 1 ;; esac; case "$1" in *[!a-z0-9-]*) return 1 ;; esac; [ ${#1} -le 31 ]; }
-need_vm() { valid_vm "${1:-}" || die "invalid VM name: ${1:-}"; }
-valid_image() { case "${1:-}" in *@*) valid_vm "${1%%@*}" && valid_snap "${1#*@}" ;; *) return 1 ;; esac; }
-need_host() { [ -n "$HOST" ] || die "host $selected is not configured; run: boxery setup user@host|local --name $selected"; }
-# HOST=local: the VM host is this machine (e.g. a Mac running Lima, or the Linux host itself).
-is_local() { [ "$HOST" = local ]; }
-# shellcheck disable=SC2088  # matching a literal "~/" prefix stored in config
-local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}" ;; *) printf '%s\n' "$HOST_BIN" ;; esac; }
-# ssh joins argv with spaces and the remote shell re-parses it, so every argument is quoted
-# (unquoted snapshot names or flags would be executed on the host). stdin passes through.
-h() {
-	need_host
-	check_target
-	if is_local; then "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
-	else ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
-}
-vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
-# Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.
-drop_master() { [ -n "${1:-}" ] && ssh -F "$SSH_CONF" -O exit "$1.boxery" >/dev/null 2>&1 || true; }
-open_url() {
-	if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then open "$1"
-	elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 &
-	else echo "open: $1"; fi
-}
-free_port() { # start
-	p=$1
-	while (echo >/dev/tcp/127.0.0.1/$p) >/dev/null 2>&1; do p=$((p + 1)); done
-	echo "$p"
-}
-
-# Does the host pin VM host keys (boxery-host known-hosts, #70)? Asked once, then remembered in the
-# profile: an older host has no record to check keys against, and strict checking would lock every VM out.
-host_pins_keys() {
-	[ ! -f "$CONF_DIR/host-pins-keys" ] || return 0
-	[ -n "$HOST" ] || return 1
-	if h help 2>/dev/null | grep -q '^  known-hosts NAME'; then : >"$CONF_DIR/host-pins-keys"; return 0; fi
-	return 1
-}
-# An ssh_config written before the host pinned keys trusts any VM key: rewrite it once the host does
-# (after upgrade-host). Asked at most once a day while the host is older.
-refresh_ssh_config() {
-	[ -f "$SSH_CONF" ] && [ -n "$HOST" ] || return 0
-	! grep -q '^  KnownHostsCommand ' "$SSH_CONF" || return 0
-	local probe="$CONF_DIR/.host-pins-keys-checked"
-	if [ -f "$probe" ] && [ -z "$(find "$probe" -mmin +1440 2>/dev/null)" ]; then return 0; fi
-	if host_pins_keys; then write_ssh_config; rm -f "$probe"
-	else : >"$probe"; warn "host $selected doesn't pin VM ssh host keys yet, so VM connections aren't verified; run: boxery upgrade-host"; fi
-}
-write_ssh_config() {
-	mkdir -p "$CONF_DIR"
-	key="${IDENTITY:-}"
-	local pins=""; if host_pins_keys; then pins=1; fi
-	{
-		echo "# generated by boxery setup — VMs are reached as <name>.boxery through the host"
-		# Leased pool VMs: use that lease's own key (IdentitiesOnly so nothing else is offered).
-		for lf in "$LEASES_DIR"/*.lease; do
-			[ -f "$lf" ] || continue
-			ln=$(sed -n 's/^name=//p' "$lf"); li=$(sed -n 's/^id=//p' "$lf")
-			echo "Host $ln.boxery"
-			echo "  IdentityFile $(ssh_value "$LEASES_DIR/$li.key")"
-			echo "  IdentitiesOnly yes"
-		done
-		# Per-VM ssh-agent grants survive setup regenerating this file. Never forward to the host.
-		for gf in "$GRANTS_DIR"/*; do
-			[ -f "$gf" ] || continue
-			has_grant "${gf##*/}" ssh-agent || continue
-			echo "Host ${gf##*/}.boxery"
-			echo "  ForwardAgent yes"
-		done
-		echo "Host *.boxery"
-		echo "  ForwardAgent no"
-		echo "  User agent"
-		if is_local; then proxy="$(shell_double "$(local_host_bin)")$(profile_args)"
-		else proxy="ssh -o LogLevel=ERROR -- $(shell_double "$HOST") $(shell_double "exec $(remote_bin)$(profile_args)")"; fi
-		# ssh joins remote argv; the entire executable expression survives the local shell as one arg.
-		# OpenSSH expands percent tokens before the local shell, so escape user-supplied percents.
-		proxy=${proxy//%/%%}
-		echo "  ProxyCommand $proxy connect %h %p"
-		if [ -n "$pins" ]; then
-			# Each VM's host key is pinned on the host (host/hostkeys.mjs) and checked strictly: the host
-			# prints the known_hosts line for %H (NAME.boxery, the name ssh matches keys against; nothing
-			# for a VM without one, which ssh then refuses). No local known_hosts: a VM's key changes on
-			# the host (new, fork, pin), and the host's record is the only one.
-			echo "  KnownHostsCommand $proxy known-hosts %H"
-			echo "  StrictHostKeyChecking yes"
-			echo "  UserKnownHostsFile none"
-			echo "  GlobalKnownHostsFile none"
-			echo "  CheckHostIP no"
-			echo "  UpdateHostKeys no"
-		else
-			# A host from before pinned keys: nothing to check against (refresh_ssh_config upgrades this).
-			echo "  StrictHostKeyChecking no"
-			echo "  UserKnownHostsFile /dev/null"
-		fi
-		echo "  LogLevel ERROR"
-		echo "  ConnectTimeout 15"
-		echo "  ServerAliveInterval 10"
-		echo "  ServerAliveCountMax 3"
-		echo "  ControlMaster auto"
-		echo "  ControlPath $(ssh_value "$CONF_DIR/cm-")%h"
-		echo "  ControlPersist 10m"
-		if [ -n "$key" ]; then echo "  IdentityFile $(ssh_value "$key")"; fi
-	} >"$SSH_CONF.tmp.$$"
-	# Publish whole: other boxery processes (and ssh -F) read this while grant changes rewrite it.
-	mv "$SSH_CONF.tmp.$$" "$SSH_CONF"
-}
+# Resolve installed bin symlinks before loading the shared profile plumbing.
+_boxery_script=${BASH_SOURCE[0]}
+while [ -L "$_boxery_script" ]; do
+	_boxery_dir=$(cd -P "$(dirname "$_boxery_script")" && pwd)
+	_boxery_script=$(readlink "$_boxery_script")
+	case $_boxery_script in /*) ;; *) _boxery_script=$_boxery_dir/$_boxery_script ;; esac
+done
+# shellcheck source=controller/profile.sh
+source "$(cd -P "$(dirname "$_boxery_script")" && pwd)/profile.sh"
 
 # setup DEST [--name NAME] ...: (re)configure host NAME, registering it first if it is new.
 # NAME defaults to "local" or DEST's host part (you@hornet.example → hornet).
@@ -648,393 +449,54 @@ cmd_forward() { # NAME PORT [LOCALPORT]
 }
 
 # ---------------------------------------------------------------- grants
-# Per-VM, user-approved access to things on this machine. Stored locally (names/paths only, never
-# values) in ~/.boxery/grants/NAME as "kind<TAB>key<TAB>extra" lines:
-#   ssh-agent                     forward the local ssh agent (ForwardAgent for NAME.boxery only)
-#   env   NAME   [command]        export NAME in the VM; value from the local env, or from `command`
-#   file  /abs/local  remote      copy a local file into the VM (tmpfs), symlinked at `remote`
-#   http  HOST  auth;ro;cmd       edge-injected HTTPS credential (the host proxy adds it; never in the VM)
-#   llm   PROVIDER                let the VM use the host proxy's PROVIDER route (chatgpt|openai|anthropic|ollama).
-#                                 No llm grant, no LLM access: the proxy refuses every provider by default.
-# env/file values are pushed over ssh into /run/user/<uid>/boxery (tmpfs, gone on reboot) whenever
-# grants are applied: on grant/revoke, new, start, revert, attach, ssh, and by the pi extension.
-
-grant_file() { echo "$GRANTS_DIR/$1"; }
-has_grant() { [ -f "$(grant_file "$1")" ] && awk -F'\t' -v k="$2" '$1==k{f=1} END{exit !f}' "$(grant_file "$1")"; }
+# Operations live in core/grants.mjs; only this front-end reads /dev/tty.
+grants_node() { BOXERY_HOME="$ROOT_DIR" node "$(pkg_root)/controller/grants.mjs" "$selected" "$CONF_DIR" "$@"; }
 has_pushed_grants() { [ -f "$(grant_file "$1")" ] && awk -F'\t' '$1=="env"||$1=="file"||$1=="http"||$1=="llm"{f=1} END{exit !f}' "$(grant_file "$1")"; }
-edge_marker() { echo "$GRANTS_DIR/.$1.edge"; }   # exists while the host holds edge routes for NAME
+edge_marker() { echo "$GRANTS_DIR/.$1.edge"; }
+grants_json() { grants_node list "$1"; }
+grants_inline() { local json; json=$(grants_json "$1") || return $?; printf '%s' "$json" | tr -d '\n'; }
+grants_summary() { grants_node summary "$1"; }
+grants_apply() { grants_node apply "$@"; }
+grants_changed() { grants_node changed "$1"; }
 
-grants_lock() { # NAME cmd...: serialize local grant-store edits
-	l="$GRANTS_DIR/.$1.lock"; mkdir -p "$GRANTS_DIR"; i=0
-	while ! take_lock "$l"; do i=$((i + 1)); [ $i -lt 300 ] || die "grants for $1 are locked ($l)"; sleep 0.1; done
-	shift; rc=0; "$@" || rc=$?; rm -f "$l"; return $rc
+grants_confirm() { # NAME SPEC...; validates every spec before asking or changing anything
+	GRANT_BATCH=$(grants_node prepare "$@") || return
+	grants_ask "$1"
 }
-
-grant_put() { # NAME kind key extra
-	mkdir -p "$GRANTS_DIR"; chmod 700 "$GRANTS_DIR"
-	f=$(grant_file "$1"); touch "$f"; tmp="$f.tmp.$$"
-	awk -F'\t' -v k="$2" -v a="$3" '!($1==k && $2==a)' "$f" >"$tmp"
-	printf '%s\t%s\t%s\n' "$2" "$3" "$4" >>"$tmp"
-	mv "$tmp" "$f"
+grants_ask() { # NAME; GRANT_BATCH is canonical data, shared by prompt and commit
+	local prompt answer
+	prompt=$(printf '%s' "$GRANT_BATCH" | grants_node prompt "$1") || return
+	# Read the opt-out from the selected profile, never from an inherited environment variable.
+	if grants_node unattended; then return; fi
+	if ! { exec 8<>/dev/tty; } 2>/dev/null; then
+		die "grants need a person. Ask the user to run the command below, or use vm_grant:
+$(printf '%s' "$GRANT_BATCH" | grants_node command "$1")"
+	fi
+	printf '%s\n\nAllow access? [y/N] ' "$prompt" >&8
+	answer=""; IFS= read -r answer <&8 || true
+	exec 8>&-
+	case $answer in y|Y|yes|YES) ;; *) die "grant declined; nothing was granted" ;; esac
 }
-
-grant_del() { # NAME kind key-or-remote → prints number removed
-	f=$(grant_file "$1"); [ -f "$f" ] || { echo 0; return; }
-	tmp="$f.tmp.$$"
-	awk -F'\t' -v k="$2" -v a="$3" '($1==k && ($2==a || $3==a)){n++; next} {print} END{print n+0 > "/dev/stderr"}' "$f" 2>"$tmp.n" >"$tmp"
-	mv "$tmp" "$f"; [ -s "$f" ] || rm -f "$f"
-	cat "$tmp.n"; rm -f "$tmp.n"
+cmd_grant() {
+	need_host; need_vm "${1:-}"
+	grants_confirm "$@" || return
+	grants_commit "$1"
 }
-
-abs_path() { # resolve a local path (file must exist)
-	[ -e "$1" ] || die "no such local file: $1"
-	d=$(cd "$(dirname "$1")" && pwd) || die "cannot resolve $1"
-	echo "$d/$(basename "$1")"
-}
-
-real_path() { # PATH → PATH with every symlink resolved: readlink for the last component, cd -P for its directory (macOS has no readlink -f)
-	local p=$1 t i=0 d
-	while [ -L "$p" ]; do
-		i=$((i + 1)); [ $i -le 40 ] || return 1
-		t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac
-	done
-	d=$(CDPATH='' cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || return 1
-	printf '%s/%s\n' "${d%/}" "$(basename "$p")"
-}
-
-# Where keys and boxery's own state live (as vm_grant refuses them), one per line, as given and by
-# real path. Files are re-read on every apply, so a file grant whose path is outside these but that
-# now resolves into one (a symlink re-pointed after approval) is skipped; naming one directly is the user's call.
-grant_deny_dirs() {
-	local d f
-	{
-		for d in "$HOME/.ssh" "$HOME/.gnupg" "$HOME/.pi" "$HOME/.config/boxery" "$HOME"/.config/boxery?* "${BOXERY_CONF:-}" "$ROOT_DIR" "$CONF_DIR"; do printf '%s\n' "$d"; done
-		for f in "$REGISTRY"/*; do [ -f "$f" ] && [ ! -L "$f" ] && IFS= read -r d <"$f" && printf '%s\n' "$d"; done
-	} | while IFS= read -r d; do
-		d=${d%/}; [ -n "$d" ] || continue
-		printf '%s\n' "$d"
-		(CDPATH='' cd -P "$d" 2>/dev/null && pwd -P) || true
-	done
-}
-in_deny_dirs() { # PATH DIRS(lines) → is PATH one of them or inside one?
-	local d
-	while IFS= read -r d; do case $1 in "$d" | "$d"/*) return 0 ;; esac; done <<EOF
-$2
-EOF
-	return 1
-}
-
-valid_edge_host() { # DNS name with a dot; no IPs, ports, userinfo or paths (mirrors the proxy's check)
-	case $1 in "" | *[!a-z0-9.-]* | .* | *. | *..* | -* | *-) return 1 ;; *.*) ;; *) return 1 ;; esac
-	case ${1##*.} in *[!a-z]* | ?) return 1 ;; esac
-	[ ${#1} -le 253 ]
-}
-LLM_PROVIDERS="chatgpt openai anthropic ollama"   # the host proxy's LLM routes (proxy/boxery-proxy.mjs)
-valid_llm() { case " $LLM_PROVIDERS " in *" $1 "*) [ -n "$1" ] ;; *) return 1 ;; esac; }
-valid_edge_auth() { # bearer | basic:USER | header:NAME
-	case $1 in
-	bearer) ;;
-	basic:?*) case ${1#basic:} in *[!A-Za-z0-9._@+-]*) return 1 ;; esac ;;
-	header:?*) case ${1#header:} in *[!A-Za-z0-9-]*) return 1 ;; esac
-		case $(printf %s "${1#header:}" | tr 'A-Z' 'a-z') in host | content-length | connection | transfer-encoding | te | upgrade | proxy-connection | keep-alive | trailer) return 1 ;; esac ;;
-	*) return 1 ;;
+# Keep the caller's stdin for approved env --cmd helpers; fd 0 carries only prepared grant data.
+grants_commit() ( exec 9<&0; printf '%s' "$GRANT_BATCH" | grants_node grant "$1"; )
+cmd_revoke() { need_host; need_vm "${1:-}"; grants_node revoke "$@"; }
+cmd_grants() {
+	need_vm "${1:-}"
+	case ${2:-} in
+	apply) need_host; grants_apply "$1" "${3:-}" ;;
+	--json) grants_json "$1" ;;
+	"") grants_node show "$1" ;;
+	*) die "usage: boxery grants NAME [apply [--quiet] | --json]" ;;
 	esac
 }
-
-# grant_spec NAME SPEC [CMD] [dry] [AUTH] [RO]: validate (and unless dry, store) one grant.
-#   ssh-agent | env:VAR | file:LOCAL[=REMOTE]   (REMOTE default: project/<basename>, relative to /home/agent)
-#   http:HOST [--auth bearer|basic:USER|header:NAME] --cmd CMD [--readonly]   (edge-injected: value stays off the VM)
-#   llm:PROVIDER   the host proxy's chatgpt | openai | anthropic | ollama route (credentials stay on the host)
-#   github [--readonly]   = http:github.com (basic:x-access-token) + http:api.github.com (bearer), from `gh auth token`
-grant_spec() {
-	n=$1; spec=$2; cmd=${3:-}; dry=${4:-}; auth=${5:-}; ro=${6:-}
-	case $spec in http:* | github) ;; *) [ -z "$auth$ro" ] || die "--auth/--readonly only apply to http: grants" ;; esac
-	case $spec in
-	github)
-		[ -z "$auth" ] || die "the github preset sets its own --auth"
-		grant_spec "$n" http:github.com "${cmd:-gh auth token}" "$dry" basic:x-access-token "$ro"
-		grant_spec "$n" http:api.github.com "${cmd:-gh auth token}" "$dry" bearer "$ro" ;;
-	http:*)
-		hst=${spec#http:}; auth=${auth:-bearer}
-		valid_edge_host "$hst" || die "invalid host '$hst' (a DNS name like api.example.com; no scheme, port, path or IP)"
-		valid_edge_auth "$auth" || die "invalid --auth '$auth' (bearer | basic:USER | header:NAME)"
-		[ -n "$cmd" ] || die "http:$hst needs --cmd CMD (run on this machine at apply time to get the secret, e.g. --cmd 'gh auth token')"
-		case $cmd in *"$TAB"* | *"$NL"*) die "--cmd must be a single line" ;; esac
-		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" http "$hst" "$auth;$ro;$cmd" ;;
-	ssh-agent)
-		[ -z "$cmd" ] || die "--cmd only applies to env grants"
-		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" ssh-agent "" "" ;;
-	llm:*)
-		[ -z "$cmd" ] || die "--cmd doesn't apply to llm grants (the credential is on the host)"
-		valid_llm "${spec#llm:}" || die "unknown LLM provider '${spec#llm:}' (use llm:$(echo "$LLM_PROVIDERS" | sed 's/ /, llm:/g'))"
-		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" llm "${spec#llm:}" "" ;;
-	env:*)
-		var=${spec#env:}
-		case $var in [A-Za-z_]*) ;; *) die "invalid env var name: $var" ;; esac
-		case $var in *[!A-Za-z0-9_]*) die "invalid env var name: $var" ;; esac
-		case $cmd in *"$TAB"* | *"$NL"*) die "--cmd must be a single line" ;; esac
-		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" env "$var" "$cmd" ;;
-	file:*)
-		rest=${spec#file:}; loc=${rest%%=*}; rem=""
-		case $rest in *=*) rem=${rest#*=} ;; esac
-		[ -n "$loc" ] || die "usage: file:LOCAL[=REMOTE]"
-		abs=$(abs_path "$loc"); [ -f "$abs" ] || die "not a regular file: $loc"
-		[ "$(wc -c <"$abs")" -le 1048576 ] || die "file grants are limited to 1 MiB: $loc"
-		[ -n "$rem" ] || rem="project/$(basename "$abs")"
-		case "/$rem/" in */../* | *"$TAB"* | *"$NL"*) die "invalid remote path: $rem" ;; esac
-		case "$abs" in *"$TAB"* | *"$NL"*) die "invalid local path: $abs" ;; esac
-		[ -n "$dry" ] || grants_lock "$n" grant_put "$n" file "$abs" "$rem" ;;
-	*) die "unknown grant '$spec' (use ssh-agent, env:VAR, file:LOCAL[=REMOTE], http:HOST, github or llm:PROVIDER)" ;;
-	esac
-}
-
-grants_json() { # NAME → [{kind, …}]  (names/paths only, never values)
-	f=$(grant_file "$1")
-	{ [ -f "$f" ] && while IFS="$TAB" read -r kind a b; do
-		case $kind in
-		ssh-agent) echo '{"kind":"ssh-agent"}' ;;
-		llm) printf '{"kind":"llm","provider":%s}\n' "$(json_text "$a")" ;;
-		env) printf '{"kind":"env","var":%s,"cmd":%s}\n' "$(json_text "$a")" "$(json_str_or_null "$b")" ;;
-		http) au=${b%%;*}; r=${b#*;}; ro=false; [ "${r%%;*}" = ro ] && ro=true
-			printf '{"kind":"http","host":%s,"auth":%s,"readonly":%s,"cmd":%s}\n' "$(json_text "$a")" "$(json_text "$au")" "$ro" "$(json_str_or_null "${r#*;}")" ;;
-		file) printf '{"kind":"file","local":%s,"remote":%s}\n' "$(json_text "$a")" "$(json_text "/home/agent/${b#/home/agent/}")" ;;
-		esac
-	done <"$f"; } | json_array
-}
-grants_inline() { grants_json "$1" | tr -d '\n'; }
-
-grants_summary() { # NAME → "ssh-agent,env:X,file:project/.env"
-	f=$(grant_file "$1"); [ -f "$f" ] || { echo "-"; return; }
-	awk -F'\t' '{ s = ($1=="ssh-agent") ? "ssh-agent" : ($1=="env") ? "env:" $2 : ($1=="http") ? "http:" $2 : ($1=="llm") ? "llm:" $2 : "file:" $3; out = out (out ? "," : "") s } END{print out ? out : "-"}' "$f"
-}
-
-env_value() { # VAR CMD → value on stdout
-	if [ -n "${2:-}" ]; then
-		v=$(sh -c "$2") || { warn "grant env:$1: command failed: $2"; return 1; }
-	else
-		v=$(printenv "$1" 2>/dev/null || true)
-	fi
-	[ -n "$v" ] || { warn "grant env:$1: no value on this machine (set it, or: boxery grant VM env:$1 --cmd '...'); skipped"; return 1; }
-	printf '%s' "$v"
-}
-
-json_str() { # value → JSON string (refuses control characters rather than escaping them)
-	case $1 in *[[:cntrl:]]*) return 1 ;; esac
-	printf '"%s"' "$(printf %s "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-}
-b64() { printf %s "$1" | base64 | tr -d '\n'; }
-
-# Edge routes JSON for the host proxy: {"HOST": {"headers": {...}, "readonly": bool}, ...}.
-# Each distinct --cmd runs once per apply (the github preset shares one `gh auth token`).
-# With llm grants: {"hosts": {…}, "llm": ["chatgpt", …]}. Without, the bare host map (what older hosts accept).
-edge_routes_json() {
-	f=$(grant_file "$1"); out=""; cache_k=""; cache_v=""; llm=""
-	[ -f "$f" ] || { echo '{}'; return; }
-	while IFS="$TAB" read -r kind hst extra; do
-		if [ "$kind" = llm ]; then valid_llm "$hst" && llm="$llm${llm:+,}\"$hst\""; continue; fi
-		[ "$kind" = http ] || continue
-		auth=${extra%%;*}; r=${extra#*;}; ro=${r%%;*}; cmd=${r#*;}
-		if [ "$cmd" = "$cache_k" ]; then v=$cache_v
-		else
-			v=$(sh -c "$cmd" </dev/null) || { warn "grant http:$hst: command failed: $cmd; skipped"; continue; }
-			v=$(printf %s "$v" | tr -d '\r\n'); cache_k=$cmd; cache_v=$v
-		fi
-		[ -n "$v" ] || { warn "grant http:$hst: '$cmd' printed nothing; skipped"; continue; }
-		case $auth in
-		bearer) hn=Authorization; hv="Bearer $v" ;;
-		basic:*) hn=Authorization; hv="Basic $(b64 "${auth#basic:}:$v")" ;;
-		header:*) hn=${auth#header:}; hv=$v ;;
-		esac
-		jv=$(json_str "$hv") || { warn "grant http:$hst: value has control characters; skipped"; continue; }
-		out="$out${out:+,}\"$hst\":{\"headers\":{\"$hn\":$jv},\"readonly\":$([ "$ro" = ro ] && echo true || echo false)}"
-	done <"$f"
-	if [ -n "$llm" ]; then echo "{\"hosts\":{$out},\"llm\":[$llm]}"; else echo "{$out}"; fi
-}
-
-edge_apply() { # NAME: push (or clear) the VM's edge routes and LLM grants on the host
-	m=$(edge_marker "$1")
-	# A leased VM's routes are for our lease only: the host refuses them once the lease has moved on.
-	lf=$(lease_by_name "$1"); lid=""; [ -z "$lf" ] || lid=$(sed -n 's/^id=//p' "$lf")
-	if [ -f "$(grant_file "$1")" ] && grep -q -e "^http$TAB" -e "^llm$TAB" "$(grant_file "$1")"; then
-		edge_routes_json "$1" | h edge-set "$1" ${lid:+--lease "$lid"} >/dev/null || { warn "could not set edge routes for $1 on the host"; return 1; }
-		: >"$m"
-	elif [ -f "$m" ]; then
-		echo '{}' | h edge-set "$1" ${lid:+--lease "$lid"} >/dev/null && rm -f "$m"
-	fi
-}
-
-# Script run in the VM (stdin of `bash -s`): reconciles the tmpfs state to exactly the current grants.
-build_apply_script() {
-	f=$(grant_file "$1")
-	cat <<'EOF'
-set -eu
-umask 077
-RT=${BOXERY_RUNTIME_DIR:-/run/user/$(id -u)}
-for _ in $(seq 30); do [ -d "$RT" ] && break; sleep 1; done   # appears once the user manager is up (lingering)
-[ -d "$RT" ] || { echo "boxery: $RT missing (no user runtime dir)" >&2; exit 1; }
-R=$RT/boxery
-mkdir -p "$R/files"
-# One apply at a time per VM (concurrent attach/revoke must not interleave staging files).
-exec 9>"$R/.lock"; if command -v flock >/dev/null; then flock 9; fi
-: >"$R/env.sh.new"; : >"$R/links.new"; : >"$R/targets.new"; : >"$R/gitconfig.new"
-# Edge grants: the VM only learns *where* to send requests; the host proxy adds the credential.
-TOK=$(cat "$HOME/.boxery/token" 2>/dev/null || true)
-EDGE="http://127.0.0.1:8088/edge/$(printf %s "$TOK" | sed 's/:/%3A/')"
-put_edge() {
-	[ -n "$TOK" ] || { echo "boxery: no proxy token in the VM; http grants unavailable" >&2; return 0; }
-	grep -q '^export BOXERY_EDGE=' "$R/env.sh.new" || printf 'export BOXERY_EDGE=%q\n' "$EDGE" >>"$R/env.sh.new"
-	printf '[url "%s/%s/"]\n\tinsteadOf = https://%s/\n' "$EDGE" "$1" "$1" >>"$R/gitconfig.new"
-	[ "$1" != registry.npmjs.org ] || printf 'export npm_config_registry=%q\n' "$EDGE/registry.npmjs.org/" >>"$R/env.sh.new"
-}
-put_env() { v=$(printf %s "$2" | base64 -d); printf 'export %s=%q\n' "$1" "$v" >>"$R/env.sh.new"; }
-put_file() {
-	d=$1; case "$d" in /*) ;; *) d=$HOME/$d ;; esac
-	case "/$d/" in */../*) echo "boxery: refusing path with ..: $d" >&2; return 0 ;; esac
-	case "$d" in "$HOME"/*) ;; *) echo "boxery: refusing file grant outside $HOME: $d" >&2; return 0 ;; esac
-	t=$R/files/$(printf %s "$d" | cksum | cut -d' ' -f1)
-	rm -f "$t"; printf %s "$2" | base64 -d >"$t"; chmod 0400 "$t"
-	echo "$t" >>"$R/targets.new"
-	if [ -e "$d" ] && [ ! -L "$d" ]; then echo "boxery: $d exists as a real file; not replacing it" >&2; return 0; fi
-	mkdir -p "$(dirname "$d")"; ln -sfn "$t" "$d"; echo "$d" >>"$R/links.new"
-	case "$d" in "$HOME"/project/*)
-		if [ -d "$HOME/project/.git" ]; then
-			ex=$HOME/project/.git/info/exclude; rel=/${d#"$HOME"/project/}
-			mkdir -p "$(dirname "$ex")"; touch "$ex"; grep -qxF "$rel" "$ex" || echo "$rel" >>"$ex"
-		fi ;;
-	esac
-}
-EOF
-	if [ -f "$f" ]; then
-		deny=""
-		while IFS="$TAB" read -r kind a b; do
-			case $kind in
-			env) v=$(env_value "$a" "$b") || continue
-				printf 'put_env %s %s\n' "$a" "$(printf %s "$v" | base64 | tr -d '\n')" ;;
-			http) printf 'put_edge %s\n' "$a" ;;
-			file) [ -r "$a" ] || { warn "grant file:$a: not readable; skipped"; continue; }
-				r=$(real_path "$a") || { warn "grant file:$a: cannot resolve its path; skipped"; continue; }
-				if [ "$r" != "$a" ]; then
-					[ -n "$deny" ] || deny=$(grant_deny_dirs)
-					if in_deny_dirs "$r" "$deny" && ! in_deny_dirs "$a" "$deny"; then
-						warn "grant file:$a: now leads through a symlink to $r, where keys or boxery's own state live; skipped (grant that path itself if you mean it)"; continue
-					fi
-				fi
-				# Read the real path just checked rather than following the link a second time.
-				printf 'put_file %s %s\n' "$(printf %q "$b")" "$(base64 <"$r" | tr -d '\n')" ;;
-			esac
-		done <"$f"
-	fi
-	cat <<'EOF'
-mv "$R/env.sh.new" "$R/env.sh"
-mv "$R/gitconfig.new" "$R/gitconfig"
-# git ignores a missing include, so this one-time line is harmless after revoke or reboot.
-if [ -s "$R/gitconfig" ] && ! git config --global --get-all include.path 2>/dev/null | grep -qxF "$R/gitconfig"; then
-	git config --global --add include.path "$R/gitconfig"
-fi
-if [ -f "$R/links" ]; then
-	while IFS= read -r old; do
-		grep -qxF "$old" "$R/links.new" && continue
-		if [ -L "$old" ]; then case "$(readlink "$old")" in "$R"/*) rm -f "$old" ;; esac; fi
-	done <"$R/links"
-fi
-mv "$R/links.new" "$R/links"
-for t in "$R"/files/*; do [ -e "$t" ] || continue; grep -qxF "$t" "$R/targets.new" || rm -f "$t"; done
-rm -f "$R/targets.new"
-hook='[ -r "/run/user/$(id -u)/boxery/env.sh" ] && . "/run/user/$(id -u)/boxery/env.sh"  # boxery-grants'
-for rc in "$HOME/.profile" "$HOME/.bashrc"; do
-	touch "$rc"
-	grep -q 'boxery-grants' "$rc" || { printf '%s\n' "$hook" | cat - "$rc" >"$rc.boxery" && cat "$rc.boxery" >"$rc" && rm -f "$rc.boxery"; }
-done
-echo "boxery: grants applied ($(grep -c . "$R/env.sh" || true) env, $(grep -c . "$R/links" || true) files, $(grep -c insteadOf "$R/gitconfig" || true) http)"
-EOF
-}
-
-grants_apply() { # NAME [--quiet]
-	edge_apply "$1" || true
-	out=$(build_apply_script "$1" | vm_ssh "$1.boxery" 'bash -s' 2>&1) || { warn "could not apply grants to $1: $out"; return 1; }
-	[ "${2:-}" = --quiet ] || echo "==> $out"
-}
-
-# After a grant change: regenerate ForwardAgent config, stop the shared connection from taking new
-# sessions (running ones finish; the next connection uses the new config), push env/file state.
-# After a grant change: regenerate ForwardAgent config and close the shared connection so the next
-# one uses it. `-O exit` (not `stop`) also tears down existing sessions, so a revoked ssh-agent
-# forward can't keep signing through an already-open channel.
-grants_changed() {
-	write_ssh_config
-	if ssh -F "$SSH_CONF" -O check "$1.boxery" >/dev/null 2>&1; then
-		ssh -F "$SSH_CONF" -O exit "$1.boxery" >/dev/null 2>&1 || true
-		echo "==> closed open connections to $1 so the change takes effect (attached sessions will reconnect)"
-	fi
-	grants_apply "$1" || warn "grants for $1 are saved; they'll be applied on the next start/attach"
-}
-
-cmd_grant() { # NAME SPEC... [--cmd CMD]
-	need_host; need_vm "${1:-}"; n=$1; shift
-	[ $# -gt 0 ] || die "usage: boxery grant NAME ssh-agent | env:VAR [--cmd CMD] | file:LOCAL[=REMOTE] | http:HOST --cmd CMD [--auth A] [--readonly] | github | llm:PROVIDER ..."
-	while [ $# -gt 0 ]; do
-		spec=$1; shift; cmd=""; auth=""; ro=""
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--cmd) [ $# -ge 2 ] || die "--cmd needs a value"; cmd=$2; shift 2 ;;
-			--auth) [ $# -ge 2 ] || die "--auth needs a value"; auth=$2; shift 2 ;;
-			--readonly) ro=ro; shift ;;
-			*) break ;;
-			esac
-		done
-		grant_spec "$n" "$spec" "$cmd" "" "$auth" "$ro"
-		echo "==> granted $spec to $n"
-	done
-	case $(grants_summary "$n") in *ssh-agent*) echo "==> note: processes in $n can use your ssh keys while you're connected. Trusted VMs only." ;; esac
-	grants_changed "$n"
-}
-
-cmd_revoke() { # NAME SPEC...|all
-	need_host; need_vm "${1:-}"; n=$1; shift
-	[ $# -gt 0 ] || die "usage: boxery revoke NAME ssh-agent | env:VAR | file:LOCAL-or-REMOTE | http:HOST | github | llm:PROVIDER | all"
-	for spec in "$@"; do
-		case $spec in
-		all) grants_lock "$n" rm -f "$(grant_file "$n")"; echo "==> revoked all grants for $n" ;;
-		ssh-agent) [ "$(grants_lock "$n" grant_del "$n" ssh-agent "")" -gt 0 ] && echo "==> revoked ssh-agent" || warn "no ssh-agent grant" ;;
-		llm:*) [ "$(grants_lock "$n" grant_del "$n" llm "${spec#llm:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
-		http:*) [ "$(grants_lock "$n" grant_del "$n" http "${spec#http:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
-		github) c=0; for gh_h in github.com api.github.com; do c=$((c + $(grants_lock "$n" grant_del "$n" http "$gh_h"))); done
-			[ $c -gt 0 ] && echo "==> revoked github" || warn "no github grant" ;;
-		env:*) [ "$(grants_lock "$n" grant_del "$n" env "${spec#env:}")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
-		file:*) k=${spec#file:}; [ -e "$k" ] && k=$(abs_path "$k")
-			[ "$(grants_lock "$n" grant_del "$n" file "$k")" -gt 0 ] && echo "==> revoked $spec" || warn "no grant $spec" ;;
-		*) die "unknown grant '$spec'" ;;
-		esac
-	done
-	grants_changed "$n"
-}
-
-cmd_grants() { # NAME [apply [--quiet] | --json]
-	need_vm "${1:-}"; n=$1
-	if [ "${2:-}" = apply ]; then need_host; grants_apply "$n" "${3:-}"; return; fi
-	if [ "${2:-}" = --json ]; then grants_json "$n"; return; fi
-	[ -z "${2:-}" ] || die "usage: boxery grants NAME [apply [--quiet] | --json]"
-	f=$(grant_file "$n")
-	[ -f "$f" ] || { echo "no grants for $n"; return; }
-	echo "grants for $n (values are read from this machine when applied; never stored):"
-	while IFS="$TAB" read -r kind a b; do
-		case $kind in
-		ssh-agent) echo "  ssh-agent   forward your local ssh agent" ;;
-		llm) echo "  llm:$a   the host proxy's $a route (credential stays on the host)" ;;
-		env) echo "  env:$a${b:+   (from: $b)}" ;;
-		file) echo "  file:$a → /home/agent/${b#/home/agent/}" ;;
-		http) au=${b%%;*}; r=${b#*;}; echo "  http:$a   ($au, from: ${r#*;})$([ "${r%%;*}" = ro ] && echo "  read-only")   value injected by the host proxy; never in the VM" ;;
-		esac
-	done <"$f"
-}
-
-cmd_agent_forward() { # NAME on|off  (alias for grant/revoke ssh-agent)
+cmd_agent_forward() {
 	[ $# -eq 2 ] || die "usage: boxery agent-forward NAME on|off"
-	case $2 in
-	on) cmd_grant "$1" ssh-agent ;;
-	off) need_host; need_vm "$1"; grant_del "$1" ssh-agent "" >/dev/null; echo "==> agent forwarding off for $1"; grants_changed "$1" ;;
-	*) die "usage: boxery agent-forward NAME on|off" ;;
-	esac
+	case $2 in on) cmd_grant "$1" ssh-agent ;; off) cmd_revoke "$1" ssh-agent ;; *) die "usage: boxery agent-forward NAME on|off" ;; esac
 }
 
 cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless [--layers L,...]] [--grant SPEC]... [--agent-forward]
@@ -1057,18 +519,14 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [-
 		esac
 	done
 	need_vm "$name"
-	# validate grants before creating anything
-	while IFS= read -r sp; do [ -n "$sp" ] && grant_spec "$name" "$sp" "" dry; done <<EOF
+	# Validate and approve the complete batch before creating anything.
+	set -- "$name"
+	while IFS= read -r sp; do [ -z "$sp" ] || set -- "$@" "$sp"; done <<EOF
 $specs
 EOF
+	if [ -n "$specs" ]; then grants_confirm "$@" || return; fi
 	h new "$name" $pass ${from:+--from "$from"}
-	if [ -n "$specs" ]; then
-		while IFS= read -r sp; do [ -n "$sp" ] && grant_spec "$name" "$sp" ""; done <<EOF
-$specs
-EOF
-		echo "==> grants for $name: $(grants_summary "$name")"
-		grants_changed "$name"
-	fi
+	if [ -n "$specs" ]; then grants_commit "$name"; fi
 }
 
 # fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB] [--grants]: copy SRC (running or not) into
@@ -1089,13 +547,15 @@ cmd_fork() {
 		esac
 	done
 	[ -n "$src" ] && [ -n "$dsts" ] || die "usage: boxery fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB] [--grants]"
+	if [ -n "$copy_grants" ] && [ -s "$(grant_file "$src")" ]; then
+		GRANT_BATCH=$(grants_node prepare "$src" --copy-from "$src") || return
+		for d in $dsts; do grants_ask "$d" || return; done
+	else copy_grants=""; fi
 	# shellcheck disable=SC2086  # word splitting of validated names/flags is intended
 	h fork "$src" $dsts $pass || rc=$?
 	for d in $dsts; do
-		if [ -n "$copy_grants" ] && [ -f "$(grant_file "$src")" ]; then
-			mkdir -p "$GRANTS_DIR"; cp "$(grant_file "$src")" "$(grant_file "$d")"
-			echo "==> grants for $d: $(grants_summary "$d")" >&2
-			grants_changed "$d" >/dev/null 2>&1 || warn "could not apply grants to $d"
+		if [ -n "$copy_grants" ]; then
+			grants_commit "$d" || warn "could not apply grants to $d"
 		fi
 	done
 	return "${rc:-0}"
@@ -1186,26 +646,37 @@ cmd_ls() { # [--json] [--refresh]
 	if [ -n "$json" ]; then ls_json $refresh; return; fi
 	out=$(h ls $refresh) || exit $?
 	printf '%s\n' "$out" | while IFS= read -r line; do
+		[ -n "$line" ] || continue
 		n=${line%% *}
 		if [ "$n" = NAME ]; then printf '%-100s %s\n' "$line" GRANTS
-		else printf '%-100s %s\n' "$line" "$(grants_summary "$n")"; fi
+		elif valid_vm "$n"; then
+			summary=$(grants_summary "$n") || exit $?
+			printf '%-100s %s\n' "$line" "$summary"
+		else printf '%-100s %s\n' "$line" -; fi
 	done
 }
 
 # The host prints one array element per line; add this machine's grants to each VM.
-ls_json() { # [--refresh]
-	out=$(h ls --json "$@") || exit $?
-	case $out in '['*) ;; *) die "host returned no JSON for 'ls --json' (update boxery-host on $HOST)" ;; esac
-	printf '%s\n' "$out" | while IFS= read -r line; do
+ls_json_rows() { # Separate from $() so Bash 3.2 doesn't misparse nested case patterns.
+	local line n sep grants
+	while IFS= read -r line; do
 		case $line in
 		'{"name":"'*)
 			n=${line#\{\"name\":\"}; n=${n%%\"*}
 			valid_vm "$n" || die "bad VM name from host: $n"
 			sep=; case $line in *,) sep=,; line=${line%,} ;; esac
-			printf '%s,"grants":%s}%s\n' "${line%\}}" "$(grants_inline "$n")" "$sep" ;;
+			grants=$(grants_inline "$n") || exit $?
+			printf '%s,"grants":%s}%s\n' "${line%\}}" "$grants" "$sep" ;;
 		*) printf '%s\n' "$line" ;;
 		esac
 	done
+}
+ls_json() { # [--refresh]
+	local merged
+	out=$(h ls --json "$@") || exit $?
+	case $out in '['*) ;; *) die "host returned no JSON for 'ls --json' (update boxery-host on $HOST)" ;; esac
+	merged=$(printf '%s\n' "$out" | ls_json_rows) || return $?
+	printf '%s\n' "$merged"
 }
 
 # Patching restarts a VM when its updates ask to: like start, the shared connection is stale afterwards

@@ -20,10 +20,13 @@ before(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "boxery-hosts-"));
 	const bin = path.join(dir, "bin");
 	mkdirSync(bin);
+	mkdirSync(path.join(dir, "runtime"));
 	mkdirSync(path.join(dir, "home", "host-registry"), { recursive: true });
 	for (const host of ["alpha", "beta"]) {
 		mkdirSync(profile(host), { recursive: true });
 		mkdirSync(path.join(vmroot(host), "project"), { recursive: true });
+		mkdirSync(path.join(profile(host), "grants"));
+		writeFileSync(path.join(profile(host), "grants/fakevm"), `file\tPROFILE:${host}\tfixture\n`);
 		writeFileSync(path.join(profile(host), "config"), "# fake controller config\n");
 		writeFileSync(path.join(profile(host), "ssh_config"), "# fake SSH config\n");
 		writeFileSync(path.join(dir, "home", "host-registry", host), `${profile(host)}\n`);
@@ -59,7 +62,7 @@ cd "$vmroot" && HOST_TAG=$host HOME="$vmroot" exec bash -c "$cmd"
 `);
 	writeFileSync(path.join(bin, "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n");
 	for (const f of ["boxery", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery") };
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery"), BOXERY_RUNTIME_DIR: path.join(dir, "runtime") };
 });
 after(() => {
 	for (const c of clients) c.close();

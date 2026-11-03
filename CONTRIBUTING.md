@@ -4,7 +4,7 @@
 |---|---|---|
 | Lint (shellcheck + node syntax) | `npm run lint` | shellcheck, node |
 | Type check: the `.mjs` sources (JSDoc types, `checkJs`), the tests (`test/tsconfig.json`) and VM-side `core/*.ts` | `npm i --no-save typescript@5.9.3 @types/node@22 && npm run typecheck` | node |
-| Unit/integration tests: core helpers, proxy, MCP, SQLite leases and lifecycle crash recovery (real host dispatcher with a fake backend), background jobs (real CLI + MCP, helper run as in a VM) | `npm test` | node ≥ 20; lease/lifecycle cases need node ≥ 22.13, job cases ≥ 22.18 |
+| Unit/integration tests: core helpers, proxy, MCP, SQLite leases and lifecycle crash recovery (real host dispatcher with a fake backend), background jobs (real CLI + MCP, helper run as in a VM) | `npm test` | node ≥ 20; lease/lifecycle cases need node ≥ 22.13, job cases ≥ 22.18; python3 ≥ 3.9 for real-PTY grant tests |
 | Shell tests: host dispatcher against the `fake` backend, leases, images/forks (`host-images.sh`: the behaviour every backend must match), controller local mode + grants, named registry/import/defaults, injection/concurrency regressions | `npm run test:shell` | bash, jq, openssl, node ≥ 22.13, ps (procps on Linux) |
 | Same under macOS's bash 3.2 | `docker run --rm -v "$PWD":/src:ro bash:3.2 bash -c 'apk add -q openssh-client jq coreutils openssl nodejs perl git procps-ng; cp -r /src /w && cd /w && bash test/shell/run.sh'` | docker |
 | MCP protocol against a live VM | `mcp/test-mcp.sh VM` | a VM |
@@ -19,6 +19,8 @@ Types: the code is plain JavaScript typed with JSDoc comments (`/** @param {stri
 `test/parity.test.mjs` keeps the CLI and the agent tools in step: a new `vm_*` tool or action, or a new `boxery` command, fails it until it is mapped to its counterpart or listed with a reason it has none. When both sides need a feature, give the CLI the tool's implementation rather than a second one (as `boxery cp` runs `vm_copy`).
 
 `test/frontends.test.mjs` does the same for the two agent front-ends, the MCP server and the pi extension: both must list exactly the shared tool table in `core/boxery-tools.mjs`. Put a new tool or action in the table (with its `run`), not in one front-end; something only one of them can offer goes in that test's `MCP_ONLY` or `PI_ONLY` with the reason.
+
+`test/grants.test.mjs` exercises the actual CLI with no controlling terminal and with a real PTY (`test/fixtures/grant-pty.py`, Python standard library only), plus in-process approvals, shared prompt text, config-only automation and deny-directory parity. Its profiles, stores and transport effects are temporary; it never grants access to a real VM.
 
 `test/lease-workflows.test.mjs` tests lease policy directly through injected store/backend/journal dependencies, without SQLite or subprocesses. [Host module boundaries](docs/host-modules.md) documents ownership and dependencies. `test/operations.test.mjs` uses deterministic fake-backend barriers to SIGKILL supervisors while their worker groups are alive, checking both recovery and external side effects. Keep these tests offline: they use only temporary config and VM directories. The [lifecycle contract](docs/lifecycle.md) documents resource boundaries, durable intents and backend recovery responsibilities.
 

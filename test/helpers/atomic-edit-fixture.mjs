@@ -3,19 +3,29 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 // All locks and HOME paths belong to the temporary fixture, never the developer.
-export function guestFixture(dir) {
+export function guestFixture(dir, { emulateFlock = process.platform === "darwin" } = {}) {
 	const bin = path.join(dir, "bin"); mkdirSync(bin, { recursive: true });
-	if (process.platform === "darwin") {
+	if (emulateFlock) {
 		writeFileSync(path.join(bin, "flock"), `#!/usr/bin/env perl
 use Fcntl qw(:flock F_SETFD);
+if (@ARGV == 1 && $ARGV[0] =~ /^[0-9]+$/) {
+    # grants use an fd opened by the parent bash; locking that same open description
+    # keeps the lock in the parent after this helper exits.
+    open(my $lock, '>>&=', $ARGV[0]) or die $!;
+    flock($lock, LOCK_EX) or die $!;
+    exit 0;
+}
 shift @ARGV; shift @ARGV; # -w 60 (tests use bounded barriers)
 open(my $lock, '>>', shift @ARGV) or die $!;
 fcntl($lock, F_SETFD, 0) or die $!; # retain the lock across exec
 flock($lock, LOCK_EX) or die $!;
 exec @ARGV or die $!;
 `);
+		chmodSync(path.join(bin, "flock"), 0o755);
+	}
+	if (process.platform === "darwin") {
 		writeFileSync(path.join(bin, "stat"), '#!/bin/sh\nshift; shift; exec /usr/bin/stat -f %Lp "$@"\n');
-		for (const name of ["flock", "stat"]) chmodSync(path.join(bin, name), 0o755);
+		chmodSync(path.join(bin, "stat"), 0o755);
 	}
 	const preload = path.join(dir, "inject.mjs");
 	writeFileSync(preload, `import fs from 'node:fs/promises'; import {writeSync} from 'node:fs';
