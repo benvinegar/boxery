@@ -10,6 +10,8 @@ mkdir -p "$tmp/bin" "$HOME"; : >"$CALLS"
 for c in systemctl launchctl ssh-keygen; do
 	printf '#!/bin/sh\necho "%s $*" >>"$CALLS"\n' "$c" >"$tmp/bin/$c"; chmod +x "$tmp/bin/$c"
 done
+# systemctl is-active: inactive (3), unless RUNNERS_ACTIVE=1 (the runner manager runs)
+printf '#!/bin/sh\necho "systemctl $*" >>"$CALLS"\ncase "$*" in *is-active*) [ "${RUNNERS_ACTIVE:-}" = 1 ] || exit 3 ;; esac\n' >"$tmp/bin/systemctl"
 # ssh-keygen stub: write the key pair it was asked for
 printf '#!/bin/sh\necho "ssh-keygen $*" >>"$CALLS"; while [ $# -gt 1 ]; do shift; done; echo "ssh-ed25519 AAAAhost boxery-host" >"$1.pub"; : >"$1"\n' >"$tmp/bin/ssh-keygen"
 export PATH="$tmp/bin:$PATH"
@@ -22,7 +24,7 @@ echo "== init"
 out=$(BOXERY_NO_SERVICES=1 BOXERY_NET=isolated "$H" init 2>&1) && ok "init succeeds" || bad "init: $out"
 [[ $out == *"init done. Next: boxery-host build-base"* ]] && ok "init says what's next" || bad "output: $out"
 [[ $(mode "$BOXERY_CONF") == 700 ]] && ok "state directory is 0700" || bad "conf mode $(mode "$BOXERY_CONF")"
-for f in tokens.json authorized_keys proxy.env; do [[ $(mode "$BOXERY_CONF/$f") == 600 ]] && ok "$f is 0600" || bad "$f mode $(mode "$BOXERY_CONF/$f")"; done
+for f in tokens.json authorized_keys proxy.env runners.env; do [[ $(mode "$BOXERY_CONF/$f") == 600 ]] && ok "$f is 0600" || bad "$f mode $(mode "$BOXERY_CONF/$f")"; done
 [[ $(cat "$BOXERY_CONF/tokens.json") == "{}" ]] && ok "empty token table" || bad "tokens: $(cat "$BOXERY_CONF/tokens.json")"
 grep -q AAAAhost "$BOXERY_CONF/mgmt_ed25519.pub" && ok "host management key created" || bad "no host key"
 e=$BOXERY_CONF/host.env
@@ -47,6 +49,22 @@ BOXERY_NO_SERVICES=1 "$H" init >/dev/null 2>&1 && [[ $(cat "$BOXERY_CONF/proxy.e
 "$H" init >/dev/null 2>&1 || bad "init with services"
 if [[ $(uname) == Darwin ]]; then grep -q 'dev.boxery-reaper.plist' "$CALLS" && ok "reaper agent loaded" || bad "reaper: $(cat "$CALLS")"
 else grep -q 'enable --now boxery-reaper.timer' "$CALLS" && ok "reaper timer enabled" || bad "reaper: $(cat "$CALLS")"; fi
+# The GitHub runner manager (docs/github-runners.md): installed, but on only after `runners start`; an
+# init while it runs (an upgrade) restarts it on the new code.
+grep -q '^#GITHUB_TOKEN=$' "$BOXERY_CONF/runners.env" && ok "runners.env: a template, no token" || bad "runners.env: $(cat "$BOXERY_CONF/runners.env")"
+if [[ $(uname) == Darwin ]]; then
+	rp=$HOME/Library/LaunchAgents/dev.boxery-runners.plist
+	[[ ! -e $rp ]] && ! grep -q boxery-runners "$CALLS" && ok "runner manager not installed until started (launchd loads every agent at login)" || bad "runners: $(cat "$CALLS")"
+	echo started >"$rp"; : >"$CALLS"
+	"$H" init >/dev/null 2>&1 && grep -q "<string>runners</string><string>run</string>" "$rp" && grep -q "launchctl bootstrap gui/$(id -u) $rp" "$CALLS" \
+		&& ok "init reloads a started runner manager" || bad "runners reload: $(cat "$CALLS")"
+else
+	ru=$HOME/.config/systemd/user/boxery-runners.service
+	grep -q "^ExecStart=$ROOT/host/boxery-host runners run$" "$ru" && ! grep -q 'boxery-runners.service' <(grep -v is-active "$CALLS") \
+		&& ok "runner manager unit installed, not enabled" || bad "runners unit: $(cat "$ru" 2>&1) calls: $(cat "$CALLS")"
+	: >"$CALLS"
+	RUNNERS_ACTIVE=1 "$H" init >/dev/null 2>&1 && grep -q 'systemctl --user restart --no-block boxery-runners.service' "$CALLS" && ok "init restarts a running runner manager" || bad "runners restart: $(cat "$CALLS")"
+fi
 err=$("$H" init --backend nope 2>&1) && bad "init --backend nope succeeded" || { [[ $err == *"unknown backend 'nope'"* ]] && ok "init --backend rejects an unknown backend" || bad "error: $err"; }
 
 echo "== add-key"

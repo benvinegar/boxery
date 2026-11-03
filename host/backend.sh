@@ -71,11 +71,12 @@ wait_ssh() { # NAME HOST [PORT]   (tries × 2s; BOXERY_SSH_WAIT_TRIES, default 1
 	die "timed out waiting for ssh on $2:${3:-22}"
 }
 
-# image/layers: plumbing (every VM) → devtools → desktop, plus their runner. A headless VM's seed and the
-# desktop build's cloud-config carry them as write_files entries (indented for a top-level write_files:).
+# image/layers: plumbing (every VM) → devtools → desktop, the optional github-runner, plus their runner. A
+# headless VM's seed and the desktop build's cloud-config carry them as write_files entries (indented for a
+# top-level write_files:).
 layer_files() {
 	local f dst mode
-	for f in lib plumbing devtools desktop provision; do
+	for f in lib plumbing devtools desktop github-runner provision; do
 		case $f in
 		provision) dst=/usr/local/sbin/boxery-provision mode=0755 ;;
 		lib) dst=/usr/local/lib/boxery/layers/lib.sh mode=0644 ;;

@@ -4,15 +4,16 @@
 #   plumbing   every VM: agent user, boxery-llm (LLM proxy bridge), sshd/sysctl/cloud-init/tmux config
 #   devtools   git, build tools, node 24, pi, opencode, ripgrep (keeps what the image already has)
 #   desktop    XFCE, VNC/noVNC, browsers, playwright-core (the desktop base build only)
+#   github-runner  optional (new --headless --layers github-runner): the pinned GitHub Actions runner
 # Records what's installed in /etc/boxery/layers; /etc/boxery/headless marks a VM without the desktop.
 set -euo pipefail
 D=/usr/local/lib/boxery/layers
 want=" ${*:-$(cat /etc/boxery/provision 2>/dev/null || true)} "
-for l in $want; do case $l in plumbing | devtools | desktop) ;; *) echo "boxery-provision: unknown layer '$l'" >&2; exit 2 ;; esac; done
+for l in $want; do case $l in plumbing | devtools | desktop | github-runner) ;; *) echo "boxery-provision: unknown layer '$l'" >&2; exit 2 ;; esac; done
 [ "$want" != "  " ] || { echo "boxery-provision: no layers given (and no /etc/boxery/provision)" >&2; exit 2; }
 mkdir -p /etc/boxery
 rm -f /var/log/boxery-provision.ok
-for l in plumbing devtools desktop; do
+for l in plumbing devtools desktop github-runner; do
 	case $want in *" $l "*) ;; *) continue ;; esac
 	echo "==> boxery layer: $l"
 	t=$SECONDS

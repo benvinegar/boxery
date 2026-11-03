@@ -53,6 +53,7 @@ const CLI_ONLY = {
 	sessions: "lists the tmux sessions behind attach/prompt",
 	"proxy-log": "host-wide LLM/edge request log, for the user",
 	pool: "host admin",
+	runners: "host admin: GitHub Actions runners on the pool, with a GitHub token that stays on the host",
 	pin: "which ssh host key a VM is trusted with is the user's decision (--from-guest trusts the network once)",
 };
 

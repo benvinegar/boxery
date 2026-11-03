@@ -129,6 +129,16 @@ for f in /usr/local/sbin/boxery-provision /usr/local/lib/boxery/layers/plumbing.
 done
 grep -A1 'path: /etc/boxery/provision$' "$ud" | grep -q 'content: plumbing devtools$' && ok "headless seed asks for plumbing + devtools only" || bad "provision list"
 awk '/^runcmd:/{f=1;next} f&&/^  - /{print; exit}' "$ud" | grep -q 'boxery-provision' && ok "provisioning is the first runcmd step (before boxery-llm restarts)" || bad "runcmd order"
+# --layers: an optional layer on top (the GitHub runner, docs/github-runners.md); headless only
+out=$("$H" new hr --headless --layers github-runner 2>&1) && grep -A1 'path: /etc/boxery/provision$' "$BOXERY_FAKE_DIR/hr/user-data" | grep -q 'content: plumbing devtools github-runner$' \
+	&& [[ $out == *"plumbing devtools github-runner installed"* ]] && ok "new --headless --layers github-runner asks for the runner layer too" || bad "--layers: $out"
+b64=$(awk '$0 == "  - path: /usr/local/lib/boxery/layers/github-runner.sh" {f=1} f&&/content:/{print $2; exit}' "$BOXERY_FAKE_DIR/hr/user-data")
+[[ -n $b64 && $(echo "$b64" | base64 -d) == "$(cat "$ROOT/image/layers/github-runner.sh")" ]] && ok "...and its seed carries the layer" || bad "seed lacks github-runner.sh"
+"$H" rm hr >/dev/null 2>&1
+expect_fail "--layers without --headless is refused" "$H" new hr2 --layers github-runner
+expect_fail "an unknown layer is refused" "$H" new hr3 --headless --layers bogus
+expect_fail "--layers with --from is refused" "$H" new hr4 --headless --from hl@nosuch --layers github-runner
+[[ ! -d $BOXERY_FAKE_DIR/hr2 && ! -d $BOXERY_FAKE_DIR/hr3 && ! -d $BOXERY_FAKE_DIR/hr4 ]] && ok "...and makes no VM" || bad "refused --layers made a VM"
 "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].desktop == false' >/dev/null && ok "ls --json: desktop false" || bad "ls --json: $("$H" ls --json)"
 "$H" ls | grep -q '^hl .* headless  *-$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
 ! grep -q '^users:' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'boxery-provision' "$BOXERY_FAKE_DIR/a2/user-data" && ok "desktop seeds are unchanged (no users:, no layers)" || bad "desktop seed changed"
@@ -147,7 +157,7 @@ for n in hl2 hl3 hf df; do "$H" rm "$n" >/dev/null 2>&1; done
 # The desktop build's cloud-config: the template with every layer at its marker
 bu=$tmp/cache/base-user-data.yaml
 out=$(BOXERY_CACHE=$tmp/cache "$H" build-base 2>&1) && [[ -f $bu ]] && ok "build-base writes the build cloud-config" || bad "build-base: $out"
-! grep -q '@boxery-layers' "$bu" && [[ $(grep -c '^  - path: ' "$bu") == $(($(grep -c '^  - path: ' "$ROOT/image/base-user-data.yaml") + 5)) ]] && ok "...with the 5 layer files in place of the marker" || bad "layers not inserted: $(grep 'path:' "$bu")"
+! grep -q '@boxery-layers' "$bu" && [[ $(grep -c '^  - path: ' "$bu") == $(($(grep -c '^  - path: ' "$ROOT/image/base-user-data.yaml") + 6)) ]] && ok "...with the 6 layer files in place of the marker" || bad "layers not inserted: $(grep 'path:' "$bu")"
 node "$ROOT/host/cloudconfig-sh.mjs" "$bu" >"$tmp/files.sh" && grep -q '/usr/local/sbin/boxery-provision' "$tmp/files.sh" && grep -q '/usr/local/sbin/boxery-build.sh' "$tmp/files.sh" && ok "cloudconfig-sh.mjs (Lima, exe) reads it" || bad "cloudconfig-sh on the build config"
 # YAML check with whatever parser this machine has (PyYAML, or macOS's Ruby); skipped if none.
 yaml_keys() { python3 -c 'import sys, yaml; print(" ".join(sorted(yaml.safe_load(open(sys.argv[1])))))' "$1" 2>/dev/null || ruby -ryaml -e 'puts YAML.load_file(ARGV[0]).keys.sort.join(" ")' "$1" 2>/dev/null; }

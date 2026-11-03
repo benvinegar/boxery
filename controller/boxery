@@ -1037,7 +1037,7 @@ cmd_agent_forward() { # NAME on|off  (alias for grant/revoke ssh-agent)
 	esac
 }
 
-cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless] [--grant SPEC]... [--agent-forward]
+cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless [--layers L,...]] [--grant SPEC]... [--agent-forward]
 	name=""; pass=""; specs=""; from=""
 	while [ $# -gt 0 ]; do
 		case $1 in
@@ -1045,6 +1045,9 @@ cmd_new() { # NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [-
 		--grant) [ $# -ge 2 ] || die "--grant needs a value"; specs="$specs$2$NL"; shift 2 ;;
 		--agent-forward) specs="${specs}ssh-agent$NL"; shift ;;
 		--headless) pass="$pass --headless"; shift ;;
+		--layers) [ $# -ge 2 ] || die "--layers needs a value"
+			case $2 in '' | *[!a-z0-9,-]*) die "invalid layer list: $2" ;; esac
+			pass="$pass --layers $2"; shift 2 ;;
 		--shape) [ $# -ge 2 ] || die "--shape needs a value"; valid_vm "$2" || die "invalid shape name: $2"; pass="$pass --shape $2"; shift 2 ;;
 		--cpus | --mem | --disk) [ $# -ge 2 ] || die "$1 needs a value"
 			case $2 in '' | *[!0-9]*) die "$1 must be a number" ;; esac
@@ -1346,6 +1349,7 @@ usage() {
 		                                ls: where each host runs (local or ssh destination) and its backend
 		new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--headless] [--grant SPEC]... [--agent-forward]
 		                                --headless: no desktop (shell + agents only); needs no build-base
+		                                --headless --layers github-runner: a GitHub Actions runner VM
 		build-base                      build the host's desktop base image (one-time, ~3 min)
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
 		ls [--json]                     list VMs (with their shape and grants)
@@ -1386,6 +1390,8 @@ usage() {
 		acquire [--ttl S] [--wait S]    lease a VM from the shared pool (prints NAME LEASE_ID)
 		renew NAME [--ttl S]            extend your lease;  release NAME   give it back (VM is reset)
 		leases [--json]                 your leases;  pool add|rm|ls (admin, on the host)
+		runners status|start|stop|config|token   GitHub Actions runners on pool VMs, one job per
+		                                  fresh VM (admin; docs/github-runners.md)
 		grant NAME SPEC... [--cmd CMD]  give a VM access to something on this machine:
 		                                  ssh-agent | env:VAR | file:LOCAL[=REMOTE]
 		                                  http:HOST --cmd CMD [--auth bearer|basic:USER|header:NAME] [--readonly]
@@ -1478,6 +1484,8 @@ renew) cmd_renew "$@" ;;
 release) cmd_release "$@" ;;
 leases) cmd_leases "$@" ;;
 pool) need_host; [ -z "${2:-}" ] || drop_master "$2"; h pool "$@"; [ -z "${2:-}" ] || drop_master "$2" ;;
+# GitHub Actions runners on the host's pool (docs/github-runners.md): passed through; `token` reads stdin
+runners) need_host; h runners "$@" ;;
 grant) cmd_grant "$@" ;;
 revoke) cmd_revoke "$@" ;;
 grants) cmd_grants "$@" ;;

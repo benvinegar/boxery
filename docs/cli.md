@@ -41,7 +41,7 @@ boxery rm demo                               # also revokes its LLM proxy token
 boxery pin demo [--from-guest]               # re-pin demo's ssh host key (a VM from before keys were pinned)
 ```
 
-**Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms).
+**Headless VMs.** `new --headless` makes a VM without the desktop: shell, git (current, from the git-core PPA), build tools, node 24, pi, opencode and ripgrep, but no XFCE, VNC, browsers or computer use. It boots the backend's stock image (the Ubuntu 24.04 cloud image; exeuntu on exe.dev) and installs boxery's plumbing and dev-tools layers at first boot, so the host needs no `build-base`. That takes longer than cloning the built desktop base: about 50 s on Lima (vz, Apple Silicon), mostly the dev tools. Snapshots, forks and `new --from` of a headless VM are as fast as for desktop VMs and stay headless; a VM made from an image keeps its source's kind, and `--headless` with a desktop image is refused. `boxery desktop`, `vm_screenshot`/`vm_click`/`vm_type`/`vm_key`/`vm_scroll` and `vm_browser` refuse headless VMs with a clear error. `ls` shows the kind (KIND column, `desktop` in `--json`). The layers are in [`image/layers/`](../image/layers/); see [backends](../host/backends/README.md#image-layers-desktop-and-headless-vms). `--layers github-runner` adds an optional layer at first boot, the GitHub Actions runner ([GitHub Actions runners](github-runners.md)); only a headless VM takes `--layers`, since a desktop VM's layers come from its base and a VM made from an image has its source's.
 
 **Host keys.** Every ssh to a VM checks its host key, which is pinned on the host when the VM is made ([security](security.md#vm-host-keys)). A VM made before that, or whose record was lost, fails with "Host key verification failed" until you run `boxery pin NAME`. That reads the key through the hypervisor (libvirt's guest agent) or the host's loopback endpoint (Lima, exe, boat). `--from-guest` instead trusts what the VM's ssh endpoint answers, once. `boxery start NAME` pins it automatically where it can.
 
@@ -148,9 +148,10 @@ boxery renew NAME [--ttl S]
 boxery release NAME                          # VM is reset to its clean snapshot
 boxery leases [--json]                       # your leases
 boxery pool add|rm|ls                        # admin
+boxery runners status|start|stop|config|token   # admin: GitHub Actions runners on pool VMs
 ```
 
-See [Shared pool & leases](pool.md).
+See [Shared pool & leases](pool.md) and [GitHub Actions runners](github-runners.md).
 
 ### Misc
 
@@ -175,7 +176,7 @@ upgrade [--check] [--ref REF] [--wait S] [--reinit]
                                 (code and each profile's state, from $BOXERY_CONF/pre-upgrade/, kept after success)
 build-base                      build the golden desktop image (one time; headless VMs don't need it)
 add-key < key.pub               authorize a controller's ssh key for new VMs
-new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless]
+new NAME [--shape S] [--cpus N --mem MiB --disk GiB] [--from IMAGE] [--headless [--layers github-runner]]
 fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]
 shapes [--json]                 VM sizes: built-ins + ~/.config/boxery/shapes.json (see Shapes)
 ls [--json] | ip NAME | start NAME | stop NAME | rm NAME
@@ -186,9 +187,18 @@ pin NAME [--from-guest]         re-pin running NAME's ssh host key; prints its S
 proxy-log [N]
 
 pool add NAME | rm NAME [--force] | ls [--json]
-acquire --holder H [--ttl S] [--wait S]    (lease ssh pubkey on stdin)
+acquire --holder H [--ttl S] [--wait S] [--only NAME,…]   (lease ssh pubkey on stdin; --only: one of these VMs)
 renew LEASE [--ttl S] | release LEASE | reap | reconcile
+
+runners config [--repo OWNER/REPO | --org ORG] [--vms NAME,…] [--count N] [--labels L,…] [--group ID] [--ttl S] [--api URL] [--prefix P]
+                                configure GitHub Actions runners (saved in runners.json; no flags: print it)
+runners token < FILE            store the GitHub token (first line of stdin) in runners.env, 0600
+runners start | stop            turn the runner manager service on or off
+runners status [--json]         configuration, whether a token is set (never its value), the service, the leased runner VMs
+runners run                     the runner manager in the foreground (what the service runs)
 ```
+
+`runners` is described in [GitHub Actions runners](github-runners.md); `boxery runners …` on a laptop passes the same arguments (and stdin, for `token`) to the host.
 
 `reconcile` (also performed by `reap`) recovers abandoned lifecycle operations and checks inventory drift. Conflicting VM mutations are serialized through readiness/key installation, not just disk operations. See [Lifecycle coordination and recovery](lifecycle.md) for crash behavior, backend responsibilities and upgrade precautions.
 

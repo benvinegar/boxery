@@ -11,7 +11,10 @@ import { fail, log, print, stamp, validImage, validName, validNum } from "./util
 /** @import { Runtime } from "./runtime.mjs" */
 /** @import { ShapeRecord } from "./shapes.mjs" */
 
-/** Parsed `new` arguments; sizes are the flags' strings ("" = unset). @typedef {{ name: string, shape: string, cpus: string, mem: string, disk: string, from: string, headless: boolean }} NewArgs */
+/** Parsed `new` arguments; sizes are the flags' strings ("" = unset). layers: optional layers on top of
+ *  plumbing + devtools (headless only). @typedef {{ name: string, shape: string, cpus: string, mem: string, disk: string, from: string, headless: boolean, layers?: string[] }} NewArgs */
+// Layers a headless VM may add with --layers (image/layers/; the base layers are always there).
+export const OPTIONAL_LAYERS = ["github-runner"];
 /** @typedef {{ cpus: string, mem: string, disk: string }} SizeFlags */
 
 const SHAPE_NAME = /^[a-z][a-z0-9-]{0,30}$/;
@@ -37,25 +40,34 @@ async function mustRun(rt, ep, command) {
 }
 
 // ---------------------------------------------------------------- new
-/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless] @param {string[]} args */
+const NEW_USAGE = "usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless [--layers L,…]]";
+/** new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless [--layers L,…]] @param {string[]} args */
 export function parseNewArgs(args) {
 	/** @type {NewArgs} */
 	const o = { name: "", shape: "", cpus: "", mem: "", disk: "", from: "", headless: false };
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i], v = args[i + 1];
 		if (a === "--headless") o.headless = true;
+		else if (a === "--layers") {
+			const layers = (v ?? "").split(",");
+			for (const l of layers) if (!OPTIONAL_LAYERS.includes(l)) fail(`unknown layer '${l}' (optional layers: ${OPTIONAL_LAYERS.join(", ")})`);
+			o.layers = [...new Set(layers)]; i++;
+		}
 		else if (a === "--shape") { if (!SHAPE_NAME.test(v ?? "")) fail(`invalid shape name '${v ?? ""}'`); o.shape = v; i++; }
 		else if (["--cpus", "--mem", "--disk"].includes(a)) { o[/** @type {keyof SizeFlags} */ (a.slice(2))] = validNum(a, v); i++; }
 		else if (a === "--from") { o.from = validImage(v); i++; }
 		else if (a.startsWith("-")) fail(`unknown flag ${a}`);
 		else o.name = a;
 	}
-	if (!o.name) fail("usage: new NAME [--shape S] [--cpus N] [--mem MiB] [--disk GiB] [--from IMAGE] [--headless]");
+	if (!o.name) fail(NEW_USAGE);
+	// A desktop VM's layers come from its base and a VM from an image keeps its source's: only a headless VM,
+	// provisioned from the stock image at first boot, can add one.
+	if (o.layers && (!o.headless || o.from)) fail("--layers needs --headless (and no --from: a VM made from an image has its source's layers)");
 	return o;
 }
 
 /** Create, boot and wait for NAME. Returns "NAME HOST:PORT". @param {Runtime} rt @param {NewArgs} args */
-export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless }) {
+export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless, layers = [] }) {
 	validName(name);
 	// Size: the shape (the default shape if none), then explicit flags. Any flag makes it a custom size.
 	const shapes = rt.shapes();
@@ -72,7 +84,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 		kind = vmKind(rt.conf, from.split("@")[0]); src = from;
 		if (headless && kind !== "headless") fail(`${from} has a desktop, and a VM made from an image keeps it (drop --headless)`);
 	} else if (headless) {
-		kind = "headless"; src = "stock"; provision = "plumbing devtools";
+		kind = "headless"; src = "stock"; provision = ["plumbing", "devtools", ...layers].join(" ");
 	} else if (!await rt.vms.hasBase()) {
 		fail(`no base image; run: boxery-host build-base (or: new ${name} --headless, which needs none)`);
 	}
