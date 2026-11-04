@@ -11,6 +11,19 @@ check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d
 cleanup() { "$A" rm "$VM" >/dev/null 2>&1 || true; [[ -n ${tun:-} ]] && kill "$tun" 2>/dev/null || true; }
 trap cleanup EXIT
 
+# Grants need a person (#138): `boxery grant` reads approval only from /dev/tty. Without one (CI, an
+# agent's shell) the profile has to opt out, which e2e never does for you. Check before creating a VM.
+if ! { exec 9<>/dev/tty; } 2>/dev/null; then
+	pdir=$("$A" host ls --json 2>/dev/null | jq -rs 'flatten | map(select(.default))[0].dir // empty' 2>/dev/null || true)
+	last=$(grep -E '^[[:space:]]*GRANT_CONFIRM=' "${pdir:-/nonexistent}/config" 2>/dev/null | tail -1 || true)
+	if ! [[ $last =~ ^[[:space:]]*GRANT_CONFIRM=(off|\'off\'|\"off\")[[:space:]]*(#.*)?$ ]]; then
+		echo "e2e: no terminal to approve grants on, and the host profile asks for one." >&2
+		echo "  run it in a terminal (it asks 3 times), or for unattended runs add GRANT_CONFIRM=off to" >&2
+		echo "  ${pdir:-the selected host profile}/config, ideally in a throwaway BOXERY_HOME (see docs/grants.md)." >&2
+		exit 2
+	fi
+else exec 9>&-; fi
+
 echo "== create $VM"
 t0=$(date +%s); "$A" new "$VM" >/dev/null; ok "created in $(($(date +%s) - t0))s"
 
