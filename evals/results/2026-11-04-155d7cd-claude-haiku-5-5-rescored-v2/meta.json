@@ -1,0 +1,54 @@
+{
+  "suite": {
+    "version": 2,
+    "hash": "3c57eef2b23a",
+    "dirty": false
+  },
+  "boxery": {
+    "commit": "155d7cdc89a277e0659852e03ac70e5cbc77b47d",
+    "describe": "v0.8.0-55-g155d7cd",
+    "dirty": false,
+    "host": {
+      "controller": {
+        "version": "0.9.0",
+        "describe": null
+      },
+      "host": {
+        "name": "local",
+        "version": "0.9.0",
+        "describe": null,
+        "install": "npm"
+      },
+      "behind": false
+    }
+  },
+  "claude": {
+    "cli": "2.1.317",
+    "model": "claude-haiku-5-5"
+  },
+  "node": "v24.22.1",
+  "platform": "darwin-arm64",
+  "command": "node evals/run.mjs --save --model claude-haiku-5-5 --concurrency 5",
+  "options": {
+    "repeat": 3,
+    "only": null,
+    "model": "claude-haiku-5-5",
+    "toolSearch": null,
+    "vm": "demo",
+    "otherVm": "hunk-perf"
+  },
+  "started": "2026-11-04T01:06:19.381Z",
+  "finished": "2026-11-04T01:09:07.864Z",
+  "runs": 60,
+  "passed": 57,
+  "cost": 0.24,
+  "rescored": {
+    "from": {
+      "version": 1,
+      "hash": "66c49e28613b",
+      "dirty": false
+    },
+    "at": "2026-11-04T02:28:24.875Z",
+    "suiteCommit": "f1a24abf58b3e8657abcda5e84a28842ef6d467a"
+  }
+}
