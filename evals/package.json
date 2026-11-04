@@ -9,6 +9,7 @@
   "scripts": {
     "eval": "node run.mjs",
     "history": "node history.mjs",
+    "rescore": "node rescore.mjs",
     "compare": "node compare.mjs",
     "index": "node history.mjs --write-index",
     "typecheck": "tsc -p ."

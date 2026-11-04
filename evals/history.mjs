@@ -5,7 +5,7 @@
 //   node history.mjs --model opus      only models whose id contains "opus"
 //   node history.mjs --case checkpoint one case's pass rate across results
 //   node history.mjs --json            the history as JSON (what results/index.json holds)
-//   node history.mjs --write-index     rebuild results/index.json (run.mjs --save does this too)
+//   node history.mjs --write-index     rebuild results/index.json (--save in run.mjs and rescore.mjs does this too)
 import { parseArgs } from "node:util";
 import { frac, indexEntry, listResults, pct, writeIndex } from "./lib/results.mjs";
 
@@ -33,13 +33,15 @@ const table = (head, body) => {
 };
 const when = (r) => r.started.slice(0, 16).replace("T", " ");
 const at = (r) => `${r.commit.slice(0, 7)}${r.dirty ? "*" : ""}`;
+const suite = (r) => `v${r.suite.version}${r.rescored ? ` (from v${r.rescored.fromVersion})` : ""}`;
 
 if (opt.case) {
 	const id = opt.case;
 	table(["started", "model", "commit", "suite", "pass", "should"], rows.filter((r) => r.cases[id]).map((r) =>
-		[when(r), r.model, at(r), `v${r.suite.version}`, frac(r.cases[id].passed, r.cases[id].runs), frac(r.cases[id].shouldOk, r.cases[id].shouldTotal)]));
+		[when(r), r.model, at(r), suite(r), frac(r.cases[id].passed, r.cases[id].runs), frac(r.cases[id].shouldOk, r.cases[id].shouldTotal)]));
 } else {
 	table(["id", "model", "commit", "suite", "runs", "pass", "should", "cost"], rows.map((r) =>
-		[r.id, r.model, at(r), `v${r.suite.version}`, r.runs, pct(r.passed, r.runs), pct(r.should.ok, r.should.total), `$${r.cost}`]));
+		[r.id, r.model, at(r), suite(r), r.runs, pct(r.passed, r.runs), pct(r.should.ok, r.should.total), `$${r.cost}`]));
 }
 if (rows.some((r) => r.dirty)) console.log("\n* run with uncommitted changes (--allow-dirty): the commit alone doesn't recreate it");
+if (rows.some((r) => r.rescored)) console.log("(from vN) = a run made under suite vN, checked again with this suite's checks (rescore.mjs)");

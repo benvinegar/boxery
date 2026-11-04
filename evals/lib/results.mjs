@@ -61,6 +61,7 @@ export function indexEntry(r) {
 		commit: r.meta.boxery.commit,
 		describe: r.meta.boxery.describe,
 		suite: { version: r.meta.suite.version, hash: r.meta.suite.hash },
+		rescored: r.meta.rescored ? { fromVersion: r.meta.rescored.from.version, suiteCommit: r.meta.rescored.suiteCommit } : undefined,
 		dirty: r.meta.boxery.dirty || r.meta.suite.dirty,
 		runs: sum("runs"),
 		passed: sum("passed"),
