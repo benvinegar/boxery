@@ -1187,7 +1187,7 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 		return { text: `The approval prompt failed (${/** @type {Error | undefined} */ (e)?.message ?? e}), so nothing was granted. ${manual}`, isError: true };
 	}
 	if (answer !== "accept")
-		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up: carry on without it, or ask them how to proceed.` };
+		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up, and don't get it into the VM another way (vm_copy, vm_write, vm_bash): carry on without it, or ask them how to proceed.` };
 	const out = await addGrants(vm, [g], { signal });
 	return { text: `The user approved: ${vm} now has ${g.spec}. New login shells (vm_bash runs one) pick it up.\n${out}` };
 }
@@ -1258,13 +1258,13 @@ export async function manage(a, opts = {}) {
 
 // ---------------------------------------------------------------- shared prompt text
 
-// Rules both forms of the guidance carry: when to reach for a VM at all, and what never to do with one.
+// Rules both forms of the guidance carry: when to reach for a VM at all, and how credentials get into one.
 const WHEN_VM =
 	"Use a VM for work that shouldn't touch this machine: untrusted code and install scripts (in a fresh VM, from vm_manage new or fork; download them there, not here), anything that needs Linux, root, Docker or a desktop/browser, long jobs that should outlive this session (vm_jobs), and parallel attempts.";
 const CREDENTIALS =
 	"Credentials reach a VM only through vm_grant, which asks the user: git asking for a username or password over https means vm_grant github, no need to inspect first. Never put them in a VM with vm_copy, vm_write or vm_bash (they would land on its disk and in its snapshots). " +
-	"If the user pastes a secret, don't save it to a file anywhere: ask them to export it on their machine and request env:VAR, or grant the file it already lives in (file:~/.npmrc=.npmrc).";
-const DECLINED = "If the user declines a vm_* call, stop and ask how to proceed. Don't do the same thing another way, locally or with another tool.";
+	"If the user pastes a secret, don't save it to a file anywhere: ask them to export it on their machine and request env:VAR, or grant the file it already lives in (file:~/.npmrc=.npmrc). " +
+	"If the user declines a grant, don't get that access into the VM another way (vm_copy, vm_write, vm_bash, or a value they paste): carry on without it, or ask them how to proceed.";
 
 /** The agent's standing instructions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
 export function guidance(current, { localToolsNote, host } = {}) {
@@ -1276,7 +1276,6 @@ export function guidance(current, { localToolsNote, host } = {}) {
 			WHEN_VM,
 			"Start GUI programs detached (`setsid nohup prog >/dev/null 2>&1 &`). Before something risky in a VM, snapshot it with vm_manage {action:'snap'}; to try several approaches at once, fork it.",
 			CREDENTIALS,
-			DECLINED,
 		].join("\n");
 	let restricted = false;
 	try { restricted = hostBackend(host) === "openshell"; } catch { /* no registered host in offline callers */ }
@@ -1298,7 +1297,6 @@ export function guidance(current, { localToolsNote, host } = {}) {
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
 		"Before something risky, snapshot the VM with vm_manage {action:'snap'} (vm_manage {action:'revert'} restores it). To try several approaches in parallel, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
 		WHEN_VM,
-		DECLINED,
 	].join("\n");
 }
 

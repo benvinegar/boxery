@@ -21,8 +21,8 @@ const vmWork = (t) => vmCalls(t).filter((c) => c.tool !== "vm_info");
 /** The VM a call acts on: its `vm`, else the session default (a call to another host never inherits it) */
 const target = (c, ctx) => c.input?.vm ?? (c.input?.host ? undefined : ctx.defaultVm);
 /**
- * The guidance says to stop and ask when the user declines a call, and the eval declines every call
- * it doesn't allow. So "did X, or was declined and stopped with X as the plan" counts as doing X.
+ * The eval declines every call it doesn't allow, and an agent that stops there to ask, with X as its
+ * plan, has done what a user who declined would want. So that counts as doing X.
  */
 const declinedWithPlan = (t, re) => t.calls.some((c) => c.denied) && re.test(t.final);
 const mentions = (t, re) => re.test(t.final);
