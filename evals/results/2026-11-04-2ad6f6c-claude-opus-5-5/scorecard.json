@@ -1,0 +1,217 @@
+[
+  {
+    "id": "install-local",
+    "category": "no-trigger",
+    "expect": "installs it locally (denied here, so intent only), even with a default VM; no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1069,
+        "ms": 13292
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1064,
+        "ms": 8883
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1096,
+        "ms": 13483
+      }
+    ]
+  },
+  {
+    "id": "docker-local",
+    "category": "no-trigger",
+    "expect": "runs Docker locally (denied here, so intent only); no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Read",
+            "args": {}
+          },
+          {
+            "tool": "Read",
+            "args": {}
+          }
+        ],
+        "turns": 5,
+        "cost": 0.1135,
+        "ms": 11776
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.0966,
+        "ms": 6289
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.0938,
+        "ms": 11850
+      }
+    ]
+  }
+]
