@@ -2488,6 +2488,40 @@
           "shouldTotal": 6
         }
       }
+    },
+    {
+      "id": "2026-11-04-40f48c0-claude-opus-5-5",
+      "started": "2026-11-04T04:51:43.266Z",
+      "model": "claude-opus-5-5",
+      "cli": "2.1.317",
+      "commit": "40f48c0092979155908d3ff455d3294b6423dc2a",
+      "describe": "v0.10.0-23-g40f48c0",
+      "suite": {
+        "version": 4,
+        "hash": "77564a29a51e"
+      },
+      "dirty": false,
+      "runs": 6,
+      "passed": 6,
+      "should": {
+        "ok": 12,
+        "total": 12
+      },
+      "cost": 0.68,
+      "cases": {
+        "git-credentials": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "pasted-token": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        }
+      }
     }
   ]
 }
