@@ -12,7 +12,7 @@ HERE = Path(__file__).parent
 
 TITLE = "The boxery host: trusted, between your agent and the untrusted VMs"
 DESC = (
-    "Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) reach the boxery host over ssh. "
+    "Coding agents (Claude Code, Codex, Cursor, opencode, pi) reach the boxery host over ssh. "
     "The host is trusted: it holds your real LLM keys and API tokens and runs the credential proxy, grants, "
     "leases and the shared pool, and images and forks. It creates, forks and wipes VMs on Lima, libvirt, exe.dev "
     "or boat.dev. The VMs are untrusted: they run any code and hold only a revocable per-VM token, which the host "
@@ -33,14 +33,12 @@ class Host(Diagram):
 
     def draw(self):
         t = self.t
-        self.text(44, 34, "Your machine", 13, t["label"], anchor="start")
-        self.region(40, 50, 600, 92, t["muted"])
-        self.agents(120, 64)
-        self.arrow(340, 146, 340, 186)
-        self.text(352, 166, "ssh · vm_* tools", 12, t["label"], anchor="start")
+        self.agents(120, 20)
+        self.arrow(340, 102, 340, 142)
+        self.text(352, 122, "ssh · vm_* tools", 12, t["label"], anchor="start")
 
         # the host: trusted, with what it runs
-        y0 = 190
+        y0 = 146
         self.slab(56, y0, 568, 136, 8, t["bar"])
         lock = t["bar_text"]
         self.add(f'<rect x="72" y="{y0 + 21}" width="13" height="10" rx="2" fill="{lock}"/>')
@@ -58,13 +56,13 @@ class Host(Diagram):
             self.text(x + 62.5, y + 34, sub, 11, t["bar_text"])
 
         # the VMs: untrusted, each holding only a token
-        y0 = 386
-        self.region(40, 368, 600, 196, t["warn_line"], t["warn"])
-        self.text(340, 352, "create · fork · wipe", 11, t["label"])
+        y0 = 342
+        self.region(40, 324, 600, 196, t["warn_line"], t["warn"])
+        self.text(340, 308, "create · fork · wipe", 11, t["label"])
         for i, (name, sub, vms) in enumerate(BACKENDS):
             x = 56 + i * 146
             cx = x + 65
-            self.arrow(cx, 334, cx, y0 - 4)
+            self.arrow(cx, 290, cx, y0 - 4)
             self.slab(x, y0, 130, 140, 6, t["host"], "4 3" if sub == "cloud" else None)
             self.text(cx, y0 + 24, name, 14, t["ink"], 600)
             self.text(cx, y0 + 43, sub, 12, t["host_sub"])
@@ -73,19 +71,19 @@ class Host(Diagram):
                 self.cube(vx, by, 12)
                 self.text(vx, by + 14, vm, 12, t["vm_text"])
                 self.token(vx, by + 32)
-        self.text(60, 546, "VMs · untrusted", 14, t["warn_text"], 600, "start")
-        self.text(620, 546, "run any code · hold only a revocable token", 12, t["warn_text"], anchor="end")
+        self.text(60, 502, "VMs · untrusted", 14, t["warn_text"], 600, "start")
+        self.text(620, 502, "run any code · hold only a revocable token", 12, t["warn_text"], anchor="end")
 
         # a VM's token goes to the credential proxy, which swaps it for the real key
-        self.arrow(86, y0 - 2, 86, 312, t["warn_line"], "3 3", "arrow-tok")
-        self.token(86, 350, 48, 18, 10)
+        self.arrow(86, y0 - 2, 86, 268, t["warn_line"], "3 3", "arrow-tok")
+        self.token(86, 306, 48, 18, 10)
 
 
 def main():
     for name, theme in THEMES.items():
         h = Host(theme)
         h.draw()
-        (HERE / f"host-{name}.svg").write_text(h.svg(680, 580, TITLE, DESC, [("arrow-tok", theme["warn_line"])]))
+        (HERE / f"host-{name}.svg").write_text(h.svg(680, 536, TITLE, DESC, [("arrow-tok", theme["warn_line"])]))
 
 
 if __name__ == "__main__":
