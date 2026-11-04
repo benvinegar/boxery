@@ -69,7 +69,16 @@ lima_start() { # INSTANCE TIMEOUT: start it (nothing to do if it runs), confined
 	sandbox-exec -p "$(lima_profile "$port")" limactl start "$i" --tty=false "${args[@]}" --timeout "$2"
 }
 
-backend_init() { :; }
+# Without confinement a guest reaches every service on the host's loopback through the gateway (#67).
+# Linux has no sandbox-exec, so Lima there is always unconfined; say so once, at init.
+backend_init() {
+	[[ $LIMA_CONFINE != 1 ]] || return 0
+	if [[ $(uname) == Darwin ]]; then
+		log "warning: BOXERY_LIMA_CONFINE=0: guests can reach every service on this Mac's 127.0.0.1 through $LIMA_GATEWAY"
+	else
+		log "warning: Lima guests on Linux are not confined: they can reach every service on this host's 127.0.0.1 through $LIMA_GATEWAY (#67). For isolated guests use --backend libvirt"
+	fi
+}
 backend_proxy_services() { :; }   # no guest bridge service needed on the host
 guest_proxy_upstream() { echo "TCP:$LIMA_GATEWAY:$PROXY_PORT"; }
 
