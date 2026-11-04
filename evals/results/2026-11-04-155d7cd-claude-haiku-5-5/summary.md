@@ -300,8 +300,8 @@ Expect: every command targets the other VM
 - **#1 pass**
   - `vm_info {"action":"hosts"}`
   - `vm_info {"action":"list","host":"local"}`
-  - `vm_info {"action":"list","host":"hornet"}`
-  - `vm_info {"action":"list","host":"exe"}`
+  - `vm_info {"action":"list","host":"<other host>"}`
+  - `vm_info {"action":"list","host":"<other host>"}`
   - `vm_bash {"vm":"hunk-perf","host":"local"}`
 - **#2 pass**
   - `vm_bash {"vm":"hunk-perf"}`

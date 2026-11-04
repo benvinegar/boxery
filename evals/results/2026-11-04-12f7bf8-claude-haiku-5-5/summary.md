@@ -91,7 +91,7 @@ Expect: uses a VM (creating one is denied, so it stops there)
   - `Bash✗`
   - `Read`
   - `vm_manage✗ {"action":"new","vm":"linux-test","headless":true,"use":true}`
-  - `vm_copy✗ {"vm":"linux-test","to":"project/"}`
+  - `vm_copy✗ {"vm":"linux-test"}`
 
 ### linux-tests-default-vm
 

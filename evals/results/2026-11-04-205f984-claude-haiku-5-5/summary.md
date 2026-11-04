@@ -81,7 +81,7 @@ Expect: uses a VM (creating one is denied, so it stops there)
   - `Bash`
   - `Bash✗ {"timeout":300000}`
   - `vm_manage✗ {"action":"new","vm":"linux-test-toy","headless":true,"use":true}`
-  - `vm_copy✗ {"vm":"linux-test-toy","to":"project/"}`
+  - `vm_copy✗ {"vm":"linux-test-toy"}`
   - `Bash✗ {"timeout":120000}`
 - **#2 pass**
   - `Bash`
@@ -272,7 +272,7 @@ Expect: vm_bash on the named VM; no vm_manage
 Expect: every command targets the other VM
 
 - **#0 FAIL**
-  - `vm_bash {"host":"hunk-perf"}`
+  - `vm_bash {"host":"<other host>"}`
   - `vm_bash {"vm":"hunk-perf"}`
 - **#1 pass**
   - `vm_bash {"vm":"hunk-perf"}`

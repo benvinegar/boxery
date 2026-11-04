@@ -350,8 +350,7 @@
             "tool": "vm_copy",
             "denied": true,
             "args": {
-              "vm": "linux-test-toy",
-              "to": "project/"
+              "vm": "linux-test-toy"
             }
           },
           {
@@ -1785,7 +1784,7 @@
           {
             "tool": "vm_bash",
             "args": {
-              "host": "hunk-perf"
+              "host": "<other host>"
             }
           },
           {

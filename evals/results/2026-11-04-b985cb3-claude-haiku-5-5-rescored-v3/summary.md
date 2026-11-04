@@ -283,9 +283,9 @@ Expect: every command targets the other VM
   - `vm_bash {"vm":"hunk-perf"}`
 - **#1 pass**
   - `vm_info {"action":"hosts"}`
-  - `vm_info {"action":"list","host":"hunk-perf"}`
-  - `vm_info {"action":"list","host":"hornet"}`
-  - `vm_info {"action":"list","host":"exe"}`
+  - `vm_info {"action":"list","host":"<other host>"}`
+  - `vm_info {"action":"list","host":"<other host>"}`
+  - `vm_info {"action":"list","host":"<other host>"}`
   - `vm_info {"action":"list"}`
   - `vm_bash {"vm":"hunk-perf"}`
 - **#2 pass**

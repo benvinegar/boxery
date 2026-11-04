@@ -405,8 +405,7 @@
             "tool": "vm_copy",
             "denied": true,
             "args": {
-              "vm": "linux-test",
-              "to": "project/"
+              "vm": "linux-test"
             }
           }
         ],

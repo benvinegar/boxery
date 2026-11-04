@@ -1866,21 +1866,21 @@
             "tool": "vm_info",
             "args": {
               "action": "list",
-              "host": "hunk-perf"
+              "host": "<other host>"
             }
           },
           {
             "tool": "vm_info",
             "args": {
               "action": "list",
-              "host": "hornet"
+              "host": "<other host>"
             }
           },
           {
             "tool": "vm_info",
             "args": {
               "action": "list",
-              "host": "exe"
+              "host": "<other host>"
             }
           },
           {

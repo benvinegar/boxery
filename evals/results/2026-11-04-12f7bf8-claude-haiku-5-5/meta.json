@@ -9,17 +9,8 @@
     "describe": "v0.10.0-16-g12f7bf8",
     "dirty": false,
     "host": {
-      "controller": {
-        "version": "0.9.0",
-        "describe": null
-      },
-      "host": {
-        "name": "local",
-        "version": "0.9.0",
-        "describe": null,
-        "install": "npm"
-      },
-      "behind": false
+      "controller": "0.9.0",
+      "host": "0.9.0"
     }
   },
   "claude": {
