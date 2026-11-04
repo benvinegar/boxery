@@ -25,7 +25,7 @@ const B = resolve(b);
 const sa = caseStats(A.card);
 const sb = caseStats(B.card);
 
-const label = (r) => `${r.id}: ${r.meta.claude.model}, ${r.meta.boxery.commit.slice(0, 7)}${r.meta.boxery.dirty || r.meta.suite.dirty ? "*" : ""}, suite v${r.meta.suite.version} ${r.meta.suite.hash}, Claude Code ${r.meta.claude.cli}`;
+const label = (r) => `${r.id}: ${r.meta.claude.model}, ${r.meta.boxery.commit.slice(0, 7)}${r.meta.boxery.dirty || r.meta.suite.dirty ? "*" : ""}, suite v${r.meta.suite.version} ${r.meta.suite.hash}${r.meta.rescored ? ` (rescored from v${r.meta.rescored.from.version})` : ""}, Claude Code ${r.meta.claude.cli}`;
 console.log(`A  ${label(A)}\nB  ${label(B)}\n`);
 for (const [k, what] of [["version", "suite versions"], ["hash", "suite files"]])
 	if (A.meta.suite[k] !== B.meta.suite[k]) console.log(`note: different ${what}, so a change may come from the cases rather than boxery or the model`);

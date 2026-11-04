@@ -12,8 +12,10 @@ A small subproject of its own: a `package.json` with no dependencies, and saved 
 evals/
   cases.mjs         the cases and their checks, plus SUITE_VERSION
   run.mjs           runs cases; --save keeps a result
+  rescore.mjs       checks stored transcripts again with the current checks
   history.mjs       saved results over time
   compare.mjs       two results, case by case
+  lib/report.mjs    checking, metadata, scorecards and summaries (run.mjs and rescore.mjs)
   lib/results.mjs   reads results/, builds results/index.json
   results/          saved results (committed): <date>-<commit>-<model>/ and index.json
   out/              everything each run produces (ignored by git)
@@ -26,6 +28,7 @@ node run.mjs --only pasted-token,browser --repeat 5
 node run.mjs --model sonnet --tool-search off
 node run.mjs --save                           # also keep it in results/ (from a clean checkout)
 node run.mjs --save --model claude-haiku-5-5  # a baseline per model
+node rescore.mjs out/<timestamp> --save       # check a stored run again after changing checks
 node history.mjs                              # every saved result: model, commit, suite, pass rates
 node history.mjs --case checkpoint            # one case over time
 node compare.mjs                              # latest result vs the previous one of the same model
@@ -33,7 +36,7 @@ node compare.mjs latest:haiku latest:opus     # two models
 node compare.mjs latest:opus out/<timestamp>  # a saved result vs a local run
 ```
 
-`npm run eval|history|compare -- ARGS` runs the same scripts. From the repo root, use `npm --prefix evals run eval -- ARGS`.
+`npm run eval|rescore|history|compare -- ARGS` runs the same scripts. From the repo root, use `npm --prefix evals run eval -- ARGS`.
 
 | Option | Default | |
 |---|---|---|
@@ -95,6 +98,24 @@ These can contain what the agent saw in your VMs and on your machine (file listi
 
 A baseline is the full suite at the default `--repeat 3`, one result per model. Save one after changing the server's instructions or tool descriptions, or when a new model or Claude Code version comes out. `compare.mjs` lines up any two results. Pass rates compare cleanly only within one `suite.version`, and it warns when the suites differ.
 
+### Changing the checks: rescore
+
+When you fix or add a check, bump `SUITE_VERSION`. Old results then no longer compare with new ones. Rather than paying to run the agent again, check the stored transcripts again:
+
+```bash
+node rescore.mjs out/<before> out/<after> --save
+```
+
+This reads `out/<timestamp>/results.json` (the full traces; `results/` doesn't keep enough to check) and runs the current checks over it.
+- It writes `out/<timestamp>-rescored-v<N>/`, and with `--save` also `results/<date>-<commit>-<model>-rescored-v<N>/`.
+- `meta.rescored` records the suite the run first used, and `suiteCommit`, the commit whose `evals/` did the checking. `boxery.commit` stays the code that was tested.
+- Cases dropped since are left out. Cases added since aren't in the old run, so they need a new run.
+- Checks that read the run's work dir (only `local-edit`) keep their earlier result.
+
+Rescoring only works on runs whose `out/` you still have. Keep the `out/` directories of runs you save.
+
+Example: v2 changed three checks after the guidance change taught agents to stop at a declined call instead of working around it. Rescoring both baselines under v2 made them comparable with the runs after the change.
+
 ### What a result depends on
 
 `meta.json` records each of these:
@@ -112,7 +133,7 @@ A baseline is the full suite at the default `--repeat 3`, one result per model. 
 
 ### Recreating a result
 
-1. Check out the commit: `git checkout <boxery.commit>`. With both `dirty` flags false, that's the server and suite that ran. Check `suite.hash` against `meta.json` in a fresh run's `out/`.
+1. Check out the commit: `git checkout <boxery.commit>` (for a rescored result, take `evals/` from `rescored.suiteCommit`: `git checkout <suiteCommit> -- evals`). With both `dirty` flags false, that's the server and suite that ran. Check `suite.hash` against `meta.json` in a fresh run's `out/`.
 2. Install the same Claude Code: `npm i -g @anthropic-ai/claude-code@<claude.cli>`, signed in.
 3. Use the same model: pass `--model <claude.model>` (the full id, not an alias, since aliases move).
 4. Have a boxery host (`boxery setup`) with two running VMs: a desktop VM with Node for `--vm`, and any VM for `--other-vm`. The `exec` cases run commands in them; nothing else changes them.
