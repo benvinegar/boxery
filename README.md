@@ -84,7 +84,7 @@ The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stac
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/layers-dark.svg">
-    <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers." width="680">
+    <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal, experimental) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted, experimental) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware, experimental) are reached through their API, and the rest runs on their servers." width="680">
   </picture>
 </p>
 

@@ -1,19 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 372" width="680" height="372" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 396" width="680" height="396" role="img" aria-labelledby="t d">
 <title id="t">What runs a boxery VM, layer by layer</title>
-<desc id="d">The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers.</desc>
+<desc id="d">The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal, experimental) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted, experimental) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware, experimental) are reached through their API, and the rest runs on their servers.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle" dominant-baseline="central">
 <text x="40" y="42" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Orchestrator</text>
 <rect x="126" y="20" width="516" height="44" rx="7" fill="#EEEDFE" stroke="#AFA9EC"/>
 <text x="384" y="34.5" font-size="13" font-weight="600" fill="#26215C" text-anchor="middle">boxery host</text>
 <text x="384" y="50.5" font-size="11" font-weight="400" fill="#534AB7" text-anchor="middle">one interface over every backend: new, fork, snapshot, wipe</text>
-<rect x="126" y="90" width="102" height="262" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
+<rect x="126" y="90" width="102" height="286" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
 <text x="138" y="108" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">macOS</text>
 <line x1="177" y1="66" x2="177" y2="88" stroke="#888780" stroke-width="1.25" marker-end="url(#arrow)"/>
-<rect x="240" y="90" width="292" height="262" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
+<rect x="240" y="90" width="292" height="286" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
 <text x="252" y="108" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Linux</text>
 <line x1="386" y1="66" x2="386" y2="88" stroke="#888780" stroke-width="1.25" marker-end="url(#arrow)"/>
-<rect x="544" y="90" width="98" height="262" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
+<rect x="544" y="90" width="98" height="286" rx="14" fill="#F7F6F2" stroke="#D3D1C7"/>
 <text x="556" y="108" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Cloud</text>
 <line x1="593" y1="66" x2="593" y2="88" stroke="#888780" stroke-width="1.25" marker-end="url(#arrow)"/>
 <text x="177" y="134" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">Lima</text>
@@ -25,47 +25,53 @@
 <text x="383" y="134" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">Cloud Hypervisor</text>
 <rect x="353.3" y="146" width="59.4" height="18" rx="9" fill="#E1F5EE" stroke="#5DCAA5"/>
 <text x="383" y="155" font-size="11" font-weight="500" fill="#085041" text-anchor="middle">minimal</text>
+<rect x="343" y="170" width="80" height="18" rx="9" fill="none" stroke="#B4B2A9"/>
+<text x="383" y="179" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">experimental</text>
 <text x="485" y="134" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">OpenShell</text>
 <rect x="446" y="146" width="78" height="18" rx="9" fill="#E1F5EE" stroke="#5DCAA5"/>
 <text x="485" y="155" font-size="11" font-weight="500" fill="#085041" text-anchor="middle">restricted</text>
+<rect x="445" y="170" width="80" height="18" rx="9" fill="none" stroke="#B4B2A9"/>
+<text x="485" y="179" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">experimental</text>
 <text x="593" y="134" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">exe.dev · boat</text>
 <rect x="550.9" y="146" width="84.2" height="18" rx="9" fill="#E1F5EE" stroke="#5DCAA5"/>
 <text x="593" y="155" font-size="11" font-weight="500" fill="#085041" text-anchor="middle">no hardware</text>
-<text x="40" y="191" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Manager</text>
-<text x="40" y="235" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">VMM</text>
-<text x="40" y="279" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Hypervisor</text>
-<text x="40" y="323" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Hardware</text>
-<rect x="133" y="174" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="177" y="191" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">limactl</text>
-<rect x="133" y="218" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="177" y="235" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Apple VZ</text>
-<rect x="133" y="262" width="88" height="34" rx="7" fill="#E1F5EE" stroke="#5DCAA5"/>
-<text x="177" y="279" font-size="12" font-weight="600" fill="#085041" text-anchor="middle">macOS kernel</text>
-<rect x="133" y="306" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="177" y="323" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Apple silicon</text>
-<rect x="247" y="174" width="74" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="284" y="191" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">libvirtd</text>
-<rect x="247" y="218" width="74" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="284" y="235" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">QEMU</text>
-<rect x="329" y="174" width="108" height="34" rx="7" fill="#EEEDFE" stroke="#AFA9EC"/>
-<text x="383" y="191" font-size="12" font-weight="600" fill="#26215C" text-anchor="middle">boxery + systemd</text>
-<rect x="329" y="218" width="108" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="383" y="235" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">cloud-hypervisor</text>
-<rect x="247" y="262" width="190" height="34" rx="7" fill="#E1F5EE" stroke="#5DCAA5"/>
-<text x="342" y="279" font-size="12" font-weight="600" fill="#085041" text-anchor="middle">KVM</text>
-<rect x="445" y="174" width="80" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="485" y="191" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">gateway</text>
-<rect x="445" y="218" width="80" height="78" rx="7" fill="none" stroke="#B4B2A9" stroke-dasharray="5 4"/>
-<text x="485" y="242" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">container</text>
-<text x="485" y="258" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">no VM: shares</text>
-<text x="485" y="272" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">the host kernel</text>
-<rect x="247" y="306" width="278" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="386" y="323" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Linux machine</text>
-<rect x="551" y="174" width="84" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
-<text x="593" y="191" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">API</text>
-<rect x="551" y="218" width="84" height="122" rx="7" fill="none" stroke="#B4B2A9" stroke-dasharray="5 4"/>
-<text x="593" y="264" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">hidden</text>
-<text x="593" y="280" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">on their</text>
-<text x="593" y="294" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">servers</text>
+<rect x="553" y="170" width="80" height="18" rx="9" fill="none" stroke="#B4B2A9"/>
+<text x="593" y="179" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">experimental</text>
+<text x="40" y="215" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Manager</text>
+<text x="40" y="259" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">VMM</text>
+<text x="40" y="303" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Hypervisor</text>
+<text x="40" y="347" font-size="13" font-weight="600" fill="#2C2C2A" text-anchor="start">Hardware</text>
+<rect x="133" y="198" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="177" y="215" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">limactl</text>
+<rect x="133" y="242" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="177" y="259" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Apple VZ</text>
+<rect x="133" y="286" width="88" height="34" rx="7" fill="#E1F5EE" stroke="#5DCAA5"/>
+<text x="177" y="303" font-size="12" font-weight="600" fill="#085041" text-anchor="middle">macOS kernel</text>
+<rect x="133" y="330" width="88" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="177" y="347" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Apple silicon</text>
+<rect x="247" y="198" width="74" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="284" y="215" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">libvirtd</text>
+<rect x="247" y="242" width="74" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="284" y="259" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">QEMU</text>
+<rect x="329" y="198" width="108" height="34" rx="7" fill="#EEEDFE" stroke="#AFA9EC"/>
+<text x="383" y="215" font-size="12" font-weight="600" fill="#26215C" text-anchor="middle">boxery + systemd</text>
+<rect x="329" y="242" width="108" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="383" y="259" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">cloud-hypervisor</text>
+<rect x="247" y="286" width="190" height="34" rx="7" fill="#E1F5EE" stroke="#5DCAA5"/>
+<text x="342" y="303" font-size="12" font-weight="600" fill="#085041" text-anchor="middle">KVM</text>
+<rect x="445" y="198" width="80" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="485" y="215" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">gateway</text>
+<rect x="445" y="242" width="80" height="78" rx="7" fill="none" stroke="#B4B2A9" stroke-dasharray="5 4"/>
+<text x="485" y="266" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">container</text>
+<text x="485" y="282" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">no VM: shares</text>
+<text x="485" y="296" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">the host kernel</text>
+<rect x="247" y="330" width="278" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="386" y="347" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">Linux machine</text>
+<rect x="551" y="198" width="84" height="34" rx="7" fill="#FFFFFF" stroke="#D3D1C7"/>
+<text x="593" y="215" font-size="12" font-weight="600" fill="#2C2C2A" text-anchor="middle">API</text>
+<rect x="551" y="242" width="84" height="122" rx="7" fill="none" stroke="#B4B2A9" stroke-dasharray="5 4"/>
+<text x="593" y="288" font-size="12" font-weight="600" fill="#5F5E5A" text-anchor="middle">hidden</text>
+<text x="593" y="304" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">on their</text>
+<text x="593" y="318" font-size="11" font-weight="400" fill="#888780" text-anchor="middle">servers</text>
 </g>
 </svg>
