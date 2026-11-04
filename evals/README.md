@@ -133,7 +133,7 @@ Example: v2 changed three checks after the guidance change taught agents to stop
 
 ### Recreating a result
 
-1. Check out the commit: `git checkout <boxery.commit>` (for a rescored result, take `evals/` from `rescored.suiteCommit`: `git checkout <suiteCommit> -- evals`). With both `dirty` flags false, that's the server and suite that ran. Check `suite.hash` against `meta.json` in a fresh run's `out/`.
+1. Check out the commit: `git checkout <boxery.commit>` (for a rescored result, take `evals/` from `rescored.suiteCommit`: `git checkout <suiteCommit> -- evals`). With both `dirty` flags false, that's the server and suite that ran. Check `suite.hash` against `meta.json` in a fresh run's `out/`. Squash merges leave a PR's own commits off master: fetch the PR's branch, or `git fetch origin pull/<N>/head`, if the commit isn't there. Results meant to last are best saved from master.
 2. Install the same Claude Code: `npm i -g @anthropic-ai/claude-code@<claude.cli>`, signed in.
 3. Use the same model: pass `--model <claude.model>` (the full id, not an alias, since aliases move).
 4. Have a boxery host (`boxery setup`) with two running VMs: a desktop VM with Node for `--vm`, and any VM for `--other-vm`. The `exec` cases run commands in them; nothing else changes them.
