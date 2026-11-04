@@ -231,7 +231,7 @@ boat_tunnel_write() { # NAME
 
 # ---------------------------------------------------------------- setup
 backend_check() {
-	need curl; need jq; need ssh; need ssh-keygen; need nc; need node; need openssl
+	need curl; need jq; need ssh; need ssh-keygen; need nc; need "${BOXERY_NODE:-node}"; need openssl
 	mkdir -p "$BOAT_DIR"
 	if [[ $BOAT_SUPERVISOR == launchd ]]; then need launchctl; else need systemctl; fi
 	[[ -z $BOAT_PREFIX || $BOAT_PREFIX =~ ^[a-z][a-z0-9-]{0,19}$ ]] || die "BOXERY_BOAT_PREFIX must match [a-z][a-z0-9-]{0,19}"

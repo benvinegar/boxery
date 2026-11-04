@@ -51,7 +51,7 @@ backend_check() {
 # it. By default qemu guests send DNS to the host agent's resolver on a random loopback port, so confined
 # qemu instances use slirp's own DNS forwarder (.3 on the user network, inside qemu) instead; vz answers
 # DNS inside gvisor.
-lima_free_port() { node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
+lima_free_port() { "${BOXERY_NODE:-node}" -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
 lima_profile() { # SSH_PORT → Seatbelt profile (later rules win)
 	printf '(version 1)\n(allow default)\n(deny network-outbound (remote ip "localhost:*"))\n'
 	printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$PROXY_PORT" "$1"
@@ -117,7 +117,7 @@ backend_build_base() {
 # over ssh. Lima owns the instance's own cloud-init seed, so we replay ours as root.
 lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	local f=$1 mode=$2
-	node "$ROOT/host/cloudconfig-sh.mjs" "$f" >"$f.files.sh" || return 1
+	"${BOXERY_NODE:-node}" "$ROOT/host/cloudconfig-sh.mjs" "$f" >"$f.files.sh" || return 1
 	if [[ $mode == build ]]; then
 		# The build script disables cloud-init re-runs, linger etc. exactly as in the libvirt builder.
 		ssh -F "$HOME/.lima/$LIMA_BASE/ssh.config" "lima-$LIMA_BASE" 'sudo bash -s' <"$f.files.sh" || return 1

@@ -162,7 +162,7 @@ exe_alloc_slot() { remote_alloc_slot "$1"; }
 
 # ---------------------------------------------------------------- setup
 backend_check() {
-	need ssh; need jq; need nc; need node; need openssl
+	need ssh; need jq; need nc; need "${BOXERY_NODE:-node}"; need openssl
 	mkdir -p "$EXE_DIR"   # known_hosts lives here
 	if [[ $EXE_SUPERVISOR == launchd ]]; then need launchctl; else need systemctl; fi
 	[[ -z $EXE_PREFIX || $EXE_PREFIX =~ ^[a-z][a-z0-9-]{0,19}$ ]] || die "BOXERY_EXE_PREFIX must match [a-z][a-z0-9-]{0,19}"
@@ -291,7 +291,7 @@ exe_identity_script() { remote_identity_script "$1" "$2" /usr/local/sbin/boxery-
 exe_stock_script() {
 	echo 'set -e'
 	{ echo '#cloud-config'; echo 'write_files:'; layer_files; } >"$1.layers" || return 1
-	node "$ROOT/host/cloudconfig-sh.mjs" "$1.layers" || return 1
+	"${BOXERY_NODE:-node}" "$ROOT/host/cloudconfig-sh.mjs" "$1.layers" || return 1
 	rm -f "$1.layers"
 	awk '$0 == "  - path: /etc/boxery/provision" { f = 1; next } f && /^    content: / { sub(/^    content: /, ""); print; exit }' "$1" |
 		while IFS= read -r l; do printf 'mkdir -p /etc/boxery; echo %q >/etc/boxery/provision\n' "$l"; done
