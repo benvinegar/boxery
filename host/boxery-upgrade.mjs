@@ -229,7 +229,7 @@ function npmSource({ ref }, current) {
 // may have migrated it. After a successful upgrade it stays (until the next one) for recovery by hand.
 // Besides init, only locked operations write these files, so restoring them loses nothing.
 export const PRE_UPGRADE = "pre-upgrade";
-const STATE_FILES = ["tokens.json", "edge", "vm-shapes", "vm-kind"];
+const STATE_FILES = ["tokens.json", "edge", "vm-shapes", "vm-kind", "vm-os"];
 const copy = (/** @type {string} */ from, /** @type {string} */ to) => cpSync(from, to, { recursive: true, preserveTimestamps: true });
 
 /** @param {string} conf @param {Hold} hold */

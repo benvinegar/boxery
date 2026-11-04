@@ -41,6 +41,7 @@
     "controller/",
     "core/",
     "extension/",
+    "guests/",
     "host/",
     "image/",
     "mcp/boxery-mcp.mjs",

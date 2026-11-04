@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import * as linux from "../guests/linux.mjs";
 import { hostKeySeedFiles, newHostKey, setHostKey } from "./hostkeys.mjs";
 /** @import { Runtime } from "./runtime.mjs" */
 
@@ -93,7 +94,7 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		// authorized keys (cloud-init's ssh module merges into the existing file, and a fork's disk carries
 		// its source's keys) and a fresh machine-id. bootcmd runs before sshd starts.
 		"bootcmd:",
-		"  - [cloud-init-per, instance, boxery-keys, sh, -c, 'rm -f /home/agent/.ssh/authorized_keys']",
+		`  - [cloud-init-per, instance, boxery-keys, sh, -c, 'rm -f ${linux.home}/.ssh/authorized_keys']`,
 		"  - [cloud-init-per, instance, boxery-machine-id, sh, -c, 'rm -f /etc/machine-id /var/lib/dbus/machine-id; systemd-machine-id-setup >/dev/null']",
 		// The pinned host key (hostkeys.mjs): write_files runs in cloud-init's init stage, which is ordered
 		// before ssh.service, so sshd starts with it and presents only it (the image's own ssh_host_* keys
@@ -102,11 +103,11 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		...(hostKey ? hostKeySeedFiles(hostKey).flatMap(([f, content, mode]) => [
 			`  - path: ${f}`, "    owner: root:root", `    permissions: "${mode}"`, "    encoding: b64", `    content: ${Buffer.from(content).toString("base64")}`,
 		]) : []),
-		"  - path: /etc/boxery/proxy-upstream",
+		`  - path: ${linux.configDir}/proxy-upstream`,
 		`    content: ${upstream}`,
-		...(provision ? [...layers, "  - path: /etc/boxery/provision", `    content: ${provision}`] : []),
+		...(provision ? [...layers, `  - path: ${linux.configDir}/provision`, `    content: ${provision}`] : []),
 		...files.flatMap(([f, content]) => [
-			`  - path: /home/agent/${f}`, "    owner: agent:agent", '    permissions: "0600"', "    defer: true", "    encoding: b64",
+			`  - path: ${linux.home}/${f}`, "    owner: agent:agent", '    permissions: "0600"', "    defer: true", "    encoding: b64",
 			`    content: ${Buffer.from(content).toString("base64")}`,
 		]),
 		"runcmd:",
@@ -114,7 +115,7 @@ export function cloudConfig({ name, keys, upstream, cred, ollama = [], provision
 		...(provision ? ['  - [bash, -c, "/usr/local/sbin/boxery-provision >/var/log/boxery-provision.log 2>&1"]'] : []),
 		...(hostKey ? ['  - [sh, -c, "systemctl try-reload-or-restart ssh.service || true"]'] : []),
 		'  - [bash, -c, "systemctl restart boxery-llm.service"]',
-		"  - [bash, -c, \"chown -R agent:agent /home/agent && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'\"]",
+		`  - [bash, -c, "chown -R agent:agent ${linux.home} && sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && git init -q'"]`,
 		"",
 	].join("\n");
 }

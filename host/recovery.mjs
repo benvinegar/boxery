@@ -10,7 +10,7 @@ import { runLifecycle } from "./boxery-lifecycle.mjs";
 import { actions, completeIntent } from "./boxery-operations.mjs";
 import { deleteHostKey } from "./hostkeys.mjs";
 import { cleanupVmImages, deleteSnapshot, restoreVm, revertVm } from "./images.mjs";
-import { deleteVmKind } from "./kinds.mjs";
+import { deleteVmType } from "./kinds.mjs";
 import { deleteVmShape } from "./shapes.mjs";
 import { fail, POOL_SNAP } from "./util.mjs";
 import { restorePetAccess, setPetKeys } from "./vms.mjs";
@@ -34,13 +34,13 @@ export async function replayIntents(rt) {
 		switch (kind) {
 			case "create":
 				await rt.vms.call("backend_cleanup_new", [name]);
-				deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
+				deleteVmShape(rt.conf, name); deleteVmType(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
 				deleteBuildRecord(rt.conf, name);
 				break;
 			case "remove":
 				await rt.vms.call("backend_cleanup_new", [name]);
 				await cleanupVmImages(rt, name); // rm can have crashed between deleting the VM and its images
-				deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
+				deleteVmShape(rt.conf, name); deleteVmType(rt.conf, name); rt.deleteToken(name); rt.clearEdge(name); deleteHostKey(rt.conf, name);
 				deleteBuildRecord(rt.conf, name, true);
 				break;
 			case "capture": await rt.vms.call("backend_recover_capture", [name, data[1], data[2]]); break;
@@ -120,6 +120,6 @@ export async function reconcileVm(rt, name) {
 		leases.markMissing(rt.db(), name);
 		rt.log(`${name} missing from backend → BROKEN`);
 	}
-	rt.deleteToken(name); rt.clearEdge(name); deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); deleteHostKey(rt.conf, name);
+	rt.deleteToken(name); rt.clearEdge(name); deleteVmShape(rt.conf, name); deleteVmType(rt.conf, name); deleteHostKey(rt.conf, name);
 	deleteBuildRecord(rt.conf, name);
 }

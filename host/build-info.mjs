@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import * as linux from "../guests/linux.mjs";
 /** @import { GuestEndpoint } from "./guest.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
 
@@ -17,7 +18,7 @@ import path from "node:path";
 
 export const LAYERS = ["plumbing", "devtools", "desktop", "github-runner"];
 export const STALE_DAYS = 30; // default for BOXERY_STALE_DAYS
-const READ = "cat /etc/boxery/build-info 2>/dev/null; test -e /var/run/reboot-required && echo reboot_required=1; true";
+const READ = `cat ${linux.configDir}/build-info 2>/dev/null; test -e /var/run/reboot-required && echo reboot_required=1; true`;
 const DAY = 86_400_000;
 
 /** The layers hash a VM built from this host's image/layers would have (lib.sh, layers_hash: the same

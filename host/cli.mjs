@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { closeSync } from "node:fs";
 import path from "node:path";
+import { DEFAULT_OS } from "../guests/index.mjs";
 import * as leases from "./boxery-leases.mjs";
 import { runLifecycle } from "./boxery-lifecycle.mjs";
 import { resources, supervise } from "./boxery-operations.mjs";
@@ -19,7 +20,7 @@ import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { runners } from "./runners.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { addKey, buildBase, init, profiles } from "./setup.mjs";
-import { vmKinds } from "./kinds.mjs";
+import { vmKinds, vmOses } from "./kinds.mjs";
 import { addVmShape, vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, log, print, readFd, table, validName } from "./util.mjs";
 import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
@@ -96,7 +97,7 @@ async function lsJson(rt, refresh = false) {
 	let pool = [];
 	try { pool = leases.list(rt.db()); } catch { /* listing VMs must not depend on the lease store */ }
 	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state.toLowerCase(), holder: r.holder, expires_at: r.expires_at }]));
-	const sizes = /** @type {Record<string, ShapeRecord | null>} */ (vmShapes(rt.conf)), kinds = vmKinds(rt.conf);
+	const sizes = /** @type {Record<string, ShapeRecord | null>} */ (vmShapes(rt.conf)), kinds = vmKinds(rt.conf), oses = vmOses(rt.conf);
 	const vms = await rt.vms.list();
 	await Promise.all(vms.filter((vm) => !sizes[vm.name]).map(async (vm) => { sizes[vm.name] = await backfillSize(rt, vm.name); }));
 	if (refresh) {
@@ -110,7 +111,7 @@ async function lsJson(rt, refresh = false) {
 		const sz = sizes[vm.name];
 		return { name: vm.name, state: nz(vm.state), ssh_addr: nz(vm.ssh), disk_size: gib(vm.diskBytes) ?? sz?.disk ?? null, disk_used: gib(vm.diskUsedBytes),
 			tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null, shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null,
-			desktop: kinds[vm.name] !== "headless", guest: guest(buildRecord(rt.conf, vm.name)) };
+			desktop: kinds[vm.name] !== "headless", os: oses[vm.name] ?? DEFAULT_OS, guest: guest(buildRecord(rt.conf, vm.name)) };
 	});
 }
 /** @typedef {Awaited<ReturnType<typeof lsJson>>[number]} LsEntry */

@@ -103,8 +103,8 @@ EOF
 run ls; same "ls" out 0
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
-{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"custom","cpus":2,"mem":2048,"desktop":true,"os":"linux","guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":true,"os":"linux","guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
 ]
 EOF
 run ls --json; same "ls --json (one element per line)" out 0
@@ -153,8 +153,8 @@ run ip a1; same "ip" out 0
 rm -rf "$BOXERY_CONF/vm-shapes"; mv "$BOXERY_FAKE_DIR/b2/size" "$tmp/b2.size"
 cat >"$tmp/expected" <<'EOF'
 [
-{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":{"state":"free","holder":null,"expires_at":null},"shape":"custom","cpus":2,"mem":2048,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
-{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":null,"disk_used":0.5,"tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
+{"name":"a1","state":"running","ssh_addr":"127.0.0.1:22000","disk_size":10,"disk_used":0.5,"tunnel":null,"lease":{"state":"free","holder":null,"expires_at":null},"shape":"custom","cpus":2,"mem":2048,"desktop":true,"os":"linux","guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}},
+{"name":"b2","state":"shut off","ssh_addr":null,"disk_size":null,"disk_used":0.5,"tunnel":null,"lease":null,"shape":null,"cpus":null,"mem":null,"desktop":true,"os":"linux","guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}
 ]
 EOF
 run ls --json; same "ls --json: pool lease object; sizes from the backend for VMs without a record, nulls if unreadable" out 0
@@ -207,7 +207,7 @@ EOF
 same "new --headless logs the layers it installs" err 0
 run ls --json
 grep -F '"name":"h3"' "$tmp/out" >"$tmp/h3.json" || true
-echo '{"name":"h3","state":"running","ssh_addr":"127.0.0.1:22002","disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false,"guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}' >"$tmp/expected"
+echo '{"name":"h3","state":"running","ssh_addr":"127.0.0.1:22002","disk_size":40,"disk_used":0.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"desktop":false,"os":"linux","guest":{"status":"unknown","reasons":["no build record"],"built_at":null,"age_days":null,"kernel":null,"chrome":null,"playwright_core":null,"reboot_required":false,"checked_at":EPOCH}}' >"$tmp/expected"
 same "ls --json: a headless VM has desktop false" h3.json 0
 run ls
 grep '^h3 ' "$tmp/out" >"$tmp/h3.txt" || true
