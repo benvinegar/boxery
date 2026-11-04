@@ -285,6 +285,13 @@ expect_fail "revert to an unknown snapshot fails" "$H" revert v1 nope
 old=$(V v1)
 e=$(LLM_INT=1 "$H" revert v1 s1 2>&1) && bad "revert succeeded with an LLM integration attached" ||
 	{ [[ $e == *"can reach exe.dev LLM integration(s): llm"* && $(V v1) == "$old" && $(gens v1) == "$old " && $(st "$old") == running ]] && ok "reimage: refused copy removed, VM left on its old disk" || bad "reimage guard: $e / $(gens v1)"; }
+# A revert that failed before changing anything exits 3, so recovery doesn't finish it later (and
+# throw away what the VM did since): the next operation on it leaves it alone.
+[[ $e != *"recovering abandoned revert"* ]] && ok "a refused revert leaves no journal behind" || bad "journal: $e"
+echo after-refusal >"$S/$old/data"
+FAIL_CP=1 expect_fail "a revert whose copy fails fails" "$H" revert v1 s1
+"$H" stop v1 >/dev/null 2>&1; "$H" start v1 >/dev/null 2>&1
+[[ $(V v1) == "$old" && $(cat "$S/$old/data") == after-refusal ]] && ok "failed reverts aren't finished by a later stop/start: the VM keeps its newer data" || bad "replayed: $(V v1) $(cat "$S/$(V v1)/data")"
 
 # --- new --from / fork
 : >"$CALLS"

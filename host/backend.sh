@@ -60,6 +60,7 @@ host_key_opts() { # NAME
 }
 
 die() { echo "boxery-host: $*" >&2; exit 1; }
+die_unchanged() { echo "boxery-host: $*" >&2; exit 3; }   # failed before changing anything (backend_reimage)
 log() { echo "==> $*" >&2; }
 need() { command -v "$1" >/dev/null || die "missing dependency: $1"; }
 # Create FILE only if it does not exist (O_EXCL, via noclobber): a lock or a claim. Not `mkdir DIR`:

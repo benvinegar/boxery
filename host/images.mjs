@@ -3,11 +3,15 @@
 //   snap   = capture NAME → NAME@LABEL          revert = put NAME's own image back (reimage)
 //   fork   = capture SRC → new VM(s) from it    pool   = reset to NAME@boxery-clean
 // Images hold disk state only (no RAM): processes restart, and tmpfs grants are never captured.
+import { BackendError } from "./backend.mjs";
 import { copyBuildRecord, deleteBuildRecord, refreshBuild } from "./build-info.mjs";
 import { installToken } from "./seed.mjs";
 import { fail, log, POOL_SNAP, stamp, validName, validSnap } from "./util.mjs";
 /** @import { Backend, CallOptions } from "./backend.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
+
+/** backend_reimage's exit status when it failed without changing the VM (die_unchanged in host/backend.sh). */
+export const REIMAGE_UNCHANGED = 3;
 
 /** Put VM NAME back to its image NAME@LABEL. @param {Backend} backend @param {string} name @param {string} label @param {CallOptions} [options] */
 export async function restoreVm(backend, name, label, options) {
@@ -91,7 +95,12 @@ export async function revert(rt, [name, label]) {
 	if (rt.poolRow(name)) fail(`${name} is a pool VM; it is reset on release`);
 	if (!(await snapsLines(rt, name)).some(([l]) => l === label)) fail(`no snapshot ${label} for ${name}`);
 	const action = rt.intent("revert", name, label);
-	await revertVm(rt, name, label);
+	try { await revertVm(rt, name, label); } catch (e) {
+		// The backend failed before changing anything: nothing for recovery to finish, and finishing it
+		// later would throw away whatever the VM did since.
+		if (e instanceof BackendError && e.exitCode === REIMAGE_UNCHANGED) rt.done(action);
+		throw e;
+	}
 	rt.done(action);
 	log(`${name} reverted to ${label}`);
 }

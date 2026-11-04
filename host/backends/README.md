@@ -2,7 +2,7 @@
 
 `host/boxery-host` is backend-agnostic. It generates each VM's identity (cloud-config with ssh keys, LLM proxy token, pi/opencode config), manages tokens, leases and locks, waits for ssh, and runs the LLM proxy. A backend is a bash file that implements the functions below.
 
-The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `log`, `need`, `wait_ssh NAME HOST [PORT]`, `vm_ssh_cmd NAME HOST PORT CMD…` (both check VM NAME's pinned host key), `profile_unit BASE` (the name for a host-wide unit in this profile: `BASE` for the default profile, `BASE-NAME` for profile NAME), and the variables `ROOT`, `CACHE`, `PROXY_PORT`, `PROXY_UNIT` (this profile's proxy unit) and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
+The host (Node) runs one backend function per process: `host/backend.sh FUNCTION ARG…` sources the backend into a small prelude and calls that function, with arguments as argv. The prelude is everything a backend may use from the host: `die`, `die_unchanged` (exit 3, see `backend_reimage`), `log`, `need`, `wait_ssh NAME HOST [PORT]`, `vm_ssh_cmd NAME HOST PORT CMD…` (both check VM NAME's pinned host key), `profile_unit BASE` (the name for a host-wide unit in this profile: `BASE` for the default profile, `BASE-NAME` for profile NAME), and the variables `ROOT`, `CACHE`, `PROXY_PORT`, `PROXY_UNIT` (this profile's proxy unit) and `SSH_OPTS`. Its settings come from the environment and `$BOXERY_CONF/host.env`. Only functions named in this contract can be called. Because every call is a fresh process, a backend can't keep state in shell variables between calls; keep it on disk or in the hypervisor. `boxery-host connect` (the ssh ProxyCommand) also goes through `backend.sh`, without starting Node.
 
 ## VMs
 
@@ -52,7 +52,7 @@ An **image** is an immutable copy of a VM's disk, named `VM@LABEL`. boxery-host 
 | `backend_capture NAME IMAGE` | copy NAME's current disk into a new image. **Must work while NAME is running** (it may stop it briefly, but must leave it in the state it found it). Must not die leaving a partial image |
 | `backend_images` | lines `IMAGE<TAB>CREATED<TAB>SIZE` for every image |
 | `backend_image_rm IMAGE` | delete an image. VMs made from it must keep working |
-| `backend_reimage NAME IMAGE` | replace NAME's disk with a copy of IMAGE, **keeping NAME's identity** (endpoint, MAC, seed). Ends running |
+| `backend_reimage NAME IMAGE` | replace NAME's disk with a copy of IMAGE, **keeping NAME's identity** (endpoint, MAC, seed). Ends running. When it fails before changing NAME at all (no such image, a copy that failed or was refused), it exits 3 (`die_unchanged`): `revert` then drops its journal entry instead of leaving recovery to finish the revert later, over whatever the VM did since. Any other failure is finished by recovery |
 
 | boxery operation | built from |
 |---|---|
