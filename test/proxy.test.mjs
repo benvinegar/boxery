@@ -1,7 +1,7 @@
 // Proxy tests: runs the real proxy against a fake upstream ("ollama" route) and a temp token file.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -42,7 +42,7 @@ before(async () => {
 	port = await listen(probe);
 	await new Promise((r) => probe.close(r));
 	proxy = spawn(process.execPath, [path.join(ROOT, "proxy/boxery-proxy.mjs")], {
-		env: { ...process.env, BOXERY_PROXY_MAX_BODY: String(1024 * 1024), BOXERY_CONF: conf, BOXERY_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, BOXERY_PI_AUTH: path.join(conf, "none.json") },
+		env: { ...process.env, BOXERY_PROXY_MAX_BODY: String(1024 * 1024), BOXERY_CONF: conf, BOXERY_PROXY_PORT: String(port), OLLAMA_URL: `http://127.0.0.1:${up}`, BOXERY_OPENAI_URL: `http://127.0.0.1:${up}`, OPENAI_API_KEY: "sk-host", OPENAI_ORG_ID: "org-host", OPENAI_PROJECT_ID: "", BOXERY_PI_AUTH: path.join(conf, "none.json") },
 		stdio: "ignore",
 	});
 	for (let i = 0; i < 50; i++) {
@@ -121,6 +121,48 @@ test("unknown route → 404; missing upstream credentials → 502 (not a crash)"
 	const r = await req("/anthropic/v1/messages", { method: "POST", headers: { authorization: "Bearer demo:s3cret" }, body: "{}" });
 	assert.equal(r.status, 502);
 	assert.match(r.text, /ANTHROPIC_API_KEY/);
+});
+
+test("guest billing headers never reach OpenAI: the host's org is pinned, a guest project is dropped", async () => {
+	const r = await req("/openai/v1/responses", {
+		method: "POST",
+		headers: { authorization: "Bearer demo:s3cret", "content-type": "application/json", "openai-organization": "org-guest", "openai-project": "proj-guest", "x-stainless-lang": "js" },
+		body: "{}",
+	});
+	assert.equal(r.status, 200);
+	assert.equal(seen.url, "/v1/responses");
+	assert.equal(seen.headers.authorization, "Bearer sk-host");
+	assert.equal(seen.headers["openai-organization"], "org-host", "OPENAI_ORG_ID replaces the guest's org");
+	assert.equal(seen.headers["openai-project"], undefined, "no OPENAI_PROJECT_ID: the guest's project is dropped, not forwarded");
+	assert.equal(seen.headers["x-stainless-lang"], "js", "other client headers still pass");
+});
+
+test("billing headers are dropped on every LLM route, and Anthropic's own headers still pass", async () => {
+	await req("/ollama/v1/chat/completions", {
+		method: "POST",
+		headers: { authorization: "Bearer demo:s3cret", "openai-organization": "org-guest", "openai-project": "proj-guest", "chatgpt-account-id": "acct-guest", "anthropic-version": "2023-06-01", "anthropic-beta": "b1" },
+		body: "{}",
+	});
+	assert.equal(seen.headers["openai-organization"], undefined);
+	assert.equal(seen.headers["openai-project"], undefined);
+	assert.equal(seen.headers["chatgpt-account-id"], undefined);
+	assert.equal(seen.headers["anthropic-version"], "2023-06-01");
+	assert.equal(seen.headers["anthropic-beta"], "b1");
+});
+
+test("a token rotated in place (same size) is picked up on the next request", async () => {
+	const file = path.join(conf, "tokens.json");
+	const ok = (s) => req("/ollama/v1/models", { headers: { authorization: `Bearer demo:${s}` } }).then((r) => r.status);
+	assert.equal(await ok("s3cret"), 200);
+	// What the host does (boxery-operations.mjs updateToken): write a temp file, rename it over.
+	writeFileSync(`${file}.tmp`, JSON.stringify({ demo: "t3cret" }));
+	renameSync(`${file}.tmp`, file);
+	assert.equal(await ok("s3cret"), 401, "old secret refused straight away");
+	assert.equal(await ok("t3cret"), 200);
+	rmSync(file);
+	assert.equal(await ok("t3cret"), 401, "no tokens file: nobody");
+	writeFileSync(file, JSON.stringify({ demo: "s3cret" }));
+	assert.equal(await ok("s3cret"), 200);
 });
 
 test("tokens file changes take effect without restart (revocation)", async () => {

@@ -44,11 +44,20 @@ function loadEnvFile() {
 }
 loadEnvFile();
 
-/** tokens.json: NAME → "secret" | {secret, lease} (parsed JSON, unchecked). @returns {Record<string, any>} */
+/** @type {{ key: string, tokens: Record<string, any> } | null} */
+let tokensCache = null;
+/** tokens.json: NAME → "secret" | {secret, lease} (parsed JSON, unchecked). Parsed again only when the
+ * file changes: a stat per request (inode, size, ns mtime/ctime) instead of a read and parse, so a
+ * revocation (the host renames a new file into place) still counts from the very next request.
+ * @returns {Record<string, any>} */
 function readTokens() {
 	try {
-		return JSON.parse(fs.readFileSync(TOKENS, "utf8"));
+		const st = fs.statSync(TOKENS, { bigint: true });
+		const key = `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+		if (tokensCache?.key !== key) tokensCache = { key, tokens: JSON.parse(fs.readFileSync(TOKENS, "utf8")) };
+		return tokensCache.tokens;
 	} catch {
+		tokensCache = null;
 		return {};
 	}
 }
@@ -128,6 +137,10 @@ async function codexCreds() {
 }
 
 const HOP = new Set(["host", "connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "te", "trailer", "content-length"]);
+// Guest headers that never reach a provider: credentials (the route sets its own), and OpenAI's billing
+// headers, which pick the organization/project a multi-org key charges. Only the host chooses those
+// (OPENAI_ORG_ID / OPENAI_PROJECT_ID in proxy.env); a guest can't send its spend somewhere else.
+const GUEST_STRIP = new Set(["x-api-key", "chatgpt-account-id", "openai-organization", "openai-project"]);
 
 // Per-route allowlist of [METHOD, path regex] (path = after the route prefix). Requests outside it are
 // rejected before credentials are attached: VMs get inference, not account administration.
@@ -171,10 +184,12 @@ const routes = {
 		},
 	},
 	openai: {
-		base: "https://api.openai.com",
+		base: process.env.BOXERY_OPENAI_URL ?? "https://api.openai.com", // override for tests
 		async auth(h) {
 			if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set in proxy.env");
 			h.set("authorization", `Bearer ${process.env.OPENAI_API_KEY}`);
+			if (process.env.OPENAI_ORG_ID) h.set("openai-organization", process.env.OPENAI_ORG_ID);
+			if (process.env.OPENAI_PROJECT_ID) h.set("openai-project", process.env.OPENAI_PROJECT_ID);
 		},
 	},
 	anthropic: {
@@ -255,9 +270,7 @@ async function handle(req, res) {
 	});
 	try {
 		const h = new Headers();
-		for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && v != null) h.set(k, Array.isArray(v) ? v.join(", ") : v);
-		h.delete("x-api-key");
-		h.delete("chatgpt-account-id");
+		for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && !GUEST_STRIP.has(k) && v != null) h.set(k, Array.isArray(v) ? v.join(", ") : v);
 		await route.auth(h);
 		const target = `${route.base}${subpath}${url.search}`;
 		const hasBody = !["GET", "HEAD"].includes(/** @type {string} */ (req.method));

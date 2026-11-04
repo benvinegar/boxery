@@ -19,6 +19,9 @@ const PROXY_ENV = `# Optional upstream API keys for the boxery LLM proxy (stay o
 # ChatGPT/Codex OAuth is read from ~/.pi/agent/auth.json automatically.
 # A VM can use a provider only after it's granted: boxery grant VM llm:chatgpt|openai|anthropic|ollama
 #OPENAI_API_KEY=
+# For a key in several OpenAI orgs/projects: which one VMs bill (VMs can't choose it themselves).
+#OPENAI_ORG_ID=
+#OPENAI_PROJECT_ID=
 #ANTHROPIC_API_KEY=
 `;
 // runners.env: the GitHub runner manager's token (host/runners.mjs reads it; never sent to a VM).
