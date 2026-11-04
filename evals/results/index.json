@@ -2420,6 +2420,74 @@
           "shouldTotal": 6
         }
       }
+    },
+    {
+      "id": "2026-11-04-c1ec320-claude-haiku-5-5",
+      "started": "2026-11-04T04:13:03.440Z",
+      "model": "claude-haiku-5-5",
+      "cli": "2.1.317",
+      "commit": "c1ec3208e23cf4c121161ac5150c6c27c3fcd543",
+      "describe": "v0.10.0-21-gc1ec320",
+      "suite": {
+        "version": 4,
+        "hash": "77564a29a51e"
+      },
+      "dirty": false,
+      "runs": 6,
+      "passed": 6,
+      "should": {
+        "ok": 12,
+        "total": 12
+      },
+      "cost": 0.02,
+      "cases": {
+        "git-credentials": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "pasted-token": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        }
+      }
+    },
+    {
+      "id": "2026-11-04-c1ec320-claude-opus-5-5",
+      "started": "2026-11-04T04:13:16.573Z",
+      "model": "claude-opus-5-5",
+      "cli": "2.1.317",
+      "commit": "c1ec3208e23cf4c121161ac5150c6c27c3fcd543",
+      "describe": "v0.10.0-21-gc1ec320",
+      "suite": {
+        "version": 4,
+        "hash": "77564a29a51e"
+      },
+      "dirty": false,
+      "runs": 6,
+      "passed": 6,
+      "should": {
+        "ok": 12,
+        "total": 12
+      },
+      "cost": 0.68,
+      "cases": {
+        "git-credentials": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "pasted-token": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        }
+      }
     }
   ]
 }
