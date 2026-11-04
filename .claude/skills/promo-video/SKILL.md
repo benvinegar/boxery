@@ -31,6 +31,18 @@ Find out what the video is for: a feature, a use case, a launch, or a general in
 - Budget the time: the opening takes 2.3 s and the close about 7.7 s, so a 30 s video has about 20 s of story. That's six to ten beats.
 - Decide how the story is told. It could be an agent's chat next to the isometric world, as in the current file, or the world on its own with short captions. Either way, the isometric world is where things happen.
 
+### Keep each scene to one point
+
+These come from reviews of earlier videos, where the first drafts had too many words and labels that needed explaining:
+
+- **The headline names the feature in plain words**, such as "Run GitHub CI on your own VMs" or "Every key grant asks you first". A teaser the viewer has to decode ("Your agent asks first", which leaves "for what?") doesn't work.
+- **Give a scene a headline, at most one command, and one short caption.** If it needs more words than that, cut the idea down rather than the font size.
+- **Show how it works, and why someone would want it.** Draw the thing moving (a job going to a VM, the result coming back, the VM resetting) rather than adding labels. Two related names on separate lines, such as `github.com` and `ci-2@boxery-clean`, read as two unrelated things.
+- **When a feature has more than one way to run it, show each one** as a beat in the same scene, with the command changing in place (for example `boxery runners once`, then `boxery runners start`). Viewers want to know how they'd deploy it.
+- **Name a host by its kind, never by an example name from the docs** (`hornet` means nothing to a viewer). Use the README hero's kinds from `docs/hero.py`: Local ("VMs on this machine"), Remote box ("any server you ssh to") and Cloud ("exe.dev · boat.dev · more"). If the story fits more than one, put each scene on a different kind.
+- **Show another service with its real logo** (from Simple Icons, in monochrome ink like the agent logos), not just its name, so it's recognisable at a glance.
+- **Leave out experimental features** unless the user asks for them.
+
 If the story needs something the style guide hasn't drawn yet (a new kind of object or a new layout), make two or three still frames of it first and let the user choose before you animate.
 
 ## 2. Build it
@@ -67,6 +79,8 @@ Look for these:
 - **Text:**
   - text or labels clipped at the frame's edge (right-align labels near the right edge)
   - labels, bars and icons colliding with each other
+  - a callout's leader line crossing its own text
+  - a second line of a label not lined up with the first (for example, when the first line makes room for a logo)
   - text that isn't on screen long enough to read
 - **Objects:**
   - things hidden under a panel (move the camera with `ISO.u` and `ISO.oy` rather than moving the panel)
@@ -77,6 +91,7 @@ Look for these:
 - **Code:**
   - `==>` or `->` turned into a ligature (use JetBrains Mono NL)
   - a local variable shadowing a helper such as `back` or `out`, which fails silently
+  - a mark that shrinks as it fades out. Fade it with alpha (`withAlpha`), and keep its size.
   - a shape "drawn on" with `setLineDash` that keeps the dash once it's complete. A single dash the length of a closed outline is still an open line: its ends meet with flat caps and no join, which leaves a notch at the start corner. Set the dash only while the drawing is under 1, and stroke the finished shape solid.
 - **The opening and close:**
   - they must still look exactly like the main video's
@@ -96,4 +111,4 @@ npm install --no-save playwright-core   # once
 node docs/promo/render.mjs docs/promo/<story>.html       # writes docs/promo/<story>.mp4
 ```
 
-The output is H.264 with yuv420p and faststart, which X, LinkedIn and Bluesky accept. There's no audio. Send the mp4 to the user. Commit the `.html` source, not the mp4: the video can always be rebuilt, and each mp4 adds about 2 MB to the repo's history.
+The output is H.264 with yuv420p and faststart, which X, LinkedIn and Bluesky accept. There's no audio. Send the mp4 to the user. Commit the `.html` source, not the mp4 (`.gitignore` keeps rendered mp4s out): the video can always be rebuilt, and each mp4 adds about 2 MB to the repo's history.
