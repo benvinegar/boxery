@@ -130,6 +130,7 @@ You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
 | [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
+| [OpenShell (experimental)](docs/openshell.md) | Policy-enforced headless sandboxes; no root, desktop, snapshots or pools |
 | [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |

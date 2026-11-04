@@ -31,7 +31,7 @@ import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
 
 const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf }) => `boxery-host — Ubuntu desktop VMs for coding agents (backend: ${backend})
 
-  init [--backend libvirt|lima|cloud-hypervisor|exe|boat]  install proxy services + backend setup, symlinks
+  init [--backend libvirt|lima|cloud-hypervisor|exe|boat|openshell]  install proxy services + backend setup, symlinks
   --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
                             state, proxy port and services. Create it with: --profile NAME init --backend B
   profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
