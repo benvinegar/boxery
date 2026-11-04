@@ -9,6 +9,7 @@ test("guestOs: linux is the default, an unknown OS is refused", () => {
 	assert.equal(guestOs().name, "linux");
 	assert.equal(guestOs("linux"), guestOs());
 	assert.throws(() => guestOs("macos"), /unknown guest OS: macos \(known: linux\)/);
+	for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) assert.throws(() => guestOs(key), /unknown guest OS/, key);
 });
 
 test("core's guest paths are the Linux definition's", () => {

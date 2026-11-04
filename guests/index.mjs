@@ -11,7 +11,7 @@ const GUESTS = { [linux.name]: linux };
 
 /** The definition for OS. @param {string} [os] default: DEFAULT_OS @returns {GuestOs} */
 export function guestOs(os = DEFAULT_OS) {
-	const g = GUESTS[os];
+	const g = Object.hasOwn(GUESTS, os) ? GUESTS[os] : undefined; // not an inherited key ("constructor", …)
 	if (!g) throw new Error(`unknown guest OS: ${os} (known: ${Object.keys(GUESTS).join(", ")})`);
 	return g;
 }
