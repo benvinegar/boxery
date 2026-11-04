@@ -122,7 +122,7 @@ def card(theme, w, h):
 """
 
 
-# The "works with" card restacks the README's logo row (docs/works-with-*.svg) one platform
+# The "works with" card restacks the README's logo row (docs/diagrams/works-with-*.svg) one platform
 # per line. Each logo is cropped out of that row by its x span, measured from a render of it;
 # the shared y window keeps the row's own vertical alignment. Update these if the row changes.
 WORKS_WITH_Y = (54, 84)
@@ -135,7 +135,7 @@ WORKS_WITH = [
 
 def works_with_card(theme, w, h):
     t = THEMES[theme]
-    row = (BRAND.parent / f"works-with-{theme}.svg").read_text()
+    row = (BRAND.parent / "diagrams" / f"works-with-{theme}.svg").read_text()
     row_defs = re.search(r"<defs>(.*?)</defs>", row, re.S).group(1)
     # the logo layer is the last top-level group: everything after the divider lines
     logos = row[row.rindex("<g fill=") : row.rindex("</svg>")]

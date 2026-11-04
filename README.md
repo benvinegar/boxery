@@ -28,14 +28,14 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.svg">
-    <img src="docs/hero-light.svg" alt="Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork, snapshot and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud. VMs are drawn as cubes whose look shows their state" width="680">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/hero-dark.svg">
+    <img src="docs/diagrams/hero-light.svg" alt="Coding agents on your machine (Claude Code, Codex, Cursor, opencode, pi) use boxery to spin up, fork, snapshot and throw away VMs and run code, Chrome and desktops inside them: locally, on a remote box, or in the cloud. VMs are drawn as cubes whose look shows their state" width="680">
   </picture>
   <br>
   <a href="docs/install.md#choosing-a-backend">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/works-with-dark.svg">
-      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt, Cloud Hypervisor and OpenShell on Linux; exe.dev and boat.dev in the cloud" width="760">
+      <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/works-with-dark.svg">
+      <img src="docs/diagrams/works-with-light.svg" alt="Works with Lima on macOS; libvirt, Cloud Hypervisor and OpenShell on Linux; exe.dev and boat.dev in the cloud" width="760">
     </picture>
   </a>
 </p>
@@ -83,8 +83,8 @@ Your machine and the host can be the same one. [Security model →](docs/securit
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/host-dark.svg">
-    <img src="docs/host-light.svg" alt="Coding agents on your machine reach the trusted boxery host over ssh. The host holds your real LLM keys and API tokens and runs the credential proxy, grants, leases and pool, and images and forks. It creates, forks and wipes untrusted VMs on Lima, libvirt, exe.dev or boat.dev, and each VM holds only a revocable token that the proxy swaps for your real key." width="680">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/host-dark.svg">
+    <img src="docs/diagrams/host-light.svg" alt="Coding agents reach the trusted boxery host over ssh. The host holds your real LLM keys and API tokens and runs the credential proxy, grants, leases and pool, and images and forks. It creates, forks and wipes untrusted VMs on Lima, libvirt, exe.dev or boat.dev, and each VM holds only a revocable token that the proxy swaps for your real key." width="680">
   </picture>
 </p>
 
@@ -94,8 +94,8 @@ The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stac
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/layers-dark.svg">
-    <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal, experimental) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted, experimental) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware, experimental) are reached through their API, and the rest runs on their servers." width="680">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/layers-dark.svg">
+    <img src="docs/diagrams/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal, experimental) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted, experimental) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware, experimental) are reached through their API, and the rest runs on their servers." width="680">
   </picture>
 </p>
 
