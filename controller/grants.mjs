@@ -8,6 +8,7 @@ try {
 	// Bash already selected and validated this directory (including pinned --profile-dir calls).
 	const resolved = core.profileFromDirectory(host, dir);
 	await core.withHost(resolved, async () => {
+		if (["prepare", "grant", "apply"].includes(action) && core.hostBackend(resolved) === "openshell") throw new Error("OpenShell credentials and egress are managed through OpenShell providers/policy, not Boxery grants");
 		let result;
 		/** @returns {import('../core/boxery-core.mjs').GrantSpec[]} */
 		const prepared = () => JSON.parse(readFileSync(0, "utf8"));

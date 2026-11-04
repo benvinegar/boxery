@@ -70,6 +70,11 @@ export function parseNewArgs(args) {
 /** Create, boot and wait for NAME. Returns "NAME HOST:PORT". @param {Runtime} rt @param {NewArgs} args */
 export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless, layers = [] }) {
 	validName(name);
+	if (rt.backend === "openshell") {
+		if (!headless || from) fail("OpenShell supports only new --headless without --from; no desktop, snapshots, forks or pools");
+		if (disk) fail("OpenShell disk sizing is managed by its compute driver; omit --disk");
+		if (layers.length) fail("OpenShell uses prebuilt images; --layers is not supported");
+	}
 	// Size: the shape (the default shape if none), then explicit flags. Any flag makes it a custom size.
 	const shapes = rt.shapes();
 	const base = shapeSize(shapes, shape || shapes.default);
@@ -91,13 +96,20 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	}
 	const t0 = Date.now(), secs = () => Math.floor((Date.now() - t0) / 1000);
 	const action = rt.intent("create", name);
-	const userdata = await writeSeed(rt, name, provision);
+	// Restricted workloads have no root provisioning, guest SSH keys or Boxery proxy token.
+	const userdata = rt.backend === "openshell" ? "" : await writeSeed(rt, name, provision);
 	await rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]);
-	setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
+	if (rt.backend !== "openshell") setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
 	setVmKind(rt.conf, name, kind);
 	const ep = await rt.vms.waitEndpoint(name);
-	log(`${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
+	log(rt.backend === "openshell" ? `${name}: waiting for restricted gateway SSH` : `${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
 	await rt.waitSsh(name, ep);
+	if (rt.backend === "openshell") {
+		await mustRun(rt, ep, 'test "$(id -u)" != 0 && test "$HOME" = /home/agent && test -d ~/project && test -f /etc/boxery/headless || exit 1; for tool in bash node tar python3 setsid file git tmux; do command -v "$tool" >/dev/null || exit 1; done');
+		rt.done(action);
+		log(`${name} ready (restricted headless; policy and credentials managed by OpenShell)`);
+		return `${name} ${ep.host}:${ep.port}`;
+	}
 	await mustRun(rt, ep, "cloud-init status --wait >/dev/null 2>&1; true");
 	if (provision) {
 		if (await rt.guest.run(ep, "test -f /var/log/boxery-provision.ok") !== 0) {
@@ -215,8 +227,8 @@ export async function start(rt, [name]) {
 	await rt.vms.call("backend_start", [name]);
 	const ep = await rt.vms.waitEndpoint(name);
 	await rt.waitSsh(name, ep);
-	await refreshBuild(rt, name, ep); // a restart may have been what the guest's updates were waiting for
-	if (!rt.poolRow(name)) {
+	if (rt.backend !== "openshell") await refreshBuild(rt, name, ep); // a restart may have been what the guest's updates were waiting for
+	if (rt.backend !== "openshell" && !rt.poolRow(name)) {
 		await setPetKeys(rt, name);
 		if (typeof rt.token(name) !== "string") await issueToken(rt, name); // left the pool while stopped
 	}

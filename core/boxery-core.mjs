@@ -1278,6 +1278,14 @@ export function guidance(current, { localToolsNote, host } = {}) {
 			CREDENTIALS,
 			DECLINED,
 		].join("\n");
+	let restricted = false;
+	try { restricted = hostBackend(host) === "openshell"; } catch { /* no registered host in offline callers */ }
+	if (restricted) return hostLine + [
+		`Project work happens in the policy-enforced OpenShell sandbox "${current}", project directory ${PROJECT}.`,
+		"Use vm_bash, vm_read, vm_write, vm_edit, vm_copy and vm_jobs. " + local,
+		"This sandbox is non-root: no sudo, desktop, disk snapshots, forks, resizing or Boxery pools. System packages must be baked into its image.",
+		"OpenShell manages credentials and egress policy, not Boxery grants. Policy denials are intentional: ask the user for narrowly scoped access; never bypass controls or copy credentials into the sandbox.",
+	].join("\n");
 	return hostLine + [
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
