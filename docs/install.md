@@ -178,7 +178,7 @@ pi and opencode come preinstalled in every VM and are already pointed at the hos
 | Provider | Set up on the host | Grant to a VM |
 |---|---|---|
 | ChatGPT / Codex | Run `pi` on the host once and `/login`. The proxy reuses `~/.pi/agent/auth.json` and refreshes it. | `llm:chatgpt` |
-| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env` | `llm:openai`, `llm:anthropic` |
+| OpenAI, Anthropic API | Put `OPENAI_API_KEY=…` / `ANTHROPIC_API_KEY=…` in `~/.config/boxery/proxy.env`. If the OpenAI key belongs to several organizations or projects, set `OPENAI_ORG_ID=…` / `OPENAI_PROJECT_ID=…` there too: VMs can't pick one themselves | `llm:openai`, `llm:anthropic` |
 | Ollama | Auto-detected on `127.0.0.1:11434`. Its tool-capable models are configured for pi and opencode. | `llm:ollama` |
 
 ## Verify
