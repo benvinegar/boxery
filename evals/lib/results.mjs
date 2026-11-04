@@ -15,7 +15,7 @@ export function listResults() {
 	return readdirSync(RESULTS, { withFileTypes: true })
 		.filter((d) => d.isDirectory() && existsSync(path.join(RESULTS, d.name, "meta.json")))
 		.map((d) => load(path.join(RESULTS, d.name)))
-		.sort((a, b) => a.meta.started.localeCompare(b.meta.started));
+		.sort((a, b) => a.meta.started.localeCompare(b.meta.started) || a.meta.suite.version - b.meta.suite.version);
 }
 
 /** @param {string} dir @returns {Result} */
