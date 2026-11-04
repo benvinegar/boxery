@@ -47,6 +47,17 @@
 
 boxery lets your agents manage their own Linux VMs: on your Mac, a Linux server, a sandbox provider like exe.dev or boat.dev, or all of them at once. Your agent stays on your machine with your login and setup; the VM is where it works, and your keys never go in.
 
+## Quick start
+
+Give this prompt to your agent:
+
+```text
+Read github.com/modem-dev/boxery and set up boxery on this machine.
+Then spin up a VM with `boxery new demo` and open its desktop.
+```
+
+Prefer to do it by hand? See [Install](#install).
+
 ## What it's for
 
 - **Dev boxes.** A full Linux machine per project or branch. `ssh demo.boxery`, or open it in VS Code.
@@ -77,9 +88,9 @@ Your machine and the host can be the same one. [Security model →](docs/securit
   </picture>
 </p>
 
-## Quick start
+## Install
 
-Give this prompt to your agent:
+The easiest way is to give this prompt to your agent:
 
 ```text
 Read github.com/modem-dev/boxery and set up boxery on this machine.
