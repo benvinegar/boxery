@@ -2,7 +2,7 @@
 
 ← [Back to the brand assets](README.md)
 
-How boxery looks and sounds, in diagrams, cards and videos. The README hero ([`docs/hero.py`](../hero.py)), the social cards ([`social-card.py`](social-card.py)) and the promo video ([`docs/promo/`](../promo/README.md)) all follow it.
+How boxery looks and sounds, in diagrams, cards and videos. The README diagrams (the hero, host and layers diagrams, drawn from the shared parts in [`docs/diagram.py`](../diagram.py)), the social cards ([`social-card.py`](social-card.py)) and the promo video ([`docs/promo/`](../promo/README.md)) all follow it.
 
 ## Principles
 
@@ -130,4 +130,4 @@ The opening and close stay the same unless someone decides to change the brand i
 
 ## The coding agents boxery works with
 
-Claude Code, Codex, Cursor, opencode and pi, always in that order, shown as monochrome ink logos with their names underneath, followed by "and any MCP client". The logo paths live in `docs/hero.py` (`AGENTS`), and `docs/promo/promo.html` has a copy. Don't recolor them or place them on colored tiles. Keep the agent chat in a video neutral too, so it doesn't copy any one agent's interface.
+Claude Code, Codex, Cursor, opencode and pi, always in that order, shown as monochrome ink logos with their names underneath, followed by "and any MCP client". The logo paths live in `docs/diagram.py` (`AGENTS`), and `docs/promo/promo.html` has a copy. Don't recolor them or place them on colored tiles. Keep the agent chat in a video neutral too, so it doesn't copy any one agent's interface.
