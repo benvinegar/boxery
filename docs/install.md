@@ -77,6 +77,17 @@ boxery-host build-base           # golden image: XFCE, VNC, Chrome, Firefox, Nod
   Remove the line (or set `on`) and restart the VMs to turn it back on.
 - `BOXERY_NET` must be a libvirt network with an IPv4 address on a private range (libvirt's `default` is `192.168.122.0/24`); isolation drops guest-to-guest traffic because the network itself is in a blocked range.
 
+## Policy-enforced headless sandboxes (OpenShell, experimental)
+
+Install/start OpenShell first, then let Boxery discover its authenticated gateway and configure the restricted backend:
+
+```bash
+boxery setup local --backend openshell
+boxery --host restricted new demo --headless
+```
+
+Setup builds/selects the image, saves an offline starter policy, chooses a namespace and registers the host—without importing credentials or requiring a guest SSH key. Use `--gateway NAME` when several gateways exist, `--image OCI` for a remote gateway, and `--yes` for noninteractive setup. OpenShell still manages its own installation, TLS and services. See [OpenShell setup and limitations](openshell.md).
+
 ## macOS host (Lima)
 
 No Linux box? Run the host on your Mac and point the controller at `local`. The laptop and the host are then the same machine.

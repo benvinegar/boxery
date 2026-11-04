@@ -1,7 +1,7 @@
 // host/backend.sh + backend.mjs (the only way Node reaches a hypervisor backend), guest.mjs and
 // config.mjs, against the fake backend and a stub ssh. No SQLite: runs on every supported Node.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -87,6 +87,31 @@ test("metadata is parsed: list, images, endpoints, size, optional functions", as
 	const broken = createBackend({ ...env, BOXERY_BACKEND: "no-such-backend" });
 	assert.equal(await broken.endpointProblem("a1"), null);
 	assert.equal(await b.guestProxyUpstream(), "TCP:fake-gateway:8088");
+});
+
+test("Lima starts and renders cloud-config with the host's Node when PATH node is unavailable", async () => {
+	stub("node", 'echo "node unavailable on PATH" >&2; exit 127');
+	stub("limactl", 'case "$1" in list) ;; start) printf "%s\\n" "$*" >"$START_LOG" ;; esac');
+	stub("sandbox-exec", 'shift 2; exec "$@"');
+	stub("ssh", 'case "$*" in *"sudo bash -s") cat >"$RENDERED" ;; esac');
+	const userdata = path.join(dir, "user-data.yaml");
+	const rendered = path.join(dir, "rendered.sh");
+	const startLog = path.join(dir, "start.log");
+	writeFileSync(userdata, "write_files:\n  - path: /tmp/hello\n    content: hello\n");
+	const b = createBackend({ ...env, BOXERY_BACKEND: "lima", BOXERY_LIMA_CONFINE: "1",
+		BOXERY_LIMA_VMTYPE: "vz", BASE_USERDATA: userdata, RENDERED: rendered, START_LOG: startLog });
+	await b.call("backend_build_base");
+	assert.match(readFileSync(startLog, "utf8"), /--ssh-port [1-9][0-9]* /);
+	assert.match(readFileSync(rendered, "utf8"), /echo aGVsbG8= \| base64 -d > "\/tmp\/hello"/);
+	assert.equal(existsSync(`${userdata}.files.sh`), false);
+});
+
+test("backend scripts run node only as the host's Node (BOXERY_NODE), never from PATH", () => {
+	const scripts = ["host/backend.sh", ...readdirSync(path.join(ROOT, "host/backends"), { recursive: true, encoding: "utf8" })
+		.filter((f) => f.endsWith(".sh")).map((f) => path.join("host/backends", f))];
+	const bare = scripts.flatMap((f) => readFileSync(path.join(ROOT, f), "utf8").split("\n")
+		.map((l, i) => `${f}:${i + 1}: ${l.trim()}`).filter((l) => /(?:^[^:]+:\d+: |[;&|({]\s*|\bneed\s+)node(?:[\s;]|$)/.test(l)));
+	assert.deepEqual(bare, []);
 });
 
 test("a failing backend call keeps its exit status and says whether it reported the error", async () => {

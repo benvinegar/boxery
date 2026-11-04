@@ -5,6 +5,8 @@ export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const VALID_SNAP = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const VALID_IMAGE = /^[a-z][a-z0-9-]{0,30}@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const POOL_SNAP = "boxery-clean"; // a pool VM's clean state is the image NAME@boxery-clean
+// POSIX shell word for the exceptional OpenSSH ProxyCommand boundary (ordinary calls use argv).
+export const shellQuote = (/** @type {unknown} */ s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /** Fail the command: "boxery-host: MESSAGE" on stderr, exit status EXITCODE.
  *  @type {(message: string, exitCode?: number) => never} */

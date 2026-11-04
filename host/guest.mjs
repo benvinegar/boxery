@@ -4,6 +4,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { shellQuote as q } from "./util.mjs";
 import { hostAlias, hostKeyFile } from "./hostkeys.mjs";
 /** @import { Writable } from "node:stream" */
 /** @import { EndpointProblem } from "./backend.mjs" */
@@ -33,7 +35,8 @@ export function createGuest({ conf, env = process.env }) {
 	 *  @returns {Promise<{ code: number, out: string }>} */
 	function exec({ host, port, name }, command, { input, quiet = false, capture = false }) {
 		return new Promise((resolve, reject) => {
-			const child = spawn("ssh", [...opts, ...hostKeyOpts(name), "-p", String(port), `agent@${host}`, command], {
+			const relay = env.BOXERY_BACKEND === "openshell" ? ["-F", "/dev/null", "-o", `ProxyCommand=${["bash", fileURLToPath(new URL("./backend.sh", import.meta.url)), "backend_connect", name].map((v) => q(String(v))).join(" ")}`] : [];
+			const child = spawn("ssh", [...relay, ...opts, ...hostKeyOpts(name), "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-p", String(port), `agent@${host}`, command], {
 				env, stdio: [input == null ? "ignore" : "pipe", capture ? "pipe" : quiet ? "ignore" : 2, quiet ? "ignore" : 2],
 			});
 			/** @type {Buffer[]} */
