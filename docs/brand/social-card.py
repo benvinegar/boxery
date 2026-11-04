@@ -4,7 +4,7 @@
 """Generate the social-card SVGs in this directory, with all text as outlines.
 
 usage: uv run docs/brand/social-card.py [path/to/JetBrainsMono-Regular.ttf]
-then:  for f in docs/brand/{social-preview,og-image}-*.svg; do rsvg-convert "$f" -o "${f%.svg}.png"; done
+then:  for f in docs/brand/{social-preview,og-image,works-with-card}-*.svg; do rsvg-convert "$f" -o "${f%.svg}.png"; done
 """
 import re
 import sys
@@ -64,6 +64,19 @@ def lockup(theme):
     return inner, 241, 64
 
 
+def backdrop(t, w, h, defs=""):
+    """The shared card background: faded dot grid over the theme color, green bar along the bottom."""
+    return f"""<defs>
+<pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse" x="{(w % 32) / 2}" y="{(h % 32) / 2}"><circle cx="16" cy="16" r="1.6" fill="{t['dots']}"/></pattern>
+<radialGradient id="fade" cx="50%" cy="50%" r="75%"><stop offset="0.25" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></radialGradient>
+<mask id="edge"><rect width="{w}" height="{h}" fill="url(#fade)"/></mask>{defs}
+</defs>
+<rect width="{w}" height="{h}" fill="{t['bg']}"/>
+<rect width="{w}" height="{h}" fill="url(#dots)" opacity="{t['dots_op'] * 3}" mask="url(#edge)"/>
+<rect y="{h - 8}" width="{w}" height="8" fill="#1D9E75"/>
+<rect y="{h - 8}" x="{w / 2}" width="{w / 2}" height="8" fill="#0F6E56"/>"""
+
+
 def card(theme, w, h):
     t = THEMES[theme]
     inner, lw, lh = lockup(theme)
@@ -101,18 +114,80 @@ def card(theme, w, h):
     )
 
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" aria-label="boxery: {' '.join(TAGLINE)}">
-<defs>
-<pattern id="dots" width="32" height="32" patternUnits="userSpaceOnUse" x="{(w % 32) / 2}" y="{(h % 32) / 2}"><circle cx="16" cy="16" r="1.6" fill="{t['dots']}"/></pattern>
-<radialGradient id="fade" cx="50%" cy="50%" r="75%"><stop offset="0.25" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="1"/></radialGradient>
-<mask id="edge"><rect width="{w}" height="{h}" fill="url(#fade)"/></mask>
-</defs>
-<rect width="{w}" height="{h}" fill="{t['bg']}"/>
-<rect width="{w}" height="{h}" fill="url(#dots)" opacity="{t['dots_op'] * 3}" mask="url(#edge)"/>
-<rect y="{h - 8}" width="{w}" height="8" fill="#1D9E75"/>
-<rect y="{h - 8}" x="{w / 2}" width="{w / 2}" height="8" fill="#0F6E56"/>
+{backdrop(t, w, h)}
 <g transform="translate({lx:.2f} {top:.2f}) scale({ls:.5f})">{inner}</g>
 {tags}
 {install}
+</svg>
+"""
+
+
+# The "works with" card restacks the README's logo row (docs/works-with-*.svg) one platform
+# per line. Each logo is cropped out of that row by its x span, measured from a render of it;
+# the shared y window keeps the row's own vertical alignment. Update these if the row changes.
+WORKS_WITH_Y = (54, 84)
+WORKS_WITH = [
+    ("macOS", [(40.0, 90.0)]),  # Lima
+    ("Linux", [(171.5, 224.0), (257.8, 415.0), (448.8, 567.2)]),  # libvirt, Cloud Hypervisor, OpenShell
+    ("Cloud", [(647.5, 748.2), (780.8, 852.0)]),  # exe.dev, boat
+]
+
+
+def works_with_card(theme, w, h):
+    t = THEMES[theme]
+    row = (BRAND.parent / f"works-with-{theme}.svg").read_text()
+    row_defs = re.search(r"<defs>(.*?)</defs>", row, re.S).group(1)
+    # the logo layer is the last top-level group: everything after the divider lines
+    logos = row[row.rindex("<g fill=") : row.rindex("</svg>")]
+
+    inner, lw, lh = lockup(theme)
+    ls = 300 / lw
+    lock_h = lh * ls
+    lx = w / 2 - 121.8 * ls
+
+    s = 1.75  # logo scale
+    y0, y1 = WORKS_WITH_Y
+    logo_h = (y1 - y0) * s
+    row_gap, logo_gap = 26, 60
+    label_size, label_gap = 26, 34
+    cap_size = 24
+    label_w = max(text_width(name, label_size) for name, _ in WORKS_WITH)
+    rows_w = max(sum(b - a for a, b in spans) * s + logo_gap * (len(spans) - 1) for _, spans in WORKS_WITH)
+    block_w = label_w + 2 * label_gap + rows_w
+    left = (w - block_w) / 2
+    divider_x = left + label_w + label_gap
+    logos_x = divider_x + label_gap
+
+    rows_h = logo_h * len(WORKS_WITH) + row_gap * (len(WORKS_WITH) - 1)
+    block_h = lock_h + 34 + cap_size + 40 + rows_h
+    top = (h - block_h) / 2
+    # same bottom-overlay rule as the other cards
+    assert top + block_h <= h * 0.82, "card content runs into the bottom overlay zone"
+
+    cap_base = top + lock_h + 34 + cap_size * 0.8
+    rows_top = top + lock_h + 34 + cap_size + 40
+    parts = [text_path("works with", cap_size, w / 2, cap_base, t["muted"])]
+    for i, (name, spans) in enumerate(WORKS_WITH):
+        ry = rows_top + i * (logo_h + row_gap)
+        parts.append(
+            text_path(name, label_size, 0, ry + logo_h / 2 + label_size * 0.36, t["muted"], left=divider_x - label_gap - text_width(name, label_size))
+        )
+        x = logos_x
+        for a, b in spans:
+            a, b = a - 1, b + 1  # a pixel of slack so antialiased edges aren't cropped
+            # a nested viewport crops the whole logo layer down to this one logo
+            parts.append(
+                f'<svg x="{x:.2f}" y="{ry:.2f}" width="{(b - a) * s:.2f}" height="{logo_h:.2f}" viewBox="{a} {y0} {b - a:.1f} {y1 - y0}" overflow="hidden"><use href="#logos"/></svg>'
+            )
+            x += (b - a) * s + logo_gap
+    parts.append(
+        f'<line x1="{divider_x:.2f}" y1="{rows_top:.2f}" x2="{divider_x:.2f}" y2="{rows_top + rows_h:.2f}" stroke="{t["pill_line"]}" stroke-width="1.5"/>'
+    )
+
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" aria-label="boxery works with Lima on macOS; libvirt, Cloud Hypervisor and OpenShell on Linux; exe.dev and boat in the cloud">
+{backdrop(t, w, h, row_defs + logos.replace("<g fill=", '<g id="logos" fill=', 1))}
+<g transform="translate({lx:.2f} {top:.2f}) scale({ls:.5f})">{inner}</g>
+{"".join(parts)}
 </svg>
 """
 
@@ -122,3 +197,8 @@ for name, (w, h) in SIZES.items():
         out = BRAND / f"{name}-{theme}.svg"
         out.write_text(card(theme, w, h))
         print(out)
+
+for theme in THEMES:
+    out = BRAND / f"works-with-card-{theme}.svg"
+    out.write_text(works_with_card(theme, 1200, 630))
+    print(out)
