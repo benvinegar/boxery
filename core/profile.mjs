@@ -13,7 +13,8 @@ const MAX_OUTPUT = 10 * 1024 * 1024;
 
 /**
  * Run one profile action: `host ARG…` (boxery-host on the profile's host; bash execs it, so a timeout or
- * abort signal reaches it), `config` (rewrite ssh_config) or `close NAME`. Resolves with trimmed stdout.
+ * abort signal reaches it: the host command itself for HOST=local, the ssh for a remote host, whose
+ * remote command keeps running), `config` (rewrite ssh_config) or `close NAME`. Resolves with trimmed stdout.
  * stderr "inherit" passes diagnostics through (the CLI): an error that exited on its own is then
  * `reported` (already explained). Otherwise stderr is the error message. Errors from `host` are `fromHost`.
  * @param {string} action @param {string[]} [args]

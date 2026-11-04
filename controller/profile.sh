@@ -118,7 +118,8 @@ local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}
 # ssh joins argv with spaces and the remote shell re-parses it, so every argument is quoted
 # (unquoted snapshot names or flags would be executed on the host). stdin passes through.
 h() { host_cmd "" "$@"; }
-# h, replacing this shell (Node's core/profile.mjs): a timeout or Ctrl-C there then reaches the host command.
+# h, replacing this shell (Node's core/profile.mjs): a timeout or Ctrl-C there then reaches the host command
+# (HOST=local) or the ssh (a remote host; the command on the host keeps running).
 h_exec() { host_cmd exec "$@"; }
 host_cmd() { # ""|exec ARG...
 	local x=$1; shift

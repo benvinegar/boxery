@@ -15,7 +15,8 @@ import { profileRun } from "./profile.mjs";
 /** A lease this machine holds. expires: unix seconds. @typedef {{ name: string, id: string, expires: number, ttl: number | null, holder: string | null, file: string }} LeaseRecord */
 /** log: progress and warnings for a person (the CLI prints them to stderr). interactiveCommands: grant
  *  --cmd helpers may prompt (CLI only). timeout: ms for each host or profile call, 0 for none (default:
- *  per call). signal: abort (Ctrl-C) stops the host call and cleans up. stderr: see profileRun.
+ *  per call). signal: abort (Ctrl-C) stops the host call (on a remote host: its ssh) and removes the
+ *  half-made key. stderr: see profileRun.
  *  @typedef {{ log?: (line: string) => void, interactiveCommands?: boolean, timeout?: number, signal?: AbortSignal, stderr?: "pipe" | "inherit" }} LeaseOpts */
 
 export const VALID_LEASE = /^l-[0-9a-f]{32}$/;
@@ -134,11 +135,11 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 		await profileRun("config", [], { timeout: opts.timeout });
 	} catch (e) {
 		const why = /** @type {Error} */ (e).message;
-		await profileRun("host", ["release", id], { timeout: 180_000 }).catch(() => {});
+		const released = await profileRun("host", ["release", id], { timeout: 180_000 }).then(() => true, () => false);
 		cleanup();
 		for (const f of [rec.file, keyFile(id), `${keyFile(id)}.pub`]) rmSync(f, { force: true });
 		await profileRun("config", [], { timeout: opts.timeout }).catch(() => {});
-		throw new Error(`leased ${name} but could not set it up on this machine (${why}); released it again`);
+		throw new Error(`leased ${name} but could not set it up on this machine (${why}); ${released ? "released it again" : `could not release it either: it expires on the host in ${t}s`}`);
 	}
 	await reapplyGrants(name, opts);
 	return rec;

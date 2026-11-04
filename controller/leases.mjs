@@ -12,9 +12,10 @@ const log = (/** @type {string} */ s) => console.error(s);
 const abort = new AbortController();
 /** @type {import("../core/leases.mjs").LeaseOpts} */
 const cli = { log, interactiveCommands: true, stderr: "inherit", timeout: 0, signal: abort.signal };
-// Ctrl-C while acquire (or renew) waits on the host: stop that call and remove the half-made key before
-// exiting. release and leases keep the default: they just stop.
-if (command === "acquire" || command === "renew") for (const sig of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"])) {
+// Ctrl-C while acquire waits on the host: stop that call and remove the half-made key before exiting.
+// Once the host has granted the lease it is held and recorded, so acquire reports it and exits 0 (a
+// grant helper interrupted while it runs only loses that grant). Other commands keep the default.
+if (command === "acquire") for (const sig of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"])) {
 	process.once(sig, () => { process.exitCode = 128 + constants.signals[sig]; abort.abort(); });
 }
 /** Like `date`: the local format people read elsewhere in the CLI. @param {number} t unix seconds */
@@ -43,6 +44,7 @@ async function run() {
 			const o = parse(args, { "--ttl": "ttl", "--wait": "wait", "--holder": "holder" });
 			for (const f of ["ttl", "wait"]) if (f in o && !/^[0-9]+$/.test(o[f])) throw new Error(`--${f} must be a number`);
 			const r = await acquireLease({ ttl: o.ttl ?? 1800, wait: o.wait ?? 0, ...(o.holder !== undefined ? { holder: o.holder } : {}) }, cli);
+			process.exitCode = 0; // (see the signal handlers)
 			log(`==> leased ${r.name} (lease ${r.id}, expires in ${r.expires - Math.floor(Date.now() / 1000)}s; renew with: boxery renew ${r.name})`);
 			console.log(`${r.name} ${r.id}`);
 			return;
@@ -85,7 +87,7 @@ try {
 	await core.withHost(core.profileFromDirectory(host, dir), run);
 } catch (e) {
 	const err = /** @type {Error & { exitCode?: number, reported?: boolean }} */ (e);
-	if (abort.signal.aborted) { /* interrupted: exit code set by the signal handler */ }
+	if (abort.signal.aborted && err.name === "AbortError") { /* interrupted while the host call ran: exit code set by the signal handler */ }
 	// The host already explained a failed acquire on stderr; pass its exit status through, like before.
 	else if (err.reported) process.exitCode = err.exitCode ?? 1;
 	else { console.error(`boxery: ${err.message}`); process.exitCode = 1; }
