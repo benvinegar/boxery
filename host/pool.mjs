@@ -2,6 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import * as linux from "../guests/linux.mjs";
 import * as leases from "./boxery-leases.mjs";
 import { captureVm } from "./images.mjs";
 import { restorePetAccess } from "./vms.mjs";
@@ -37,7 +38,7 @@ export async function poolAdd(rt, [name]) {
 	const ep = await rt.vms.sshEndpoint(name); // must be running
 	const action = rt.intent("pool-add", name);
 	// The clean snapshot must not carry a previous user's pushed grants (tmpfs) or keys.
-	await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"');
+	await rt.guest.run(ep, `rm -rf "${linux.grantsDir}"`);
 	try { await setLeaseKeys(rt, name); } catch { fail(`could not lock down ssh keys on ${name}`); }
 	// authorized_keys only gates *new* logins: end existing ssh sessions (not the desktop) so nobody
 	// keeps access through a connection opened before the VM joined the pool.

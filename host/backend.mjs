@@ -105,9 +105,13 @@ export function createBackend(env = process.env) {
 			try { await call("backend_exists", [name], { quiet: true }); return true; }
 			catch (e) { if (e instanceof BackendError && e.exitCode === 1) return false; throw e; }
 		},
+		/** Whether the desktop base is built. backend_has_base exits 1 for "not built"; any other failure
+		 *  means it couldn't tell (e.g. limactl isn't on PATH), and its stderr has said why. */
 		async hasBase() {
-			try { await call("backend_has_base", [], { quiet: true }); return true; }
-			catch (e) { if (e instanceof BackendError) return false; throw e; }
+			const { code } = await run(env, "backend_has_base", [], { status: true });
+			if (code === 0) return true;
+			if (code === 1) return false;
+			throw new BackendError("backend_has_base failed", { exitCode: code, reported: true });
 		},
 		/** @param {string} name @param {CallOptions} [options] */
 		sshEndpoint: async (name, options) => endpoint(await meta("backend_ssh_endpoint", [name], options), name),

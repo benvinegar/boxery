@@ -102,7 +102,7 @@ try {
 		const dir = mkdtempSync(path.join(tmpdir(), "boxery-openshell-key-"));
 		try {
 			const file = path.join(dir, "known_hosts");
-			const proxyCommand = ["node", fileURLToPath(import.meta.url), "connect", name].map(q).join(" ");
+			const proxyCommand = [process.execPath, fileURLToPath(import.meta.url), "connect", name].map(q).join(" ");
 			const r = spawnSync("ssh", ["-F", "/dev/null", "-o", `ProxyCommand=${proxyCommand}`, "-o", "HostKeyAlgorithms=ssh-ed25519",
 				"-o", "StrictHostKeyChecking=accept-new", "-o", `UserKnownHostsFile=${file}`, "-o", "GlobalKnownHostsFile=/dev/null",
 				"-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ConnectTimeout=15", "sandbox@openshell", "true"],

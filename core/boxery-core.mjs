@@ -8,6 +8,7 @@ import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, 
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as linux from "../guests/linux.mjs";
 import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
 import { parseGrantRequest, grantPrompt, grantCommand, listGrants, addGrants } from "./grants.mjs";
@@ -42,7 +43,7 @@ export { q } from "./shell.mjs";
 /** vm_grant arguments. @typedef {{ spec?: unknown, readonly?: boolean, reason?: unknown }} GrantRequestArgs */
 /** @typedef {"accept" | "decline" | "cancel"} ApprovalAnswer */
 /** @typedef {(message: string) => Promise<ApprovalAnswer | string>} Approve */
-/** A VM as `boxery ls --json` lists it (docs/cli.md); `addr` is from hosts before ssh_addr. @typedef {{ name: string, state?: string | null, ssh_addr?: string | null, addr?: string | null, disk_size?: number | null, disk_used?: number | null, tunnel?: string | null, lease?: { state?: string, [k: string]: any } | null, shape?: string | null, cpus?: number | null, mem?: number | null, desktop?: boolean, grants?: Grant[], guest?: GuestInfo }} VmInfo */
+/** A VM as `boxery ls --json` lists it (docs/cli.md); `addr` is from hosts before ssh_addr. @typedef {{ name: string, state?: string | null, ssh_addr?: string | null, addr?: string | null, disk_size?: number | null, disk_used?: number | null, tunnel?: string | null, lease?: { state?: string, [k: string]: any } | null, shape?: string | null, cpus?: number | null, mem?: number | null, desktop?: boolean, os?: string, grants?: Grant[], guest?: GuestInfo }} VmInfo */
 /** Guest software status from the host's build records (docs/cli.md, `guest`). @typedef {{ status: string, reasons?: string[], built_at?: string | null, age_days?: number | null, [k: string]: any }} GuestInfo */
 /** @typedef {{ cpus: number, mem: number, disk: number }} Shape */
 /** @typedef {{ default?: string, shapes: Record<string, Shape> }} Shapes */
@@ -235,8 +236,8 @@ export function controllerCommand(args) {
 	// Bind the resolved directory, not a registry entry that could change during this call.
 	return { args: ["--host", host.name, "--profile-dir", host.dir, ...args], env: process.env };
 }
-export const REMOTE_HOME = "/home/agent";
-export const PROJECT = `${REMOTE_HOME}/project`;
+export const REMOTE_HOME = linux.home;
+export const PROJECT = linux.project;
 export const CDP_PORT = 9222;
 export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const MAX_BYTES = 50 * 1024;
@@ -886,7 +887,7 @@ export async function copyTool({ from, to }, { current, localCwd = process.cwd()
 
 // Desktop tools on a headless VM (boxery new --headless) fail with this, not with an X11 error.
 const HEADLESS_EXIT = 64;
-const X = `[ ! -e /etc/boxery/headless ] || exit ${HEADLESS_EXIT}; export DISPLAY=:1; `;
+const X = `[ ! -e ${linux.configDir}/headless ] || exit ${HEADLESS_EXIT}; export DISPLAY=:1; `;
 const headlessError = (/** @type {string} */ vm) =>
 	new Error(`VM "${vm}" is headless (created with --headless): it has no desktop, so screenshots, mouse/keyboard input and vm_browser don't work there. Use a desktop VM (vm_manage {action:'new'} without headless) for GUI or browser work.`);
 /** @param {string} vm @param {string} script @param {SshRunOpts} [opts] */

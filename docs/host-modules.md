@@ -18,15 +18,16 @@ The host runs in Node. Bash remains where it fits: the entry point (`host/boxery
 | `host/recovery.mjs` | Replaying an abandoned operation's intents; inventory drift | Deciding which operations are abandoned |
 | `host/boxery-lifecycle.mjs` | Lease runtime: binds lease policy to SQLite, the journal, backend effects and the supervisor; held-lock validation | Lease policy or hypervisor commands |
 | `host/lease-workflows.mjs` | Lease workflow ordering, stale-state decisions, reset outcomes and retry/reap policy | Files, environment variables, subprocesses, SQLite implementation or CLI formatting |
-| `host/boxery-leases.mjs` | Transactional lease state machine, generations/incarnations, expiry and claim eligibility | Guest side effects |
+| `host/boxery-leases.mjs` | Transactional lease state machine, generations/incarnations, expiry and claim eligibility; the store's schema and its migrations | Guest side effects |
 | `host/boxery-operations.mjs` | Resource arbitration, worker supervision, durable intent storage, abandoned-operation recovery scheduling, token file transactions | Guest or lease workflow policy |
 | `host/backend.sh` + `host/backend.mjs` | Running one allowlisted backend function per process (argv only), parsing its metadata | Any decision about what to run |
 | `host/guest.mjs` | ssh into a VM with the host's management key: commands, readiness, `authorized_keys` | Which keys a VM should accept |
 | `host/hostkeys.mjs` | Each VM's pinned ssh host key: generation for the seed, the `host-keys/NAME` record, `known-hosts`/`pin`, pinning through trusted channels | Delivering the key to the guest (seed, backends) |
+| `host/vm-records.mjs` | Each VM's record, one `vm_records` row in the store: kind, guest OS and size. Written by `new`/`fork`, `resize` and `ls` (a size it reads from the backend), deleted by `rm` and recovery; kind and OS inherited from an image's source VM | What a guest OS contains (`guests/`), the store's schema (`boxery-leases.mjs`) |
 | `host/runtime.mjs`, `host/config.mjs`, `host/shapes.mjs`, `host/util.mjs` | Per-command context (store, backend, journal, held locks), configuration, shapes, shared helpers | Side effects of their own |
 | `host/backends/*.sh` | Hypervisor-specific effects and idempotent recovery hooks | Pool ownership or lease transitions |
 
-`core/boxery-core.mjs` remains the agent-facing transport/tool implementation. It is not a dependency of the host.
+`core/boxery-core.mjs` remains the agent-facing transport/tool implementation. It is not a dependency of the host. Both import `guests/` (facts about the guest OS, such as its paths), which imports nothing.
 
 ## Call paths
 
@@ -74,7 +75,7 @@ Documented CLI arguments, listing output (tables and JSON), environment override
 
 - `test/shell/host-output.sh`: exact output of listings, usage and common errors.
 - `test/lease-workflows.test.mjs`: injected policy tests, no SQLite or subprocesses, so they also run on a Node without `node:sqlite`.
-- `test/leases.test.mjs`: real SQLite transaction/state tests.
+- `test/leases.test.mjs`: real SQLite transaction/state tests, schema migrations; `test/vm-records.test.mjs`: each VM's record.
 - `test/operations.test.mjs`: real dispatcher/supervisor crash tests against the fake backend, plus runtime parsing and callback-boundary checks.
 - `test/host-backend.test.mjs`, `test/host-shapes.test.mjs`, `test/host-seed.test.mjs`, `test/host-setup.test.mjs`: the backend shim, guest ssh, configuration, shapes, seed and service files, without SQLite.
 - `test/shell/host-init.sh`: `init`, `add-key` and `build-base` with stubbed service managers.

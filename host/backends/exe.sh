@@ -244,7 +244,7 @@ backend_build_base() {
 
 backend_has_base() {
 	[[ -n $EXE_PREFIX ]] || return 1
-	local j; j=$(exe_ls) || exit 1
+	local j; j=$(exe_ls) || exit 2
 	exe_has "$(exe_base)" "$j"
 }
 # Local state first (no API call); a VM that only exists on exe.dev (crash before its state dir) still

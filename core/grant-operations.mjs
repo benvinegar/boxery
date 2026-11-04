@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, wr
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { currentHost, hostBackend, assertName, deniedDirs, isWithin } from "./boxery-core.mjs";
+import { currentHost, hostBackend, assertName, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
 import { parseGrantSpec } from "./grants.mjs";
 import { q } from "./shell.mjs";
 /** @import { Grant, GrantSpec, HostProfile } from "./boxery-core.mjs" */
@@ -41,7 +41,7 @@ export function listGrants(vm) {
 		switch (kind) {
 			case "ssh-agent": return { kind };
 			case "env": return { kind, var: a, cmd: b || null };
-			case "file": return { kind, local: a, remote: `/home/agent/${b.replace(/^\/home\/agent\//, "")}` };
+			case "file": return { kind, local: a, remote: `${REMOTE_HOME}/${b.startsWith(`${REMOTE_HOME}/`) ? b.slice(REMOTE_HOME.length + 1) : b}` };
 			case "llm": return { kind, provider: a };
 			case "http": {
 				const first = b.indexOf(";"), second = b.indexOf(";", first + 1);
