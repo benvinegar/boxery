@@ -53,6 +53,8 @@ boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
   init [--backend libvirt|lima|cloud-hypervisor|exe|boat|openshell]  install proxy services + backend setup, symlinks
   --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
                             state, proxy port and services. Create it with: --profile NAME init --backend B
+  backends [--json]         backend support, requirements and capability declarations
+  capabilities [--json | --check]  this host's platform, validation and conditional capabilities
   profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
   version [--json]          this install's version, commit and kind (git or npm)
   upgrade [--check] [--ref REF] [--wait S] [--reinit]

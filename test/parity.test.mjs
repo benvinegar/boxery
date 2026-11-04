@@ -32,7 +32,7 @@ const CLI_FOR_TOOL = {
 		host: none("the CLI has no session host; every command takes --host, and the default is the user's (boxery host use)"),
 		host_add: "host add", host_rm: "host rm",
 	},
-	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version", hosts: "host ls" },
+	vm_info: { list: "ls", shapes: "shapes", grants: "grants", snaps: "snaps", images: "images", version: "version", hosts: "host ls", capabilities: "capabilities" },
 	vm_lease: { acquire: "acquire", renew: "renew", release: "release", list: "leases" },
 	vm_grant: "grant", // the agent asks; the user approves in a prompt, then it runs boxery grant
 };
@@ -41,6 +41,7 @@ const CLI_FOR_TOOL = {
 const CLI_ONLY = {
 	help: "usage text",
 	setup: "configuring the VM host is the user's setup",
+	backends: "catalog for user setup; agents inspect their configured host with vm_info capabilities",
 	backend: "refreshes the backend recorded in the user's profile (vm_info hosts reads that record)",
 	"upgrade-host": "upgrading the host is the user's to run (vm_info version tells agents to ask)",
 	revoke: "only the user takes access away (agents can only ask for it, with vm_grant)",

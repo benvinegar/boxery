@@ -84,6 +84,10 @@ cmd_setup() {
 	elif [ -n "$HOST_PROFILE" ]; then
 		h help >/dev/null || die "cannot use host profile $HOST_PROFILE on $HOST"
 	fi
+	# Check boxery-host, not the controller; old hosts remain registrable with a warning.
+	if h help | grep -q 'capabilities'; then
+		h capabilities --check || die "host backend requirements not met (see above); fix them before setup"
+	else echo "==> warning: host predates capability checks; upgrade it for backend preflight" >&2; fi
 	local auth_backend; auth_backend=$(h backend 2>/dev/null) || auth_backend=""
 	if [ "$auth_backend" = openshell ]; then
 		IDENTITY=""
@@ -999,6 +1003,8 @@ usage() {
 		                                --headless: no desktop (shell + agents only); needs no build-base
 		                                --headless --layers github-runner: a GitHub Actions runner VM
 		build-base                      build the host's desktop base image (one-time, ~3 min)
+		backends [--json]               backend support, requirements and capabilities (on selected host)
+		capabilities [--json | --check]  selected host's platform and conditional capability assessment
 		shapes [--json]                 VM sizes defined on the host (* = default; see docs/shapes.md)
 		ls [--json] [--refresh]         list VMs (with their shape, grants and guest software: GUEST is
 		                                  current, outdated or unknown; --refresh reads it from running VMs)
@@ -1119,6 +1125,8 @@ images) need_host; h images "$@" ;;
 pin) need_host; need_vm "${1:-}"; case ${2:-} in '' | --from-guest) ;; *) die "usage: boxery pin NAME [--from-guest]" ;; esac
 	[ $# -le 2 ] || die "usage: boxery pin NAME [--from-guest]"; drop_master "$1"; h pin "$@" ;;
 build-base) need_host; [ $# -eq 0 ] || die "usage: boxery build-base"; h build-base ;;
+backends) need_host; h backends "$@" ;;
+capabilities) need_host; h capabilities "$@" ;;
 shapes) need_host; case ${1:-} in '' | --json) h shapes "$@" ;; *) die "usage: boxery shapes [--json]" ;; esac ;;
 ls | list) need_host; cmd_ls "$@" ;;
 patch) need_host; cmd_patch "$@" ;;

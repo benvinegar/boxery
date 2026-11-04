@@ -43,6 +43,8 @@ grep -q AAAAme "$BOXERY_CONF/authorized_keys" && ok "setup registered the key wi
 "$A" fork w2 w3 >/dev/null 2>&1 && [ "$(cat "$tmp/vms/w3/size")" = "3 4096 20" ] && ok "fork keeps the source's size" || bad "fork size: $(cat "$tmp/vms/w3/size" 2>&1)"
 "$A" ls --json | jq -e '.[] | select(.name == "w2") | .shape == "custom" and .cpus == 3' >/dev/null && ok "ls --json has shape fields" || bad "ls shape: $("$A" ls --json)"
 "$A" shapes --json | jq -e '.default == "standard" and .shapes.large.cpus == 8' >/dev/null && ok "shapes --json via controller" || bad "shapes: $("$A" shapes --json 2>&1)"
+"$A" backends --json | jq -e '.schemaVersion == 1 and (.backends | map(.id) | index("boat") != null)' >/dev/null && ok "backends catalog via controller" || bad "backends catalog"
+BOXERY_BACKEND=boat "$A" capabilities --json | jq -e '.backend.id == "boat" and .backend.runtime.location == "remote" and .capabilities.headless.availability == "unavailable" and .capabilities.diskSnapshots.availability == "unknown"' >/dev/null && ok "conditional capabilities queried on host via controller" || bad "capabilities report"
 if "$A" new w4 --shape 'x;id' >/dev/null 2>&1; then bad "invalid --shape accepted"; else ok "invalid --shape rejected by the controller"; fi
 "$A" new hc --headless >/dev/null 2>&1 && [ "$(cat "$tmp/vms/hc/from")" = stock ] && ok "new --headless passed to the host" || bad "new --headless"
 "$A" ls --json | grep '"name":"hc"' | grep '"desktop":false,' | grep -q ',"grants":\[' && ok "ls --json: desktop false, with grants" || bad "ls --json headless: $("$A" ls --json)"
@@ -173,7 +175,7 @@ if "$A" grant e1 llm:openai --cmd 'echo k' >/dev/null 2>&1; then bad "llm grant 
 # Version skew: a controller with llm: grants against a host from before them. That host rejects the
 # {"hosts","llm"} payload: the grant is kept locally, the user is warned, and nothing on the host changes.
 if git -C "$ROOT" cat-file -e 2ee0cd7:host/pool.mjs 2>/dev/null; then
-	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/host" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
+	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/host" "$ROOT/core" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
 	git -C "$ROOT" show 2ee0cd7:host/pool.mjs >"$old/host/pool.mjs"
 	HOME=$tmp/home "$A" host add old local --host-bin "$old/host/boxery-host" >/dev/null 2>&1
 	echo 'GRANT_CONFIRM=off' >>"$BOXERY_HOME/profiles/old/config"

@@ -15,6 +15,7 @@
 // "Current VM", the session's host and held leases are front-end state: vm_manage and vm_lease change
 // them only through the Session hooks.
 import * as core from "./boxery-core.mjs";
+import { BACKENDS as BACKEND_DECLARATIONS } from "./backend-metadata.mjs";
 /** @import { Approve, HostProfile, LocalConfinement, ManageArgs, Progress, ToolResult } from "./boxery-core.mjs" */
 /** A JSON Schema fragment. @typedef {{ type?: string | string[], description?: string, enum?: readonly string[], properties?: Record<string, JsonSchema>, items?: JsonSchema, required?: string[], anyOf?: JsonSchema[], minimum?: number, maximum?: number }} JsonSchema */
 /** A tool's input schema: always an object with named properties. @typedef {JsonSchema & { type: "object", properties: Record<string, JsonSchema>, required: string[] }} ObjectSchema */
@@ -53,13 +54,14 @@ const obj = (properties, required = []) => ({ type: "object", properties: { ...p
 
 export const LEASE_ACTIONS = ["acquire", "renew", "release", "list"];
 export const MANAGE_ACTIONS = ["new", "fork", "rm", "start", "stop", "resize", "snap", "snap-rm", "revert", "use", "none", "build-base", "host", "host_add", "host_rm"];
-const BACKENDS = "libvirt | lima | cloud-hypervisor | exe | boat";
+const BACKENDS = Object.keys(BACKEND_DECLARATIONS).join(" | ");
 const SIZE = (/** @type {string} */ unit, /** @type {number} */ min) => ({ type: "integer", minimum: min, description: `for new/fork/resize: ${unit}; overrides the shape's value` });
-export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version", "hosts"];
+export const INFO_ACTIONS = ["list", "shapes", "grants", "snaps", "images", "version", "hosts", "capabilities"];
 
 const INFO_OUTPUT = {
 	type: "object",
 	properties: {
+		capabilities: { type: "object", description: "capabilities: selected boxery-host's support, requirements, validation and conditional capability report; unknown is not available" },
 		vms: { type: "array", items: { type: "object" }, description: "list: VMs on the host" },
 		current: { type: ["string", "null"], description: "list: the current VM" },
 		default: { type: "string", description: "shapes: the default shape" },
@@ -307,6 +309,7 @@ export const TOOLS = [
 			"`list` shows the VMs on the host and the current VM; `shapes` the VM sizes the host offers; `grants` what VM `vm` may access from the user's machine (to ask for more, use vm_grant); `snaps` the snapshots of VM `vm`; `images` every snapshot on the host as VM@SNAP (what vm_manage new takes as `from`); " +
 			"`version` the controller's and host's boxery versions. If the host is behind, tell the user: upgrading it is theirs to run (`boxery upgrade-host`). " +
 			"`hosts` lists registered hosts: where each runs (local or its ssh destination), its backend, and which names share a profile (same host). " +
+			"`capabilities` discovers the selected host backend's supported/tested platform, requirements and conditional features before operations (unknown entitlements are not guarantees). " +
 			"`vm` defaults to the current VM.",
 		parameters: {
 			type: "object",
@@ -442,6 +445,10 @@ export async function infoAction(a, { host, current }) {
 			const v = await core.versions();
 			if (v.host) v.host = { ...v.host, name: host.name };
 			return { text: core.formatVersions(v), structured: v };
+		}
+		case "capabilities": {
+			const capabilities = await core.backendCapabilities();
+			return { text: JSON.stringify(capabilities, null, 2), structured: { capabilities } };
 		}
 		case "hosts":
 			return hostsResult(host);

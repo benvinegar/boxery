@@ -18,6 +18,7 @@ import { parsePatchArgs, patchAll, patchVm, waitForLease } from "./patch.mjs";
 import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { runners } from "./runners.mjs";
 import { createRuntime } from "./runtime.mjs";
+import { backends, capabilities, checkOperation } from "./capabilities.mjs";
 import { addKey, buildBase, init, profiles } from "./setup.mjs";
 import { vmKinds } from "./kinds.mjs";
 import { addVmShape, vmShapes } from "./shapes.mjs";
@@ -34,6 +35,8 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
   init [--backend libvirt|lima|cloud-hypervisor|exe|boat|openshell]  install proxy services + backend setup, symlinks
   --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
                             state, proxy port and services. Create it with: --profile NAME init --backend B
+  backends [--json]         backend support, requirements and capability declarations
+  capabilities [--json | --check]  this host's platform, validation and conditional capabilities
   profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
   version [--json]          this install's version, commit and kind (git or npm)
   upgrade [--check] [--ref REF] [--wait S] [--reinit]
@@ -193,7 +196,7 @@ const lifecycle = (command) => (rt, args) => runLifecycle(rt, command, args);
 /** @type {Record<string, Command>} */
 const COMMANDS = {
 	init: (rt) => init(rt), "build-base": buildBase, "add-key": addKey, profiles,
-	ls, list: ls, shapes, snaps, images, ip, "known-hosts": knownHosts,
+	ls, list: ls, shapes, snaps, images, ip, "known-hosts": knownHosts, backends, capabilities,
 	pool: (rt, [sub = "ls", ...args]) => (sub === "ls" ? poolLs(rt, args) : fail(POOL_USAGE)),
 	patch: patchAll, // patch NAME runs supervised (MUTATING); --all supervises one VM at a time
 	"proxy-log": proxyLog,
@@ -250,6 +253,7 @@ async function main(argv) {
 			return await CALLBACKS[callback](rt, rest);
 		}
 		if (command === "__recover") return await replayIntents(rt);
+		checkOperation(rt.backend, command, args);
 		if (supervised(command, args)) {
 			if (command === "patch") { const { name, wait } = parsePatchArgs(args); if (wait) await waitForLease(rt, name, wait); }
 			const names = resources(command, args);

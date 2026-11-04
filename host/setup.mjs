@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import path from "node:path";
 import { discover } from "./boxery-upgrade.mjs";
+import { checkBackend } from "./capabilities.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
 import { ensureHostKey, hasHostKey } from "./hostkeys.mjs";
 import { baseUserdata } from "./seed.mjs";
@@ -328,6 +329,7 @@ async function pinExisting(rt) {
 // ---------------------------------------------------------------- commands
 /** @param {Runtime} rt */
 export async function init(rt) {
+	checkBackend(rt.backend, { env: rt.env });
 	const others = hostProfiles().filter((p) => path.resolve(p.conf) !== rt.conf);
 	if (rt.profile && !rt.env.BOXERY_PROXY_PORT) {
 		// First init of a named profile (later ones read the port back from its host.env). Loaded here:

@@ -26,6 +26,16 @@ boxery host rm hornet                       # forget only; preserves VMs and pro
 
 See [Named hosts](hosts.md) for isolation, imports, precedence and safe removal. `--host NAME` precedes the command and also scopes grants and lease keys.
 
+### Backend discovery
+
+`boxery backends [--json]` lists backend platform support, requirements and capabilities.
+`boxery capabilities [--json | --check]` assesses the selected **host**, not the controller.
+Both are also available directly as `boxery-host` commands. Agents use
+`vm_info {action:"capabilities"}`. See the [metadata contract](backends.md) for
+supported versus tested configurations and conditional features. Setup checks
+locally verifiable requirements before backend initialization; manual account and
+privilege requirements are explained but remain unknown until verified.
+
 ### Lifecycle
 
 ```bash
