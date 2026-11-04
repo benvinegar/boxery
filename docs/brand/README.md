@@ -16,12 +16,13 @@ For how to use these assets in diagrams, cards and videos (the full palette, typ
 | `apple-touch-icon.png` | 180×180 home-screen icon (iOS rounds the corners). |
 | `social-preview-dark.png`, `social-preview-light.png` | 1280×640 GitHub social preview (Settings → General → Social preview). The repo uses the dark one. |
 | `og-image-dark.png`, `og-image-light.png` | 1200×630 Open Graph / `twitter:card` image for web pages. |
+| `works-with-card-dark.png`, `works-with-card-light.png` | 1200×630 card for posts on X, LinkedIn and the like: the README's "works with" logo row, stacked one platform per line under the lockup. |
 
-The social cards are the lockup, the GitHub "About" tagline and the npm install command, with all text as outlines. To change them, edit `social-card.py` and regenerate:
+The social cards are the lockup, the GitHub "About" tagline and the npm install command, with all text as outlines. The "works with" card reuses the logos from `docs/works-with-*.svg`, so regenerate it when that row changes (and update the logo spans in `social-card.py` if logos move). To change them, edit `social-card.py` and regenerate:
 
 ```sh
 uv run docs/brand/social-card.py   # optional arg: path to JetBrainsMono-Regular.ttf
-for f in docs/brand/{social-preview,og-image}-*.svg; do rsvg-convert "$f" -o "${f%.svg}.png"; done
+for f in docs/brand/{social-preview,og-image,works-with-card}-*.svg; do rsvg-convert "$f" -o "${f%.svg}.png"; done
 ```
 
 The favicons use a heavier cut of the mark (thicker outline, larger inner cube) so it stays legible at 16px.
