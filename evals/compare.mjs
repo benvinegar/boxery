@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Compare two results case by case: what got better or worse between commits, suites or models.
 //
-//   node compare.mjs                              the latest result vs the previous one of the same model
+//   node compare.mjs                              the latest result vs the latest earlier run of its model and suite
 //   node compare.mjs previous:opus latest:opus    two results by reference
 //   node compare.mjs latest:haiku latest:opus     two models
 //   node compare.mjs results/<id> out/<timestamp> a saved result vs a local run
@@ -12,13 +12,16 @@ import { caseStats, frac, listResults, pct, resolve } from "./lib/results.mjs";
 
 let [a, b] = process.argv.slice(2);
 if (!b) {
+	// The latest result, against the latest earlier run of the same model checked by the same suite
+	// version (not a rescore of the same run).
 	const latest = resolve(a ?? "latest");
-	const model = latest.meta.claude.model;
-	if (!listResults().some((r) => r.meta.claude.model === model && r.dir !== latest.dir)) {
-		console.error(`Only one saved result for ${model} (${latest.id}). Name two to compare, e.g. node compare.mjs latest:haiku latest:opus`);
+	const { model } = latest.meta.claude;
+	const prev = listResults().filter((r) => r.meta.claude.model === model && r.meta.suite.version === latest.meta.suite.version && r.meta.started < latest.meta.started).at(-1);
+	if (!prev) {
+		console.error(`No earlier ${model} result under suite v${latest.meta.suite.version} than ${latest.id}. Name two to compare, e.g. node compare.mjs latest:haiku latest:opus`);
 		process.exit(1);
 	}
-	[a, b] = [`previous:${model}`, latest.dir];
+	[a, b] = [prev.dir, latest.dir];
 }
 const A = resolve(a);
 const B = resolve(b);
