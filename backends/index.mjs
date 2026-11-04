@@ -53,8 +53,8 @@ export const BACKENDS = {
 	},
 	exe: {
 		id: "exe", stability: "experimental", supported: both,
-		// Live provider validation is documented, but no host OS/arch was recorded. Do not infer it.
-		tested: [], runtime: { location: "remote", default: "exe.dev", options: ["exe.dev"] },
+		// Live runs 2026-11-04 (host/backends/README.md#exe-experimental). No x64 host yet.
+		tested: [tested("darwin", "arm64", "exe.dev"), tested("linux", "arm64", "exe.dev")], runtime: { location: "remote", default: "exe.dev", options: ["exe.dev"] },
 		requirements: [...tools(["ssh", "jq", "nc", "node", "openssl"]), manual("exe.dev account with registered SSH key (ssh exe.dev, or BOXERY_EXE_KEY)")],
 		capabilities: capabilities(),
 	},
