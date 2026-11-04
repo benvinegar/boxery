@@ -34,6 +34,7 @@ EXE_PORT_BASE=${BOXERY_EXE_PORT_BASE:-22400}     # VM slot S ↔ host port BASE+
 EXE_GUEST_PORT=${BOXERY_EXE_GUEST_PORT:-18088}   # the tunnel's -R end in the guest (LLM proxy)
 EXE_EGRESS=${BOXERY_EXE_EGRESS:-}                # "integrations" to cut VMs off the internet (see README)
 EXE_POOL=${BOXERY_EXE_POOL:-}                    # exe.dev pool for new VMs (Work plans)
+EXE_ALLOW_INTEGRATIONS=${BOXERY_EXE_ALLOW_INTEGRATIONS:-}   # comma-separated integrations VMs may reach (see exe_integrations)
 EXE_MAX_CPUS=${BOXERY_EXE_MAX_CPUS:-2}           # Personal plan: 2 vCPU / 4 GB shared by all VMs
 EXE_MAX_MEM=${BOXERY_EXE_MAX_MEM:-4096}          # MiB
 EXE_BASE_DISK=20                                 # GB, the base VM's disk (copies grow from it)
@@ -171,7 +172,7 @@ backend_check() {
   Run 'ssh exe.dev' once in a terminal (re-registering with your account's email adds the key), or set BOXERY_EXE_KEY."
 	jq -e '.email' <<<"$out" >/dev/null 2>&1 || die "unexpected 'whoami' reply from exe.dev: ${out:0:200}"
 }
-backend_init() { mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure; }
+backend_init() { mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure; exe_init_integrations; }
 backend_proxy_services() { :; }   # per-VM tunnels carry the proxy; nothing host-wide
 guest_proxy_upstream() { echo "TCP:127.0.0.1:$EXE_GUEST_PORT"; }
 
@@ -256,30 +257,86 @@ backend_exists() {
 	[[ -n $(exe_vms_of "$1" "$j") ]]
 }
 
-# exe.dev LLM integrations a VM can reach. New exe.dev accounts attach an `llm` integration to every VM
-# (auto:all): a guest could use the account's LLM credits directly, skipping the proxy and its llm:
-# grants. Checked from inside the VM, so it holds however the integration got there (auto:all, a tag, by
-# hand): the default name answers on llm.int.exe.xyz (403 when not attached), and Reflection, when
-# attached, lists LLM integrations under other names. Prints one name per line. Fails closed: returns 1
-# when it can't tell (VM unreachable, or llm.int.exe.xyz answers neither like attached nor like 403/404).
-exe_llm_integrations() { # VM
+# exe.dev integrations keep credentials off the VM and use them for it: llm, http-proxy, github, s3,
+# token mints, the Anthropic/OpenAI workload identity ones… One that reaches a boxery VM gets its guest
+# around the proxy and its grants. New accounts attach `llm` to every VM (auto:all). Only reflection (the
+# VM's own metadata) and notify (push to the owner's devices) hold no credential; BOXERY_EXE_ALLOW_INTEGRATIONS
+# names others a VM may reach on purpose.
+exe_integrations() { # the account's integrations, a JSON array. An unreachable exe.dev is an error.
+	local j
+	j=$(exe_do "integrations list") || return 1
+	jq -e 'type == "array"' <<<"$j" >/dev/null 2>&1 || { echo "boxery-host: unexpected 'integrations list --json' reply from exe.dev: ${j:0:200}" >&2; return 1; }
+	printf '%s\n' "$j"
+}
+# INTEGRATIONS_JSON TAGS_JSON VM → "NAME<TAB>SPEC<TAB>[--team]" for each credential integration exe.dev
+# attaches to VM: auto:all, vm:VM, or tag:T for one of its tags. VM "": any boxery VM (auto:all, vm:PREFIX…).
+exe_int_attached() {
+	jq -r --argjson tags "$2" --arg vm "$3" --arg p "$EXE_PREFIX" --arg allow "$EXE_ALLOW_INTEGRATIONS" '
+		def ok: type == "string" and test("^[A-Za-z0-9._-]{1,64}$");
+		($allow | split(",")) as $a | .[] | .name as $n | select($n | ok) |
+		select(.type != "reflection" and .type != "notify" and (any($a[]; . == $n) | not)) |
+		(if .isTeam == true then "--team" else "" end) as $team | (.attachments // [])[] | strings |
+		select(test("^(auto:all|vm:[A-Za-z0-9._-]{1,64}|tag:[A-Za-z0-9._-]{1,64})$")) |
+		select(. == "auto:all" or (if $vm == "" then startswith("vm:" + $p)
+			else . == "vm:" + $vm or (startswith("tag:") and (.[4:] as $t | any($tags[]; . == $t))) end)) |
+		[$n, ., $team] | @tsv' <<<"$1"
+}
+# The same from inside the VM, however it got there: the default llm answers on llm.int.exe.xyz (403 when
+# not attached), and Reflection, when attached, lists the rest. Prints one name per line. Fails closed:
+# returns 1 when it can't tell (VM unreachable, or llm.int.exe.xyz answers neither like attached nor 403/404).
+exe_guest_integrations() { # VM
 	local out code
 	out=$(exe_edge "$1" 'echo "llm-probe $(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://llm.int.exe.xyz/v1/models)"; curl -fsS --max-time 10 https://reflection.int.exe.xyz/integrations 2>/dev/null || true' </dev/null 2>/dev/null) || return 1
 	code=$(sed -n 's/^llm-probe //p' <<<"$out" | head -1)
-	case $code in 2??) echo llm ;; 403 | 404) ;; *) return 1 ;; esac
-	sed '/^llm-probe /d' <<<"$out" | jq -r '.integrations[]? | select(.type == "llm") | .name | select(type == "string" and test("^[A-Za-z0-9._-]{1,64}$"))' 2>/dev/null | sort -u
+	case $code in 2??) [[ ,$EXE_ALLOW_INTEGRATIONS, == *,llm,* ]] || echo llm ;; 403 | 404) ;; *) return 1 ;; esac
+	sed '/^llm-probe /d' <<<"$out" | jq -r --arg allow "$EXE_ALLOW_INTEGRATIONS" '($allow | split(",")) as $a | .integrations[]? |
+		select(.type != "reflection" and .type != "notify") | .name | select(type == "string" and test("^[A-Za-z0-9._-]{1,64}$")) |
+		select(. as $n | any($a[]; . == $n) | not)' 2>/dev/null | sort -u
 }
-# VMs get LLM access only through llm: grants. Fails (with the fix) when the VM can reach an exe.dev LLM
-# integration, or when that can't be checked.
-exe_llm_guard() { # VM NAME
-	local names
-	names=$(exe_llm_integrations "$1") || { log "couldn't check $2 for exe.dev LLM integrations (is it reachable?)"; return 1; }
-	names=$(sort -u <<<"$names" | sed '/^$/d')
+# VMs get credentials only through grants. Fails (with the fix) when exe.dev attaches a credential
+# integration to the VM, or the VM can reach one, or either can't be checked.
+exe_integration_guard() { # VM NAME
+	local j ints tags att names fix
+	{ j=$(exe_ls) && ints=$(exe_integrations); } || { log "couldn't check $2 for exe.dev integrations (is exe.dev reachable?)"; return 1; }
+	tags=$(jq -c --arg n "$1" '[.vms[] | select(.vm_name == $n) | (.tags // [])[]? | strings]' <<<"$j")
+	att=$(exe_int_attached "$ints" "$tags" "$1")
+	names=$(exe_guest_integrations "$1") || { log "couldn't check $2 for exe.dev integrations from inside (is it reachable?)"; return 1; }
+	names=$(printf '%s\n%s\n' "$(cut -f1 <<<"$att")" "$names" | sed '/^$/d' | sort -u)
 	[[ -z $names ]] && return 0
-	log "$2 can reach exe.dev LLM integration(s): $(paste -sd, - <<<"$names"). That would let it use LLMs without an llm: grant.
-  Detach them from boxery's VMs, e.g.: ssh exe.dev integrations detach $(head -1 <<<"$names") auto:all
-  (check for vm:/tag: attachments too: ssh exe.dev integrations list). Then retry."
+	fix=$(awk -F'\t' 'NF { printf "  ssh exe.dev integrations detach %s %s%s\n", $1, $2, ($3 == "" ? "" : " " $3) }' <<<"$att")
+	log "$2 can reach exe.dev integration(s) that hold credentials: $(paste -sd, - <<<"$names"). It could use them without a grant, outside boxery's proxy.
+  Detach them from boxery's VMs:
+${fix:-  ssh exe.dev integrations list   (find where they are attached; detach them with: integrations detach NAME SPEC)}
+  Detaching auto:all affects the account's other VMs too (attach one to a tag to keep it for them), or allow one on purpose with BOXERY_EXE_ALLOW_INTEGRATIONS=NAME. Then retry."
 	return 1
+}
+# PROMPT → 0 yes, 1 no, 2 no terminal to ask on (backend functions get no stdin)
+exe_ask() {
+	local answer=""
+	{ exec 8<>/dev/tty; } 2>/dev/null || return 2
+	printf '%s [y/N] ' "$1" >&8
+	IFS= read -r answer <&8 || true
+	exec 8>&-
+	case $answer in y | Y | yes | YES) return 0 ;; *) return 1 ;; esac
+}
+# init (#41): find the credential integrations exe.dev would attach to boxery's VMs and offer to detach
+# them. That changes the account (auto:all covers its other VMs too), so it asks on the terminal, and
+# without one only says what to run. new, start and reimages refuse such VMs either way.
+exe_init_integrations() {
+	local ints lines name spec team q
+	ints=$(exe_integrations) || { log "warning: couldn't list exe.dev integrations; boxery refuses new VMs until it can"; return 0; }
+	lines=$(exe_int_attached "$ints" '[]' "")
+	[[ -n $lines ]] || return 0
+	while IFS=$'\t' read -r name spec team; do
+		log "exe.dev integration '$name' is attached to $spec: boxery's VMs could use its credentials without a grant, outside the proxy"
+		q="Detach '$name' from $spec?"
+		[[ $spec != auto:all ]] || q="$q Your other exe.dev VMs lose it too (attach it to a tag to keep it for them)."
+		if exe_ask "$q"; then
+			# shellcheck disable=SC2086  # team: zero or one word
+			if exe_do "integrations detach" "$name" "$spec" $team >/dev/null; then log "detached '$name' from $spec"; continue; fi
+		fi
+		log "  boxery refuses VMs that can reach it. To detach it: ssh exe.dev integrations detach $name $spec${team:+ $team}"
+	done <<<"$lines"
 }
 
 # Per-VM identity, as root over the edge (lib/remote.sh). A VM made from another VM's disk also gets its
@@ -345,7 +402,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	exe_identity_script "$userdata" "$name" | exe_edge "$vm" 'sudo bash -s' >/dev/null || die "applying $name's identity failed"
 	if [[ $from == stock && -n $EXE_EGRESS ]]; then exe_do egress "$vm" "$EXE_EGRESS" >/dev/null || die "exe.dev egress $vm $EXE_EGRESS failed"; fi
 	# Before the tunnel: a refused VM never becomes usable (the failed new is cleaned up).
-	exe_llm_guard "$vm" "$name" || die "refusing to create $name"
+	exe_integration_guard "$vm" "$name" || die "refusing to create $name"
 	j=$(exe_ls) || exit 1
 	exe_tunnel_write "$name" "$j"
 	exe_tunnel_start "$name"
@@ -389,7 +446,7 @@ backend_start() {
 		exe_do resume "$vm" >/dev/null || die "exe.dev resume $vm failed"
 	fi
 	# Integrations can be attached after a VM was created (auto:all covers existing VMs too).
-	if ! exe_llm_guard "$vm" "$1"; then
+	if ! exe_integration_guard "$vm" "$1"; then
 		exe_pause "$vm"
 		die "refusing to start $1 (paused again)"
 	fi
@@ -503,7 +560,7 @@ backend_reimage() {
 	# shellcheck disable=SC2086
 	exe_cp "$img" "$new" $flags || die "copying $2 failed"
 	# A pool reset makes a new exe.dev VM, which auto:all integrations attach to. Check before switching.
-	if ! exe_llm_guard "$new" "$1"; then
+	if ! exe_integration_guard "$new" "$1"; then
 		exe_do rm "$new" >/dev/null 2>&1 || log "warning: could not remove the refused copy (ssh exe.dev rm $new)"
 		exit 1
 	fi
