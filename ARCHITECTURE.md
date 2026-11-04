@@ -97,12 +97,12 @@ In HTTP mode "local" means the machine running MCP: grant values come from that 
 | Where | What | Notes |
 |---|---|---|
 | `~/.boxery/` (controller) | `host-registry/`, `default-host`, and per host `profiles/NAME/`: `config`, `ssh_config`, `grants/` (names and paths only, never values), `leases/` (lease records + per-lease ssh keys), ControlMaster sockets | Per host profile; every host is registered by name |
-| `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases | SQLite, short `BEGIN IMMEDIATE` transactions; schema version in `user_version` |
+| `~/.config/boxery/` (host) | `leases.db`: resource locks, operations and intent journal, pool leases, and each VM's record (`vm_records`: kind, guest OS ([guests/](guests/)), size) | SQLite, short `BEGIN IMMEDIATE` transactions; schema version in `user_version` |
 | | `host-keys/NAME` (each VM's pinned ssh host key, one known_hosts line) | Written with the seed, removed by `rm`; read by `boxery-host known-hosts` |
 | | `tokens.json` (VM → proxy secret; a leased pool VM's carries its lease id), `edge/NAME.json` (HTTP grant headers, stamped with the lease on a pool VM), `proxy.env` (API keys) | `0600`; updated via temp file + rename |
-| | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `vm-kind/`, `vm-os/` (guest OS, [guests/](guests/)), `work/OP/` (seeds, removed after the operation) | |
+| | `authorized_keys` (laptop keys for new VMs), `mgmt_ed25519` (host → every VM), `host.env`, `work/OP/` (seeds, removed after the operation) | `vm-kind/`, `vm-os/`, `vm-shapes/` from before schema version 2 stay, unread: their contents were imported into `leases.db` |
 | | `runners.json` (GitHub runner configuration), `runners.env` (the GitHub token), `runners-state.json` (what each runner slot is doing), `runners.lock` | `0600`; the token never leaves the host ([GitHub runners](docs/github-runners.md)) |
-| | `pre-upgrade/`: `leases.db`, `tokens.json`, `edge/`, `vm-shapes/`, `vm-kind/`, `vm-os/` as they were before the last `upgrade` | Restored if the upgrade rolls back; kept for recovery by hand ([install](docs/install.md#upgrading)) |
+| | `pre-upgrade/`: `leases.db`, `tokens.json`, `edge/` as they were before the last `upgrade` (and `vm-shapes/`, `vm-kind/`, `vm-os/` when a release that still had them ran it) | Restored if the upgrade rolls back; kept for recovery by hand ([install](docs/install.md#upgrading)) |
 | Hypervisor | VMs, images (`VM@LABEL`), seeds | Owned by the backend |
 | Guest | `~/.boxery/token`, agent configs, `/run/user/UID/boxery/` (pushed grants, tmpfs) | Token rotates on every new VM and every lease; grants are gone on reset or reboot |
 

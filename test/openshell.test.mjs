@@ -7,11 +7,13 @@ import { spawnSync } from "node:child_process";
 import { profileFromDirectory, withHost } from "../core/boxery-core.mjs";
 import { addGrants, applyGrants } from "../core/grant-operations.mjs";
 import { createBackend } from "../host/backend.mjs";
+import * as L from "../host/boxery-leases.mjs";
 import { createGuest } from "../host/guest.mjs";
 import { createVm, start } from "../host/vms.mjs";
 import { poolAdd, edgeSet } from "../host/pool.mjs";
 import { loadConfig, SETTINGS } from "../host/config.mjs";
 import { OPENSHELL_NAMESPACE_LABEL, OPENSHELL_NO_PROVIDERS, openShellNamespace } from "../host/openshell-config.mjs";
+import { vmRecord } from "../host/vm-records.mjs";
 
 let dir, env, backend;
 beforeEach(() => {
@@ -138,8 +140,9 @@ test("OpenShell refuses unsupported operations and invalid names", async () => {
 });
 
 test("restricted create and start skip root provisioning, proxy tokens and guest key fencing", async () => {
+	const db = L.open(`${dir}/conf/leases.db`);
 	/** @type {any} */
-	const rt = { backend: "openshell", conf: `${dir}/conf`, vms: backend,
+	const rt = { backend: "openshell", conf: `${dir}/conf`, vms: backend, db: () => db,
 		shapes: () => ({ default: "small", shapes: { small: { cpus: 1, mem: 1024, disk: 10 } } }),
 		intent: () => "intent", done: () => {}, waitSsh: async () => {}, guest: { run: async () => 0 } };
 	const args = { name: "newbox", shape: "", cpus: "", mem: "", disk: "", from: "", headless: true };
@@ -148,8 +151,9 @@ test("restricted create and start skip root provisioning, proxy tokens and guest
 	await assert.rejects(createVm(rt, { ...args, layers: ["github-runner"] }), /--layers is not supported/);
 	assert.equal(await createVm(rt, args), "newbox newbox.openshell:22");
 	assert.equal(existsSync(`${dir}/conf/tokens.json`), false);
-	assert.equal(existsSync(`${dir}/conf/vm-shapes/newbox`), false);
+	assert.deepEqual(vmRecord(db, "newbox"), { kind: "headless", os: "linux", size: null }, "no size: OpenShell's compute driver manages it");
 	await start(rt, ["newbox"]);
+	db.close();
 });
 
 test("host guest transport uses gateway ProxyCommand with strict pinned host keys", async () => {

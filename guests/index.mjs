@@ -1,4 +1,4 @@
-// Guest OS definitions, by the name a VM's record holds (host/kinds.mjs: $CONF/vm-os/NAME).
+// Guest OS definitions, by the name a VM's record holds (host/vm-records.mjs: os).
 // Only linux exists; macOS is planned (docs/plans/2026-11-03-guest-os-seam.md, #155).
 import * as linux from "./linux.mjs";
 

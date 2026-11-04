@@ -9,9 +9,9 @@ import * as leases from "./boxery-leases.mjs";
 import { supervise } from "./boxery-operations.mjs";
 import { refreshBuild } from "./build-info.mjs";
 import { captureVm } from "./images.mjs";
-import { vmKind } from "./kinds.mjs";
 import { setLeaseKeys } from "./pool.mjs";
 import { fail, log, POOL_SNAP, sleep, validName, validNum } from "./util.mjs";
+import { vmRecord } from "./vm-records.mjs";
 /** @import { GuestEndpoint } from "./guest.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
 
@@ -90,7 +90,7 @@ export async function patchVm(rt, args) {
 	const action = row ? rt.intent("pool-patch", name) : "";
 	if (await rt.guest.run(ep, "sudo bash -s", { input: await pushScript(rt) }) !== 0) fail(`could not install this host's image layers in ${name}`);
 	// The layers it has (/etc/boxery/layers); a VM from before that file: its kind's.
-	const fallback = vmKind(rt.conf, name) === "headless" ? "plumbing devtools" : "plumbing devtools desktop";
+	const fallback = vmRecord(rt.db(), name).kind === "headless" ? "plumbing devtools" : "plumbing devtools desktop";
 	log(`${name}: running its image layers again (log: /var/log/boxery-patch.log in the VM)`);
 	const provision = `sudo bash -c 'set -o pipefail; L=$(tr "\\n" " " 2>/dev/null <${linux.configDir}/layers); /usr/local/sbin/boxery-provision \${L:-${fallback}} 2>&1 | tee /var/log/boxery-patch.log | while IFS= read -r l; do case $l in "==> "*) printf "%s\\n" "$l" ;; esac; done'`;
 	if (await rt.guest.run(ep, provision) !== 0) {

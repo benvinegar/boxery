@@ -11,9 +11,9 @@
 //   FREE ──claim──▶ ACQUIRING ──commit──▶ LEASED ──release / expiry / host reboot──▶ RESETTING ──finish──▶ FREE
 //                       └──────────── failed key install / stale ─────────────────────▶ RESETTING ──finish──▶ BROKEN
 //
-// Also the host's shared store primitives: the SQLite schema and its version (leases + operation
-// journal, see boxery-operations.mjs), BEGIN IMMEDIATE transactions, the copy an upgrade takes and
-// restores, VM names and boot/process identity.
+// Also the host's shared store primitives: the SQLite schema and its version (leases, the operation
+// journal of boxery-operations.mjs, each VM's record of vm-records.mjs), BEGIN IMMEDIATE transactions,
+// the copy an upgrade takes and restores, VM names and boot/process identity.
 //
 // CLI (used by host/boxery-host; prints JSON). Lease transitions themselves run in-process
 // (boxery-lifecycle.mjs); the shell only inspects and edits pool membership:
@@ -22,8 +22,10 @@
 // Env (tests): BOXERY_NOW (epoch seconds), BOXERY_BOOT_ID.
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { DEFAULT_OS } from "../guests/index.mjs";
 
 /** @typedef {"FREE" | "ACQUIRING" | "LEASED" | "RESETTING" | "BROKEN"} LeaseState */
 /** A pool VM's row in `vms`. @typedef {{ name: string, state: LeaseState, gen: number, lease_id: string | null, holder: string | null, pubkey: string | null, acquired_at: number | null, expires_at: number | null, boot_id: string | null, updated_at: number, epoch: string }} LeaseRow */
@@ -100,7 +102,7 @@ function retryBusy(fn) {
 // The store's schema version (PRAGMA user_version; 0 = a store from before it was recorded). Every
 // schema change bumps it and adds a step to migrate(). Code refuses a store newer than it understands
 // instead of misreading it, e.g. after an upgrade that migrated it was rolled back without its copy.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 const SCHEMA_V1 = `
 	CREATE TABLE IF NOT EXISTS vms (
 		name TEXT PRIMARY KEY,
@@ -121,6 +123,44 @@ const SCHEMA_V1 = `
 		seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
 		operation_id TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
 	);`;
+// v2: what each VM is (vm-records.mjs), one row per VM, pool or not. os is checked on write in JS
+// (guests/index.mjs), so a new guest OS needs no table rebuild. A size is all there or not at all.
+const SCHEMA_V2 = `
+	CREATE TABLE IF NOT EXISTS vm_records (
+		name TEXT PRIMARY KEY,
+		kind TEXT NOT NULL CHECK (kind IN ('desktop','headless')),
+		os TEXT NOT NULL,
+		shape TEXT, cpus INTEGER, mem INTEGER, disk INTEGER,
+		CHECK ((cpus IS NULL AND mem IS NULL AND disk IS NULL AND shape IS NULL) OR (cpus IS NOT NULL AND mem IS NOT NULL AND disk IS NOT NULL))
+	);`;
+
+/** v1 → v2: the record files next to the store ($CONF/vm-kind/NAME, vm-os/NAME, vm-shapes/NAME.json)
+ *  become rows. A VM with only some files gets the defaults for the rest (desktop, linux, no size: ls
+ *  reads it from the backend). The files stay as they were, for the pre-upgrade copy of the release that
+ *  wrote them; nothing reads them after this. @param {DatabaseSync} db @param {string} conf */
+function importRecordFiles(db, conf) {
+	/** @param {string} dir @param {string} [ext] */
+	const names = (dir, ext = "") => {
+		try { return readdirSync(path.join(conf, dir)).filter((f) => f.endsWith(ext) && VALID_NAME.test(f.slice(0, f.length - ext.length))).map((f) => f.slice(0, f.length - ext.length)); }
+		catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return []; throw e; }
+	};
+	/** @param {string} dir @param {string} name */
+	const token = (dir, name) => {
+		try { return readFileSync(path.join(conf, dir, name), "utf8").trim(); }
+		catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return ""; throw e; }
+	};
+	/** @param {string} name @returns {(string | number | null)[]} shape, cpus, mem, disk */
+	const size = (name) => {
+		let r;
+		try { r = JSON.parse(readFileSync(path.join(conf, "vm-shapes", `${name}.json`), "utf8")); } catch { /* none, or torn: no size */ }
+		if (![r?.cpus, r?.mem, r?.disk].every((n) => Number.isInteger(n) && n >= 0)) return [null, null, null, null];
+		return [typeof r.shape === "string" && r.shape ? r.shape : null, r.cpus, r.mem, r.disk];
+	};
+	const insert = db.prepare("INSERT OR IGNORE INTO vm_records (name, kind, os, shape, cpus, mem, disk) VALUES (?, ?, ?, ?, ?, ?, ?)");
+	for (const name of new Set([...names("vm-kind"), ...names("vm-os"), ...names("vm-shapes", ".json")])) {
+		insert.run(name, token("vm-kind", name) === "headless" ? "headless" : "desktop", token("vm-os", name) || DEFAULT_OS, ...size(name));
+	}
+}
 
 /** @param {DatabaseSync} db @returns {number} */
 export const schemaVersion = (db, schema = "main") => /** @type {{ user_version: number }} */ (db.prepare(`PRAGMA ${schema}.user_version`).get()).user_version;
@@ -135,6 +175,7 @@ function migrate(db, file) {
 	const v = schemaVersion(db); // again, under the write lock: another opener may have migrated it
 	checkVersion(file, v);
 	if (v < 1) db.exec(SCHEMA_V1); // a new store, or one from before versioning (same tables)
+	if (v < 2) { db.exec(SCHEMA_V2); importRecordFiles(db, path.dirname(file)); }
 	if (v !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 

@@ -16,6 +16,8 @@ ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
 bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 expect() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
 expect_fail() { local d=$1; shift; if "$@" >/dev/null 2>&1; then bad "$d (should fail)"; else ok "$d"; fi; }
+# sql QUERY → its rows in the host's store, as JSON (each VM's record is a vm_records row)
+sql() { node --disable-warning=ExperimentalWarning -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);console.log(JSON.stringify(d.prepare(process.argv[2]).all()))' "$BOXERY_CONF/leases.db" "$1"; }
 
 [[ $("$H" backend) == fake ]] && ok "backend selection via env" || bad "backend selection"
 expect_fail "new before build-base fails" "$H" new a1
@@ -141,23 +143,29 @@ expect_fail "--layers with --from is refused" "$H" new hr4 --headless --from hl@
 [[ ! -d $BOXERY_FAKE_DIR/hr2 && ! -d $BOXERY_FAKE_DIR/hr3 && ! -d $BOXERY_FAKE_DIR/hr4 ]] && ok "...and makes no VM" || bad "refused --layers made a VM"
 "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].desktop == false' >/dev/null && ok "ls --json: desktop false" || bad "ls --json: $("$H" ls --json)"
 "$H" ls | grep -Eq '^hl .* headless +- +[a-z]+$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
-[[ $(cat "$BOXERY_CONF/vm-os/hl") == linux ]] && "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].os == "linux"' >/dev/null && ok "new records the guest OS; ls --json: os" || bad "os record: $("$H" ls --json)"
+[[ $(sql "SELECT kind, os FROM vm_records WHERE name='hl'") == '[{"kind":"headless","os":"linux"}]' ]] && "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].os == "linux"' >/dev/null && ok "new records the guest OS; ls --json: os" || bad "os record: $("$H" ls --json)"
 ! grep -q '^users:' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'boxery-provision' "$BOXERY_FAKE_DIR/a2/user-data" && ok "desktop seeds are unchanged (no users:, no layers)" || bad "desktop seed changed"
-echo testos >"$BOXERY_CONF/vm-os/hl"   # stands in for a second guest OS: images and forks inherit the record as it is
 "$H" snap hl s1 >/dev/null 2>&1
 out=$("$H" new hl2 --from hl@s1 2>&1) && [[ $(cat "$BOXERY_FAKE_DIR/hl2/from") == hl@s1 ]] && ! grep -q boxery-provision "$BOXERY_FAKE_DIR/hl2/user-data" && ok "new --from a headless image: no base, no reprovisioning" || bad "from headless image: $out"
 "$H" ls --json | jq -e 'map(select(.name == "hl2"))[0].desktop == false' >/dev/null && ok "...and stays headless" || bad "hl2 kind"
-"$H" ls --json | jq -e 'map(select(.name == "hl2"))[0].os == "testos"' >/dev/null && ok "...with its source's guest OS" || bad "hl2 os: $("$H" ls --json)"
+[[ $(sql "SELECT kind, os FROM vm_records WHERE name='hl2'") == '[{"kind":"headless","os":"linux"}]' ]] && ok "...with its source's guest OS" || bad "hl2 record: $(sql "SELECT * FROM vm_records")"
 "$H" new hl3 --from hl@s1 --headless >/dev/null 2>&1 && ok "--headless with a headless image is fine" || bad "hl3"
 out=$("$H" fork hl hf 2>&1) && "$H" ls --json | jq -e 'map(select(.name == "hf"))[0].desktop == false' >/dev/null && ok "a fork of a headless VM is headless" || bad "fork: $out"
-[[ $(cat "$BOXERY_CONF/vm-os/hf") == testos ]] && ok "a fork has its source's guest OS" || bad "fork os: $(cat "$BOXERY_CONF/vm-os/hf" 2>&1)"
-rm "$BOXERY_CONF/vm-os/a2"; "$H" ls --json | jq -e 'map(select(.name == "a2"))[0].os == "linux"' >/dev/null && ok "no OS record (a VM from before records): linux" || bad "a2 os: $("$H" ls --json)"
+[[ $(sql "SELECT kind, os FROM vm_records WHERE name='hf'") == '[{"kind":"headless","os":"linux"}]' ]] && ok "a fork has its source's guest OS" || bad "fork record: $(sql "SELECT * FROM vm_records")"
+# A guest OS this boxery doesn't know (a newer one's): it lists, but nothing is made from it.
+sql "UPDATE vm_records SET os='testos' WHERE name='hl'" >/dev/null
+"$H" ls --json | jq -e 'map(select(.name == "hl"))[0].os == "testos"' >/dev/null && ok "ls --json shows the recorded OS as it is" || bad "hl os: $("$H" ls --json)"
+out=$("$H" new hlx --from hl@s1 2>&1) && bad "new --from an unknown guest OS accepted" || { [[ $out == *"unknown guest OS: testos"* && ! -d $BOXERY_FAKE_DIR/hlx ]] && ok "new --from an image of an unknown guest OS is refused" || bad "refusal: $out"; }
+out=$("$H" fork hl hfx 2>&1) && bad "fork of an unknown guest OS accepted" || { [[ $out == *"unknown guest OS: testos"* && ! -d $BOXERY_FAKE_DIR/hfx && -z $("$H" images 2>/dev/null | grep '@fork-') ]] && ok "...and so is a fork, before capturing anything" || bad "fork refusal: $out"; }
+[[ $(sql "SELECT count(*) n FROM vm_records WHERE name IN ('hlx','hfx')") == '[{"n":0}]' ]] && ok "...with no record left" || bad "records: $(sql "SELECT * FROM vm_records")"
+sql "UPDATE vm_records SET os='linux' WHERE name='hl'" >/dev/null
+sql "DELETE FROM vm_records WHERE name='a2'" >/dev/null; "$H" ls --json | jq -e 'map(select(.name == "a2"))[0] | .os == "linux" and .desktop' >/dev/null && ok "no record (a VM from before records): desktop, linux" || bad "a2: $("$H" ls --json)"
 mv "$tmp/base.off" "$BOXERY_FAKE_DIR/.base"
 "$H" snap a2 d1 >/dev/null 2>&1
 out=$("$H" new dx --from a2@d1 --headless 2>&1) && bad "--headless with a desktop image accepted" || { [[ $out == *"has a desktop"* && ! -d $BOXERY_FAKE_DIR/dx ]] && ok "--headless with a desktop image is refused" || bad "refusal: $out"; }
 "$H" fork a2 df >/dev/null 2>&1 && "$H" ls --json | jq -e 'map(select(.name == "df"))[0].desktop == true' >/dev/null && ok "a fork of a desktop VM is a desktop" || bad "desktop fork"
-"$H" rm hl >/dev/null 2>&1 && [[ ! -e $BOXERY_CONF/vm-kind/hl && ! -e $BOXERY_CONF/vm-os/hl ]] && ok "rm drops the kind and OS records" || bad "kind/os record left"
-BOXERY_FAKE_FAIL_NEW=1 "$H" new hlf --headless >/dev/null 2>&1 || true; [[ ! -e $BOXERY_CONF/vm-kind/hlf && ! -e $BOXERY_CONF/vm-os/hlf && ! -d $BOXERY_FAKE_DIR/hlf ]] && ok "a failed headless new leaves no record" || bad "hlf leftovers"
+"$H" rm hl >/dev/null 2>&1 && [[ $(sql "SELECT count(*) n FROM vm_records WHERE name='hl'") == '[{"n":0}]' ]] && ok "rm drops the VM's record" || bad "record left: $(sql "SELECT * FROM vm_records WHERE name='hl'")"
+BOXERY_FAKE_FAIL_NEW=1 "$H" new hlf --headless >/dev/null 2>&1 || true; [[ $(sql "SELECT count(*) n FROM vm_records WHERE name='hlf'") == '[{"n":0}]' && ! -d $BOXERY_FAKE_DIR/hlf ]] && ok "a failed headless new leaves no record" || bad "hlf leftovers"
 for n in hl2 hl3 hf df; do "$H" rm "$n" >/dev/null 2>&1; done
 # The desktop build's cloud-config: the template with every layer at its marker
 bu=$tmp/cache/base-user-data.yaml
