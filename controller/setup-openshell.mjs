@@ -7,6 +7,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { HOST_ENV } from "../host/config.mjs";
+import { OPENSHELL_NO_PROVIDERS, openShellProviders } from "../host/openshell-config.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const NAME = /^[a-z][a-z0-9-]{0,30}$/;
@@ -19,6 +20,7 @@ const HELP = `boxery setup local --backend openshell [options]
   --image OCI          Use an existing image instead of building the bundled Docker image
   --policy PATH        Use your policy (default: saved, offline starter policy)
   --provider NAME      Explicit existing provider to attach to new sandboxes; repeatable
+  --no-providers       Clear saved provider attachments for future sandboxes
   --prefix PREFIX      Sandbox namespace (default: generated once and saved)
   --profile NAME       Host-side Boxery profile (default: host name)
   --host-bin PATH      Local boxery-host executable (default: this installation)
@@ -27,17 +29,18 @@ No credentials are imported and no network access is granted by default.
 OpenShell installation and gateway services remain managed by OpenShell, not Boxery.`;
 
 /** @typedef {"name" | "gateway" | "workspace" | "image" | "policy" | "prefix" | "profile" | "hostBin"} ValueOption */
-/** @typedef {Partial<Record<ValueOption, string>> & { name: string, providers: string[], yes: boolean, registerLocal: boolean, help: boolean }} SetupOptions */
+/** @typedef {Partial<Record<ValueOption, string>> & { name: string, providers: string[], noProviders: boolean, yes: boolean, registerLocal: boolean, help: boolean }} SetupOptions */
 /** @param {string[]} argv @returns {SetupOptions} */
 export function parseSetupArgs(argv) {
 	/** @type {SetupOptions} */
-	const options = { name: "restricted", providers: [], yes: false, registerLocal: false, help: false };
+	const options = { name: "restricted", providers: [], noProviders: false, yes: false, registerLocal: false, help: false };
 	/** @type {Record<string, ValueOption>} */
 	const values = { "--name": "name", "--gateway": "gateway", "--workspace": "workspace", "--image": "image", "--policy": "policy", "--prefix": "prefix", "--profile": "profile", "--host-bin": "hostBin" };
 	let destination = "", backend = "";
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === "--yes") options.yes = true;
+		else if (a === "--no-providers") options.noProviders = true;
 		else if (a === "--register-local") options.registerLocal = true;
 		else if (["--help", "-h"].includes(a)) options.help = true;
 		else if (a === "--backend" || a === "--provider" || Object.hasOwn(values, a)) {
@@ -53,6 +56,7 @@ export function parseSetupArgs(argv) {
 	if (options.help) return options;
 	if (destination !== "local" || backend !== "openshell") throw new Error("guided OpenShell setup supports only: boxery setup local --backend openshell (use manual host setup for remote Boxery hosts)");
 	for (const k of /** @type {const} */ (["name", "profile"])) if (options[k] && !NAME.test(options[k])) throw new Error(`invalid ${k}: ${options[k]}`);
+	if (options.noProviders && options.providers.length) throw new Error("--no-providers conflicts with --provider");
 	if (!options.providers.every((p) => NAME.test(p))) throw new Error("invalid provider name");
 	return options;
 }
@@ -145,7 +149,8 @@ export async function setupOpenShell(argv, { env = process.env, run = execute, a
 	const defaultImage = `boxery-openshell:${digest}`;
 	const image = o.image || saved.BOXERY_OPENSHELL_IMAGE || env.BOXERY_OPENSHELL_IMAGE || defaultImage;
 	if (!image || image.startsWith("-") || /[\r\n\0]/.test(image)) throw new Error("invalid image reference");
-	const build = !o.image && image === defaultImage;
+	// Saved references are already-selected images, including ones supplied explicitly on remote gateways.
+	const build = !o.image && !saved.BOXERY_OPENSHELL_IMAGE && image === defaultImage;
 	if (build) {
 		const info = await json([...common, "gateway", "info", "--output", "json"]);
 		if (selected.is_remote || !["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname) || info.compute_drivers?.length !== 1 || info.compute_drivers[0].name !== "docker") throw new Error("automatic image builds require a local Docker gateway; build/push the compatible image in the gateway's engine and pass --image OCI");
@@ -162,7 +167,7 @@ export async function setupOpenShell(argv, { env = process.env, run = execute, a
 	if (/[\r\n\0]/.test(policy)) throw new Error("invalid policy path");
 	const policyExists = existsSync(policy);
 	if ((customPolicy || policyExists) && (!policyExists || !lstatSync(policy).isFile() || lstatSync(policy).isSymbolicLink())) throw new Error("policy must be a regular, non-symlink file");
-	const providers = o.providers.length ? [...new Set(o.providers)] : (saved.BOXERY_OPENSHELL_PROVIDERS || env.BOXERY_OPENSHELL_PROVIDERS || "").split(",").filter(Boolean);
+	const providers = o.noProviders ? [] : o.providers.length ? [...new Set(o.providers)] : openShellProviders(saved.BOXERY_OPENSHELL_PROVIDERS || env.BOXERY_OPENSHELL_PROVIDERS);
 	if (!providers.every((p) => NAME.test(p))) throw new Error("invalid provider name");
 	if (providers.length) {
 		const available = new Set(); let token = ""; const seen = new Set();
@@ -183,7 +188,7 @@ export async function setupOpenShell(argv, { env = process.env, run = execute, a
 	if (!customPolicy) { try { copyFileSync(path.join(ROOT, "image/openshell/policy.yaml"), policy, constants.COPYFILE_EXCL); chmodSync(policy, 0o600); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "EEXIST") throw e; } }
 	if (!lstatSync(policy).isFile() || lstatSync(policy).isSymbolicLink()) throw new Error("saved policy is not a regular file; refusing to follow it");
 	const initEnv = { ...env, BOXERY_HOME: registry, BOXERY_BACKEND: "openshell", BOXERY_OPENSHELL_GATEWAY: gateway, BOXERY_OPENSHELL_WORKSPACE: workspace,
-		BOXERY_OPENSHELL_PREFIX: prefix, BOXERY_OPENSHELL_IMAGE: image, BOXERY_OPENSHELL_POLICY: policy, BOXERY_OPENSHELL_PROVIDERS: providers.join(",") };
+		BOXERY_OPENSHELL_PREFIX: prefix, BOXERY_OPENSHELL_IMAGE: image, BOXERY_OPENSHELL_POLICY: policy, BOXERY_OPENSHELL_PROVIDERS: providers.length ? providers.join(",") : OPENSHELL_NO_PROVIDERS };
 	await run(hostBin, ["--profile", profile, "init", "--backend", "openshell"], { env: initEnv });
 	// Use the ordinary controller registration, with no --backend: the host is already initialized.
 	await run(path.join(ROOT, "controller/boxery"), ["setup", "local", "--name", o.name, "--profile", profile, "--host-bin", hostBin], { env: initEnv });

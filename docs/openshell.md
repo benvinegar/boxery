@@ -20,7 +20,7 @@ Guided setup discovers an existing authenticated HTTPS gateway, builds the bundl
 
 If the package-managed local gateway is running but not registered yet, add `--register-local`. This registers `https://127.0.0.1:17670` using OpenShell's existing TLS bundle; it does not generate certificates, start services, or disable verification. Missing dependencies and unavailable gateways produce installation/startup guidance.
 
-Settings and the editable policy live in `~/.config/boxery-restricted/`. Repeating setup preserves the prefix, configured image and edited policy. It refuses to repoint an initialized profile at another gateway/workspace/namespace; choose a new `--name` instead. `--name` also selects the host-side profile unless `--profile` is explicit.
+Settings and the editable policy live in `~/.config/boxery-restricted/`. Repeating setup preserves the prefix, configured image and edited policy. Saved image references are used as existing images, not automatically rebuilt, even when their tag matches the bundled image. It refuses to repoint an initialized profile at another gateway/workspace/namespace; choose a new `--name` instead. `--name` also selects the host-side profile unless `--profile` is explicit.
 
 Explicit choices:
 
@@ -30,7 +30,7 @@ boxery setup local --backend openshell --gateway work --name restricted \
   --policy "$PWD/team-policy.yaml" --provider work-github --yes
 ```
 
-`--provider` is repeatable and selects existing providers only; setup never imports credentials. Providers can add network permissions, so review their effective policy. Use `--image` for remote/non-Docker gateways or when the gateway uses a different Docker engine/context. Automatic builds use the current local Docker engine and reject remote Docker contexts. Run `boxery setup local --backend openshell --help` for all options.
+`--provider` is repeatable and selects existing providers only; setup never imports credentials. To clear saved attachments for **future** sandboxes, rerun with `--no-providers` (mutually exclusive with `--provider`). This does not detach providers from existing sandboxes; use OpenShell's provider detach commands for those. Providers can add network permissions, so review their effective policy. Use `--image` for remote/non-Docker gateways or when the gateway uses a different Docker engine/context. Automatic builds use the current local Docker engine and reject remote Docker contexts. Run `boxery setup local --backend openshell --help` for all options.
 
 ### Manual configuration / remote Boxery hosts
 
@@ -52,7 +52,7 @@ boxery --host restricted new demo --headless
 boxery --host restricted run demo bash -c 'id; node --version; git init -q; echo hello >hello.txt'
 ```
 
-Each profile needs its own prefix. OpenShell 0.1.7 limits the **prefix plus VM name** to 19 characters; the adapter rejects longer names before creation. Only sandboxes with that prefix in the selected gateway/workspace are managed. These settings persist in the host profile; image and policy paths/references must be available on that host, not just the controller. Do not change a populated profile's gateway, workspace or prefix.
+Each profile needs its own prefix. OpenShell 0.1.7 limits the **prefix plus VM name** to 19 characters; the adapter rejects longer names before creation. Every create also stamps an exact `boxery.dev/namespace` ownership label derived from the prefix. Inventory, lifecycle, cleanup and SSH verify both that label and the name in the selected gateway/workspace, so overlapping prefixes cannot claim each other's sandboxes. Unlabeled sandboxes from earlier development builds are not automatically adopted; inspect/manage them explicitly through OpenShell. These settings persist in the host profile; image and policy paths/references must be available on that host, not just the controller. Do not change a populated profile's gateway, workspace or prefix.
 
 The image must provide UID 1000, `HOME=/home/agent`, writable `~/project`, Bash, Node >=22.18, Python 3, tar, coreutils, procps, `file`, git, tmux, util-linux (`setsid`) and `/etc/boxery/headless`. Our image includes these. Set `WORKDIR /home/agent`: the Docker driver derives `HOME` from `WORKDIR`, so using `/home/agent/project` would break Boxery's paths. The policy explicitly permits sandbox-local `/dev/pts` and `/dev/ptmx` for tmux jobs and interactive shells. Add project-specific system packages at image build time. No cloud-init, sudo, guest SSH server or Boxery provisioning layers are used. The canonical workload is `sleep infinity`; tools run through OpenShell's SSH gateway.
 
@@ -60,7 +60,7 @@ CPU and memory are requested through OpenShell; enforcement depends on its compu
 
 ## Credentials and policy
 
-The example policy starts offline. Add only the network destinations and binaries your project needs, using [OpenShell policies](https://github.com/NVIDIA/OpenShell/tree/main/docs/how-it-works/policies). For example, a GitHub workflow needs approved git/HTTPS endpoints and an explicitly configured provider with a dev-scoped token. Select existing providers during setup with `--provider NAME`, through `BOXERY_OPENSHELL_PROVIDERS` for manual configuration, or attach them with OpenShell's own commands. Setup settings affect newly created sandboxes; changing them does not update existing sandboxes. Boxery does not auto-import local credentials.
+The example policy starts offline. Add only the network destinations and binaries your project needs, using [OpenShell policies](https://github.com/NVIDIA/OpenShell/tree/main/docs/how-it-works/policies). For example, a GitHub workflow needs approved git/HTTPS endpoints and an explicitly configured provider with a dev-scoped token. Select existing providers during setup with `--provider NAME`, through `BOXERY_OPENSHELL_PROVIDERS` for manual configuration, or attach them with OpenShell's own commands. Setup settings affect newly created sandboxes; changing them does not update existing sandboxes. Manual configuration can use `BOXERY_OPENSHELL_PROVIDERS='[]'` to persist an explicitly empty selection rather than inherit a saved list. Boxery does not auto-import local credentials.
 
 Boxery `grant`, SSH-agent forwarding, its LLM proxy and pushed env/file grants are not supported. Keep the controlling agent outside the sandbox. Do not copy credentials into the sandbox to work around a policy denial. Provider attachments can add allowed network access; review the **effective** policy, not only the supplied YAML.
 

@@ -985,7 +985,7 @@ usage() {
 		boxery — remote desktop VMs for coding agents
 
 		setup user@host|local [--name NAME] [--key K.pub] [--host-bin PATH] [--profile P [--backend B]]
-		setup local --backend openshell [--gateway G] [--image OCI] [--policy PATH] [--provider P] [--yes]
+		setup local --backend openshell [--gateway G] [--image OCI] [--policy PATH] [--provider P | --no-providers] [--yes]
 		                                configure a VM host (local = this machine) + register your ssh key;
 		                                  NAME defaults to local / the host part of user@host
 		--host NAME COMMAND             route a command to a host other than the default

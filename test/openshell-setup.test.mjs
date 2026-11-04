@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { parseSetupArgs, setupOpenShell } from "../controller/setup-openshell.mjs";
-import { HOST_ENV } from "../host/config.mjs";
+import { HOST_ENV, loadConfig } from "../host/config.mjs";
+import { OPENSHELL_NO_PROVIDERS } from "../host/openshell-config.mjs";
+import { hostEnv } from "../host/setup.mjs";
 
 let dir, env, calls, logs, gateways, authenticated, driver, providers, failBuild, dockerSocket;
 beforeEach(() => {
@@ -71,9 +74,41 @@ test("repeat setup preserves namespace, edited policy and provider selection", a
 	const second = await setup(); assert.ok(second);
 	assert.equal(second.prefix, first.prefix); assert.equal(second.image, first.image);
 	assert.deepEqual(second.providers, ["work-api"]);
+	assert.equal(calls.filter((c) => c.command === "docker" && c.args[0] === "build").length, 1, "saved images are not rebuilt on repeat setup");
 	assert.equal(readFileSync(second.policy, "utf8"), "# owner-edited policy\nversion: 1\n");
 	await assert.rejects(setup(args("--prefix", "different-")), /refusing to change/);
 	await assert.rejects(setup(args("--workspace", "other")), /refusing to change/);
+});
+
+test("--no-providers clears saved attachments durably without affecting existing sandboxes", async () => {
+	providers = ["work-api"];
+	await setup(args("--provider", "work-api"));
+	const cleared = await setup(args("--no-providers")); assert.ok(cleared);
+	assert.deepEqual(cleared.providers, []);
+	const init = calls.filter((c) => c.command.endsWith("/host/boxery-host")).at(-1); assert.ok(init);
+	assert.equal(init.env.BOXERY_OPENSHELL_PROVIDERS, OPENSHELL_NO_PROVIDERS);
+	assert.match(readFileSync(path.join(conf(), "host.env"), "utf8"), /BOXERY_OPENSHELL_PROVIDERS=\[\]/);
+	// Exercise the real loader and writer, not only the onboarding subprocess double.
+	const config = loadConfig({ BOXERY_CONF: conf() });
+	assert.equal(config.env.BOXERY_OPENSHELL_PROVIDERS, OPENSHELL_NO_PROVIDERS);
+	assert.match(hostEnv(config, process.execPath), /BOXERY_OPENSHELL_PROVIDERS=\[\]/);
+	env.BOXERY_OPENSHELL_PROVIDERS = "work-api";
+	const repeated = await setup(); assert.deepEqual(repeated?.providers, []);
+	assert.ok(!calls.some((c) => c.args.includes("detach") || c.args.includes("delete")), "setup only changes defaults for future sandboxes");
+	for (const flags of [["--no-providers", "--provider", "work-api"], ["--provider", "work-api", "--no-providers"]]) {
+		assert.throws(() => parseSetupArgs(args(...flags)), /conflicts/);
+	}
+});
+
+test("a saved explicitly supplied bundled-image tag remains use-existing on a remote gateway", async () => {
+	gateways[0] = { name: "local", endpoint: "https://remote.example", is_remote: true };
+	driver = "vm";
+	const dockerfile = readFileSync(new URL("../image/openshell/Dockerfile", import.meta.url));
+	const image = `boxery-openshell:${createHash("sha256").update(dockerfile).digest("hex").slice(0, 12)}`;
+	await setup(args("--image", image));
+	const repeated = await setup(); assert.equal(repeated?.image, image);
+	assert.equal(calls.some((c) => c.command === "docker"), false);
+	assert.equal(calls.some((c) => c.command === "openshell" && c.args.includes("info")), false, "repeat setup must not request automatic-build qualification");
 });
 
 test("multiple gateways require a choice, never silently use the active gateway", async () => {

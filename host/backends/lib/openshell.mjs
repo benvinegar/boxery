@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { shellQuote as q } from "../../util.mjs";
+import { OPENSHELL_NAMESPACE_LABEL, openShellNamespace, openShellProviders } from "../../openshell-config.mjs";
 
 const env = { ...process.env };
 const gateway = env.BOXERY_OPENSHELL_GATEWAY;
 const workspace = env.BOXERY_OPENSHELL_WORKSPACE || "default";
 const prefix = env.BOXERY_OPENSHELL_PREFIX;
+const owner = openShellNamespace(prefix || "");
 const namePattern = /^[a-z][a-z0-9-]{0,30}$/;
 function required(value, name) { if (!value || /[\r\n\0]/.test(value)) throw new Error(`set ${name}`); return value; }
 function validateConfig() {
@@ -36,14 +38,15 @@ function platformName(name) {
 function inventory() {
 	const all = [], seen = new Set(); let token = "";
 	do {
-		const page = JSON.parse(cli(["sandbox", "list", "--output", "json", "--page-token", token], { capture: true }));
+		const page = JSON.parse(cli(["sandbox", "list", "--output", "json", "--selector", `${OPENSHELL_NAMESPACE_LABEL}=${owner}`, "--page-token", token], { capture: true }));
 		if (!Array.isArray(page.sandboxes) || typeof page.next_page_token !== "string") throw new Error("unexpected OpenShell inventory response");
 		all.push(...page.sandboxes);
 		token = page.next_page_token;
 		if (token && seen.has(token)) throw new Error("repeated OpenShell inventory page token");
 		seen.add(token);
 	} while (token);
-	return all.filter((s) => typeof s.name === "string" && s.name.startsWith(prefix) && namePattern.test(s.name.slice(prefix.length)));
+	// Verify ownership locally as well: never trust a name prefix or server-side selector alone.
+	return all.filter((s) => s.labels?.[OPENSHELL_NAMESPACE_LABEL] === owner && typeof s.name === "string" && s.name.startsWith(prefix) && namePattern.test(s.name.slice(prefix.length)));
 }
 function find(name) { const n = platformName(name); return inventory().find((s) => s.name === n); }
 function proxy(name) {
@@ -74,10 +77,10 @@ try {
 		if (source !== "stock") throw new Error("OpenShell only supports new --headless without --from");
 		const image = required(env.BOXERY_OPENSHELL_IMAGE, "BOXERY_OPENSHELL_IMAGE");
 		const policy = required(env.BOXERY_OPENSHELL_POLICY, "BOXERY_OPENSHELL_POLICY");
-		const providers = (env.BOXERY_OPENSHELL_PROVIDERS || "").split(",").filter(Boolean);
+		const providers = openShellProviders(env.BOXERY_OPENSHELL_PROVIDERS);
 		if (!providers.every((p) => namePattern.test(p))) throw new Error("invalid OpenShell provider name");
 		cli(["sandbox", "create", "--name", platformName(name), "--from", image, "--policy", policy,
-			"--cpu", cpus, "--memory", `${mem}Mi`, "--no-auto-providers", "--detach", ...providers.flatMap((p) => ["--provider", p]), "--", "sleep", "infinity"]);
+			"--cpu", cpus, "--memory", `${mem}Mi`, "--no-auto-providers", "--detach", "--label", `${OPENSHELL_NAMESPACE_LABEL}=${owner}`, ...providers.flatMap((p) => ["--provider", p]), "--", "sleep", "infinity"]);
 		break;
 	}
 	case "start": case "stop":
@@ -88,12 +91,12 @@ try {
 		else if (command === "rm") throw new Error(`no such sandbox: ${name}`);
 		break;
 	case "connect":
-		// Validate names without an inventory round trip on every SSH channel.
-		platformName(name);
+		if (!find(name)) throw new Error(`no owned sandbox: ${name}`);
 		proxy(name).on("error", (e) => { console.error(e.message); process.exitCode = 1; })
 			.on("exit", (code, signal) => { process.exitCode = code ?? (signal ? 128 : 1); });
 		break;
 	case "host-key": {
+		if (!find(name)) throw new Error(`no owned sandbox: ${name}`);
 		// Bootstrap ONLY over the authenticated, workspace-scoped gateway relay. No network TOFU.
 		// The gateway authenticates the sandbox identity; SSH pins that identity for later tool calls.
 		const dir = mkdtempSync(path.join(tmpdir(), "boxery-openshell-key-"));

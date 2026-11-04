@@ -3,18 +3,22 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { profileFromDirectory, withHost } from "../core/boxery-core.mjs";
+import { addGrants, applyGrants } from "../core/grant-operations.mjs";
 import { createBackend } from "../host/backend.mjs";
 import { createGuest } from "../host/guest.mjs";
 import { createVm, start } from "../host/vms.mjs";
 import { poolAdd, edgeSet } from "../host/pool.mjs";
 import { loadConfig, SETTINGS } from "../host/config.mjs";
+import { OPENSHELL_NAMESPACE_LABEL, OPENSHELL_NO_PROVIDERS, openShellNamespace } from "../host/openshell-config.mjs";
 
 let dir, env, backend;
 beforeEach(() => {
 	dir = mkdtempSync(path.join(tmpdir(), "boxery-openshell-"));
 	mkdirSync(path.join(dir, "bin")); mkdirSync(path.join(dir, "conf"));
 	writeFileSync(path.join(dir, "policy.yaml"), "version: 1\nnetwork_policies: {}\n");
-	writeFileSync(path.join(dir, "state.json"), JSON.stringify([{ name: "bx-demo", phase: "Ready" }, { name: "unrelated", phase: "Ready" }]));
+	writeFileSync(path.join(dir, "state.json"), JSON.stringify([{ name: "bx-demo", phase: "Ready", labels: { [OPENSHELL_NAMESPACE_LABEL]: openShellNamespace("bx-") } }, { name: "unrelated", phase: "Ready" }]));
 	env = { ...process.env, PATH: `${dir}/bin:${process.env.PATH}`, BOXERY_BACKEND: "openshell", BOXERY_CONF: `${dir}/conf`,
 		BOXERY_OPENSHELL_GATEWAY: "local", BOXERY_OPENSHELL_WORKSPACE: "default", BOXERY_OPENSHELL_PREFIX: "bx-",
 		BOXERY_OPENSHELL_IMAGE: "boxery:test", BOXERY_OPENSHELL_POLICY: `${dir}/policy.yaml`, OS_TEST_DIR: dir };
@@ -33,7 +37,9 @@ if (op === 'list') {
 } else if (op === 'create') {
  const name = a[a.indexOf('--name') + 1];
  if (state.some(s => s.name === name)) process.exit(1);
- state.push({ name, phase: 'Ready' }); fs.writeFileSync(d + '/state.json', JSON.stringify(state));
+ const labels = {};
+ for (let j = 0; j < a.length; j++) if (a[j] === '--label') { const [k, v] = a[j + 1].split('='); labels[k] = v; }
+ state.push({ name, phase: 'Ready', labels }); fs.writeFileSync(d + '/state.json', JSON.stringify(state));
 } else if (['stop', 'start', 'delete'].includes(op)) {
  const n = a[i + 2], s = state.find(s => s.name === n);
  if (!s) process.exit(1);
@@ -57,6 +63,43 @@ test("OpenShell paginates, scopes inventory, and reports unknown capacity", asyn
 	assert.ok(calls().every(({ a }) => a.slice(0, 4).join(" ") === "--gateway local --workspace default"));
 });
 
+test("overlapping prefixes and unlabeled sandboxes never share ownership, including cleanup and SSH", async () => {
+	const state = [
+		{ name: "bx-demo", phase: "Ready", labels: { [OPENSHELL_NAMESPACE_LABEL]: openShellNamespace("bx-") } },
+		{ name: "bx-team-demo", phase: "Ready", labels: { [OPENSHELL_NAMESPACE_LABEL]: openShellNamespace("bx-team-") } },
+		{ name: "bx-legacy", phase: "Ready" },
+		{ name: "bx-team-legacy", phase: "Ready" },
+	];
+	writeFileSync(`${dir}/state.json`, JSON.stringify(state));
+	const team = createBackend({ ...env, BOXERY_OPENSHELL_PREFIX: "bx-team-" });
+	// The CLI double deliberately ignores --selector: client-side ownership checks must still hold.
+	assert.deepEqual((await backend.list()).map((v) => v.name), ["demo"]);
+	assert.deepEqual((await team.list()).map((v) => v.name), ["demo"]);
+	assert.equal(await backend.exists("team-demo"), false);
+	assert.equal(await backend.exists("legacy"), false);
+	for (const fn of ["backend_start", "backend_stop", "backend_rm", "backend_connect", "backend_platform_host_key"]) {
+		await assert.rejects(backend.call(fn, ["team-demo"], { quiet: true }));
+	}
+	await assert.rejects(backend.call("backend_new", ["team-demo", 1, 1024, 10, "", "stock"], { quiet: true }), "name collision must not authorize cleanup");
+	await backend.call("backend_cleanup_new", ["team-demo"], { quiet: true });
+	await backend.call("backend_cleanup_new", ["legacy"], { quiet: true });
+	assert.deepEqual(JSON.parse(readFileSync(`${dir}/state.json`, "utf8")), state);
+	assert.ok(!calls().some(({ a }) => a.includes("delete") || a.includes("ssh-proxy")));
+	await team.call("backend_rm", ["demo"], { quiet: true });
+	assert.deepEqual(JSON.parse(readFileSync(`${dir}/state.json`, "utf8")).map((s) => s.name), ["bx-demo", "bx-legacy", "bx-team-legacy"]);
+});
+
+test("explicit empty providers survive saved configuration fallback and reach sandbox creation", async () => {
+	writeFileSync(`${dir}/conf/host.env`, "BOXERY_OPENSHELL_PROVIDERS=old-provider\n");
+	const config = loadConfig({ ...env, BOXERY_OPENSHELL_PROVIDERS: OPENSHELL_NO_PROVIDERS });
+	assert.equal(config.env.BOXERY_OPENSHELL_PROVIDERS, OPENSHELL_NO_PROVIDERS);
+	const b = createBackend(config.env);
+	await b.call("backend_new", ["offline", 1, 1024, 10, "", "stock"], { quiet: true });
+	const c = calls().find(({ a }) => a.includes("create"));
+	assert.ok(!c.a.includes("--provider"), "backend.sh must not reload the old provider list");
+	assert.ok(c.a.includes("--no-auto-providers"));
+});
+
 test("OpenShell inventory errors cannot masquerade as absence or an empty host", async () => {
 	for (const extra of [{ OS_FAIL: "1" }, { OS_BAD_JSON: "1" }]) {
 		const b = createBackend({ ...env, ...extra });
@@ -71,6 +114,7 @@ test("OpenShell creates explicitly scoped headless workloads without credential 
 	const c = calls().find(({ a }) => a.includes("create"));
 	assert.equal(c.endpoint, undefined); assert.equal(c.insecure, undefined);
 	assert.ok(c.a.includes("--no-auto-providers")); assert.ok(c.a.includes("--detach")); assert.ok(c.a.includes("github"));
+	assert.ok(c.a.includes(`${OPENSHELL_NAMESPACE_LABEL}=${openShellNamespace("bx-")}`));
 	assert.ok(c.a.includes("2048Mi")); assert.ok(c.a.includes("bx-second")); assert.ok(!c.a.includes("--disk"));
 	await b.call("backend_stop", ["second"], { quiet: true });
 	assert.equal((await b.list()).find((r) => r.name === "second")?.state, "shut off");
@@ -101,6 +145,7 @@ test("restricted create and start skip root provisioning, proxy tokens and guest
 	const args = { name: "newbox", shape: "", cpus: "", mem: "", disk: "", from: "", headless: true };
 	await assert.rejects(createVm(rt, { ...args, headless: false }), /only new --headless/);
 	await assert.rejects(createVm(rt, { ...args, disk: "20" }), /omit --disk/);
+	await assert.rejects(createVm(rt, { ...args, layers: ["github-runner"] }), /--layers is not supported/);
 	assert.equal(await createVm(rt, args), "newbox newbox.openshell:22");
 	assert.equal(existsSync(`${dir}/conf/tokens.json`), false);
 	assert.equal(existsSync(`${dir}/conf/vm-shapes/newbox`), false);
@@ -134,6 +179,22 @@ fs.writeFileSync(f, 'openshell ssh-ed25519 AAAAtest\\n');
 	await assert.rejects(createBackend({ ...env, OS_SSH_FAIL: "1" }).call("backend_platform_host_key", ["demo"], { quiet: true }));
 	recorded = JSON.parse(readFileSync(`${dir}/key-argv`, "utf8"));
 	assert.equal(existsSync(path.dirname(recorded.f)), false);
+});
+
+test("shared grant operations and CLI preparation refuse OpenShell before approval or writes", async () => {
+	const profile = `${dir}/controller-profile`;
+	mkdirSync(profile);
+	writeFileSync(`${profile}/config`, "HOST='local'\n");
+	writeFileSync(`${profile}/ssh_config`, "");
+	writeFileSync(`${profile}/backend`, "openshell\n");
+	await withHost(profileFromDirectory("restricted", profile), async () => {
+		await assert.rejects(addGrants("demo", [{ kind: "llm", spec: "llm:openai", provider: "openai" }]), /OpenShell providers\/policy/);
+		await assert.rejects(applyGrants("demo"), /OpenShell providers/);
+	});
+	const prepared = spawnSync(process.execPath, [path.resolve(import.meta.dirname, "../controller/grants.mjs"), "restricted", profile, "prepare", "demo", "llm:openai"], { env, encoding: "utf8" });
+	assert.equal(prepared.status, 1);
+	assert.match(prepared.stderr, /OpenShell providers\/policy/);
+	assert.equal(existsSync(`${profile}/grants`), false);
 });
 
 test("OpenShell configuration is persisted and journaled", () => {
