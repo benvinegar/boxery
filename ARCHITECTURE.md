@@ -12,6 +12,8 @@ This file describes the system **as built** (v0.7). Designs that aren't implemen
 
 Non-goals (for now): macOS/Windows guests, GPU passthrough, scheduling across hosts, hostile multi-tenant users.
 
+Experimental exception: the [OpenShell backend](docs/openshell.md) offers policy-enforced, non-root headless sandboxes through its authenticated gateway. It does not use Boxery's guest provisioning, proxy/grants, images or lease pools. The VM contracts below otherwise remain unchanged.
+
 ## Trust model
 
 One trusted owner runs agents that are *semi-trusted*: they're yours, but they may be confused or prompt-injected. boxery limits what a VM, and the code running in it, can reach. It isn't a boundary between mutually distrustful people who share a host account. Detail: [docs/security.md](docs/security.md).

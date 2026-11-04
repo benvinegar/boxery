@@ -155,6 +155,12 @@ A remote backend sets `REMOTE_DIR`, `REMOTE_SUPERVISOR`, `REMOTE_PORT_BASE`, `RE
 
 Select a backend with `boxery-host init --backend NAME` (persisted in `$BOXERY_CONF/host.env`) or `BOXERY_BACKEND`. A second backend on the same host is a second profile: `boxery-host --profile NAME init --backend B` (or `boxery host add NAME DEST --backend B` from the controller) gives it `~/.config/boxery-NAME`, a free proxy port and its own services. Init refuses a new profile with the same backend and the same namespace settings as an existing one; a backend's namespace keys are listed in `NAMESPACE` in [host/setup.mjs](../setup.mjs) (add yours there).
 
+## OpenShell (experimental)
+
+`openshell` is a restricted headless backend, not a full implementation of the VM/image contract. See [setup, trust model and smoke checks](../../docs/openshell.md). It uses prebuilt OCI images, OpenShell policy/providers and gateway-authenticated SSH. No root provisioning, Boxery proxy tokens, pushed grants, desktop, disk images, forks, resizing or pools are supported. Inventory is scoped to an explicit gateway, workspace and prefix.
+
+Backends can optionally implement `backend_connect NAME` to relay SSH through their authenticated control plane instead of a TCP endpoint. The host's guest transport must use the same relay and retain strict pinned host-key checks. OpenShell bootstraps its platform-managed key through that authenticated relay. A gateway relay does **not** imply guest `authorized_keys` enforcement: OpenShell pool membership is refused.
+
 ## Guest contract
 
 Ubuntu, user `agent` with passwordless sudo, sshd, `~/project`, `boxery-llm.service` reading `/etc/boxery/proxy-upstream`, and cloud-init (for per-instance `bootcmd`; exe and Lima replay it instead). Desktop VMs also have XFCE on `:1` with VNC/noVNC on localhost (VNC needs the password `boxery-vnc-password --new` sets and prints), xdotool + ImageMagick, a `google-chrome` binary and `/opt/boxery/node_modules/playwright-core`. The layers above provide all of it.

@@ -15,7 +15,7 @@ CONF=${BOXERY_CONF:-$HOME/.config/boxery}
 # Settings persisted by `init`. Explicit env vars win over the file. Same list as HOST_ENV in host/config.mjs.
 if [ -f "$CONF/host.env" ]; then
 	while IFS='=' read -r k v; do
-		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_NET | BOXERY_NET_ISOLATION | LIBVIRT_DEFAULT_URI | LIMA_HOME | BOXERY_LIMA_PREFIX | BOXERY_LIMA_GATEWAY | BOXERY_LIMA_VMTYPE | BOXERY_LIMA_ARCH | BOXERY_CH_DIR | BOXERY_CH_NET | BOXERY_CH_DNS | BOXERY_CH_FIRMWARE | BOXERY_CH_SUDO | BOXERY_EXE_DIR | BOXERY_EXE_PREFIX | BOXERY_EXE_KEY | BOXERY_EXE_PORT_BASE | BOXERY_EXE_GUEST_PORT | BOXERY_EXE_EGRESS | BOXERY_EXE_POOL | BOXERY_EXE_MAX_CPUS | BOXERY_EXE_MAX_MEM | BOXERY_BOAT_DIR | BOXERY_BOAT_PREFIX | BOXERY_BOAT_API | BOXERY_BOAT_ORG | BOXERY_BOAT_PORT_BASE | BOXERY_BOAT_GUEST_PORT | BOXERY_BOAT_MAX_TYPE | BOXERY_BOAT_TTL | BOXERY_STALE_DAYS) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+		case $k in BOXERY_BACKEND | BOXERY_PROXY_PORT | BOXERY_PROXY_UNIT | BOXERY_POOL | BOXERY_POOL_DIR | BOXERY_BASE_VOL | BOXERY_DOMAIN_PREFIX | BOXERY_NET | BOXERY_NET_ISOLATION | LIBVIRT_DEFAULT_URI | LIMA_HOME | BOXERY_LIMA_PREFIX | BOXERY_LIMA_GATEWAY | BOXERY_LIMA_VMTYPE | BOXERY_LIMA_ARCH | BOXERY_CH_DIR | BOXERY_CH_NET | BOXERY_CH_DNS | BOXERY_CH_FIRMWARE | BOXERY_CH_SUDO | BOXERY_EXE_DIR | BOXERY_EXE_PREFIX | BOXERY_EXE_KEY | BOXERY_EXE_PORT_BASE | BOXERY_EXE_GUEST_PORT | BOXERY_EXE_EGRESS | BOXERY_EXE_POOL | BOXERY_EXE_MAX_CPUS | BOXERY_EXE_MAX_MEM | BOXERY_BOAT_DIR | BOXERY_BOAT_PREFIX | BOXERY_BOAT_API | BOXERY_BOAT_ORG | BOXERY_BOAT_PORT_BASE | BOXERY_BOAT_GUEST_PORT | BOXERY_BOAT_MAX_TYPE | BOXERY_BOAT_TTL | BOXERY_STALE_DAYS | BOXERY_OPENSHELL_GATEWAY | BOXERY_OPENSHELL_WORKSPACE | BOXERY_OPENSHELL_PREFIX | BOXERY_OPENSHELL_IMAGE | BOXERY_OPENSHELL_POLICY | BOXERY_OPENSHELL_PROVIDERS) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
 	done <"$CONF/host.env"
 fi
 export CACHE=${BOXERY_CACHE:-$HOME/.cache/boxery}
@@ -94,7 +94,7 @@ f="$ROOT/host/backends/$BACKEND.sh"
 CONTRACT=" backend_check backend_init backend_proxy_services backend_proxy_bind guest_proxy_upstream backend_build_base
 	backend_has_base backend_exists backend_new backend_list backend_ssh_endpoint backend_wait_endpoint backend_start backend_stop
 	backend_rm backend_size backend_resize backend_capture backend_images backend_image_rm backend_reimage backend_cleanup_new
-	backend_cleanup_image backend_recover_capture backend_endpoint_problem backend_host_key backend_platform_host_key "
+	backend_cleanup_image backend_recover_capture backend_endpoint_problem backend_host_key backend_platform_host_key backend_connect "
 case ${1:-} in
 __layer_files) layer_files ;;
 __functions)
@@ -102,8 +102,9 @@ __functions)
 __connect)
 	n=${2:-}; n=${n%.boxery}; port=${3:-22}
 	[[ $n =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "invalid name '$n' (use [a-z][a-z0-9-]*)"
-	ep=$(backend_ssh_endpoint "$n")
 	[[ $port == 22 ]] || die "connect: only the ssh port is supported (forward other ports over ssh)"
+	if declare -F backend_connect >/dev/null; then backend_connect "$n"; exit $?; fi
+	ep=$(backend_ssh_endpoint "$n")
 	exec nc "${ep% *}" "${ep#* }" ;;
 *)
 	[[ -n ${1:-} && $CONTRACT == *[[:space:]]"$1"[[:space:]]* ]] && declare -F "$1" >/dev/null || die "not a $BACKEND backend function: ${1:-}"

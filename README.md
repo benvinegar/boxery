@@ -35,7 +35,7 @@
   <a href="docs/install.md#choosing-a-backend">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/works-with-dark.svg">
-      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt and Cloud Hypervisor on Linux; exe.dev and boat.dev in the cloud" width="640">
+      <img src="docs/works-with-light.svg" alt="Works with Lima on macOS; libvirt, Cloud Hypervisor and OpenShell on Linux; exe.dev and boat.dev in the cloud" width="760">
     </picture>
   </a>
 </p>
@@ -129,7 +129,7 @@ You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo
 | [MCP server](docs/mcp.md) | stdio on your laptop, or Streamable HTTP over Tailscale |
 | [pi extension](docs/pi-extension.md) | `--vm`, `/vm` commands, tools, fan-out |
 | [CLI reference](docs/cli.md) | Every `boxery` and `boxery-host` command, and their `--json` output |
-| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, and the backend contract |
+| [Backends](host/backends/README.md) | libvirt, Lima, Cloud Hypervisor, exe.dev, boat.dev, OpenShell, and the backend contract |
 | [Grants](docs/grants.md) | Give a VM LLM providers, GitHub/HTTPS APIs (secret stays on the host), your ssh-agent, env vars, or files |
 | [Named hosts](docs/hosts.md) | Multiple hosts, one controller and MCP server |
 | [Shared pool & leases](docs/pool.md) | Several agents, one pool of VMs, no collisions |
@@ -139,7 +139,7 @@ You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo
 
 ## Status
 
-The exe.dev, boat.dev and Cloud Hypervisor backends are experimental. See the [roadmap](ARCHITECTURE.md#roadmap).
+The exe.dev, boat.dev, Cloud Hypervisor and OpenShell backends are experimental. See the [roadmap](ARCHITECTURE.md#roadmap).
 
 ## Contributing
 

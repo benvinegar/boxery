@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, wr
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { currentHost, assertName, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
+import { currentHost, hostBackend, assertName, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
 import { parseGrantSpec } from "./grants.mjs";
 import { q } from "./shell.mjs";
 /** @import { Grant, GrantSpec, HostProfile } from "./boxery-core.mjs" */
@@ -88,6 +88,7 @@ function rowsFor(g) {
  * @param {string} vm @param {GrantSpec[]} specs @param {GrantOptions} [opts]
  */
 export async function addGrants(vm, specs, opts = {}) {
+	if (hostBackend(currentHost()) === "openshell") throw new Error("OpenShell credentials and egress are managed through OpenShell providers/policy, not Boxery grants");
 	assertName(vm); opts.signal?.throwIfAborted();
 	const grants = specs.map((g) => {
 		const checked = parseGrantSpec(g, { cli: true });
@@ -150,6 +151,7 @@ function commandValue(command, env, opts) {
 const guestTemplate = readFileSync(new URL("./grants-guest.sh", import.meta.url), "utf8");
 /** @param {string} vm @param {GrantOptions} [opts] */
 export async function applyGrants(vm, opts = {}) {
+	if (hostBackend(currentHost()) === "openshell") throw new Error("OpenShell does not support Boxery pushed grants; use OpenShell providers");
 	const grants = listGrants(vm), hosts = {}, llm = [], cache = new Map();
 	/** @type {string[]} */
 	const values = [];

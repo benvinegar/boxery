@@ -50,7 +50,7 @@ echo "== usage"
 cat >"$tmp/expected" <<'EOF'
 boxery-host — Ubuntu desktop VMs for coding agents (backend: fake)
 
-  init [--backend libvirt|lima|cloud-hypervisor|exe|boat]  install proxy services + backend setup, symlinks
+  init [--backend libvirt|lima|cloud-hypervisor|exe|boat|openshell]  install proxy services + backend setup, symlinks
   --profile NAME COMMAND…   use a second profile on this host (~/.config/boxery-NAME): its own backend,
                             state, proxy port and services. Create it with: --profile NAME init --backend B
   profiles [--json]         the profiles on this host (backend, proxy port, service name, state directory)
@@ -194,7 +194,7 @@ err "edge-set with no input" "boxery-host: edge-set: invalid routes (hosts must 
 err "images with a bad flag" "boxery-host: usage: images [--json]" images bogus
 err "shapes with an extra argument" "boxery-host: usage: shapes [--json]" shapes extra
 err "ls with an extra argument" "boxery-host: usage: ls [--json] [--refresh]" ls extra
-BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: boat cloud-hypervisor exe fake libvirt lima )" ls
+BOXERY_BACKEND=nope err "unknown backend" "boxery-host: unknown backend 'nope' (have: boat cloud-hypervisor exe fake libvirt lima openshell )" ls
 
 echo "== headless"
 run new h3 --headless

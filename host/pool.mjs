@@ -31,6 +31,7 @@ export async function setLeaseKeys(rt, name, pubkey) {
 
 /** @param {Runtime} rt @param {string[]} args */
 export async function poolAdd(rt, [name]) {
+	if (rt.backend === "openshell") fail("OpenShell pools are unsupported: gateway SSH access is not fenced by guest authorized_keys");
 	validName(name);
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	if (rt.poolRow(name)) fail(`${name} is already in the pool`);
@@ -102,6 +103,7 @@ export function validRoutes(routes) {
  * its id, and the proxy honours them only with that lease's token. --lease (the controller's lease
  * record) refuses a stale caller instead of touching the next holder's routes. @param {Runtime} rt @param {string[]} args */
 export async function edgeSet(rt, [name, ...args]) {
+	if (rt.backend === "openshell") fail("OpenShell credentials are managed with OpenShell providers, not Boxery grants");
 	validName(name);
 	if (args.length && (args.length !== 2 || args[0] !== "--lease" || !/^l-[0-9a-f]{32}$/.test(args[1]))) fail("usage: edge-set NAME [--lease ID] < routes.json");
 	const want = args[1];
