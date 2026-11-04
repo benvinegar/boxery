@@ -8,7 +8,7 @@ The host runs in Node. Bash remains where it fits: the entry point (`host/boxery
 
 | Module | Owns | Does not own |
 |---|---|---|
-| `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles and grants | Host lease decisions or hypervisor mechanics |
+| `controller/boxery` | Portable Bash 3.2 laptop CLI, SSH configuration, host profiles, grant approval; lease and grant operations run in Node (`core/leases.mjs`, `core/grants.mjs`) | Host lease decisions or hypervisor mechanics |
 | `host/boxery-host` | Entry point (Bash): `connect` via `backend.sh`, everything else to Node (the node `init` recorded) | Any command logic |
 | `host/boxery-host.mjs` + `host/cli.mjs` | Node version check; CLI: argument dispatch, listings and their output formats, supervised mutating commands, private worker entry points | Lease policy, hypervisor commands |
 | `host/setup.mjs` | `init` (state directory, `host.env`, proxy/reaper/runner-manager services), `build-base`, `add-key` | VM lifecycle |

@@ -582,81 +582,9 @@ cmd_fork() {
 # ---------------------------------------------------------------- leases
 # A lease = exclusive use of a pool VM until it expires or is released. Each lease gets its own
 # throwaway ssh key; the host installs it in the VM, and removes it (by resetting the VM) on release
-# or expiry, so a stale holder is locked out. Local record: ~/.boxery/leases/<id>.{lease,key,key.pub}.
-
-lease_file() { echo "$LEASES_DIR/$1.lease"; }
-lease_by_name() { grep -l "^name=$1\$" "$LEASES_DIR"/*.lease 2>/dev/null | head -1; }
-
-cmd_acquire() { # [--ttl S] [--wait S] [--holder H] → prints "NAME LEASE_ID" (stdout) for scripts
-	need_host
-	ttl=1800; wait=0; holder="${USER:-user}@$(hostname -s 2>/dev/null || hostname)"
-	while [ $# -gt 0 ]; do
-		case $1 in
-		--ttl | --wait) case ${2:-} in '' | *[!0-9]*) die "$1 must be a number" ;; esac
-			[ "$1" = --ttl ] && ttl=$2 || wait=$2; shift 2 ;;
-		--holder) holder=${2:-}; shift 2 ;;
-		*) die "unknown flag $1" ;;
-		esac
-	done
-	mkdir -p "$LEASES_DIR"; chmod 700 "$LEASES_DIR"
-	tmpk="$LEASES_DIR/.new-$$"
-	ssh-keygen -q -t ed25519 -N "" -C "boxery-lease $holder" -f "$tmpk" || die "ssh-keygen failed"
-	out=$(h acquire --holder "$holder" --ttl "$ttl" --wait "$wait" <"$tmpk.pub") || { rc=$?; rm -f "$tmpk" "$tmpk.pub"; exit $rc; }
-	set -- $out; name=$1; id=$2; exp=$3
-	valid_vm "$name" || { rm -f "$tmpk" "$tmpk.pub"; die "bad response from host: $out"; }
-	case $id in l-*) ;; *) rm -f "$tmpk" "$tmpk.pub"; die "bad response from host: $out" ;; esac
-	mv "$tmpk" "$LEASES_DIR/$id.key"; mv "$tmpk.pub" "$LEASES_DIR/$id.key.pub"
-	printf 'name=%s\nid=%s\nexpires=%s\nttl=%s\nholder=%s\n' "$name" "$id" "$exp" "$ttl" "$holder" >"$(lease_file "$id")"
-	drop_master "$name"; write_ssh_config
-	if has_pushed_grants "$name"; then grants_apply "$name" --quiet || true; fi
-	echo "==> leased $name (lease $id, expires in $((exp - $(date +%s)))s; renew with: boxery renew $name)" >&2
-	echo "$name $id"
-}
-
-resolve_lease() { # NAME-or-LEASE_ID → lease file
-	case $1 in l-*) f=$(lease_file "$1") ;; *) f=$(lease_by_name "$1") ;; esac
-	[ -n "$f" ] && [ -f "$f" ] || die "no local lease for '$1' (boxery leases)"
-	echo "$f"
-}
-
-cmd_renew() { # NAME|LEASE [--ttl S]
-	need_host; f=$(resolve_lease "${1:-}"); id=$(sed -n 's/^id=//p' "$f")
-	ttl=$(sed -n 's/^ttl=//p' "$f"); [ "${2:-}" = --ttl ] && ttl=${3:-$ttl}
-	case $ttl in '' | *[!0-9]*) die "--ttl must be a number" ;; esac
-	out=$(h renew "$id" --ttl "$ttl") || die "renew failed (lease expired or released?)"
-	set -- $out
-	sed -i.bak "s/^expires=.*/expires=$2/" "$f" && rm -f "$f.bak"
-	echo "==> renewed $1 until $(date -d "@$2" 2>/dev/null || date -r "$2")"
-}
-
-cmd_release() { # NAME|LEASE
-	need_host; f=$(resolve_lease "${1:-}"); id=$(sed -n 's/^id=//p' "$f"); name=$(sed -n 's/^name=//p' "$f")
-	drop_master "$name"
-	h release "$id" || warn "host did not release $id (already expired?); forgetting it locally"
-	rm -f "$f" "$LEASES_DIR/$id.key" "$LEASES_DIR/$id.key.pub"
-	rm -f "$(grant_file "$name")" "$(edge_marker "$name")"   # grants were for this lease; the host reset clears edge routes
-	write_ssh_config
-	echo "==> released $name"
-}
-
-cmd_leases() { # [--json]   local leases
-	json=0; case ${1:-} in --json) json=1 ;; '') ;; *) die "usage: boxery leases [--json]" ;; esac
-	now=$(date +%s); found=0
-	for f in "$LEASES_DIR"/*.lease; do
-		[ -f "$f" ] || continue; found=1
-		n=$(sed -n 's/^name=//p' "$f"); e=$(sed -n 's/^expires=//p' "$f"); i=$(sed -n 's/^id=//p' "$f")
-		case $e in '' | *[!0-9]*) e=0 ;; esac
-		if [ $json = 1 ]; then
-			left=$((e - now)); [ $left -gt 0 ] || left=0
-			printf '{"name":%s,"lease_id":%s,"expires_at":%s,"expires_in":%s,"ttl":%s,"holder":%s}\n' "$(json_text "$n")" "$(json_text "$i")" "$e" "$left" \
-				"$(json_num_or_null "$(sed -n 's/^ttl=//p' "$f")")" "$(json_str_or_null "$(sed -n 's/^holder=//p' "$f")")"
-			continue
-		fi
-		if [ "$e" -gt "$now" ]; then left="$((e - now))s"; else left=expired; fi
-		printf '%-16s %-10s %s\n' "$n" "$left" "$i"
-	done | if [ $json = 1 ]; then json_array; else cat; fi
-	[ $json = 1 ] || [ $found = 1 ] || echo "(no leases)"
-}
+# or expiry, so a stale holder is locked out. Local record: PROFILE/leases/<id>.{lease,key,key.pub}.
+# acquire/renew/release/leases run core/leases.mjs, the same operations as vm_lease (MCP and pi).
+leases_node() { BOXERY_HOME="$ROOT_DIR" node "$(pkg_root)/controller/leases.mjs" "$selected" "$CONF_DIR" "$@"; }
 
 cmd_ls() { # [--json] [--refresh]
 	local json="" refresh=""
@@ -1137,10 +1065,10 @@ kill) need_host; cmd_kill "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
 desktop) need_host; cmd_desktop "$@" ;;
 forward) need_host; cmd_forward "$@" ;;
-acquire) cmd_acquire "$@" ;;
-renew) cmd_renew "$@" ;;
-release) cmd_release "$@" ;;
-leases) cmd_leases "$@" ;;
+acquire) leases_node acquire "$@" ;;
+renew) leases_node renew "$@" ;;
+release) leases_node release "$@" ;;
+leases) leases_node leases "$@" ;;
 pool) need_host; [ -z "${2:-}" ] || drop_master "$2"; h pool "$@"; [ -z "${2:-}" ] || drop_master "$2" ;;
 # GitHub Actions runners on the host's pool (docs/github-runners.md): `once` (local runners) runs here with
 # this machine's gh login; the rest (host runners) is passed through, and `token` reads stdin

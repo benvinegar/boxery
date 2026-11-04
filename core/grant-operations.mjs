@@ -2,32 +2,17 @@
 import { execFile, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, renameSync, unlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { currentHost, hostBackend, assertName, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
 import { parseGrantSpec } from "./grants.mjs";
 import { q } from "./shell.mjs";
+import { profileRun } from "./profile.mjs";
+export { profileRun } from "./profile.mjs";
 /** @import { Grant, GrantSpec, HostProfile } from "./boxery-core.mjs" */
 /** CLI env-command helpers may use the original stdin and show prompts on stderr. Agent calls remain headless.
  * @typedef {{ signal?: AbortSignal, interactiveCommands?: boolean, commandStdin?: number }} GrantOptions
  */
 
-const profileLib = fileURLToPath(new URL("../controller/profile.sh", import.meta.url));
-/** Shared existing Bash profile plumbing: trusted config sourcing, host transport, SSH config rendering.
- * This is not the CLI, and contains no grant mutation or confirmation implementation.
- * @param {string} action @param {string[]} args @param {{ input?: string, signal?: AbortSignal, host?: HostProfile }} [opts]
- */
-export function profileRun(action, args = [], { input, signal, host = currentHost() } = {}) {
-	const script = 'set -eu; source "$1"; select_profile "$2" "$3"; shift 3; action=$1; shift; case $action in host) h "$@" ;; config) write_ssh_config ;; close) drop_master "$1" ;; *) exit 2 ;; esac';
-	return new Promise((resolve, reject) => {
-		const child = execFile("bash", ["-c", script, "boxery-profile", profileLib, host.name, host.dir, action, ...args], { timeout: 120_000, maxBuffer: 10 * 1024 * 1024, signal }, (e, stdout, stderr) => {
-			if (e) reject(new Error((stderr || e.message).trim()));
-			else resolve(stdout.trim());
-		});
-		child.stdin?.on("error", () => {});
-		child.stdin?.end(input);
-	});
-}
 const storeDir = () => path.join(currentHost().dir, "grants");
 const storeFile = (/** @type {string} */ vm) => path.join(storeDir(), assertName(vm));
 /** @param {string} f */

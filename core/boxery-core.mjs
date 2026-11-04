@@ -1,6 +1,7 @@
 // boxery core: VM transport and tool implementations shared by the pi extension and the MCP server.
 // Plain ESM, Node >= 18, no dependencies. Talks to VMs over ssh using the selected host profile's
-// ssh_config (written by `boxery setup`), and to the VM host through the `boxery` controller CLI.
+// ssh_config (written by `boxery setup`), and to the VM host through the `boxery` controller CLI
+// (leases and grants: through the shared operations in leases.mjs and grants.mjs).
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -11,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import * as linux from "../guests/linux.mjs";
 import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
+import { acquireLease, releaseLease, renewLease } from "./leases.mjs";
 import { parseGrantRequest, grantPrompt, grantCommand, listGrants, addGrants } from "./grants.mjs";
 export { parseGrantRequest, grantPrompt, listGrants, applyGrants, revokeGrants } from "./grants.mjs";
 export { requestUserGrants, prepareUserGrants, approveGrantSpecs } from "./grant-approval.mjs";
@@ -1327,16 +1329,9 @@ export class LeaseKeeper {
 		assertSeconds("ttl", ttl, LEASE_TTL.min, LEASE_TTL.max);
 		assertSeconds("wait", wait, 0, 3600);
 		const host = currentHost();
-		// boxeryCli returns stdout+stderr; the machine-readable line is "NAME LEASE_ID".
-		const out = await boxeryCli(["acquire", "--ttl", String(ttl), "--wait", String(wait)], (wait + 300) * 1000);
-		const m = out.match(/^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32})$/m);
-		if (!m) {
-			const leaked = out.match(/l-[0-9a-f]{32}/)?.[0];
-			if (leaked) await boxeryCli(["release", leaked], 180_000).catch(() => {}); // never leak a lease
-			throw new Error(`unexpected acquire output: ${out.slice(0, 300)}`);
-		}
+		const r = await acquireLease({ ttl, wait });
 		/** @type {Lease} */
-		const lease = { name: m[1], id: m[2], ttl, host, expiresAt: Date.now() + ttl * 1000, timer: null };
+		const lease = { name: r.name, id: r.id, ttl, host, expiresAt: Date.now() + ttl * 1000, timer: null };
 		this.leases.set(lease.id, lease);
 		this.#schedule(lease);
 		return lease;
@@ -1361,10 +1356,10 @@ export class LeaseKeeper {
 
 	/** @param {Lease} lease @param {number} ttl */
 	async #renew(lease, ttl) {
-		const out = await boxeryCli(["renew", lease.id, "--ttl", String(ttl)], 60_000);
+		const r = await renewLease(lease.id, ttl);
 		lease.ttl = ttl;
 		lease.expiresAt = Date.now() + ttl * 1000;
-		return out;
+		return r;
 	}
 
 	/** @param {Lease} lease */
@@ -1393,12 +1388,12 @@ export class LeaseKeeper {
 		const lease = this.find(name);
 		if (!lease) throw new Error(`this session holds no lease on ${name}`);
 		this.#forget(lease);
-		return boxeryCli(["release", lease.id], 180_000);
+		return releaseLease(lease.id);
 	}
 
 	/** Release every lease (session end). Never throws: a lease the host already dropped is just forgotten. */
 	async releaseAll() {
-		await Promise.all(this.list().map((l) => (this.#forget(l), withHost(l.host, () => boxeryCli(["release", l.id], 180_000)).catch(() => {}))));
+		await Promise.all(this.list().map((l) => (this.#forget(l), withHost(l.host, () => releaseLease(l.id)).catch(() => {}))));
 	}
 }
 
