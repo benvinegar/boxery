@@ -12,6 +12,10 @@ set -euo pipefail
 resolve() { local p=$1; while [ -L "$p" ]; do local t; t=$(readlink "$p"); case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac; done; echo "$p"; }  # macOS has no readlink -f
 ROOT=$(cd "$(dirname "$(resolve "$0")")/.." && pwd)
 CONF=${BOXERY_CONF:-$HOME/.config/boxery}
+# Non-interactive ssh sessions on macOS get sshd's bare PATH, without Homebrew, so limactl and jq (from
+# Homebrew) aren't found there (#143). Appended, so the caller's PATH still wins. The launchd services
+# get the same directories (host/setup.mjs).
+if [[ $(uname) == Darwin ]]; then PATH=$PATH:/opt/homebrew/bin:/usr/local/bin; fi
 # Settings persisted by `init`. Explicit env vars win over the file. Same list as HOST_ENV in host/config.mjs.
 if [ -f "$CONF/host.env" ]; then
 	while IFS='=' read -r k v; do

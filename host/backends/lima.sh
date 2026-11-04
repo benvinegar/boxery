@@ -51,7 +51,10 @@ backend_check() {
 # it. By default qemu guests send DNS to the host agent's resolver on a random loopback port, so confined
 # qemu instances use slirp's own DNS forwarder (.3 on the user network, inside qemu) instead; vz answers
 # DNS inside gvisor.
-lima_free_port() { "${BOXERY_NODE:-node}" -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
+# The port goes out with process.stdout.write, not console.log: with FORCE_COLOR set (the test runner sets it
+# for its children when run in a terminal), console.log colours a number with ANSI escapes, and that
+# isn't a port.
+lima_free_port() { "${BOXERY_NODE:-node}" -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { process.stdout.write(`${s.address().port}\n`); s.close(); })'; }
 lima_profile() { # SSH_PORT → Seatbelt profile (later rules win)
 	printf '(version 1)\n(allow default)\n(deny network-outbound (remote ip "localhost:*"))\n'
 	printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$PROXY_PORT" "$1"
@@ -135,7 +138,11 @@ lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	rm -f "$f.files.sh"
 }
 
-backend_has_base() { lima_exists_inst "$LIMA_BASE"; }
+backend_has_base() { # exit 2 when it can't tell, so a missing limactl isn't reported as a missing base (#143)
+	command -v limactl >/dev/null || { echo "boxery-host: limactl not found (PATH=$PATH); install Lima, or put limactl on PATH for non-interactive ssh sessions" >&2; exit 2; }
+	local j; j=$(lima_json "$LIMA_BASE") || { echo "boxery-host: cannot inspect Lima instances (limactl list failed)" >&2; exit 2; }
+	[[ -n $j ]]
+}
 backend_exists() { lima_exists_inst "$(linst "$1")"; }
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
