@@ -1,0 +1,16 @@
+{
+  "name": "boxery-evals",
+  "private": true,
+  "description": "Agent behaviour evals for the boxery MCP server: when agents reach for the vm_* tools, which ones, and whether they follow instructions",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "eval": "node run.mjs",
+    "history": "node history.mjs",
+    "compare": "node compare.mjs",
+    "index": "node history.mjs --write-index",
+    "typecheck": "tsc -p ."
+  }
+}
