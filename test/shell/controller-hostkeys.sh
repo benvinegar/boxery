@@ -24,7 +24,7 @@ P=$BOXERY_HOME/profiles/local
 echo 'GRANT_CONFIRM=off' >>"$P/config" # offline automation fixture
 G=$("$REAL_SSH" -F "$P/ssh_config" -G demo.boxery)
 printf '%s\n' "$G" | grep -qx 'stricthostkeychecking true' && ok "ssh_config: StrictHostKeyChecking yes" || bad "strict: $(printf '%s\n' "$G" | grep stricthost)"
-printf '%s\n' "$G" | grep -Fqx "knownhostscommand \"$H\" known-hosts %H" && ok "ssh_config: the host's pinned key via KnownHostsCommand known-hosts %H" || bad "knownhostscommand: $(printf '%s\n' "$G" | grep knownhostscommand)"
+printf '%s\n' "$G" | grep -Fqx "knownhostscommand /bin/sh -c \"exec \\\"$H\\\" known-hosts \\\"\$1\\\"\" sh %H" && ok "ssh_config: the host's pinned key via KnownHostsCommand (/bin/sh -c … known-hosts %H)" || bad "knownhostscommand: $(printf '%s\n' "$G" | grep knownhostscommand)"
 printf '%s\n' "$G" | grep -qx 'userknownhostsfile none' && printf '%s\n' "$G" | grep -qx 'globalknownhostsfile none' &&
 	ok "ssh_config: no local known_hosts (never /dev/null, never ~/.ssh/known_hosts)" || bad "known_hosts files: $(printf '%s\n' "$G" | grep knownhostsfile)"
 printf '%s\n' "$G" | grep -qx 'checkhostip no' && printf '%s\n' "$G" | grep -qx 'updatehostkeys false' && ok "ssh_config: CheckHostIP and UpdateHostKeys off" || bad "checkhostip/updatehostkeys"
@@ -94,10 +94,26 @@ if [ -n "$SSHD" ] && [ -x "$SSHD" ]; then
 	}
 	printf 'demo.boxery %s\n' "$(cut -d' ' -f1-2 "$d/right.pub")" >"$BOXERY_CONF/host-keys/demo"
 	run_ssh() { "$REAL_SSH" -F "$P/ssh_config" -o "ProxyCommand=nc 127.0.0.1 $port" -o ControlMaster=no -o ControlPath=none -o "User=$(id -un)" -o BatchMode=yes demo.boxery true 2>"$d/err"; }
+	# A remote host (user@host): KnownHostsCommand reaches it through ssh, which ssh itself runs without a
+	# shell. The stub ssh runs the remote command line under /bin/sh, as the host's sshd would; the
+	# host path has a space and an apostrophe and is left for the host to expand (~/).
+	sb=$tmp/stub; rh=$tmp/remote-home; rel="bin/boxery's host"; mkdir -p "$sb" "$rh/bin"
+	printf '#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do case $1 in -o) shift 2 ;; --) shift ;; *) break ;; esac; done\nshift; HOME=%q exec /bin/sh -c "$*"\n' "$rh" >"$sb/ssh"
+	printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$H" >"$rh/$rel"; chmod +x "$sb/ssh" "$rh/$rel"
+	# shellcheck disable=SC2088 # a literal ~ is for the remote host to expand
+	PATH="$sb:$PATH" "$CLI" host add remote user@hostbox --host-bin "~/$rel" >/dev/null 2>&1 || bad "host add remote"
+	R=$BOXERY_HOME/profiles/remote
+	run_remote() { PATH="$sb:$PATH" "$REAL_SSH" -F "$R/ssh_config" -o "ProxyCommand=nc 127.0.0.1 $port" -o ControlMaster=no -o ControlPath=none -o "User=$(id -un)" -o BatchMode=yes demo.boxery true 2>"$d/err"; }
 	if start_sshd right && command -v nc >/dev/null; then
 		run_ssh && ok "real ssh: the pinned key is accepted" || bad "pinned key refused: $(cat "$d/err" "$d/log")"
+		grep -q '^  KnownHostsCommand /bin/sh -c ' "$R/ssh_config" && run_remote && ok "real ssh, remote host: KnownHostsCommand runs as ssh splits it and the pinned key is accepted" || bad "remote host: $(cat "$d/err"; grep KnownHosts "$R/ssh_config")"
+		# A profile written by 0.9.0 (a shell line ssh can't run) is rewritten on the next command.
+		sed -i.bak 's#^  KnownHostsCommand .*#  KnownHostsCommand ssh -o LogLevel=ERROR -- "user@hostbox" "exec x" known-hosts %H#' "$R/ssh_config"
+		PATH="$sb:$PATH" "$CLI" --host remote ls >/dev/null 2>&1 || true
+		run_remote && ok "...and a 0.9.0 ssh_config is rewritten to the working form" || bad "not rewritten: $(grep KnownHosts "$R/ssh_config")"
 		start_sshd wrong
 		if run_ssh; then bad "real ssh: a VM presenting another key was accepted"; else grep -q "REMOTE HOST IDENTIFICATION HAS CHANGED\|Host key verification failed" "$d/err" && ok "real ssh: a spoofed endpoint (another key) is refused" || bad "refused for another reason: $(cat "$d/err")"; fi
+		if run_remote; then bad "real ssh, remote host: another key was accepted"; else ok "real ssh, remote host: a spoofed endpoint is refused"; fi
 		rm "$BOXERY_CONF/host-keys/demo"
 		if run_ssh; then bad "real ssh: a VM without a record was accepted"; else ok "real ssh: a VM without a pinned key is refused"; fi
 	else echo "  - skipped the real-sshd checks (sshd or nc unavailable: $(tail -2 "$d/log" 2>/dev/null))"; fi
