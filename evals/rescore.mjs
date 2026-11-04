@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { cases } from "./cases.mjs";
-import { ROOT, boxeryInfo, check, ctxFor, saveResult, suiteInfo, writeOut } from "./lib/report.mjs";
+import { ROOT, boxeryInfo, check, ctxFor, hostOf, saveResult, suiteInfo, writeOut } from "./lib/report.mjs";
 
 const { values: opt, positionals } = parseArgs({
 	allowPositionals: true,
@@ -32,7 +32,7 @@ for (const ref of positionals) {
 	const options = old.options;
 	const runs = before.flatMap((r) => {
 		const c = cases.find((x) => x.id === r.id);
-		return c ? [{ ...r, ...check(c, r, ctxFor(c, options), r.results) }] : [];
+		return c ? [{ ...r, ...check(c, r, ctxFor(c, options, hostOf(old)), r.results) }] : [];
 	});
 	const meta = {
 		...old,

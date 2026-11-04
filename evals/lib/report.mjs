@@ -26,8 +26,14 @@ export function workDir() {
 	return dir;
 }
 
-/** What a case's prompt and checks see. workDir is null when rescoring (the run's work dir is gone). @param {string | null} [workDir] */
-export const ctxFor = (c, { vm, otherVm }, workDir = null) => ({ vm, otherVm, defaultVm: c.cfg === "vm" ? vm : undefined, workDir, pkgLines: PKG_LINES, token: TOKEN });
+/**
+ * What a case's prompt and checks see. defaultHost is the session's host (the server's default, as
+ * `boxery version --json` names it). workDir is null when rescoring (the run's work dir is gone).
+ * @param {any} c @param {{ vm: string, otherVm: string }} opts @param {string} defaultHost @param {string | null} [workDir]
+ */
+export const ctxFor = (c, opts, defaultHost, workDir = null) => ({ vm: opts.vm, otherVm: opts.otherVm, defaultVm: c.cfg === "vm" ? opts.vm : undefined, defaultHost, workDir, pkgLines: PKG_LINES, token: TOKEN });
+/** The session host a run used, from its metadata. */
+export const hostOf = (meta) => meta.boxery.host?.host?.name ?? "local";
 
 /**
  * Run a case's checks over a trace. A check that can't run again (it reads the work dir, gone when
@@ -62,14 +68,39 @@ export function suiteInfo() {
 export const boxeryInfo = () => ({ commit: git("rev-parse", "HEAD"), describe: git("describe", "--tags", "--always"), dirty: dirty(".", ":!evals") });
 
 /** Tool arguments that say how boxery was used and are safe to publish; commands, file contents and answers stay in out/. */
-const PUBLIC_ARGS = ["action", "vm", "to", "host", "headless", "use", "shape", "snapshot", "spec", "readonly", "timeout"];
+const PUBLIC_ARGS = ["action", "vm", "host", "headless", "use", "shape", "snapshot", "spec", "readonly", "timeout"];
+/** Arguments published for one tool only: vm_manage's `to` is fork names (vm_copy's is a path). */
+const PUBLIC_ARGS_FOR = { vm_manage: ["to"] };
 const TMP = [tmpdir(), "/private/var/folders", "/var/folders", "/private/tmp", "/tmp"].map((p) => path.resolve(p));
-const scrub = (v) =>
-	typeof v === "string" ? TMP.reduce((s, p) => s.split(p).join("<tmp>"), v).replace(/<tmp>[^\s"'=]*/g, "<tmp>").split(homedir()).join("~")
-	: Array.isArray(v) ? v.map(scrub) : v;
+/** Temp paths → <tmp>, anything under home → ~/…, the eval's token → <token>; recursively. */
+export const scrub = (v) =>
+	typeof v === "string"
+		? TMP.reduce((s, p) => s.split(p).join("<tmp>"), v.split(TOKEN).join("<token>")).replace(/<tmp>[^\s"'=]*/g, "<tmp>").split(homedir()).join("~").replace(/~\/[^\s"'=]*/g, "~/…")
+		: Array.isArray(v) ? v.map(scrub)
+		: v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x)]))
+		: v;
+const versionOf = (x) => (x && typeof x === "object" ? x.version ?? null : x ?? null);
+/** What results/ keeps of the run's metadata: the host's versions but not its name, and a scrubbed command. */
+export const publicMeta = (meta) => ({
+	...meta,
+	command: scrub(meta.command),
+	boxery: { ...meta.boxery, host: meta.boxery.host && { controller: versionOf(meta.boxery.host.controller), host: versionOf(meta.boxery.host.host) } },
+});
 
-/** Per-run results with tool arguments reduced to PUBLIC_ARGS: what results/ keeps. */
-export function scorecard(runs) {
+/**
+ * A tool call as results/ keeps it: name, denied, and PUBLIC_ARGS scrubbed. A `host` other than the
+ * session's (or `local`) becomes <other host>: users' host names aren't published.
+ * @param {{ tool: string, denied?: boolean, input?: any, args?: any }} x @param {string} sessionHost
+ */
+export function publicCall(x, sessionHost) {
+	const input = x.input ?? x.args ?? {};
+	const args = Object.fromEntries([...PUBLIC_ARGS, ...(PUBLIC_ARGS_FOR[x.tool] ?? [])].filter((k) => input[k] !== undefined).map((k) => [k, scrub(input[k])]));
+	if (typeof args.host === "string" && ![sessionHost, "local"].includes(args.host)) args.host = "<other host>";
+	return { tool: x.tool, denied: x.denied || undefined, args };
+}
+
+/** Per-run results with tool calls reduced by publicCall: what results/ keeps. @param {string} sessionHost */
+export function scorecard(runs, sessionHost) {
 	return cases.filter((c) => runs.some((r) => r.id === c.id)).map((c) => ({
 		id: c.id,
 		category: c.category,
@@ -77,9 +108,9 @@ export function scorecard(runs) {
 		runs: runs.filter((r) => r.id === c.id).map((r) => ({
 			rep: r.rep,
 			pass: r.pass,
-			error: r.error || undefined,
+			error: r.error ? scrub(r.error).slice(0, 120) : undefined,
 			checks: r.results.map(({ level, name, ok }) => ({ level, name, ok })),
-			calls: r.calls.map((x) => ({ tool: x.tool, denied: x.denied || undefined, args: Object.fromEntries(PUBLIC_ARGS.filter((k) => x.input?.[k] !== undefined).map((k) => [k, scrub(x.input[k])])) })),
+			calls: r.calls.map((x) => publicCall(x, sessionHost)),
 			turns: r.turns,
 			cost: +r.cost.toFixed(4),
 			ms: r.ms,
@@ -98,7 +129,7 @@ export function summary(card, meta, full = null) {
 		`| | |`,
 		`|---|---|`,
 		`| model | ${meta.claude.model} (Claude Code ${meta.claude.cli}) |`,
-		`| boxery | \`${meta.boxery.commit.slice(0, 12)}\` (${meta.boxery.describe})${meta.boxery.dirty ? ", uncommitted changes" : ""}; host ${meta.boxery.host?.host?.version ?? "?"} |`,
+		`| boxery | \`${meta.boxery.commit.slice(0, 12)}\` (${meta.boxery.describe})${meta.boxery.dirty ? ", uncommitted changes" : ""}; host ${meta.boxery.host?.host?.version ?? meta.boxery.host?.host ?? "?"} |`,
 		`| suite | v${meta.suite.version}, \`${meta.suite.hash}\`${meta.suite.dirty ? ", uncommitted changes" : ""}${meta.rescored ? `; rescored ${meta.rescored.at.slice(0, 10)} from a v${meta.rescored.from.version} run` : ""} |`,
 		`| runs | ${runs.length}: ${runs.filter((r) => r.pass).length} passed every must check; should checks ${shoulds.filter((x) => x.ok).length}/${shoulds.length}; $${meta.cost} |`,
 		`| command | \`${meta.command}\` |`,
@@ -137,7 +168,7 @@ export function summary(card, meta, full = null) {
 
 /** Write a run (or a rescore) to its out/ directory: everything, including full traces. */
 export function writeOut(dir, meta, runs) {
-	const card = scorecard(runs);
+	const card = scorecard(runs, hostOf(meta));
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
 	writeFileSync(path.join(dir, "results.json"), JSON.stringify({ runs }, null, 2));
@@ -152,9 +183,10 @@ export function saveResult(meta, card) {
 	let dir = base;
 	for (let i = 2; existsSync(dir); i++) dir = `${base}-${i}`;
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+	const pub = publicMeta(meta);
+	writeFileSync(path.join(dir, "meta.json"), JSON.stringify(pub, null, 2) + "\n");
 	writeFileSync(path.join(dir, "scorecard.json"), JSON.stringify(card, null, 2) + "\n");
-	writeFileSync(path.join(dir, "summary.md"), summary(card, meta));
+	writeFileSync(path.join(dir, "summary.md"), summary(card, pub));
 	writeIndex();
 	return dir;
 }

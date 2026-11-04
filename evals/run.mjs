@@ -19,7 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { cases } from "./cases.mjs";
-import { ROOT, boxeryInfo, check, ctxFor, saveResult, suiteInfo, summary, workDir, writeOut } from "./lib/report.mjs";
+import { ROOT, boxeryInfo, check, ctxFor, hostOf, saveResult, suiteInfo, summary, workDir, writeOut } from "./lib/report.mjs";
 
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
 // Local tools act on a throwaway work dir. In VMs only lookups run, unless a case sets `exec`:
@@ -81,7 +81,7 @@ function tryJson(cmd, args) {
 /** Run one case once; resolve with its trace and check results. */
 async function runOne(c, rep) {
 	const dir = workDir();
-	const ctx = ctxFor(c, options, dir);
+	const ctx = ctxFor(c, options, hostOf(meta), dir);
 	const mcp = path.join(dir, "..", `${path.basename(dir)}.mcp.json`);
 	writeFileSync(mcp, JSON.stringify({ mcpServers: { boxery: { command: process.execPath, args: [SERVER, ...(ctx.defaultVm ? ["--vm", ctx.defaultVm] : [])] } } }));
 	const args = ["-p", c.prompt(ctx), "--mcp-config", mcp, "--strict-mcp-config", "--setting-sources", "project", "--output-format", "stream-json", "--verbose", "--max-turns", "12",
@@ -91,17 +91,19 @@ async function runOne(c, rep) {
 	if (opt["tool-search"]) env.ENABLE_TOOL_SEARCH = opt["tool-search"] === "off" ? "false" : "true";
 
 	const t0 = Date.now();
-	const raw = await new Promise((resolve) => {
+	// stdout and stderr apart, so stderr can't split a stream-json line; stderr is appended after.
+	const { raw, timedOut } = await new Promise((resolve) => {
 		const p = spawn("claude", args, { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] });
-		let out = "";
+		let out = "", err = "", timedOut = false;
 		p.stdout.on("data", (d) => (out += d));
-		p.stderr.on("data", (d) => (out += d));
-		const timer = setTimeout(() => p.kill("SIGTERM"), TIMEOUT_MS);
-		p.on("close", () => (clearTimeout(timer), resolve(out)));
+		p.stderr.on("data", (d) => (err += d));
+		const timer = setTimeout(() => ((timedOut = true), p.kill("SIGTERM")), TIMEOUT_MS);
+		p.on("close", () => (clearTimeout(timer), resolve({ raw: out + (err && !out.endsWith("\n") ? "\n" : "") + err, timedOut })));
 	});
 	writeFileSync(path.join(outDir, "raw", `${c.id}.${rep}.jsonl`), raw);
 
 	const t = parse(raw);
+	if (timedOut) t.error = `timed out after ${TIMEOUT_MS / 1000} s`;
 	const { results, pass } = check(c, t, ctx);
 	rmSync(dir, { recursive: true, force: true });
 	rmSync(mcp, { force: true });
@@ -110,6 +112,7 @@ async function runOne(c, rep) {
 
 /** stream-json transcript → { model, deferred, calls, final, cost, turns, error } */
 function parse(raw) {
+	let ended = false;
 	const t = { model: "", deferred: false, calls: /** @type {{ tool: string, input: any, denied: boolean, error: boolean }[]} */ ([]), final: "", cost: 0, turns: 0, error: "" };
 	const byId = new Map();
 	for (const line of raw.split("\n")) {
@@ -136,6 +139,7 @@ function parse(raw) {
 		for (const x of e.type === "user" && Array.isArray(e.message?.content) ? e.message.content : [])
 			if (x.type === "tool_result" && x.is_error && byId.has(x.tool_use_id)) byId.get(x.tool_use_id).error = true;
 		if (e.type === "result") {
+			ended = true;
 			t.final = e.result ?? "";
 			t.cost = e.total_cost_usd ?? 0;
 			t.turns = e.num_turns ?? 0;
@@ -144,6 +148,8 @@ function parse(raw) {
 		}
 	}
 	if (!t.model && !t.error) t.error = `no transcript: ${raw.slice(0, 200)}`;
+	// A session that ends without a result event (killed, crashed) is judged on nothing, not on a partial trace.
+	if (!ended && !t.error) t.error = "no result event (killed or crashed)";
 	return t;
 }
 

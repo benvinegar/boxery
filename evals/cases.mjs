@@ -1,14 +1,14 @@
 // Eval cases for the boxery MCP server: prompts given to a headless `claude -p` session that has
 // only boxery-mcp loaded, and checks over the tools it called. See README.md.
 //
-// A trace is { calls: [{ tool, input, denied, error }], final, toolCount }, where `tool` is the
-// short name (`vm_bash`, `Bash`, `Read`). `ctx` is { vm, otherVm, defaultVm, workDir, pkgLines, token }.
+// A trace is { calls: [{ tool, input, denied, error }], final, error }, where `tool` is the short name
+// (`vm_bash`, `Bash`, `Read`). `ctx` is { vm, otherVm, defaultVm, defaultHost, workDir, pkgLines, token }.
 // `must` checks decide pass/fail; `should` checks are tracked separately as quality signals.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
 /** Bump when a prompt, check, fixture or the allowed tools change: results compare only within a version. */
-export const SUITE_VERSION = 3;
+export const SUITE_VERSION = 4;
 
 const must = (name, test) => ({ level: "must", name, test });
 const should = (name, test) => ({ level: "should", name, test });
@@ -18,8 +18,10 @@ const has = (t, tool, pred) => calls(t, tool, pred).length > 0;
 const vmCalls = (t) => t.calls.filter((c) => c.tool.startsWith("vm_"));
 /** vm_* calls that do work, not lookups */
 const vmWork = (t) => vmCalls(t).filter((c) => c.tool !== "vm_info");
-/** The VM a call acts on: its `vm`, else the session default (a call to another host never inherits it) */
-const target = (c, ctx) => c.input?.vm ?? (c.input?.host ? undefined : ctx.defaultVm);
+/** The VM a call acts on: its `vm`, else the session default, unless the call names another host (as the server's callTarget does) */
+const target = (c, ctx) => c.input?.vm ?? (c.input?.host && c.input.host !== ctx.defaultHost ? undefined : ctx.defaultVm);
+/** vm_manage calls the eval let through: none today, but a check shouldn't credit a plan over a real call */
+const managed = (t) => t.calls.some((c) => c.tool === "vm_manage" && !c.denied);
 /**
  * The eval declines every call it doesn't allow, and an agent that stops there to ask, with X as its
  * plan, has done what a user who declined would want. So that counts as doing X.
@@ -179,7 +181,7 @@ export const cases = [
 		checks: [
 			must("forks the current VM into 3 copies (or plans to, after a decline)", (t, c) =>
 				calls(t, "vm_manage", (i) => i.action === "fork" && (i.vm ?? c.defaultVm) === c.vm).reduce((n, x) => n + [].concat(x.input.to ?? [null]).length, 0) >= 3 ||
-				(!has(t, "vm_manage") && declinedWithPlan(t, /\bfork/i))),
+				(!managed(t) && declinedWithPlan(t, /\bfork/i))),
 			must("no fresh VMs", (t) => !has(t, "vm_manage", (i) => i.action === "new")),
 		],
 	},
@@ -202,7 +204,7 @@ export const cases = [
 		expect: "vm_manage snap (or fork) of the current VM",
 		checks: [
 			must("snapshots or forks the VM (or plans to, after a decline)", (t, c) =>
-				has(t, "vm_manage", (i) => ["snap", "fork"].includes(i.action) && (i.vm ?? c.defaultVm) === c.vm) || (!has(t, "vm_manage") && declinedWithPlan(t, /\b(snap|fork)/i))),
+				has(t, "vm_manage", (i) => ["snap", "fork"].includes(i.action) && (i.vm ?? c.defaultVm) === c.vm) || (!managed(t) && declinedWithPlan(t, /\b(snap|fork)/i))),
 			should("uses snap", (t) => has(t, "vm_manage", (i) => i.action === "snap")),
 		],
 	},

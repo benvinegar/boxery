@@ -1,24 +1,22 @@
 #!/usr/bin/env node
 // Compare two results case by case: what got better or worse between commits, suites or models.
 //
-//   node compare.mjs                              the latest result vs the latest earlier run of its model and suite
+//   node compare.mjs                              the latest full run vs the run before it (same model and suite)
 //   node compare.mjs previous:opus latest:opus    two results by reference
 //   node compare.mjs latest:haiku latest:opus     two models
 //   node compare.mjs results/<id> out/<timestamp> a saved result vs a local run
 //
 // A reference is an id in results/, a directory holding meta.json + scorecard.json (results/ or
 // out/), latest, or latest:MODEL / previous:MODEL, where MODEL matches part of the model id.
-import { caseStats, frac, listResults, pct, resolve } from "./lib/results.mjs";
+import { caseStats, frac, pct, previousOf, resolve } from "./lib/results.mjs";
 
 let [a, b] = process.argv.slice(2);
 if (!b) {
-	// The latest result, against the latest earlier run of the same model checked by the same suite
-	// version (not a rescore of the same run).
+	// The latest result, against the run before it (previousOf: same model and suite version, full runs only).
 	const latest = resolve(a ?? "latest");
-	const { model } = latest.meta.claude;
-	const prev = listResults().filter((r) => r.meta.claude.model === model && r.meta.suite.version === latest.meta.suite.version && r.meta.started < latest.meta.started).at(-1);
+	const prev = previousOf(latest);
 	if (!prev) {
-		console.error(`No earlier ${model} result under suite v${latest.meta.suite.version} than ${latest.id}. Name two to compare, e.g. node compare.mjs latest:haiku latest:opus`);
+		console.error(`No earlier full ${latest.meta.claude.model} run under suite v${latest.meta.suite.version} than ${latest.id}. Name two to compare, e.g. node compare.mjs latest:haiku latest:opus`);
 		process.exit(1);
 	}
 	[a, b] = [prev.dir, latest.dir];
@@ -46,7 +44,9 @@ const head = ["case", "A pass", "B pass", "A should", "B should", "change"];
 const w = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
 for (const r of [head, ...rows]) console.log(r.map((c, i) => c.padEnd(w[i])).join("  ").trimEnd());
 
-const tot = (s) => Object.values(s).reduce((t, c) => ({ runs: t.runs + c.runs, passed: t.passed + c.passed, ok: t.ok + c.shouldOk, n: t.n + c.shouldTotal }), { runs: 0, passed: 0, ok: 0, n: 0 });
+// Totals over the cases both results ran, so a partial or older suite doesn't skew them.
+const shared = ids.filter((id) => sa[id] && sb[id]);
+const tot = (s) => shared.map((id) => s[id]).reduce((t, c) => ({ runs: t.runs + c.runs, passed: t.passed + c.passed, ok: t.ok + c.shouldOk, n: t.n + c.shouldTotal }), { runs: 0, passed: 0, ok: 0, n: 0 });
 const [ta, tb] = [tot(sa), tot(sb)];
-console.log(`\nall    A ${pct(ta.passed, ta.runs)} pass, ${pct(ta.ok, ta.n)} should   B ${pct(tb.passed, tb.runs)} pass, ${pct(tb.ok, tb.n)} should`);
+console.log(`\n${shared.length < ids.length ? `${shared.length} shared cases` : "all"}    A ${pct(ta.passed, ta.runs)} pass, ${pct(ta.ok, ta.n)} should   B ${pct(tb.passed, tb.runs)} pass, ${pct(tb.ok, tb.n)} should`);
 console.log("Agents vary between runs: a one-run change in a case is noise until it repeats.");

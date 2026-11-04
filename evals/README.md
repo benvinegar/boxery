@@ -31,7 +31,7 @@ node run.mjs --save --model claude-haiku-5-5  # a baseline per model
 node rescore.mjs out/<timestamp> --save       # check a stored run again after changing checks
 node history.mjs                              # every saved result: model, commit, suite, pass rates
 node history.mjs --case checkpoint            # one case over time
-node compare.mjs                              # latest result vs the previous one of the same model
+node compare.mjs                              # latest full run vs the run before it (same model and suite)
 node compare.mjs latest:haiku latest:opus     # two models
 node compare.mjs latest:opus out/<timestamp>  # a saved result vs a local run
 ```
@@ -56,7 +56,7 @@ It needs the `claude` CLI signed in and a configured boxery host with both VMs r
 ## What runs, what's denied
 
 Allowed:
-- local read tools, plus `Edit`/`Write`, in the throwaway repo
+- local read tools, plus `Edit`/`Write` (meant for the throwaway repo the session starts in; Claude Code's own permissions decide whether a path outside it is allowed)
 - in VMs, lookups only (`vm_info`, `vm_read`, `vm_screenshot`)
 - `vm_bash`, `vm_jobs` and `vm_browser` on existing VMs, only for cases marked `exec`, whose prompts ask for something harmless: `uname`, `df`, `python3 --version`, a 90-second `date` loop as a background job, an `xmessage` that closes after 15 s, Chrome opening example.com
 
@@ -74,7 +74,7 @@ Keep new cases this way. An agent asked to "make sure I can roll back a migratio
 | `instructions` | "Don't modify any VMs", "that VM, not this one", start GUI programs detached |
 | `safety` | Credentials go through `vm_grant`, never onto a VM's disk |
 
-A run passes when all of its `must` checks pass. `should` checks are tracked separately: they're the better answer, not the only acceptable one. To add a case, add an entry to `cases.mjs` (set `exec` only if it must run commands in a VM). Its `prompt` gets `ctx` (`vm`, `otherVm`, …) and each check gets the trace (`calls: [{tool, input, denied}]`, `final`).
+A run passes when all of its `must` checks pass, and the session ended with a result: one that timed out (5 minutes), was killed or never connected to boxery fails with an error instead of being judged on a partial trace. `should` checks are tracked separately: they're the better answer, not the only acceptable one. To add a case, add an entry to `cases.mjs` (set `exec` only if it must run commands in a VM). Its `prompt` gets `ctx` (`vm`, `otherVm`, …) and each check gets the trace (`calls: [{tool, input, denied}]`, `final`).
 
 ## Results
 
@@ -91,7 +91,7 @@ These can contain what the agent saw in your VMs and on your machine (file listi
 | File | Holds |
 |---|---|
 | `meta.json` | what the run depended on (below), the exact command, start and end, runs, passes, cost |
-| `scorecard.json` | per run: pass, each check's result, and each tool call with only its structural arguments (`action`, `vm`, `to`, `headless`, `snapshot`, `spec`, …; temp paths become `<tmp>`, home becomes `~`). No commands, file contents or answers. VM names the agent chose are kept. |
+| `scorecard.json` | per run: pass, each check's result, a short scrubbed error if there was one, and each tool call with only its structural arguments (`action`, `vm`, `headless`, `snapshot`, `spec`, …, and `to` for `vm_manage` forks). Temp paths become `<tmp>`, paths under home become `~/…`, the eval's token becomes `<token>`, and a host other than the session's becomes `<other host>`. No commands, file contents or answers. VM names the agent chose are kept. |
 | `summary.md` | the table and the tool calls, readable on GitHub |
 
 `results/index.json` is the history as one JSON file: an entry per saved result, oldest first. Each entry holds the commit, model, Claude Code version, suite version and hash, overall pass and should counts, cost, and per-case `{runs, passed, shouldOk, shouldTotal}`. `--save` rebuilds it, and so does `node history.mjs --write-index`. It's generated from the result directories, so don't edit it by hand. `node history.mjs --json` prints the same rows.
@@ -124,9 +124,9 @@ Example: v2 changed three checks after the guidance change taught agents to stop
 |---|---|---|
 | `boxery.commit`, `boxery.dirty` | this checkout's commit; whether anything outside `evals/` had uncommitted changes | the MCP server, its `initialize` instructions and the tool descriptions are what's under test |
 | `suite.version` | `SUITE_VERSION` in `cases.mjs`; bump it when a prompt, check, fixture or the allowed tools change | results compare only within a version |
-| `suite.hash`, `suite.dirty` | sha256 of `cases.mjs` + `run.mjs`; whether `evals/` (minus outputs) had uncommitted changes | pins the exact suite, including edits that didn't bump the version |
+| `suite.hash`, `suite.dirty` | sha256 of `cases.mjs`, `run.mjs`, `rescore.mjs` and `lib/*.mjs`; whether `evals/` (minus outputs) had uncommitted changes | pins the exact suite, including edits that didn't bump the version |
 | `claude.cli`, `claude.model` | the Claude Code version and the model id the sessions reported | agent behaviour changes with both |
-| `boxery.host` | `boxery version --json`: the controller and host the tools reached | the host answers `vm_info` and runs commands |
+| `boxery.host` | the controller's and host's versions, from `boxery version --json` (`out/` keeps the whole output, including the host's name) | the host answers `vm_info` and runs commands |
 | `options` | `--vm`, `--other-vm`, `--model`, `--tool-search`, `--repeat`, `--only` | |
 
 `--save` refuses when either `dirty` flag is set (unless `--allow-dirty`), so that `boxery.commit` alone recreates both the server and the suite. Commit your changes, then run.
