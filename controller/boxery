@@ -24,6 +24,16 @@ setup_name() {
 	printf '%s\n' "$d"
 }
 cmd_setup_named() {
+	# OpenShell onboarding is local Node orchestration; ordinary SSH setup stays dependency-free.
+	local prev="" arg
+	for arg in "$@"; do
+		if [ "$prev" = --backend ] && [ "$arg" = openshell ]; then
+			command -v node >/dev/null 2>&1 || die "OpenShell setup needs Node >= 22.13 on this machine"
+			BOXERY_HOME="$ROOT_DIR" node "$(controller_root)/controller/setup-openshell.mjs" "$@"
+			return
+		fi
+		prev=$arg
+	done
 	local usage="usage: boxery setup user@host|local [--name NAME] [--key ~/.ssh/id_ed25519.pub] [--host-bin PATH] [--profile P] [--backend B]"
 	[ $# -ge 1 ] || die "$usage"
 	local name=""; local -a args=()
@@ -60,10 +70,6 @@ cmd_setup() {
 		valid_vm "$backend" || die "invalid backend: $backend"
 	fi
 	check_target
-	if [ -z "$pub" ]; then for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ecdsa.pub" "$HOME/.ssh/id_rsa.pub"; do [ -f "$k" ] && { pub=$k; break; }; done; fi
-	[ -f "$pub" ] || die "no ssh public key found; pass --key"
-	IDENTITY=${pub%.pub}
-	plain_path "$IDENTITY"
 	if is_local; then
 		echo "==> local mode: the VM host is this machine"
 		[ -x "$(local_host_bin)" ] || die "$(local_host_bin) not found; run host/boxery-host init here first"
@@ -78,8 +84,18 @@ cmd_setup() {
 	elif [ -n "$HOST_PROFILE" ]; then
 		h help >/dev/null || die "cannot use host profile $HOST_PROFILE on $HOST"
 	fi
-	echo "==> registering $pub with host (applies to VMs created from now on)"
-	h add-key <"$pub"
+	local auth_backend; auth_backend=$(h backend 2>/dev/null) || auth_backend=""
+	if [ "$auth_backend" = openshell ]; then
+		IDENTITY=""
+		echo "==> OpenShell gateway authenticates access; no guest SSH key registration needed"
+	else
+		if [ -z "$pub" ]; then for k in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_ecdsa.pub" "$HOME/.ssh/id_rsa.pub"; do [ -f "$k" ] && { pub=$k; break; }; done; fi
+		[ -f "$pub" ] || die "no ssh public key found; pass --key"
+		IDENTITY=${pub%.pub}
+		plain_path "$IDENTITY"
+		echo "==> registering $pub with host (applies to VMs created from now on)"
+		h add-key <"$pub"
+	fi
 	mkdir -p "$CONF_DIR"
 	{
 		printf 'HOST='; literal "$HOST"; printf '\nHOST_BIN='; literal "$HOST_BIN"; printf '\nIDENTITY='; literal "$IDENTITY"; printf '\n'
@@ -103,7 +119,9 @@ cmd_setup() {
 			printf '    %s\n' "$include"
 		fi
 	fi
-	if [ -n "$backend" ]; then
+	if [ "$b" = openshell ]; then
+		echo "==> done. Try: boxery --host $selected new demo --headless (no desktop or build-base)"
+	elif [ -n "$backend" ]; then
 		hint="boxery build-base"; [ "$selected" = "$(default_host)" ] || hint="boxery --host $selected build-base"
 		echo "==> done. Headless VMs work now; desktop VMs need the base image once (~3 min): $hint"
 	else echo "==> done. Try: boxery new demo"; fi
@@ -967,6 +985,7 @@ usage() {
 		boxery — remote desktop VMs for coding agents
 
 		setup user@host|local [--name NAME] [--key K.pub] [--host-bin PATH] [--profile P [--backend B]]
+		setup local --backend openshell [--gateway G] [--image OCI] [--policy PATH] [--provider P] [--yes]
 		                                configure a VM host (local = this machine) + register your ssh key;
 		                                  NAME defaults to local / the host part of user@host
 		--host NAME COMMAND             route a command to a host other than the default

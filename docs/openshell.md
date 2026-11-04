@@ -6,9 +6,35 @@ This is an experimental integration, validated end-to-end with OpenShell 0.1.7 o
 
 ## Setup
 
-Install OpenShell and configure a trusted gateway separately, following [OpenShell's instructions](https://github.com/NVIDIA/OpenShell). Boxery does not install or reconfigure it. Use verified TLS for remote gateways. Access to the gateway's operator credentials is effectively administrative access to its sandboxes; never put those credentials inside the workload.
+Install OpenShell and start a trusted gateway using [OpenShell's instructions](https://github.com/NVIDIA/OpenShell). Boxery leaves gateway binaries, TLS and services under OpenShell's management. Access to gateway operator credentials is effectively administrative access to its sandboxes; never put those credentials inside the workload.
 
-Build the image in the engine used by the gateway (or push it to a registry accessible to that gateway):
+Then run:
+
+```bash
+boxery setup local --backend openshell
+boxery --host restricted new demo --headless
+boxery --host restricted run demo node --version
+```
+
+Guided setup discovers an existing authenticated HTTPS gateway, builds the bundled image for a local Docker gateway, saves an offline starter policy, chooses a unique sandbox prefix, and registers the Boxery host `restricted`. No environment-variable setup or guest SSH key is required. It displays the plan for confirmation; use `--yes` for noninteractive setup. If several gateways exist, choose `--gateway NAME` rather than silently using the active gateway.
+
+If the package-managed local gateway is running but not registered yet, add `--register-local`. This registers `https://127.0.0.1:17670` using OpenShell's existing TLS bundle; it does not generate certificates, start services, or disable verification. Missing dependencies and unavailable gateways produce installation/startup guidance.
+
+Settings and the editable policy live in `~/.config/boxery-restricted/`. Repeating setup preserves the prefix, configured image and edited policy. It refuses to repoint an initialized profile at another gateway/workspace/namespace; choose a new `--name` instead. `--name` also selects the host-side profile unless `--profile` is explicit.
+
+Explicit choices:
+
+```bash
+boxery setup local --backend openshell --gateway work --name restricted \
+  --workspace default --image registry.example/boxery:team \
+  --policy "$PWD/team-policy.yaml" --provider work-github --yes
+```
+
+`--provider` is repeatable and selects existing providers only; setup never imports credentials. Providers can add network permissions, so review their effective policy. Use `--image` for remote/non-Docker gateways or when the gateway uses a different Docker engine/context. Automatic builds use the current local Docker engine and reject remote Docker contexts. Run `boxery setup local --backend openshell --help` for all options.
+
+### Manual configuration / remote Boxery hosts
+
+The original environment-variable setup remains available. Build the image in the engine used by the gateway (or push it to a registry accessible to that gateway):
 
 ```bash
 docker build -t boxery-openshell:dev -f image/openshell/Dockerfile .
@@ -34,7 +60,7 @@ CPU and memory are requested through OpenShell; enforcement depends on its compu
 
 ## Credentials and policy
 
-The example policy starts offline. Add only the network destinations and binaries your project needs, using [OpenShell policies](https://github.com/NVIDIA/OpenShell/tree/main/docs/how-it-works/policies). For example, a GitHub workflow needs approved git/HTTPS endpoints and an explicitly configured provider with a dev-scoped token. Attach providers through `BOXERY_OPENSHELL_PROVIDERS` at creation or OpenShell's own commands. Boxery does not auto-import local credentials.
+The example policy starts offline. Add only the network destinations and binaries your project needs, using [OpenShell policies](https://github.com/NVIDIA/OpenShell/tree/main/docs/how-it-works/policies). For example, a GitHub workflow needs approved git/HTTPS endpoints and an explicitly configured provider with a dev-scoped token. Select existing providers during setup with `--provider NAME`, through `BOXERY_OPENSHELL_PROVIDERS` for manual configuration, or attach them with OpenShell's own commands. Setup settings affect newly created sandboxes; changing them does not update existing sandboxes. Boxery does not auto-import local credentials.
 
 Boxery `grant`, SSH-agent forwarding, its LLM proxy and pushed env/file grants are not supported. Keep the controlling agent outside the sandbox. Do not copy credentials into the sandbox to work around a policy denial. Provider attachments can add allowed network access; review the **effective** policy, not only the supplied YAML.
 
@@ -72,4 +98,4 @@ For other gateway versions/drivers and release qualification, also check:
 5. Confirm `snap`, `fork`, pool membership, grants and desktop tools fail rather than silently weakening isolation.
 6. Interrupt creation, then `reconcile`; check that only the selected namespace is cleaned up. An unavailable gateway must fail inventory, not report an empty host.
 
-Offline adapter checks: `node --test test/openshell.test.mjs`. These mocks alone do not establish kernel enforcement or gateway compatibility. The live runner tests the shared tools used by MCP and pi, not their client-specific UI. Provider rotation, multi-user authorization, MicroVM isolation and real-hypervisor crash recovery need separate qualification.
+Offline checks: `node --test test/openshell.test.mjs test/openshell-setup.test.mjs`. These mocks alone do not establish kernel enforcement or gateway compatibility. The live runner tests the shared tools used by MCP and pi, not their client-specific UI. Provider rotation, multi-user authorization, MicroVM isolation and real-hypervisor crash recovery need separate qualification.
