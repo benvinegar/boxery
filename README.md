@@ -79,15 +79,7 @@ Your machine and the host can be the same one. [Security model →](docs/securit
 
 ## Platforms
 
-The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stack of existing tools, and boxery drives the top of it, so agents get the same tools on every one except OpenShell.
-
-- **macOS: Lima.** VMs on the Mac you're on, through Apple's Virtualization framework. The quickest way to try boxery, and everything stays local.
-- **Linux: libvirt.** QEMU on KVM, and the fastest backend. Use a physical machine: a desktop, a laptop or a home server. A VPS works only if it offers nested virtualization.
-- **Linux: Cloud Hypervisor.** A leaner VMM on the same KVM, run by boxery directly. Experimental.
-- **Linux: [OpenShell](docs/openshell.md).** Headless sandboxes behind an OpenShell gateway, with a policy on what each one can read and reach. With its Docker driver they're containers on the host's kernel, not VMs. Headless only: no desktop, snapshots, forks or pool. Experimental.
-- **Cloud: exe.dev and boat.dev.** VMs on the provider, with no hardware of your own. For long-running work, keep the host on an always-on machine such as a small VPS. Experimental.
-
-One MCP server can drive several hosts [at once](docs/hosts.md). [Choosing a backend →](docs/install.md#choosing-a-backend)
+The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stack of existing tools, and boxery drives the top of it, so agents get the same tools on every one except OpenShell. One MCP server can drive several hosts [at once](docs/hosts.md). [Choosing a backend →](docs/install.md#choosing-a-backend)
 
 <p align="center">
   <picture>
@@ -95,6 +87,15 @@ One MCP server can drive several hosts [at once](docs/hosts.md). [Choosing a bac
     <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) has no manager, so boxery runs it directly; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers." width="680">
   </picture>
 </p>
+
+- **macOS: Lima.** VMs on the Mac you're on, through Apple's Virtualization framework. The quickest way to try boxery, and everything stays local.
+- **Linux: libvirt.** QEMU on KVM, and the fastest backend. Use a physical machine: a desktop, a laptop or a home server. A VPS works only if it offers nested virtualization.
+
+### Experimental
+
+- **Linux: Cloud Hypervisor.** A leaner VMM on the same KVM, run by boxery directly.
+- **Linux: [OpenShell](docs/openshell.md).** Headless sandboxes from [NVIDIA's OpenShell](https://github.com/NVIDIA/OpenShell), behind its gateway, with a policy on what each one can read and reach. With its Docker driver they're containers on the host's kernel, not VMs. No desktop, snapshots, forks or pool.
+- **Cloud: exe.dev and boat.dev.** VMs on the provider, with no hardware of your own. For long-running work, keep the host on an always-on machine such as a small VPS.
 
 ## Quick start
 
