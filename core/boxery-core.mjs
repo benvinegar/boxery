@@ -1264,7 +1264,7 @@ const WHEN_VM =
 	"Installing or running something the user asks for on their own machine still happens here.";
 /** @param {string} vm the VM to name in the `boxery grant` example @param {string} [host] the session's host, for --host */
 const credentials = (vm, host) =>
-	"Credentials reach a VM only through grants (vm_grant asks the user): git asking for a username or password for github.com means vm_grant github, no need to inspect first; for another git host, ask the user to grant it. Never put them in a VM with vm_copy, vm_write or vm_bash (they would land on its disk and in its snapshots). " +
+	"Access from the user's machine reaches a VM only through grants. When something in a VM fails because it lacks access the user has here, request it with vm_grant right away instead of investigating; its description says what can be granted. Never put credentials in a VM with vm_copy, vm_write or vm_bash (they would land on its disk and in its snapshots). " +
 	"If the user pastes a secret, don't save it to a file anywhere. Grants read their values again each time they're applied, so the secret has to live where boxery can read it: a file the user keeps it in (request file:PATH, e.g. file:~/.npmrc=.npmrc), " +
 	`or a command they register in their own terminal, such as a keychain lookup: \`boxery ${host ? `--host ${host} ` : ""}grant ${vm} env:NAME --cmd '…'\`. A value they only export in a terminal doesn't reach boxery. ` +
 	"If the user declines a grant, don't get that access into the VM another way (vm_copy, vm_write, vm_bash, or a value they paste): carry on without it, or ask them how to proceed.";
@@ -1295,7 +1295,7 @@ export function guidance(current, { localToolsNote, host } = {}) {
 		"If a request could mean a local file or the VM's copy, say which one you used.",
 		"Unless it was created headless, the VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`). A headless VM has /etc/boxery/headless and no desktop tools.",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
-		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant.",
+		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it.",
 		credentials(current, host),
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
 		"Before something risky, snapshot the VM with vm_manage {action:'snap'} (vm_manage {action:'revert'} restores it). To try several approaches in parallel, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
