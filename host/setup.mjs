@@ -329,7 +329,6 @@ async function pinExisting(rt) {
 // ---------------------------------------------------------------- commands
 /** @param {Runtime} rt */
 export async function init(rt) {
-	checkBackend(rt.backend, { env: rt.env });
 	const others = hostProfiles().filter((p) => path.resolve(p.conf) !== rt.conf);
 	if (rt.profile && !rt.env.BOXERY_PROXY_PORT) {
 		// First init of a named profile (later ones read the port back from its host.env). Loaded here:
@@ -345,7 +344,8 @@ export async function init(rt) {
 async function initProfile(rt, others) {
 	checkServiceHome();
 	// Only a profile's first init: re-running init (or an upgrade) never fails over an existing setup.
-	if (!existsSync(path.join(rt.conf, "host.env"))) checkProfiles(rt, others);
+	// backend_check below still runs every time; it's the authority on what's installed.
+	if (!existsSync(path.join(rt.conf, "host.env"))) { checkProfiles(rt, others); checkBackend(rt.backend, { env: rt.env }); }
 	need("nc"); need("ps");
 	await rt.vms.call("backend_check");
 	mkdirSync(rt.conf, { recursive: true });

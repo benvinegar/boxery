@@ -2,10 +2,14 @@
 // directories, contact a provider, start services, or infer account entitlements from credentials.
 import { accessSync, constants } from "node:fs";
 import path from "node:path";
-import { BACKENDS, backendMetadata, capabilityStatus, matchesPlatform, platformStatus } from "../core/backend-metadata.mjs";
+import { BACKENDS, backendMetadata, capabilityStatus, declared, matchesPlatform, platformStatus } from "../backends/index.mjs";
 import { fail, log, print } from "./util.mjs";
-/** @import { Configuration, Requirement } from "../core/backend-metadata.mjs" */
+/** @import { Configuration, Requirement } from "../backends/index.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
+
+/** The PATH backend.sh runs with: on macOS it appends Homebrew, which sshd's bare PATH lacks (#143).
+ * @param {NodeJS.ProcessEnv} env */
+const searchPath = (env) => [...(env.PATH ?? "").split(path.delimiter), ...(process.platform === "darwin" ? ["/opt/homebrew/bin", "/usr/local/bin"] : [])];
 
 /** @param {Requirement} requirement @param {NodeJS.ProcessEnv} env */
 function probe(requirement, env) {
@@ -14,7 +18,7 @@ function probe(requirement, env) {
 	};
 	// Backend helpers use the host's pinned Node, not whichever node happens to be on PATH.
 	if (requirement.kind === "tool" && requirement.id === "node") return accessible(env.BOXERY_NODE || process.execPath, constants.X_OK);
-	if (requirement.kind === "tool") return (env.PATH ?? "").split(path.delimiter).some((dir) => accessible(path.join(dir || ".", requirement.id), constants.X_OK));
+	if (requirement.kind === "tool") return searchPath(env).some((dir) => accessible(path.join(dir || ".", requirement.id), constants.X_OK));
 	if (requirement.kind === "device") return accessible(requirement.id, constants.R_OK | constants.W_OK);
 	return undefined;
 }
@@ -39,10 +43,11 @@ export function assessBackend(backend, { env = process.env, configuration, facts
  * @param {string} backend @param {Parameters<typeof assessBackend>[1]} [opts] */
 export function checkBackend(backend, opts) {
 	if (backend === "fake") return; // internal test fixture, not a user-facing backend
+	if (!declared(backend)) return log(`warning: ${backend} has no declaration in backends/index.mjs; skipping its preflight`);
 	const report = assessBackend(backend, opts);
 	const { configuration: { host, runtime }, platform, requirements } = report;
-	if (!platform.supported) fail(`${backend} does not support boxery-host configuration ${host.os}/${host.arch} with ${runtime}. Supported host platforms: ${report.backend.supported.map((p) => `${p.os}/${p.arch}`).join(", ")}. Run boxery-host on a supported machine (a remote host is fine; the controller OS does not constrain it).`);
 	if (!report.backend.runtime.options.includes(runtime)) fail(`${backend}: unsupported runtime '${runtime}'; use ${report.backend.runtime.options.join(" or ")}`);
+	if (!platform.supported) fail(`${backend} does not support boxery-host configuration ${host.os}/${host.arch} with ${runtime}. Supported host platforms: ${report.backend.supported.map((p) => `${p.os}/${p.arch}`).join(", ")}. Run boxery-host on a supported machine (a remote host is fine; the controller OS does not constrain it).`);
 	if (!platform.tested) log(`warning: ${backend} on ${host.os}/${host.arch} with ${runtime} is supported but not recorded as Boxery-tested`);
 	if (report.backend.stability !== "stable") log(`warning: ${backend} is ${report.backend.stability}`);
 	const missing = requirements.filter((r) => r.setup && r.status === "missing");
@@ -54,6 +59,10 @@ export function checkBackend(backend, opts) {
 export function capabilities(rt, args) {
 	if (args.length === 1 && args[0] === "--check") return checkBackend(rt.backend, { env: rt.env });
 	if (args.some((a) => a !== "--json") || args.length > 1) fail("usage: capabilities [--json | --check]");
+	if (!declared(rt.backend)) {
+		if (args.includes("--json")) return print(JSON.stringify({ schemaVersion: 1, backend: { id: rt.backend, declared: false } }));
+		return print(`${rt.backend}: no declaration in backends/index.mjs; its platforms, requirements and capabilities are unknown`);
+	}
 	const report = assessBackend(rt.backend, { env: rt.env });
 	if (args.includes("--json")) return print(JSON.stringify(report));
 	print(`${rt.backend}: ${report.backend.stability}; boxery-host ${report.configuration.host.os}/${report.configuration.host.arch}; runtime ${report.configuration.runtime} (${report.backend.runtime.location})\nsupported: ${report.platform.supported}; tested: ${report.platform.tested}`);
@@ -71,7 +80,7 @@ export function backends(_rt, args) {
  * provider entitlements remain advisory; the provider is authoritative at execution time.
  * @param {string} backend @param {string} command @param {string[]} args */
 export function checkOperation(backend, command, args) {
-	if (backend === "fake") return;
+	if (backend === "fake" || !declared(backend)) return;
 	const metadata = backendMetadata(backend);
 	const feature = command === "new" ? (args.includes("--headless") ? "headless" : "desktop")
 		: ({ snap: "diskSnapshots", "snap-rm": "diskSnapshots", fork: "fork", revert: "restore", resize: "resize", acquire: "leases", "build-base": "desktop" })[command]

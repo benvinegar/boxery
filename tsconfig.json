@@ -18,5 +18,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["controller/*.mjs", "core/*.mjs", "core/*.ts", "guests/*.mjs", "host/*.mjs", "mcp/*.mjs", "proxy/*.mjs"]
+  "include": ["controller/*.mjs", "core/*.mjs", "core/*.ts", "backends/*.mjs", "guests/*.mjs", "host/*.mjs", "mcp/*.mjs", "proxy/*.mjs"]
 }

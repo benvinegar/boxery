@@ -1,5 +1,6 @@
 // Backend declarations are data, not probes. Platforms here describe the machine running boxery-host,
 // never the controller or (for hosted backends) the provider's compute. No services/API calls on import.
+// No imports: host/, controller/ and core/ all load it, and the host never depends on core/.
 /** @typedef {{ os: string, arch: string }} Platform */
 /** @typedef {{ host: Platform, runtime: string }} Configuration */
 /** @typedef {{ id: string, kind: "tool" | "device" | "manual", description: string, setup: boolean, when?: Platform }} Requirement */
@@ -38,7 +39,8 @@ export const BACKENDS = {
 		id: "lima", stability: "stable", supported: both,
 		tested: [tested("darwin", "arm64", "vz")],
 		runtime: { location: "host", default: "platform", options: ["vz", "qemu"], platforms: { vz: both.filter((p) => p.os === "darwin"), qemu: both } },
-		requirements: [...tools(["limactl", "jq", "ssh"]), manual("macOS confinement needs sandbox-exec unless BOXERY_LIMA_CONFINE=0"), manual("Linux qemu: KVM recommended; without it Lima uses slow TCG emulation")],
+		requirements: [...tools(["limactl", "jq", "ssh"]), { ...manual("macOS confinement needs sandbox-exec unless BOXERY_LIMA_CONFINE=0"), when: { os: "darwin", arch: "*" } },
+			{ ...manual("Linux qemu: KVM recommended; without it Lima uses slow TCG emulation"), when: { os: "linux", arch: "*" } }],
 		capabilities: capabilities(),
 	},
 	"cloud-hypervisor": {
@@ -47,7 +49,7 @@ export const BACKENDS = {
 		runtime: { location: "host", default: "kvm", options: ["kvm"] },
 		requirements: [...tools(["cloud-hypervisor", "ch-remote", "qemu-img", "cloud-localds", "ip", "nft", "socat", "curl", "jq"]), kvm,
 			manual("Cloud Hypervisor >=54 and firmware at BOXERY_CH_FIRMWARE"), manual("Root or passwordless BOXERY_CH_SUDO; cloud-hypervisor needs cap_net_admin")],
-		capabilities: capabilities(),
+		capabilities: { ...capabilities(), resize: no("cloud-hypervisor has no resize; create a new VM with the size you need") },
 	},
 	exe: {
 		id: "exe", stability: "experimental", supported: both,
@@ -103,6 +105,8 @@ export function matchesPlatform(pattern, platform) {
 	const p = normalizePlatform(pattern), h = normalizePlatform(platform);
 	return (p.os === "*" || p.os === h.os) && (p.arch === "*" || p.arch === h.arch);
 }
+/** Out-of-tree backends (a .sh file in host/backends/) have none; they run unchecked. @param {string} id */
+export const declared = (id) => Object.hasOwn(BACKENDS, id);
 /** @param {string} id */
 export function backendMetadata(id) {
 	if (!Object.hasOwn(BACKENDS, id)) throw new Error(`No metadata for backend '${id}'; available: ${Object.keys(BACKENDS).join(", ")}`);

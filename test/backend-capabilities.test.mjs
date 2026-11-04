@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { BACKENDS, backendMetadata, capabilityStatus, matchesPlatform, metadataTable, normalizePlatform, platformStatus } from "../core/backend-metadata.mjs";
+import { BACKENDS, backendMetadata, capabilityStatus, declared, matchesPlatform, metadataTable, normalizePlatform, platformStatus } from "../backends/index.mjs";
 import { assessBackend, checkBackend, checkOperation } from "../host/capabilities.mjs";
 
 const config = (os, arch, runtime) => ({ host: { os, arch }, runtime });
@@ -113,11 +113,29 @@ test("host CLI discovery is read-only and unsupported operations fail before sid
 		assert.equal(denied.status, 1);
 		assert.match(denied.stderr, /boat: headless is unavailable/);
 		assert.equal(existsSync(env.BOXERY_CONF), false, "no config, journal, locks, keys or services written");
+		// No tools on PATH but ps, which macOS needs before the preflight runs (process identities).
+		const bin = path.join(home, "bin"); mkdirSync(bin); symlinkSync("/bin/ps", path.join(bin, "ps"));
 		const setup = spawnSync(process.execPath, [path.resolve("host/boxery-host.mjs"), "init", "--backend", "libvirt"], {
-			env: { ...env, PATH: "" }, encoding: "utf8",
+			env: { ...env, PATH: bin, BOXERY_STUB_SERVICES: "1" }, encoding: "utf8",
 		});
 		assert.equal(setup.status, 1);
 		assert.match(setup.stderr, /requirements not met|does not support boxery-host/);
 		assert.equal(existsSync(env.BOXERY_CONF), false, "failed setup preflight must not create a profile");
 	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("resize is declared exactly where the backend defines backend_resize", () => {
+	for (const id of Object.keys(BACKENDS)) {
+		const r = spawnSync("bash", [path.resolve("host/backend.sh"), "__functions"], { env: { ...process.env, BOXERY_BACKEND: id }, encoding: "utf8" });
+		assert.equal(r.status, 0, r.stderr);
+		assert.equal(BACKENDS[id].capabilities.resize.status !== "unsupported", r.stdout.split("\n").includes("backend_resize"), id);
+	}
+});
+
+test("a backend without a declaration runs unchecked", () => {
+	assert.equal(declared("mycustom"), false);
+	assert.equal(declared("constructor"), false);
+	assert.doesNotThrow(() => checkOperation("mycustom", "new", ["ci", "--headless"]));
+	assert.doesNotThrow(() => checkOperation("mycustom", "resize", ["ci"]));
+	assert.doesNotThrow(() => checkBackend("mycustom"));
 });

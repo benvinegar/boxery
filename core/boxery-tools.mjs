@@ -15,7 +15,7 @@
 // "Current VM", the session's host and held leases are front-end state: vm_manage and vm_lease change
 // them only through the Session hooks.
 import * as core from "./boxery-core.mjs";
-import { BACKENDS as BACKEND_DECLARATIONS } from "./backend-metadata.mjs";
+import { BACKENDS as BACKEND_DECLARATIONS } from "../backends/index.mjs";
 /** @import { Approve, HostProfile, LocalConfinement, ManageArgs, Progress, ToolResult } from "./boxery-core.mjs" */
 /** A JSON Schema fragment. @typedef {{ type?: string | string[], description?: string, enum?: readonly string[], properties?: Record<string, JsonSchema>, items?: JsonSchema, required?: string[], anyOf?: JsonSchema[], minimum?: number, maximum?: number }} JsonSchema */
 /** A tool's input schema: always an object with named properties. @typedef {JsonSchema & { type: "object", properties: Record<string, JsonSchema>, required: string[] }} ObjectSchema */

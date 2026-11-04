@@ -7,7 +7,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { HOST_ENV } from "../host/config.mjs";
-import { backendMetadata, platformStatus } from "../core/backend-metadata.mjs";
+import { backendMetadata, platformStatus } from "../backends/index.mjs";
 import { OPENSHELL_NO_PROVIDERS, openShellProviders } from "../host/openshell-config.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));

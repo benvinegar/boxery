@@ -41,6 +41,7 @@
     "controller/",
     "core/",
     "extension/",
+    "backends/",
     "guests/",
     "host/",
     "image/",

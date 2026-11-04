@@ -175,7 +175,7 @@ if "$A" grant e1 llm:openai --cmd 'echo k' >/dev/null 2>&1; then bad "llm grant 
 # Version skew: a controller with llm: grants against a host from before them. That host rejects the
 # {"hosts","llm"} payload: the grant is kept locally, the user is warned, and nothing on the host changes.
 if git -C "$ROOT" cat-file -e 2ee0cd7:host/pool.mjs 2>/dev/null; then
-	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/guests" "$ROOT/host" "$ROOT/core" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
+	old=$tmp/oldhost; mkdir -p "$old"; cp -R "$ROOT/backends" "$ROOT/guests" "$ROOT/host" "$ROOT/proxy" "$ROOT/image" "$ROOT/package.json" "$old/"
 	git -C "$ROOT" show 2ee0cd7:host/pool.mjs >"$old/host/pool.mjs"
 	HOME=$tmp/home "$A" host add old local --host-bin "$old/host/boxery-host" >/dev/null 2>&1
 	echo 'GRANT_CONFIRM=off' >>"$BOXERY_HOME/profiles/old/config"
