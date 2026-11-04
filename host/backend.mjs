@@ -101,7 +101,7 @@ export function createBackend(env = process.env) {
 		/** @param {string} name */
 		async exists(name) {
 			try { await call("backend_exists", [name], { quiet: true }); return true; }
-			catch (e) { if (e instanceof BackendError) return false; throw e; }
+			catch (e) { if (e instanceof BackendError && e.exitCode === 1) return false; throw e; }
 		},
 		async hasBase() {
 			try { await call("backend_has_base", [], { quiet: true }); return true; }

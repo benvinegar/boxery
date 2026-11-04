@@ -1,0 +1,21 @@
+# Start offline. Add narrowly scoped network rules/providers for your project.
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /etc
+    - /proc
+    - /dev/urandom
+  read_write:
+    - /home/agent
+    - /sandbox
+    - /tmp
+    - /dev/null
+    # tmux-backed background jobs and interactive shells need sandbox-local PTYs.
+    - /dev/pts
+    - /dev/ptmx
+landlock:
+  compatibility: best_effort
+network_policies: {}

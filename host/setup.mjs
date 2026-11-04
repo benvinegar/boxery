@@ -107,6 +107,7 @@ const NAMESPACE = {
 	"cloud-hypervisor": /^BOXERY_CH_(DIR|NET)$/,
 	exe: /^BOXERY_EXE_(DIR|PORT_BASE)$/,
 	boat: /^BOXERY_BOAT_(DIR|PORT_BASE)$/,
+	openshell: /^BOXERY_OPENSHELL_(GATEWAY|WORKSPACE|PREFIX)$/,
 };
 /** @param {string} backend @param {Record<string, string | undefined>} env */
 const namespace = (backend, env) => JSON.stringify(HOST_ENV.filter((k) => NAMESPACE[backend]?.test(k)).map((k) => env[k] || ""));
@@ -370,9 +371,9 @@ async function initProfile(rt, others) {
 			symlinkSync(path.join(rt.root, target), file);
 		}
 	}
-	await startServices(rt, { reaper: !process.env.BOXERY_NO_SERVICES });
+	if (rt.backend !== "openshell") await startServices(rt, { reaper: !process.env.BOXERY_NO_SERVICES });
 	if (rt.profile) log(`profile ${rt.profile}: ${rt.backend} backend, ${rt.conf}, proxy port ${rt.proxyPort}, services ${rt.proxyUnit}/${rt.reaperUnit}`);
-	log(`init done. Next: boxery-host ${rt.profile ? `--profile ${rt.profile} ` : ""}build-base`);
+	log(`init done. Next: boxery-host ${rt.profile ? `--profile ${rt.profile} ` : ""}${rt.backend === "openshell" ? "new demo --headless" : "build-base"}`);
 }
 
 /** @param {Runtime} rt */
