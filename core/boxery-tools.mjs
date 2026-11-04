@@ -324,10 +324,10 @@ export const TOOLS = [
 			"Ask the user to give a VM access to something on their machine, when work there fails without it (a 401 from a package registry, git asking for credentials). " +
 			"The user approves or declines in a prompt you cannot answer; on approval the grant is added and applied. " +
 			"spec: `llm:chatgpt` | `llm:openai` | `llm:anthropic` | `llm:ollama` (an LLM provider through the host proxy; a VM has none until granted, so a 403 'llm:X is not granted' from 127.0.0.1:8088 means request it), `github` (git over https and the GitHub API; the token stays on the host proxy, never in the VM; readonly:true for clone/fetch and reads), " +
-			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable's value from this machine), " +
+			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable as set where boxery runs, so one set before this session started), " +
 			"or `file:LOCAL[=REMOTE]` (LOCAL on this machine; REMOTE relative to /home/agent, default project/<name>; e.g. `file:~/.npmrc=.npmrc`). " +
 			"Prefer `github` for GitHub. Granted values live in the VM's memory, not its disk or snapshots. Request each thing once; if the user declines, don't ask again, and don't get it into the VM another way (vm_copy, vm_write, vm_bash). " +
-			"A secret the user pastes into the chat can't be granted as is, and must not be saved to a file to grant it: ask them to export it on their machine and request `env:VAR`, or grant the file it already lives in. " +
+			"A secret the user pastes into the chat can't be granted as is, and must not be saved to a file to grant it: ask them to export it in their own terminal and run `boxery grant VM env:NAME` there, or grant a file it already lives in. " +
 			"Where the client can't prompt, you get the command for the user to run. vm_info {action:'grants'} shows what the VM already has.",
 		parameters: obj(
 			{
