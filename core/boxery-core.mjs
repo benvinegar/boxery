@@ -179,6 +179,17 @@ export function hostBackend(host) {
 	const name = text?.replace(/\n$/, "");
 	return name && VALID_HOST.test(name) ? name : null; // one line, like the controller's valid_vm
 }
+/** Backends whose VMs run on the host machine itself; the others (exe, boat) run in the cloud. */
+const ON_HOST_BACKENDS = ["lima", "libvirt", "cloud-hypervisor"];
+/**
+ * Whether a host's VMs run somewhere other than the machine the controller runs on (an ssh host, or a
+ * cloud backend), or null when the profile doesn't say. @param {string | null} destination @param {string | null} backend
+ */
+export function vmsAreRemote(destination, backend) {
+	if (destination && destination !== "local") return true;
+	if (backend && !ON_HOST_BACKENDS.includes(backend)) return true;
+	return destination === "local" && backend ? false : null;
+}
 /**
  * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
  * profile files (never sources them, never contacts a host). same_as names the other entries registered for
@@ -1259,9 +1270,11 @@ export async function manage(a, opts = {}) {
 // ---------------------------------------------------------------- shared prompt text
 
 // Rules both forms of the guidance carry: when to reach for a VM at all, and how credentials get into one.
-const WHEN_VM =
-	"Use a VM for code the user doesn't trust or asks to try safely (in a fresh VM, from vm_manage new or fork; download it there, not here), for work that needs Linux or a desktop and browser you can drive, for long jobs that should outlive this session (vm_jobs), and for parallel attempts. " +
-	"Installing or running something the user asks for on their own machine still happens here.";
+/** What VMs suit. Long jobs only when the VMs run elsewhere: a VM on this machine sleeps with it. @param {boolean | null} remote */
+const whenVm = (remote) =>
+	"VMs suit work that shouldn't or can't happen on this machine: untrusted code (use a fresh VM, from vm_manage new or fork, and fetch the code there, not here), Linux-only work, " +
+	`an isolated desktop and browser that doesn't share this machine's logins or credentials, ${remote ? "long jobs that should keep running while this machine sleeps or is closed (vm_jobs), " : ""}and parallel attempts. ` +
+	"What the user asks to install or run on their own machine still happens here.";
 /** @param {string} vm the VM to name in the `boxery grant` example @param {string} [host] the session's host, for --host */
 const credentials = (vm, host) =>
 	"Access from the user's machine reaches a VM only through grants. When something in a VM fails because it lacks access the user has here, request it with vm_grant right away instead of investigating; its description says what can be granted. Never put credentials in a VM with vm_copy, vm_write or vm_bash (they would land on its disk and in its snapshots). " +
@@ -1272,11 +1285,13 @@ const credentials = (vm, host) =>
 /** The agent's standing instructions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
 export function guidance(current, { localToolsNote, host } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
+	let remote = null;
+	try { remote = vmsAreRemote(hostDestination(host), hostBackend(host)); } catch { /* no registered host in offline callers */ }
 	const hostLine = host ? `Current host: ${host}. VM selections belong only to that host. Every vm_* tool accepts optional host (vm_info {action:'hosts'} lists them).\n` : "";
 	if (!current)
 		return hostLine + [
 			`boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`,
-			WHEN_VM,
+			whenVm(remote),
 			"Start GUI programs detached (`setsid nohup prog >/dev/null 2>&1 &`). Before something risky in a VM, snapshot it with vm_manage {action:'snap'}; to try several approaches at once, fork it.",
 			credentials("VM", host),
 		].join("\n");
@@ -1299,7 +1314,7 @@ export function guidance(current, { localToolsNote, host } = {}) {
 		credentials(current, host),
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
 		"Before something risky, snapshot the VM with vm_manage {action:'snap'} (vm_manage {action:'revert'} restores it). To try several approaches in parallel, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
-		WHEN_VM,
+		whenVm(remote),
 	].join("\n");
 }
 

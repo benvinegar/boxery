@@ -86,6 +86,16 @@ test("guidance mentions the current VM and the local/VM split", () => {
 	assert.match(core.guidance(null), /vm_manage/);
 });
 
+test("vmsAreRemote: an ssh host or a cloud backend is remote; VMs on this machine aren't", () => {
+	assert.equal(core.vmsAreRemote("ben@box", "libvirt"), true);
+	assert.equal(core.vmsAreRemote("local", "exe"), true);
+	assert.equal(core.vmsAreRemote("local", "boat"), true);
+	assert.equal(core.vmsAreRemote("local", "lima"), false);
+	assert.equal(core.vmsAreRemote("local", "cloud-hypervisor"), false);
+	assert.equal(core.vmsAreRemote(null, "lima"), null);
+	assert.equal(core.vmsAreRemote("local", null), null);
+});
+
 test("formatVms / formatGrants render the --json shapes", () => {
 	const vms = [
 		{ name: "a1", state: "running", ssh_addr: "10.0.0.2:22", disk_size: 40, disk_used: 1.04, lease: null, shape: "large", cpus: 8, mem: 16384, desktop: false, grants: [], guest: { status: "current", reasons: [] } },
