@@ -3,7 +3,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 import { q } from "./shell.mjs";
-import { currentHost, registeredHosts, deniedDirs, isWithin } from "./boxery-core.mjs";
+import { currentHost, registeredHosts, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
 export { listGrants, addGrants, revokeGrants, applyGrants, grantsChanged, storedSpecs } from "./grant-operations.mjs";
 /** Agent requests have the same validation, but cannot supply commands or arbitrary HTTP grants.
  * @param {GrantRequestArgs} [a] @param {{localCwd?: string}} [opts]
@@ -77,9 +77,10 @@ export function parseGrantSpec({ spec, readonly, cmd, auth } = {}, { localCwd, c
 	const hit = deniedDirs([...registeredHosts().map((h) => h.dir), currentHost().dir]).find((d) => isWithin(real, d.dir));
 	if (hit?.keys) throw new Error(`${shown} holds keys; request ssh-agent instead (the keys stay on the user's machine)`);
 	if (hit) throw new Error(`${shown} is inside ${hit.dir} (boxery's own configuration or the user's credentials) and can't be granted`);
-	// REMOTE is relative to /home/agent; accept ~/… and /home/agent/… spellings too.
-	let remote = eq < 0 ? `project/${path.basename(local)}` : rest.slice(eq + 1).replace(/^~\//, "").replace(/^\/home\/agent\//, "");
-	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + real)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to /home/agent)`);
+	// REMOTE is relative to REMOTE_HOME; accept ~/… and REMOTE_HOME/… spellings too.
+	let remote = eq < 0 ? `project/${path.basename(local)}` : rest.slice(eq + 1).replace(/^~\//, "");
+	if (remote.startsWith(`${REMOTE_HOME}/`)) remote = remote.slice(REMOTE_HOME.length + 1);
+	if (!remote || remote.startsWith("/") || `/${remote}/`.includes("/../") || /[\t\n\r]/.test(remote + real)) throw new Error(`invalid remote path: ${remote || "(empty)"} (relative to ${REMOTE_HOME})`);
 	return { kind: "file", spec: `file:${real}=${remote}`, local: real, ...(real === local ? {} : { requested: local }), remote };
 }
 

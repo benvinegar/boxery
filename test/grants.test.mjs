@@ -316,6 +316,17 @@ test("multi-destination forks require every approval and revalidate source grant
 	assert.equal(existsSync(path.join(root, "host.calls")), false);
 });
 
+test("file grants: REMOTE is relative to the guest's home, however it is spelled", () => {
+	const file = path.join(root, "home.env"); writeFileSync(file, "A=1");
+	for (const remote of [".config/x.env", "~/.config/x.env", "/home/agent/.config/x.env"]) {
+		assert.equal(grants.parseGrantSpec({ spec: `file:${file}=${remote}` }, { cli: true }).remote, ".config/x.env", remote);
+	}
+	assert.throws(() => grants.parseGrantSpec({ spec: `file:${file}=/etc/x.env` }, { cli: true }), /relative to \/home\/agent/);
+	writeFileSync(path.join(profile, "grants/homes"), `file\t${file}\tproject/.env\nfile\t${file}\t/home/agent/project/.env\n`);
+	assert.deepEqual(grants.listGrants("homes").map((g) => g.remote), ["/home/agent/project/.env", "/home/agent/project/.env"]);
+	rmSync(path.join(profile, "grants/homes"));
+});
+
 test("all grant kinds use the same prompt formatter and validation on both front-ends", () => {
 	const file = path.join(root, "dev.env"); writeFileSync(file, "A=1");
 	for (const spec of ["ssh-agent", "github", "env:EXAMPLE", `file:${file}=.config/dev.env`, "llm:chatgpt"]) {

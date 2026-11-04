@@ -4,13 +4,14 @@
 // records the new build (build-info.mjs). A pool VM must be free: its lifecycle lock keeps leases off it
 // while it is patched, and its clean image NAME@boxery-clean is captured again. Other snapshots and images
 // keep their old software.
+import * as linux from "../guests/linux.mjs";
 import * as leases from "./boxery-leases.mjs";
 import { supervise } from "./boxery-operations.mjs";
 import { refreshBuild } from "./build-info.mjs";
 import { captureVm } from "./images.mjs";
-import { vmKind } from "./kinds.mjs";
 import { setLeaseKeys } from "./pool.mjs";
 import { fail, log, POOL_SNAP, sleep, validName, validNum } from "./util.mjs";
+import { vmRecord } from "./vm-records.mjs";
 /** @import { GuestEndpoint } from "./guest.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
 
@@ -89,9 +90,9 @@ export async function patchVm(rt, args) {
 	const action = row ? rt.intent("pool-patch", name) : "";
 	if (await rt.guest.run(ep, "sudo bash -s", { input: await pushScript(rt) }) !== 0) fail(`could not install this host's image layers in ${name}`);
 	// The layers it has (/etc/boxery/layers); a VM from before that file: its kind's.
-	const fallback = vmKind(rt.conf, name) === "headless" ? "plumbing devtools" : "plumbing devtools desktop";
+	const fallback = vmRecord(rt.db(), name).kind === "headless" ? "plumbing devtools" : "plumbing devtools desktop";
 	log(`${name}: running its image layers again (log: /var/log/boxery-patch.log in the VM)`);
-	const provision = `sudo bash -c 'set -o pipefail; L=$(tr "\\n" " " 2>/dev/null </etc/boxery/layers); /usr/local/sbin/boxery-provision \${L:-${fallback}} 2>&1 | tee /var/log/boxery-patch.log | while IFS= read -r l; do case $l in "==> "*) printf "%s\\n" "$l" ;; esac; done'`;
+	const provision = `sudo bash -c 'set -o pipefail; L=$(tr "\\n" " " 2>/dev/null <${linux.configDir}/layers); /usr/local/sbin/boxery-provision \${L:-${fallback}} 2>&1 | tee /var/log/boxery-patch.log | while IFS= read -r l; do case $l in "==> "*) printf "%s\\n" "$l" ;; esac; done'`;
 	if (await rt.guest.run(ep, provision) !== 0) {
 		await rt.guest.run(ep, "sudo tail -30 /var/log/boxery-patch.log");
 		fail(`patching ${name} failed (log above: /var/log/boxery-patch.log in the VM)`);
@@ -101,7 +102,7 @@ export async function patchVm(rt, args) {
 	const rec = await refreshBuild(rt, name, ep);
 	if (row) {
 		// Like pool add: the clean image holds only the host's key and no pushed grants.
-		await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"; sync');
+		await rt.guest.run(ep, `rm -rf "${linux.grantsDir}"; sync`);
 		try { await setLeaseKeys(rt, name); } catch { fail(`could not lock down ssh keys on ${name}`); }
 		if (await rt.vms.imageExists(`${name}@${POOL_SNAP}`)) await rt.vms.call("backend_image_rm", [`${name}@${POOL_SNAP}`]);
 		await captureVm(rt, name, `${name}@${POOL_SNAP}`);

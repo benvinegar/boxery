@@ -106,6 +106,27 @@ test("Lima starts and renders cloud-config with the host's Node when PATH node i
 	assert.equal(existsSync(`${userdata}.files.sh`), false);
 });
 
+test("Lima: a missing limactl is reported as such, not as a missing base (#143)", async () => {
+	// Not macOS, so backend.sh adds no Homebrew directories that might hold a real limactl.
+	stub("uname", "echo Linux");
+	const lima = { ...env, BOXERY_BACKEND: "lima", PATH: `${path.join(dir, "bin")}:/usr/bin:/bin` };
+	await assert.rejects(createBackend(lima).hasBase(), (e) => e instanceof BackendError && e.exitCode === 2 && e.reported);
+	stub("limactl", 'echo \'{"name":"boxery-other"}\'');
+	assert.equal(await createBackend(lima).hasBase(), false);
+	stub("limactl", 'echo \'{"name":"boxery-base"}\'');
+	assert.equal(await createBackend(lima).hasBase(), true);
+	stub("limactl", "exit 1");
+	await assert.rejects(createBackend(lima).hasBase(), (e) => e instanceof BackendError && e.exitCode === 2);
+});
+
+test("backend calls on macOS find Homebrew's tools without a login shell's PATH (#143)", async () => {
+	stub("uname", "echo Darwin");
+	stub("limactl", `printf '%s' "$PATH" >"${dir}/path"`);
+	const b = createBackend({ ...env, BOXERY_BACKEND: "lima", PATH: `${path.join(dir, "bin")}:/usr/bin:/bin` });
+	assert.equal(await b.hasBase(), false);
+	assert.equal(readFileSync(path.join(dir, "path"), "utf8"), `${path.join(dir, "bin")}:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin`);
+});
+
 test("backend scripts run node only as the host's Node (BOXERY_NODE), never from PATH", () => {
 	const scripts = ["host/backend.sh", ...readdirSync(path.join(ROOT, "host/backends"), { recursive: true, encoding: "utf8" })
 		.filter((f) => f.endsWith(".sh")).map((f) => path.join("host/backends", f))];

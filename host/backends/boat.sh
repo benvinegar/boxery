@@ -327,7 +327,7 @@ backend_build_base() {
 
 backend_has_base() {
 	[[ -n $BOAT_PREFIX ]] || return 1
-	local s; s=$(boat_saved) || exit 1
+	local s; s=$(boat_saved) || exit 2
 	[[ $(boat_saved_status "$(boat_base)" "$s") == ready ]]
 }
 # Local state first (no API call); a VM that only exists on boat (crash before its state dir) still

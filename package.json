@@ -1,6 +1,6 @@
 {
   "name": "boxery-vm",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Easiest way to give your coding agents VMs; MCP server + pi extension give agents vm_* tools",
   "keywords": [
     "pi-package",
@@ -41,6 +41,7 @@
     "controller/",
     "core/",
     "extension/",
+    "guests/",
     "host/",
     "image/",
     "mcp/boxery-mcp.mjs",

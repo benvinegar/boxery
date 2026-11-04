@@ -66,6 +66,14 @@ for c in 1 0; do
 	if [[ $c == 1 && $got == *sandbox-exec* ]] || [[ $c == 0 && $got != *sandbox-exec* ]]; then ok "backend_check (confine=$c) needs: $got"; else bad "backend_check (confine=$c) needs: $got"; fi
 done
 
+# --- backend_init warns when guests will run unconfined, and only then
+for c in 1 0; do
+	got=$(BOXERY_LIMA_CONFINE=$c bash -c 'log() { echo "$*"; }; . "$1/host/backends/lima.sh"; backend_init' _ "$ROOT")
+	if [[ $c == 1 && -z $got ]] || [[ $c == 0 && $got == *"warning:"*"127.0.0.1"* ]]; then ok "backend_init (confine=$c) warns: ${got:-nothing}"; else bad "backend_init (confine=$c) said: ${got:-nothing}"; fi
+done
+got=$(env -u BOXERY_LIMA_CONFINE bash -c 'uname() { echo Linux; }; log() { echo "$*"; }; . "$1/host/backends/lima.sh"; backend_init' _ "$ROOT")
+[[ $got == *"not confined"*"--backend libvirt"* ]] && ok "backend_init on Linux points at libvirt" || bad "backend_init on Linux said: ${got:-nothing}"
+
 # --- the profile against the real Seatbelt (macOS): proxy port reachable, a second loopback port not
 if [[ $(uname) == Darwin && -x /usr/bin/sandbox-exec ]]; then
 	# Two listeners, in a subshell so the shell doesn't report the kill.

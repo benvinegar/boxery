@@ -1,7 +1,7 @@
 // Shapes: named VM sizes. Built-ins in host/shapes.json, overridden or extended by $CONF/shapes.json.
 // A user entry with a built-in's name overrides only the fields it sets; a new name needs all three.
-// Each VM's resolved size is recorded in $CONF/vm-shapes/NAME.json, so forks and `ls` know it.
-import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+// Each VM's resolved size is part of its record (vm-records.mjs), so forks and `ls` know it.
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 /** @typedef {{ cpus: number, mem: number, disk: number }} Size */
@@ -51,51 +51,4 @@ export function loadShapes(root, conf) {
 export function shapeSize(shapes, name) {
 	if (!Object.hasOwn(shapes.shapes, name)) throw new Error(`unknown shape '${name}' (have: ${Object.keys(shapes.shapes).sort().join(", ")})`);
 	return shapes.shapes[name];
-}
-
-// ---------------------------------------------------------------- per-VM size records
-/** @param {string} conf @param {string} name */
-const recordFile = (conf, name) => path.join(conf, "vm-shapes", `${name}.json`);
-
-/** {NAME: {shape, cpus, mem, disk}} for VMs with a record (unreadable records are skipped). @param {string} conf */
-export function vmShapes(conf) {
-	/** @type {Record<string, ShapeRecord>} */
-	const out = {};
-	/** @type {string[]} */
-	let files = [];
-	try { files = readdirSync(path.join(conf, "vm-shapes")); }
-	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code !== "ENOENT") throw e; }
-	for (const f of files.filter((f) => f.endsWith(".json")).sort()) {
-		try { out[f.slice(0, -5)] = JSON.parse(readFileSync(path.join(conf, "vm-shapes", f), "utf8")); }
-		catch { /* a torn or foreign file is not a size record */ }
-	}
-	return out;
-}
-/** @param {string} conf @param {string} name @returns {ShapeRecord | null} */
-export function vmShape(conf, name) {
-	try { return JSON.parse(readFileSync(recordFile(conf, name), "utf8")); }
-	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return null; throw e; }
-}
-/** shape null = custom size @param {string} conf @param {string} name @param {ShapeInput} size */
-export function setVmShape(conf, name, { shape = null, cpus, mem, disk }) {
-	mkdirSync(path.join(conf, "vm-shapes"), { recursive: true });
-	const file = recordFile(conf, name);
-	writeFileSync(`${file}.tmp`, `${JSON.stringify({ shape: shape || null, cpus: Number(cpus), mem: Number(mem), disk: Number(disk) })}\n`);
-	renameSync(`${file}.tmp`, file);
-}
-/** Record NAME's size only if it has no record yet (atomic, never replaces one): for callers that hold
- *  no VM lock, such as `ls`, so a concurrent new/resize always wins. false if a record exists.
- *  @param {string} conf @param {string} name @param {ShapeInput} size */
-export function addVmShape(conf, name, { shape = null, cpus, mem, disk }) {
-	mkdirSync(path.join(conf, "vm-shapes"), { recursive: true });
-	const file = recordFile(conf, name), tmp = `${file}.${process.pid}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify({ shape: shape || null, cpus: Number(cpus), mem: Number(mem), disk: Number(disk) })}\n`);
-	try { linkSync(tmp, file); return true; }
-	catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "EEXIST") return false; throw e; }
-	finally { rmSync(tmp, { force: true }); }
-}
-/** @param {string} conf @param {string} name */
-export function deleteVmShape(conf, name) {
-	rmSync(recordFile(conf, name), { force: true });
-	rmSync(`${recordFile(conf, name)}.tmp`, { force: true });
 }
