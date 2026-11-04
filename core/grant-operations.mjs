@@ -6,8 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { currentHost, hostBackend, assertName, deniedDirs, isWithin, REMOTE_HOME } from "./boxery-core.mjs";
 import { parseGrantSpec } from "./grants.mjs";
 import { q } from "./shell.mjs";
-import { profileRun } from "./profile.mjs";
-export { profileRun } from "./profile.mjs";
+import { closeMaster, hostRun, writeSshConfig } from "./profile.mjs";
 /** @import { Grant, GrantSpec, HostProfile } from "./boxery-core.mjs" */
 /** CLI env-command helpers may use the original stdin and show prompts on stderr. Agent calls remain headless.
  * @typedef {{ signal?: AbortSignal, interactiveCommands?: boolean, commandStdin?: number }} GrantOptions
@@ -184,7 +183,7 @@ export async function applyGrants(vm, opts = {}) {
 		const id = record?.match(/^id=(.+)$/m)?.[1];
 		const routes = llm.length ? { hosts, llm } : hosts;
 		try {
-			await profileRun("host", ["edge-set", vm, ...(id ? ["--lease", id] : [])], { ...opts, input: JSON.stringify(routes) });
+			await hostRun(["edge-set", vm, ...(id ? ["--lease", id] : [])], { signal: opts.signal, input: JSON.stringify(routes) });
 			if (grants.some((g) => g.kind === "http" || g.kind === "llm")) writeFileSync(marker, "", { mode: 0o600 }); else remove(marker);
 		} catch { warn(`could not set edge routes for ${vm} on the host`); }
 	}
@@ -205,9 +204,9 @@ export async function grantsChanged(vm, opts = {}) {
 	const finish = { ...opts, signal: undefined };
 	let stage = "refreshing SSH configuration";
 	try {
-		await profileRun("config", [], finish);
+		await writeSshConfig();
 		stage = "closing existing SSH connections";
-		await profileRun("close", [vm], finish);
+		await closeMaster(vm);
 		stage = "applying grants";
 		return await applyGrants(vm, finish);
 	} catch (e) {

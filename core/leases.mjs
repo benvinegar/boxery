@@ -3,20 +3,20 @@
 // one record per lease it holds, in the selected profile's leases/ directory:
 //   ID.lease               name= id= expires= ttl= holder=   (key=value lines)
 //   ID.key, ID.key.pub     the lease's own throwaway ssh key; the host installs the public half in the VM
-// ssh_config uses ID.key for NAME.boxery while the lease lasts (controller/profile.sh write_ssh_config).
+// ssh_config uses ID.key for NAME.boxery while the lease lasts (core/profile.mjs writeSshConfig).
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import path from "node:path";
 import { currentHost, VALID_NAME } from "./boxery-core.mjs";
 import { applyGrants, listGrants } from "./grant-operations.mjs";
-import { profileRun } from "./profile.mjs";
+import { closeMaster, hostRun, writeSshConfig } from "./profile.mjs";
 
 /** A lease this machine holds. expires: unix seconds. @typedef {{ name: string, id: string, expires: number, ttl: number | null, holder: string | null, file: string }} LeaseRecord */
 /** log: progress and warnings for a person (the CLI prints them to stderr). interactiveCommands: grant
- *  --cmd helpers may prompt (CLI only). timeout: ms for each host or profile call, 0 for none (default:
- *  per call). signal: abort (Ctrl-C) stops the host call (on a remote host: its ssh) and removes the
- *  half-made key. stderr: see profileRun.
+ *  --cmd helpers may prompt (CLI only). timeout: ms for each host command, 0 for none (default: per
+ *  command). signal: abort (Ctrl-C) stops the host call (on a remote host: its ssh) and removes the
+ *  half-made key. stderr: see hostRun.
  *  @typedef {{ log?: (line: string) => void, interactiveCommands?: boolean, timeout?: number, signal?: AbortSignal, stderr?: "pipe" | "inherit" }} LeaseOpts */
 
 export const VALID_LEASE = /^l-[0-9a-f]{32}$/;
@@ -112,7 +112,7 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 	let out;
 	try {
 		await keygen(tmp, `boxery-lease ${holder}`);
-		out = await profileRun("host", ["acquire", "--holder", holder, "--ttl", String(t), "--wait", String(w)], {
+		out = await hostRun(["acquire", "--holder", holder, "--ttl", String(t), "--wait", String(w)], {
 			input: readFileSync(`${tmp}.pub`, "utf8"), timeout: opts.timeout ?? (w + 300) * 1000, signal: opts.signal, stderr: opts.stderr,
 		});
 	} catch (e) { cleanup(); throw e; }
@@ -120,7 +120,7 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 	if (!m) {
 		cleanup();
 		const leaked = out.match(/l-[0-9a-f]{32}/)?.[0]; // never leave a lease we can't use on the host
-		if (leaked) await profileRun("host", ["release", leaked], { timeout: 180_000 }).catch(() => {});
+		if (leaked) await hostRun(["release", leaked], { timeout: 180_000 }).catch(() => {});
 		throw new Error(`bad response from host: ${out.slice(0, 300)}`);
 	}
 	const [, name, id, exp] = m;
@@ -131,14 +131,14 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 	try {
 		renameSync(tmp, keyFile(id)); renameSync(`${tmp}.pub`, `${keyFile(id)}.pub`);
 		writeRecord(rec);
-		await profileRun("close", [name], { timeout: opts.timeout });
-		await profileRun("config", [], { timeout: opts.timeout });
+		await closeMaster(name);
+		await writeSshConfig();
 	} catch (e) {
 		const why = /** @type {Error} */ (e).message;
-		const released = await profileRun("host", ["release", id], { timeout: 180_000 }).then(() => true, () => false);
+		const released = await hostRun(["release", id], { timeout: 180_000 }).then(() => true, () => false);
 		cleanup();
 		for (const f of [rec.file, keyFile(id), `${keyFile(id)}.pub`]) rmSync(f, { force: true });
-		await profileRun("config", [], { timeout: opts.timeout }).catch(() => {});
+		await writeSshConfig().catch(() => {});
 		throw new Error(`leased ${name} but could not set it up on this machine (${why}); ${released ? "released it again" : `could not release it either: it expires on the host in ${t}s`}`);
 	}
 	await reapplyGrants(name, opts);
@@ -149,7 +149,7 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 export async function renewLease(ref, ttl, opts = {}) {
 	const rec = needLease(ref);
 	const t = seconds("--ttl", ttl ?? rec.ttl ?? "");
-	const out = await profileRun("host", ["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, signal: opts.signal, stderr: opts.stderr });
+	const out = await hostRun(["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, signal: opts.signal, stderr: opts.stderr });
 	const m = /^\S+ ([0-9]+)$/.exec(out.split("\n").at(-1) ?? ""); // NAME EXPIRES
 	if (!m) throw new Error(`bad response from host: ${out.slice(0, 300)}`);
 	// A release that ran while the host answered (another process, or the session ending) removed the
@@ -166,15 +166,15 @@ export async function renewLease(ref, ttl, opts = {}) {
  */
 export async function releaseLease(ref, opts = {}) {
 	const rec = needLease(ref);
-	await profileRun("close", [rec.name], { timeout: opts.timeout });
-	try { await profileRun("host", ["release", rec.id], { timeout: opts.timeout ?? 180_000, stderr: opts.stderr }); }
+	await closeMaster(rec.name);
+	try { await hostRun(["release", rec.id], { timeout: opts.timeout ?? 180_000, stderr: opts.stderr }); }
 	catch { opts.log?.(`boxery: host did not release ${rec.id} (already expired?); forgetting it locally`); }
 	for (const f of [rec.file, keyFile(rec.id), `${keyFile(rec.id)}.pub`]) rmSync(f, { force: true });
 	// The grants were for this lease; the host's reset clears its edge routes.
 	const grants = path.join(currentHost().dir, "grants");
 	rmSync(path.join(grants, rec.name), { force: true });
 	rmSync(path.join(grants, `.${rec.name}.edge`), { force: true });
-	await profileRun("config", [], { timeout: opts.timeout });
+	await writeSshConfig();
 	return rec;
 }
 
