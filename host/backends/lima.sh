@@ -51,7 +51,10 @@ backend_check() {
 # it. By default qemu guests send DNS to the host agent's resolver on a random loopback port, so confined
 # qemu instances use slirp's own DNS forwarder (.3 on the user network, inside qemu) instead; vz answers
 # DNS inside gvisor.
-lima_free_port() { "${BOXERY_NODE:-node}" -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); })'; }
+# The port goes out with process.stdout.write, not console.log: with FORCE_COLOR set (the test runner sets it
+# for its children when run in a terminal), console.log colours a number with ANSI escapes, and that
+# isn't a port.
+lima_free_port() { "${BOXERY_NODE:-node}" -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { process.stdout.write(`${s.address().port}\n`); s.close(); })'; }
 lima_profile() { # SSH_PORT → Seatbelt profile (later rules win)
 	printf '(version 1)\n(allow default)\n(deny network-outbound (remote ip "localhost:*"))\n'
 	printf '(allow network-outbound (remote ip "localhost:%s"))\n' "$PROXY_PORT" "$1"
