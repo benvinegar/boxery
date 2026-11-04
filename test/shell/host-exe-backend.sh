@@ -47,7 +47,9 @@ chmod +x "$tmp/bin/ssh"
 # The fake exe.dev lobby: VMs are $EXE_STATE/NAME/{status,comment,data,args}.
 cat >"$tmp/bin/fake-exe" <<'STUB'
 #!/usr/bin/env bash
-S=$EXE_STATE; cmd=$1; shift
+S=$EXE_STATE
+read -ra w <<<"$1"; shift; set -- "${w[@]}" "$@"   # real ssh joins its arguments: "billing plan"
+cmd=$1; shift
 pos=(); flags=()
 for a in "$@"; do case $a in --json) ;; --*) flags+=("$a") ;; *) pos+=("$a") ;; esac; done
 echo "exe.dev $cmd ${pos[*]} ${flags[*]}" >>"$CALLS"
@@ -80,6 +82,8 @@ comment) vm "${pos[0]}"; t=${pos[1]#\'}; echo "${t%\'}" >"$S/${pos[0]}/comment";
 pause) vm "${pos[0]}"; echo paused >"$S/${pos[0]}/status"; echo '{}' ;;
 resume | restart) vm "${pos[0]}"; echo running >"$S/${pos[0]}/status"; echo '{}' ;;
 egress) vm "${pos[0]}"; echo "${pos[1]}" >"$S/${pos[0]}/egress"; echo '{}' ;;
+billing) [ "${pos[0]}" = plan ] || err "unknown billing command"; [ -z "${FAIL_PLAN:-}" ] || exit 255
+	echo "${PLAN:-{\"plan\":\"Personal\",\"max_cpus\":2,\"max_memory_gb\":4,\"max_disk_gb\":1024,\"max_vms\":50\}}" ;;
 resize) vm "${pos[0]}"; [ -z "${FAIL_RESIZE:-}" ] || err "injected resize failure"; echo "${flags[*]}" >"$S/${pos[0]}/resized"; echo '{}' ;;
 *) err "unknown command $cmd" ;;
 esac
@@ -206,6 +210,25 @@ called "exe.dev resize $(V v1) --cpu=1 --disk=30GB" && called "exe.dev restart $
 expect_fail "disks don't shrink" "$H" resize v1 --disk 25
 expect "resize back to 2 vCPU" "$H" resize v1 --cpus 2
 [[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "2 4096 30" ]] && ok "backend_size follows resizes" || bad "size: $(cat "$E/v1/size")"
+
+# --- the account's limits (billing plan), not a fixed Personal-plan cap (#40)
+: >"$CALLS"
+out=$(PLAN='{"plan":"Personal","max_cpus":8,"max_memory_gb":16,"max_disk_gb":400}' "$H" new big --cpus 4 --mem 8192 --disk 30 2>"$tmp/err") &&
+	called "exe.dev cp bxtest-base $(V big) --copy-tags=false --cpu=4 --memory=8GB --disk=30GB" && ! grep -F capping "$tmp/err" >/dev/null &&
+	ok "an 8 vCPU / 16 GB account: a 4 vCPU / 8 GB VM isn't capped" || bad "big: $out $(cat "$tmp/err") $(grep 'exe.dev cp' "$CALLS")"
+[[ $(jq -c . "$BOXERY_EXE_DIR/plan.json") == '{"max_cpus":8,"max_memory_gb":16,"max_disk_gb":400}' ]] && ok "the account's limits are kept for when exe.dev can't be asked" || bad "plan.json: $(cat "$BOXERY_EXE_DIR/plan.json")"
+: >"$CALLS"
+FAIL_PLAN=1 "$H" resize big --cpus 16 2>"$tmp/err" && called "exe.dev resize $(V big) --cpu=8" && grep -F "using the last ones" "$tmp/err" >/dev/null &&
+	ok "billing unreachable: the last known limits, said so" || bad "cached: $(cat "$tmp/err") $(grep 'exe.dev resize' "$CALLS")"
+e=$("$H" resize big --disk 500 2>&1) && bad "a disk beyond the account's limit was accepted" ||
+	{ [[ $e == *"exe.dev disks are at most 400 GB on this account (asked for 500)"* && $(cat "$E/big/disk") == 30 ]] && ok "a disk beyond the account's limit is refused, size unchanged" || bad "disk: $e"; }
+: >"$CALLS"
+BOXERY_EXE_MAX_CPUS=1 "$H" resize big --cpus 4 >/dev/null 2>&1 && called "exe.dev resize $(V big) --cpu=1" && ok "BOXERY_EXE_MAX_CPUS overrides the account's limit" || bad "override: $(grep 'exe.dev resize' "$CALLS")"
+"$H" rm big >/dev/null 2>&1
+(export FAIL_PLAN=1; BOXERY_EXE_DIR=$tmp/noplan; mkdir -p "$tmp/noplan"; . "$ROOT/host/backends/exe.sh"; log() { echo "$*" >&2; }; exe_limits; echo "$EXE_MAX_CPUS $EXE_MAX_MEM [$EXE_MAX_DISK]") >"$tmp/out" 2>"$tmp/err"
+[[ $(cat "$tmp/out") == "2 4096 []" ]] && grep -F "assuming 2 vCPU / 4 GB" "$tmp/err" >/dev/null && ok "no answer and none kept: 2 vCPU / 4 GB, said so" || bad "no plan: $(cat "$tmp/out" "$tmp/err")"
+(export PLAN='{"max_cpus":"$(touch '"$tmp"'/pwned4)","max_memory_gb":-3}'; BOXERY_EXE_DIR=$tmp/noplan2; mkdir -p "$tmp/noplan2"; . "$ROOT/host/backends/exe.sh"; log() { :; }; exe_limits; echo "$EXE_MAX_CPUS $EXE_MAX_MEM") >"$tmp/out" 2>/dev/null
+[[ $(cat "$tmp/out") == "2 4096" && ! -e $tmp/pwned4 ]] && ok "hostile or odd plan fields fall back to the defaults" || bad "hostile plan: $(cat "$tmp/out")"
 
 # --- stop / start
 : >"$CALLS"

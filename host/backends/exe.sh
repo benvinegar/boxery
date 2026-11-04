@@ -34,8 +34,9 @@ EXE_PORT_BASE=${BOXERY_EXE_PORT_BASE:-22400}     # VM slot S ↔ host port BASE+
 EXE_GUEST_PORT=${BOXERY_EXE_GUEST_PORT:-18088}   # the tunnel's -R end in the guest (LLM proxy)
 EXE_EGRESS=${BOXERY_EXE_EGRESS:-}                # "integrations" to cut VMs off the internet (see README)
 EXE_POOL=${BOXERY_EXE_POOL:-}                    # exe.dev pool for new VMs (Work plans)
-EXE_MAX_CPUS=${BOXERY_EXE_MAX_CPUS:-2}           # Personal plan: 2 vCPU / 4 GB shared by all VMs
-EXE_MAX_MEM=${BOXERY_EXE_MAX_MEM:-4096}          # MiB
+EXE_MAX_CPUS=${BOXERY_EXE_MAX_CPUS:-}            # a VM's largest size; default: the account's (exe_limits)
+EXE_MAX_MEM=${BOXERY_EXE_MAX_MEM:-}              # MiB
+EXE_MAX_DISK=""                                  # GB, the account's
 EXE_BASE_DISK=20                                 # GB, the base VM's disk (copies grow from it)
 EXE_SUPERVISOR=${BOXERY_EXE_SUPERVISOR:-$([[ $(uname) == Darwin ]] && echo launchd || echo systemd)}
 EXE_POLL=${BOXERY_EXE_POLL:-15}                  # seconds between build-base progress checks
@@ -123,14 +124,35 @@ exe_edge() { # VM COMMAND (stdin: passed through)
 	# shellcheck disable=SC2086  # dest is "-l USER HOST" or "HOST"
 	"${EXE_SSH[@]}" $dest "$@"
 }
-# CPUS MEM_MIB → "CPUS MEM_MIB" as exe.dev will size the VM: capped to the plan (BOXERY_EXE_MAX_CPUS/MEM),
-# memory in whole GB.
+# The largest VM the account allows, from `billing plan` (Personal: its capacity, which all VMs share;
+# one VM may use all of it). BOXERY_EXE_MAX_CPUS/MEM override it (pools: a pool's size). The last answer
+# is kept in $EXE_DIR/plan.json for when exe.dev can't be asked; without one, 2 vCPU / 4 GB (the smallest
+# plan). Call it in the function that creates or resizes, not in a $(subshell).
+exe_limits() {
+	[[ -z $EXE_MAX_CPUS || -z $EXE_MAX_MEM || -z $EXE_MAX_DISK ]] || return 0
+	local j f=$EXE_DIR/plan.json c m k
+	if j=$(exe_do "billing plan" 2>/dev/null) && jq -e '.max_cpus | type == "number"' <<<"$j" >/dev/null 2>&1; then
+		mkdir -p "$EXE_DIR"; jq '{max_cpus, max_memory_gb, max_disk_gb}' <<<"$j" >"$f.tmp" && mv "$f.tmp" "$f"
+	elif [[ -f $f ]]; then
+		j=$(cat "$f"); log "couldn't read the exe.dev account's limits; using the last ones ($f)"
+	else
+		j='{}'; log "couldn't read the exe.dev account's limits; assuming 2 vCPU / 4 GB (BOXERY_EXE_MAX_CPUS/MEM set them)"
+	fi
+	read -r c m k <<<"$(jq -r 'def n: if type == "number" and . >= 1 and . < 100000 then floor else empty end;
+		"\(.max_cpus | n // 2) \(.max_memory_gb | n // 4) \(.max_disk_gb | n // "")"' <<<"$j" 2>/dev/null)"
+	[[ -n $EXE_MAX_CPUS ]] || EXE_MAX_CPUS=${c:-2}
+	[[ -n $EXE_MAX_MEM ]] || EXE_MAX_MEM=$((${m:-4} * 1024))
+	[[ -n $EXE_MAX_DISK ]] || EXE_MAX_DISK=${k:-}
+}
+# CPUS MEM_MIB → "CPUS MEM_MIB" as exe.dev will size the VM: capped to the largest VM the account allows
+# (exe_limits), memory in whole GB. VMs share the account's capacity, so several may add up to more.
 exe_cap() {
 	local c=$1 m=$2
-	if ((c > EXE_MAX_CPUS)); then log "capping to $EXE_MAX_CPUS vCPU (BOXERY_EXE_MAX_CPUS)"; c=$EXE_MAX_CPUS; fi
-	if ((m > EXE_MAX_MEM)); then log "capping to $EXE_MAX_MEM MiB (BOXERY_EXE_MAX_MEM)"; m=$EXE_MAX_MEM; fi
+	if ((c > ${EXE_MAX_CPUS:-2})); then log "capping to ${EXE_MAX_CPUS:-2} vCPU, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_CPUS)"; c=${EXE_MAX_CPUS:-2}; fi
+	if ((m > ${EXE_MAX_MEM:-4096})); then log "capping to ${EXE_MAX_MEM:-4096} MiB, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_MEM)"; m=${EXE_MAX_MEM:-4096}; fi
 	echo "$c $((((m + 1023) / 1024) * 1024))"
 }
+exe_disk_ok() { [[ -z $EXE_MAX_DISK ]] || (($1 <= EXE_MAX_DISK)) || die "exe.dev disks are at most ${EXE_MAX_DISK} GB on this account (asked for $1)"; }   # GB
 exe_sizes() { local c m; read -r c m <<<"$(exe_cap "$1" "$2")"; echo "--cpu=$c --memory=$((m / 1024))GB"; }   # → cp/new flags
 exe_pool_flag() { [[ -z $EXE_POOL ]] || echo "--pool=$EXE_POOL"; }
 # cp SRC DST [FLAGS…]: a copy boots fresh from SRC's disk. Fails without leaving DST behind.
@@ -171,7 +193,7 @@ backend_check() {
   Run 'ssh exe.dev' once in a terminal (re-registering with your account's email adds the key), or set BOXERY_EXE_KEY."
 	jq -e '.email' <<<"$out" >/dev/null 2>&1 || die "unexpected 'whoami' reply from exe.dev: ${out:0:200}"
 }
-backend_init() { mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure; }
+backend_init() { mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure; exe_limits; }
 backend_proxy_services() { :; }   # per-VM tunnels carry the proxy; nothing host-wide
 guest_proxy_upstream() { echo "TCP:127.0.0.1:$EXE_GUEST_PORT"; }
 
@@ -209,6 +231,7 @@ $(remote_hostname_restore)"
 backend_build_base() {
 	exe_prefix_ensure
 	local base stg j; base=$(exe_base); stg=${EXE_PREFIX}build
+	exe_limits
 	j=$(exe_ls) || exit 1
 	if exe_has "$stg" "$j"; then exe_do rm "$stg" >/dev/null || die "could not remove a previous build VM $stg"; fi
 	log "creating exe.dev builder VM $stg (exeuntu)"
@@ -305,6 +328,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	[[ -n $EXE_PREFIX ]] || die "no exe.dev prefix; run: boxery-host init --backend exe"
 	[[ $name != *- ]] || die "exe.dev names can't end with '-': $name"
 	d=$(exe_dir "$name"); vm=$(exe_vm_new "$name")
+	exe_limits
 	j=$(exe_ls) || exit 1
 	if [[ $from == stock ]]; then
 		src="" srcdisk=0
@@ -322,6 +346,7 @@ backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL ima
 	# Disks only grow: ask for more than the source only.
 	[[ -n $srcdisk ]] || srcdisk=0
 	if ((disk < srcdisk)); then disk=$srcdisk; fi
+	exe_disk_ok "$disk"
 	echo "$disk" >"$d/disk"
 	echo "$(exe_cap "$cpus" "$mem" 2>/dev/null) $disk" >"$d/size"   # CPUS MEM_MIB DISK_GIB, for backend_size
 	local flags; flags="$(exe_sizes "$cpus" "$mem") $(exe_pool_flag)"
@@ -416,6 +441,8 @@ backend_size() { # → CPUS MEM_MIB DISK_GIB, as created/resized (exe.dev's ls d
 backend_resize() { # NAME CPUS MEM_MIB DISK_GIB (empty = unchanged)
 	local vm d c m k j st flags=""; vm=$(exe_vm "$1"); d=$(exe_dir "$1")
 	read -r c m k <"$d/size" || die "no recorded size for $1"
+	exe_limits
+	[[ -z $4 ]] || exe_disk_ok "$4"
 	[[ -z $2 && -z $3 ]] || read -r c m <<<"$(exe_cap "${2:-$c}" "${3:-$m}")"
 	[[ -z $2 ]] || flags="$flags --cpu=$c"
 	[[ -z $3 ]] || flags="$flags --memory=$((m / 1024))GB"
@@ -494,6 +521,7 @@ backend_reimage() {
 	j=$(exe_ls) || exit 1
 	exe_has "$img" "$j" || die "no such image: $2"
 	disk=$(cat "$d/disk" 2>/dev/null || echo 0); srcdisk=$(exe_disk_of_image "$img" "$j")
+	exe_limits
 	flags=$(exe_pool_flag)
 	# The image may come from before a resize: keep the VM's own CPU and memory.
 	local c m; if read -r c m _ <"$d/size" 2>/dev/null; then flags="$flags $(exe_sizes "$c" "$m")"; fi
