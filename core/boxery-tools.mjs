@@ -103,7 +103,7 @@ export const TOOLS = [
 		name: "vm_bash",
 		title: "VM bash",
 		engine: "bash",
-		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd /home/agent/project. Use rg / fdfind / ls for searching. Output keeps the last ${core.MAX_LINES} lines / ${core.MAX_BYTES / 1024}KB.`,
+		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd /home/agent/project. Use rg / fdfind / ls for searching. Start GUI programs detached (\`setsid nohup prog >/dev/null 2>&1 &\`), or the call waits until they exit. Output keeps the last ${core.MAX_LINES} lines / ${core.MAX_BYTES / 1024}KB.`,
 		parameters: obj({ command: { type: "string" }, timeout: { type: "number", description: "Seconds (default 120)" } }, ["command"]),
 		annotations: { destructiveHint: true, openWorldHint: true },
 		run: (vm, a, x) => core.bashTool(vm, a, x),

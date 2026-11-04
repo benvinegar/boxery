@@ -222,7 +222,7 @@ const instructions = (/** @type {Session} */ s) =>
 	core.guidance(s.current, {
 		host: s.host.name,
 		localToolsNote:
-			"The vm_* tools act on remote VMs; any other tools you have (shell, file tools) act on the machine you run on, not the VM. Use those only when you deliberately need something local.",
+			"Your other tools (shell, files) act on this machine, not a VM; use them only when you mean to work here.",
 	}) + (LOCAL_COPY_NOTE ? `\nvm_copy: ${LOCAL_COPY_NOTE}` : "");
 
 /** Send the client a request on this call's channel and resolve with its result. Abort sends notifications/cancelled.
