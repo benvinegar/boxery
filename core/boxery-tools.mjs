@@ -327,6 +327,7 @@ export const TOOLS = [
 			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable's value from this machine), " +
 			"or `file:LOCAL[=REMOTE]` (LOCAL on this machine; REMOTE relative to /home/agent, default project/<name>; e.g. `file:~/.npmrc=.npmrc`). " +
 			"Prefer `github` for GitHub. Granted values live in the VM's memory, not its disk or snapshots. Request each thing once; if the user declines, don't ask again. " +
+			"A secret the user pastes into the chat can't be granted as is, and must not be saved to a file to grant it: ask them to export it on their machine and request `env:VAR`, or grant the file it already lives in. " +
 			"Where the client can't prompt, you get the command for the user to run. vm_info {action:'grants'} shows what the VM already has.",
 		parameters: obj(
 			{

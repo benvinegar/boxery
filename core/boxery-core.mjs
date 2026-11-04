@@ -1258,22 +1258,39 @@ export async function manage(a, opts = {}) {
 
 // ---------------------------------------------------------------- shared prompt text
 
+// Rules both forms of the guidance carry: when to reach for a VM at all, and what never to do with one.
+const WHEN_VM =
+	"Use a VM for work that shouldn't touch this machine: untrusted code and install scripts (in a fresh VM, from vm_manage new or fork; download them there, not here), anything that needs Linux, root, Docker or a desktop/browser, long jobs that should outlive this session (vm_jobs), and parallel attempts.";
+const CREDENTIALS =
+	"Credentials reach a VM only through vm_grant, which asks the user: git asking for a username or password over https means vm_grant github, no need to inspect first. Never put them in a VM with vm_copy, vm_write or vm_bash (they would land on its disk and in its snapshots). " +
+	"If the user pastes a secret, don't save it to a file anywhere: ask them to export it on their machine and request env:VAR, or grant the file it already lives in (file:~/.npmrc=.npmrc).";
+const DECLINED = "If the user declines a vm_* call, stop and ask how to proceed. Don't do the same thing another way, locally or with another tool.";
+
 /** The agent's standing instructions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
 export function guidance(current, { localToolsNote, host } = {}) {
 	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
 	const hostLine = host ? `Current host: ${host}. VM selections belong only to that host. Every vm_* tool accepts optional host (vm_info {action:'hosts'} lists them).\n` : "";
 	if (!current)
-		return `${hostLine}boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+		return hostLine + [
+			`boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`,
+			WHEN_VM,
+			"Start GUI programs detached (`setsid nohup prog >/dev/null 2>&1 &`). Before something risky in a VM, snapshot it with vm_manage {action:'snap'}; to try several approaches at once, fork it.",
+			CREDENTIALS,
+			DECLINED,
+		].join("\n");
 	return hostLine + [
 		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
 		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
 		local,
+		"If a request could mean a local file or the VM's copy, say which one you used.",
 		"Unless it was created headless, the VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`). A headless VM has /etc/boxery/headless and no desktop tools.",
 		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
-		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. " +
-			"If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant, which asks the user. Never copy credentials into the VM with vm_copy or vm_write: they would land on its disk and in its snapshots.",
+		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant.",
+		CREDENTIALS,
 		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
-		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		"Before something risky, snapshot the VM with vm_manage {action:'snap'} (vm_manage {action:'revert'} restores it). To try several approaches in parallel, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		WHEN_VM,
+		DECLINED,
 	].join("\n");
 }
 
