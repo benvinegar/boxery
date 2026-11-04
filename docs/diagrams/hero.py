@@ -4,11 +4,11 @@ VMs are the mark's solid cube; the cube's state shows what boxery did to it:
 solid is running, a dashed copy behind it is a snapshot, a branch is a fork,
 and a faded dotted outline is a VM that was thrown away.
 
-    python3 docs/hero.py
+    python3 docs/diagrams/hero.py   # or python3 docs/diagrams, for every diagram
 """
 from pathlib import Path
 
-from diagram import THEMES, Diagram
+from parts import THEMES, Diagram
 
 HERE = Path(__file__).parent
 
@@ -89,8 +89,12 @@ class Hero(Diagram):
                 self.text(vx, by + 16, vm, 12, t["vm_text"], opacity=0.55 if vm == "fix-c" else None)
 
 
-if __name__ == "__main__":
+def main():
     for name, theme in THEMES.items():
         h = Hero(theme)
         h.draw()
         (HERE / f"hero-{name}.svg").write_text(h.svg(680, 556, TITLE, DESC))
+
+
+if __name__ == "__main__":
+    main()

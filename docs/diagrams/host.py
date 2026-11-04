@@ -2,11 +2,11 @@
 
 The host is trusted and holds the real keys; the VMs are untrusted and hold only a token the host swaps.
 
-    python3 docs/host.py
+    python3 docs/diagrams/host.py   # or python3 docs/diagrams, for every diagram
 """
 from pathlib import Path
 
-from diagram import THEMES, Diagram
+from parts import THEMES, Diagram
 
 HERE = Path(__file__).parent
 
@@ -81,8 +81,12 @@ class Host(Diagram):
         self.token(86, 350, 48, 18, 10)
 
 
-if __name__ == "__main__":
+def main():
     for name, theme in THEMES.items():
         h = Host(theme)
         h.draw()
         (HERE / f"host-{name}.svg").write_text(h.svg(680, 580, TITLE, DESC, [("arrow-tok", theme["warn_line"])]))
+
+
+if __name__ == "__main__":
+    main()

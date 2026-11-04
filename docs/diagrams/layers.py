@@ -1,12 +1,12 @@
-"""Generate docs/layers-{light,dark}.svg: which program fills each virtualization layer, per backend.
+"""Draw layers-light.svg and layers-dark.svg: which program fills each virtualization layer, per backend.
 
-usage: python3 docs/layers.py
+    python3 docs/diagrams/layers.py   # or python3 docs/diagrams, for every diagram
 """
 from pathlib import Path
 
-from diagram import THEMES, Diagram
+from parts import THEMES, Diagram
 
-DOCS = Path(__file__).parent
+HERE = Path(__file__).parent
 W = 680
 
 # Backends left to right, each with the one thing it's best at and whether it's experimental (both from
@@ -124,9 +124,12 @@ DESC = (
     "are reached through their API, and the rest runs on their servers."
 )
 
-for name, theme in THEMES.items():
-    d = Layers(theme)
-    d.draw()
-    p = DOCS / f"layers-{name}.svg"
-    p.write_text(d.svg(W, PANEL_Y + PANEL_H + 20, TITLE, DESC))
-    print(p)
+def main():
+    for name, theme in THEMES.items():
+        d = Layers(theme)
+        d.draw()
+        (HERE / f"layers-{name}.svg").write_text(d.svg(W, PANEL_Y + PANEL_H + 20, TITLE, DESC))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-"""Shared drawing for the README diagrams (hero.py, host.py, layers.py), in the boxery mark's isometric style.
+"""The parts the README diagrams (hero.py, host.py, layers.py) are drawn from, in the boxery mark's isometric style.
 
 Cards are slabs extruded down-right at the mark's 30°, VMs are the mark's solid cube, and a cube's state
 shows what boxery did to it: a dashed copy behind it is a snapshot, a faded dotted outline was thrown away.

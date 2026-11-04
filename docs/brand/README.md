@@ -18,7 +18,7 @@ For how to use these assets in diagrams, cards and videos (the full palette, typ
 | `og-image-dark.png`, `og-image-light.png` | 1200×630 Open Graph / `twitter:card` image for web pages. |
 | `works-with-card-dark.png`, `works-with-card-light.png` | 1200×630 card for posts on X, LinkedIn and the like: the README's "works with" logo row, stacked one platform per line under the lockup. |
 
-The social cards are the lockup, the GitHub "About" tagline and the npm install command, with all text as outlines. The "works with" card reuses the logos from `docs/works-with-*.svg`, so regenerate it when that row changes (and update the logo spans in `social-card.py` if logos move). To change them, edit `social-card.py` and regenerate:
+The social cards are the lockup, the GitHub "About" tagline and the npm install command, with all text as outlines. The "works with" card reuses the logos from `docs/diagrams/works-with-*.svg`, so regenerate it when that row changes (and update the logo spans in `social-card.py` if logos move). To change them, edit `social-card.py` and regenerate:
 
 ```sh
 uv run docs/brand/social-card.py   # optional arg: path to JetBrainsMono-Regular.ttf
