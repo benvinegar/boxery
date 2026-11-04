@@ -143,6 +143,26 @@ The image contract maps onto most VM platforms:
 
 Run `bash test/shell/host-images.sh` against the fake backend to see the behaviour every backend has to match.
 
+### What stable means for a backend
+
+A backend is **stable** when every line below holds. This is the bar libvirt and Lima were promoted on (offline suites, `e2e.sh` 19/19 on both, their `tested` entries), written down. Lines 6 and 7 matter most for hosted backends, where the platform keeps working after the CLI dies and the host is a separate machine. A backend that misses a line stays experimental, and its section says which lines it misses.
+
+| # | | Requirement |
+|---|---|---|
+| 1 | Contract | Every function in the [VM](#vms), [image](#images-one-primitive-for-snapshots-forks-and-pool-resets) and [crash recovery](#crash-recovery-contract) tables, following their rules (images disk-only and independent, inventory errors never an empty host, only its own namespace touched). Each capability it doesn't offer is declared unsupported in [`backends/index.mjs`](../../backends/index.mjs) |
+| 2 | Offline tests | `test/shell/host-NAME-backend.sh`, against command doubles (no hypervisor, no account), run by `npm run test:shell`: every lifecycle function, capture of a running VM, a failed create or capture leaving nothing behind, every recovery hook run twice, inventory failing when the platform is unreachable, a create killed mid-way recovered by `reconcile`, and the host's or account's other VMs untouched |
+| 3 | Declaration | `stability`, `supported`, `requirements` and `capabilities` in `backends/index.mjs`, and a `tested` entry for every host configuration that passed lines 4–7 |
+| 4 | Live: e2e | `e2e.sh` passes from a controller on current code, on every host OS the docs say the backend runs on. For a backend with host-side tunnels, that means both supervisors: systemd user units with linger (Linux) and launchd (macOS) |
+| 5 | Live: lifecycle | What `e2e.sh` doesn't cover: `build-base`, `new --headless`, `new --from`, `stop`/`start`, pool lease and reset, and every account or plan option the docs offer (or that option is listed as unverified) |
+| 6 | Live: interruptions | A create and a capture killed mid-way, then `reconcile`: no VM, image or local state is left, including work the platform finishes after the CLI died |
+| 7 | Live: host reboot | After a host reboot with VMs running, each VM is in the state the docs say and is reachable, at most after `start` |
+| 8 | Security | A guest reaches credentials only through the boxery proxy, with its per-VM token and grants: no platform feature (integrations, credential stores, metadata services) or other host service gets it around them. Its sshd accepts only boxery's lease-fenced keys, through the pinned endpoint |
+| 9 | Security notes | Every remaining limit (what the platform, its admins or the account's key can do) is in the backend's security notes and [docs/security.md](../../docs/security.md) |
+| 10 | Docs | `docs/install.md` gives requirements, account or plan prerequisites and setup; the backend's section here gives layout, lifecycle mapping, recovery, security notes and a verification record (date, host OS and arch, platform plan or version, timings). Nothing the docs state is contradicted by the platform, and no "Not verified yet" item touches lines 4–8 |
+| 11 | One answer | Every statement of stability agrees: the `docs/install.md` table, the backend's heading here, `ARCHITECTURE.md` (backends row, roadmap), the README's Status, `stability` in `backends/index.mjs`, and the "works with" artwork |
+
+Each live check is recorded where it was run: the backend's section here, and a `tested` entry in `backends/index.mjs`.
+
 ### Remote backends
 
 A backend whose VMs live on a hosted platform (exe.dev, boat.dev, and likely Daytona, #61) faces the same problems every time: the guest has no cloud-init, the host may be a laptop behind NAT, and boxery-host wants a stable `HOST PORT` for each VM's sshd. [`lib/remote.sh`](lib/remote.sh) solves them once:
@@ -238,6 +258,22 @@ Not verified yet:
 
 Not supported:
 - No HTTPS (`POST /exec`) transport: its 30 s limit is too short for `cp`, `new` and the build, and the tunnels need ssh anyway.
+
+Scorecard against [what stable means](#what-stable-means-for-a-backend) (2026-11-04):
+
+| # | | exe | Evidence and what's left |
+|---|---|---|---|
+| 1 | Contract | pass | Every VM, image and recovery function. No `backend_host_key`: the endpoint is the tunnel's loopback end, trusted like Lima's |
+| 2 | Offline tests | pass | `test/shell/host-exe-backend.sh` (125 checks) covers every item on the list. The fixes below add their own tests |
+| 3 | Declaration | fail | `tested: []` in `backends/index.mjs`: the November run recorded no host OS |
+| 4 | Live: e2e | fail | `e2e.sh` was never run against exe. The live run was by hand, on a Mac (launchd); a Linux host (systemd, linger) was never tried |
+| 5 | Live: lifecycle | fail | Headless `new`, snapshots, forks, `new --from`, stop/start and resize were live-tested on a Personal plan. Pool lease and reset weren't. `BOXERY_EXE_EGRESS` and `BOXERY_EXE_POOL` are unverified |
+| 6 | Live: interruptions | fail | A `cp` that lands after its CLI was killed, and after cleanup, is unverified |
+| 7 | Live: host reboot | not tested | The tunnels are meant to come back (enabled units, launchd agents); never tried |
+| 8 | Security | fail | The guard refuses VMs that reach an `llm`-type integration only. exe.dev's other integrations hold credentials off the VM and inject them for it (Anthropic and OpenAI workload identity, HTTP proxy, S3, GitHub, token mint…); one attached to `auto:all` reaches every boxery VM, outside the proxy and its grants. `init` doesn't look for any of them ([#41](https://github.com/modem-dev/boxery/issues/41)) |
+| 9 | Security notes | fail | The account key and integrations are in the notes here, but not in `docs/security.md` |
+| 10 | Docs | fail | "Not verified yet" is open. Sizes are capped at the Personal plan's 2 vCPU / 4 GB, though `billing plan` reports the account's real limits ([#40](https://github.com/modem-dev/boxery/issues/40)), and exe.dev's `ls` now reports each VM's size, which the notes above say it doesn't. Whether an always-on host is a requirement or a recommendation is open ([#42](https://github.com/modem-dev/boxery/issues/42)) |
+| 11 | One answer | pass | Experimental everywhere it's stated |
 
 ## boat (experimental)
 
