@@ -13,7 +13,7 @@ boxery's backends are pluggable but its guest isn't. "The guest is Ubuntu with c
 | Identity ([host/seed.mjs](../../host/seed.mjs) `cloudConfig`) | The per-VM identity is cloud-config text. Backends without cloud-init replay it three different ways: [host/cloudconfig-sh.mjs](../../host/cloudconfig-sh.mjs), `lima_apply_cloudconfig` in [lima.sh](../../host/backends/lima.sh), and `remote_identity_script` in [lib/remote.sh](../../host/backends/lib/remote.sh). Each one hard-codes `systemctl`, `systemd-machine-id-setup`, `/home/agent` and `/etc/boxery` |
 | Image layers ([image/layers/](../../image/layers)) | apt, systemd units, XFCE/TigerVNC. [host/backend.sh](../../host/backend.sh) `layer_files` has a fixed list of them |
 | Commands run in the guest | About 25 inline shell strings across `core/` (`REMOTE_HOME`, `bash -c`, `setsid`, `stat -c`, `flock`, xdotool, `import`, `DISPLAY=:1`, Chrome paths), `core/grants-guest.sh` (`/run/user` tmpfs), and `host/` (`cloud-init status --wait`, `/proc/.../boot_id`, `/var/run/reboot-required`, `systemctl reboot`, GNU `date -s`) |
-| VM records ([host/kinds.mjs](../../host/kinds.mjs)) | The only per-VM type is `desktop` or `headless`. Backends can say which functions they define (`__functions`) but nothing about what they can run |
+| VM records ([host/vm-records.mjs](../../host/vm-records.mjs)) | The only per-VM type is `desktop` or `headless`. Backends can say which functions they define (`__functions`) but nothing about what they can run |
 
 A second guest OS today would mean editing all four, with no single place that lists what a guest must provide.
 
@@ -36,7 +36,8 @@ boxery-host ──► backend (how to run a VM: lima, libvirt, …)
 
 ### 1. Record each VM's guest OS (done)
 
-- `$CONF/vm-os/NAME` sits next to `vm-kind/NAME`, with the same shape: one token, and no record means `linux` ([host/kinds.mjs](../../host/kinds.mjs)). Like the kind, it's fixed for the VM's life, inherited by images and forks from the source VM, deleted with the VM's other records, and kept in the pre-upgrade copy.
+- `$CONF/vm-os/NAME` sits next to `vm-kind/NAME`, with the same shape: one token, and no record means `linux` (`host/kinds.mjs` then; see the next point). Like the kind, it's fixed for the VM's life, inherited by images and forks from the source VM, deleted with the VM's other records, and kept in the pre-upgrade copy.
+- Since then, kind, OS and size are one row per VM in the host's store (`vm_records` in `leases.db`, schema version 2, [host/vm-records.mjs](../../host/vm-records.mjs)), written and deleted in one statement. Upgrading imports the old files, then renames their directories to `*.imported` so they can't be imported again. The OS is checked against [guests/](../../guests/) when it's written, so a VM made from an image or fork of an unknown OS is refused, and a new OS needs no schema change.
 - It shows as `os` in `boxery ls --json` and so in `vm_info`. (`guest` was taken: it is the guest software's build status.)
 - [guests/linux.mjs](../../guests/linux.mjs) holds the path constants that were duplicated (`/home/agent`, `~/project`, `/etc/boxery`, the grants tmpfs directory), and [guests/index.mjs](../../guests/index.mjs) looks a definition up by name. `core/` and `host/` import these instead of keeping their own copies. They import nothing, so the host still doesn't depend on `core/`. Call sites use `linux` directly. Choosing the definition by each VM's record is step 3.
 

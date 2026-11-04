@@ -20,13 +20,13 @@ import { reconcileVm, replayIntents } from "./recovery.mjs";
 import { runners } from "./runners.mjs";
 import { createRuntime } from "./runtime.mjs";
 import { addKey, buildBase, init, profiles } from "./setup.mjs";
-import { vmKinds, vmOses } from "./kinds.mjs";
-import { addVmShape, vmShapes } from "./shapes.mjs";
 import { fail, jsonArray, log, print, readFd, table, validName } from "./util.mjs";
+import { addVmSize, vmRecords } from "./vm-records.mjs";
 import { fork, newVm, resize, rm, start, stop } from "./vms.mjs";
 /** @import { LeaseListEntry } from "./boxery-leases.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
 /** @import { ShapeRecord } from "./shapes.mjs" */
+/** @import { VmRecord } from "./vm-records.mjs" */
 
 /** A boxery-host command: the runtime and the arguments after the command name. @typedef {(rt: Runtime, args: string[]) => unknown} Command */
 
@@ -85,7 +85,7 @@ async function backfillSize(rt, name) {
 		if (!await rt.vms.has("backend_size")) return null;
 		const [cpus, mem, disk] = await rt.vms.size(name, { quiet: true });
 		const rec = { shape: null, cpus, mem, disk };
-		try { addVmShape(rt.conf, name, rec); } catch { /* unwritable config: still list the size */ }
+		try { addVmSize(rt.db(), name, rec); } catch { /* unwritable store: still list the size */ }
 		return rec;
 	} catch { return null; } // one VM's size must not break the listing
 }
@@ -95,9 +95,15 @@ async function backfillSize(rt, name) {
 async function lsJson(rt, refresh = false) {
 	/** @type {LeaseListEntry[]} */
 	let pool = [];
-	try { pool = leases.list(rt.db()); } catch { /* listing VMs must not depend on the lease store */ }
+	/** @type {Record<string, VmRecord>} */
+	let records = {};
+	// Listing VMs must not depend on the store: without it, VMs list with the defaults (desktop, linux, the
+	// backend's size), and a warning says so.
+	try { pool = leases.list(rt.db()); records = vmRecords(rt.db()); }
+	catch (e) { log(`warning: cannot read the host's store (${/** @type {Error} */ (e).message}); kinds, guest OSes, shapes and leases below are defaults`); }
 	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state.toLowerCase(), holder: r.holder, expires_at: r.expires_at }]));
-	const sizes = /** @type {Record<string, ShapeRecord | null>} */ (vmShapes(rt.conf)), kinds = vmKinds(rt.conf), oses = vmOses(rt.conf);
+	/** @type {Record<string, ShapeRecord | null>} */
+	const sizes = Object.fromEntries(Object.entries(records).map(([n, r]) => [n, r.size]));
 	const vms = await rt.vms.list();
 	await Promise.all(vms.filter((vm) => !sizes[vm.name]).map(async (vm) => { sizes[vm.name] = await backfillSize(rt, vm.name); }));
 	if (refresh) {
@@ -111,7 +117,7 @@ async function lsJson(rt, refresh = false) {
 		const sz = sizes[vm.name];
 		return { name: vm.name, state: nz(vm.state), ssh_addr: nz(vm.ssh), disk_size: gib(vm.diskBytes) ?? sz?.disk ?? null, disk_used: gib(vm.diskUsedBytes),
 			tunnel: nz(vm.tunnel), lease: lease[vm.name] ?? null, shape: sz ? (sz.shape ?? "custom") : null, cpus: sz?.cpus ?? null, mem: sz?.mem ?? null,
-			desktop: kinds[vm.name] !== "headless", os: oses[vm.name] ?? DEFAULT_OS, guest: guest(buildRecord(rt.conf, vm.name)) };
+			desktop: records[vm.name]?.kind !== "headless", os: records[vm.name]?.os ?? DEFAULT_OS, guest: guest(buildRecord(rt.conf, vm.name)) };
 	});
 }
 /** @typedef {Awaited<ReturnType<typeof lsJson>>[number]} LsEntry */

@@ -6,16 +6,18 @@ import * as linux from "../guests/linux.mjs";
 import { deleteBuildRecord, refreshBuild } from "./build-info.mjs";
 import { captureVm, cleanupVmImages } from "./images.mjs";
 import { deleteHostKey } from "./hostkeys.mjs";
-import { deleteVmType, setVmKind, setVmOs, vmKind, vmOs } from "./kinds.mjs";
 import { issueToken, writeSeed } from "./seed.mjs";
-import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
+import { shapeSize } from "./shapes.mjs";
 import { fail, log, print, stamp, validImage, validName, validNum } from "./util.mjs";
+import { createVmRecord, deleteVmRecord, inheritedType, setVmSize, vmRecord } from "./vm-records.mjs";
 /** @import { GuestEndpoint } from "./guest.mjs" */
 /** @import { Runtime } from "./runtime.mjs" */
-/** @import { ShapeRecord } from "./shapes.mjs" */
+/** @import { VmKind } from "./vm-records.mjs" */
 
 /** Parsed `new` arguments; sizes are the flags' strings ("" = unset). layers: optional layers on top of
- *  plumbing + devtools (headless only). @typedef {{ name: string, shape: string, cpus: string, mem: string, disk: string, from: string, headless: boolean, layers?: string[] }} NewArgs */
+ *  plumbing + devtools (headless only). sameAs (fork, not a flag): the shape name to record although the
+ *  size is given by flags, which copy that shape's size exactly.
+ *  @typedef {{ name: string, shape: string, cpus: string, mem: string, disk: string, from: string, headless: boolean, layers?: string[], sameAs?: string }} NewArgs */
 // Layers a headless VM may add with --layers (image/layers/; the base layers are always there).
 export const OPTIONAL_LAYERS = ["github-runner"];
 /** @typedef {{ cpus: string, mem: string, disk: string }} SizeFlags */
@@ -70,7 +72,7 @@ export function parseNewArgs(args) {
 }
 
 /** Create, boot and wait for NAME. Returns "NAME HOST:PORT". @param {Runtime} rt @param {NewArgs} args */
-export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless, layers = [] }) {
+export async function createVm(rt, { name, shape, cpus, mem, disk, from, headless, layers = [], sameAs }) {
 	validName(name);
 	if (rt.backend === "openshell") {
 		if (!headless || from) fail("OpenShell supports only new --headless without --from; no desktop, snapshots, forks or pools");
@@ -81,15 +83,17 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	const shapes = rt.shapes();
 	const base = shapeSize(shapes, shape || shapes.default);
 	const custom = Boolean(cpus || mem || disk);
-	const label = custom ? "" : shape || shapes.default;
+	const label = sameAs ?? (custom ? "" : shape || shapes.default);
 	cpus ||= String(base.cpus); mem ||= String(base.mem); disk ||= String(base.disk);
 	if (!(Number(cpus) >= 1 && Number(mem) >= 1 && Number(disk) >= 1)) fail("--cpus, --mem and --disk must be >= 1");
 	if (await rt.vms.exists(name)) fail(`${name} already exists`);
 	// Where the disk comes from: an image (its VM's kind and OS), the stock image (headless), or the desktop base.
-	let kind = "desktop", os = DEFAULT_OS, src = "", provision = "";
+	/** @type {VmKind} */
+	let kind = "desktop";
+	let os = DEFAULT_OS, src = "", provision = "";
 	if (from) {
 		if (!await rt.vms.imageExists(from)) fail(`no such image: ${from} (boxery-host images)`);
-		kind = vmKind(rt.conf, from.split("@")[0]); os = vmOs(rt.conf, from.split("@")[0]); src = from;
+		({ kind, os } = inheritedType(rt.db(), from)); src = from;
 		if (headless && kind !== "headless") fail(`${from} has a desktop, and a VM made from an image keeps it (drop --headless)`);
 	} else if (headless) {
 		kind = "headless"; src = "stock"; provision = ["plumbing", "devtools", ...layers].join(" ");
@@ -101,9 +105,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	// Restricted workloads have no root provisioning, guest SSH keys or Boxery proxy token.
 	const userdata = rt.backend === "openshell" ? "" : await writeSeed(rt, name, provision);
 	await rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]);
-	if (rt.backend !== "openshell") setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
-	setVmKind(rt.conf, name, kind);
-	setVmOs(rt.conf, name, os);
+	createVmRecord(rt.db(), name, { kind, os, size: rt.backend === "openshell" ? null : { shape: label, cpus, mem, disk } });
 	const ep = await rt.vms.waitEndpoint(name);
 	log(rt.backend === "openshell" ? `${name}: waiting for restricted gateway SSH` : `${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
 	await rt.waitSsh(name, ep);
@@ -160,8 +162,9 @@ export async function fork(rt, args) {
 	if (!src || !dsts.length) fail("usage: fork SRC DST... [--shape S] [--cpus N --mem MiB --disk GiB]");
 	validName(src);
 	if (!await rt.vms.exists(src)) fail(`no such vm: ${src}`);
+	inheritedType(rt.db(), src); // a guest OS this boxery doesn't know fails here, before the capture
 	// Size: --shape, else SRC's recorded size, else (VMs made before shapes) its size per the backend.
-	const rec = vmShape(rt.conf, src);
+	const { size: rec } = vmRecord(rt.db(), src);
 	/** @type {number[] | null} */
 	let sz = rec ? [rec.cpus, rec.mem, rec.disk] : null;
 	if (!rec && await rt.vms.has("backend_size")) sz = await rt.vms.size(src, { quiet: true }).catch(() => null);
@@ -187,12 +190,11 @@ export async function fork(rt, args) {
 	log(`captured ${src} in ${secs()}s; booting ${dsts.length} fork(s)`);
 	// Boot the forks in parallel under this operation's locks; print results in argument order. A failed
 	// fork leaves its create intent behind, so the supervisor removes it after this worker exits.
-	const results = await Promise.allSettled(dsts.map((d) => createVm(rt, parseNewArgs([d, ...sizing, ...flags, "--from", image]))));
+	const results = await Promise.allSettled(dsts.map((d) => createVm(rt, { ...parseNewArgs([d, ...sizing, ...flags, "--from", image]), ...(label ? { sameAs: label } : {}) })));
 	let rc = 0;
 	results.forEach((r, i) => {
 		if (r.status === "fulfilled") {
 			print(r.value);
-			if (label) setVmShape(rt.conf, dsts[i], { .../** @type {ShapeRecord} */ (vmShape(rt.conf, dsts[i])), shape: label });
 		} else {
 			rc = 1;
 			if (!r.reason?.reported) process.stderr.write(`boxery-host: ${r.reason?.message ?? r.reason}\n`);
@@ -214,7 +216,7 @@ export async function rm(rt, [name]) {
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	const action = rt.intent("remove", name);
 	await rt.vms.call("backend_rm", [name]);
-	deleteVmShape(rt.conf, name); deleteVmType(rt.conf, name); deleteBuildRecord(rt.conf, name, true);
+	deleteVmRecord(rt.db(), name); deleteBuildRecord(rt.conf, name, true);
 	// Forks and image readers hold this source's lock until all copies are independent.
 	await cleanupVmImages(rt, name);
 	rt.deleteToken(name);
@@ -284,6 +286,6 @@ async function resizeVm(rt, name, want) {
 	let after;
 	try { after = await rt.vms.size(name); } catch { fail(`${name} was resized, but its new size cannot be read`); }
 	const [cpus, mem, disk] = after;
-	setVmShape(rt.conf, name, { shape: null, cpus, mem, disk }); // no longer its shape's size: custom
+	setVmSize(rt.db(), name, { shape: null, cpus, mem, disk }); // no longer its shape's size: custom
 	log(`${name} resized: ${c} vCPU, ${m} MiB, ${d} GiB → ${cpus} vCPU, ${mem} MiB, ${disk} GiB`);
 }

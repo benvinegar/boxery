@@ -227,9 +227,11 @@ function npmSource({ ref }, current) {
 // Each profile's state as it was before the code changed, taken under the host-wide lock, so no
 // operation is running. A rollback restores it before init runs the old code again, since the new code
 // may have migrated it. After a successful upgrade it stays (until the next one) for recovery by hand.
-// Besides init, only locked operations write these files, so restoring them loses nothing.
+// Besides init, only locked operations write these files, so restoring them loses nothing. Each VM's
+// records are rows in leases.db now; the release before that also copied vm-shapes/, vm-kind/, vm-os/,
+// and since the copy is taken and restored by the release being upgraded from, that one still does.
 export const PRE_UPGRADE = "pre-upgrade";
-const STATE_FILES = ["tokens.json", "edge", "vm-shapes", "vm-kind", "vm-os"];
+const STATE_FILES = ["tokens.json", "edge"];
 const copy = (/** @type {string} */ from, /** @type {string} */ to) => cpSync(from, to, { recursive: true, preserveTimestamps: true });
 
 /** @param {string} conf @param {Hold} hold */

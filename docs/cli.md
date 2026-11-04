@@ -247,7 +247,7 @@ VMs on the host, plus the grants this machine has given each one.
 | `disk_used` | number \| null | GiB the VM's own disk takes on the host (allocated blocks, two decimals; a shared base image is not counted). `null` where the backend can't know (exe.dev, boat.dev) |
 | `tunnel` | string \| null | exe.dev and boat.dev only: the host's ssh tunnel to the VM, which carries its ssh endpoint and LLM proxy: `up`, `connecting` (retrying; is the host online?) or `down` (`boxery-host start NAME`). `null` on other backends. A running VM shows `ssh_addr: null` while its tunnel isn't `up` |
 | `lease` | object \| null | `null` for ordinary VMs; for pool VMs: `{state, holder, expires_at}`, `state` lowercase as in `pool ls` |
-| `shape` | string \| null | shape the VM was created with; `custom` if size flags or `resize` changed it, or if it has no recorded shape (made before shapes: its size is read from the backend once and recorded); `null` only if the size can't be read |
+| `shape` | string \| null | shape the VM was created with; `custom` if size flags or `resize` changed it, or if it has no recorded size (made before shapes, or outside boxery: its size is read from the backend once and recorded); `null` only if the size can't be read |
 | `cpus` | number \| null | vCPUs (`null` if unknown) |
 | `mem` | number \| null | memory in MiB (`null` if unknown) |
 | `desktop` | boolean | `false` for headless VMs (`new --headless`, or made from a headless VM's image); `true` otherwise, including VMs created before headless VMs existed |
