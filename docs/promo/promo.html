@@ -175,7 +175,9 @@ function lockup(cx, cy, s, o = {}) {
   x.save(); x.globalAlpha *= alpha;
   x.translate(cx, cy); x.scale(s, s); x.translate(-ox, -32);
   if (hex > 0) {
-    x.setLineDash([162 * hex, 400]);
+    // Dash only while drawing on: one dash the length of the whole outline is an
+    // open line, with flat ends and no join, so it leaves a notch at the top vertex.
+    if (hex < 1) x.setLineDash([162 * hex, 400]);
     poly(HEX, null, COL.ink, 4);
     x.setLineDash([]);
   }

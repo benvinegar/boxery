@@ -77,9 +77,17 @@ Look for these:
 - **Code:**
   - `==>` or `->` turned into a ligature (use JetBrains Mono NL)
   - a local variable shadowing a helper such as `back` or `out`, which fails silently
+  - a shape "drawn on" with `setLineDash` that keeps the dash once it's complete. A single dash the length of a closed outline is still an open line: its ends meet with flat caps and no join, which leaves a notch at the start corner. Set the dash only while the drawing is under 1, and stroke the finished shape solid.
 - **The opening and close:**
   - they must still look exactly like the main video's
   - compare stills at 1 s, `S_END + 2` and `DUR - 1` with the same frames from `promo.html`
+  - matching `promo.html` only shows you didn't change it, not that it's right. Check the mark against `docs/brand/mark-dark.svg` as well: all six corners of the hexagon rounded, with no gaps or notches.
+
+Small details don't show in a whole 1080 px frame, because the frame shrinks when you view it. For the mark, icons, corners and joins, crop and enlarge them before you judge them:
+
+```sh
+ffmpeg -i t1.00.png -vf "crop=200:120:440:300,scale=800:-1:flags=neighbor" zoom.png
+```
 
 ## 4. Render and hand it over
 
