@@ -10,7 +10,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
 import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport } from "./fixtures/grant-transport.mjs";
+import { grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -75,8 +75,6 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 [ "$1" != --host ] || shift 4 # --host NAME --profile-dir DIR
 echo "$*" >> "$BOXERY_HOME/calls"
 case "$*" in
-"acquire "*) echo "==> leased pool-1" >&2; echo "pool-1 l-0123456789abcdef0123456789abcdef" ;;
-"renew "*) echo "pool-1 9999999999" ;;
 "ls --json") echo '[{"name":"fakevm","state":"running","ssh_addr":"10.0.0.2:22","disk_size":40,"disk_used":1.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
 "shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
 "grants granted --json") echo '[{"kind":"ssh-agent"}]' ;;
@@ -585,7 +583,8 @@ describe("older protocol versions", () => {
 
 describe("leases", () => {
 	const LEASE = "l-0123456789abcdef0123456789abcdef";
-	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
+	// Leases run in-process (core/leases.mjs) against the stub host, not through the controller CLI.
+	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2));
 
 	test("vm_lease acquires, tracks, renews and releases pool VMs per session; leases end with the session", async () => {
 		const c = client();
@@ -600,7 +599,7 @@ describe("leases", () => {
 			assert.equal(await lease({ action: "list" }), "this session holds no leases");
 			await err("vm_lease", { action: "acquire", ttl: 5 }, /ttl must be/);
 			assert.match(await lease({ action: "acquire", ttl: 600, wait: 5 }), new RegExp(`^leased pool-1 \\(lease ${LEASE}, ttl 600s.*\ncurrent VM: pool-1$`));
-			assert.equal(calls().at(-1), "acquire --ttl 600 --wait 5");
+			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 600 --wait 5$/);
 			assert.match(await lease({ action: "list" }), new RegExp(`^pool-1\t${LEASE}\texpires in 600s .*\tcurrent$`));
 			assert.match((await c.tool("vm_info", { action: "list" })).content[0].text, /current: pool-1/);
 			await err("vm_manage", { action: "rm", vm: "pool-1" }, /leased from the pool/);
@@ -612,7 +611,7 @@ describe("leases", () => {
 			await err("vm_bash", { command: "true" }, /no current VM/);
 			await err("vm_lease", { action: "release", vm: "pool-1" }, /holds no lease/);
 			assert.doesNotMatch(await lease({ action: "acquire", use: false }), /current VM/);
-			assert.equal(calls().at(-1), "acquire --ttl 1800 --wait 60");
+			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 1800 --wait 60$/);
 		} finally {
 			c.p.stdin.end(); // stdio session over: its leases are released before the server exits
 			await new Promise((r) => c.p.on("exit", r));
@@ -622,7 +621,8 @@ describe("leases", () => {
 });
 
 describe("grant requests (vm_grant)", () => {
-	const calls = () => readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n");
+	// Leases run in-process (core/leases.mjs) against the stub host, not through the controller CLI.
+	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2));
 	const grantCalls = () => calls().filter((l) => l.startsWith("grant "));
 	const elicitClient = async (protocolVersion = "2025-06-18", elicitation = {}, extraEnv = {}) => {
 		const c = client(["--vm", "fakevm"], extraEnv);
@@ -886,7 +886,7 @@ describe("http", () => {
 		assert.match(acq.result.content[0].text, /^leased pool-1/);
 		const del = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "DELETE", headers: { ...auth, "mcp-session-id": sid } });
 		assert.equal(del.status, 204);
-		assert.equal(readFileSync(path.join(env.BOXERY_HOME, "calls"), "utf8").trim().split("\n").at(-1), "release l-0123456789abcdef0123456789abcdef", "DELETE releases the session's leases");
+		assert.match(hostCalls(dir).at(-1) ?? "", /: release l-0123456789abcdef0123456789abcdef$/, "DELETE releases the session's leases");
 		assert.equal((await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, { ...auth, "mcp-session-id": sid })).status, 404, "deleted session");
 	});
 

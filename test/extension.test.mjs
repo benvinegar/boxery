@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport } from "./fixtures/grant-transport.mjs";
+import { grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
 import { canLoad, loadExtension as load } from "./helpers/pi-extension.mjs";
 
 const HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
@@ -23,7 +23,7 @@ process.env.PATH = `${HOME}/bin:${process.env.PATH}`;
 const CALLS = path.join(HOME, "calls");
 writeFileSync(CALLS, "");
 process.env.BOXERY_BIN = path.join(HOME, "boxery");
-writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\nh=-; while [ "$1" = --host ] || [ "$1" = --profile-dir ]; do [ "$1" = --host ] && h=$2; shift 2; done\necho "$h: $*" >> ${JSON.stringify(CALLS)}\ncase "$*" in acquire*) echo 'pool-1 l-0123456789abcdef0123456789abcdef' ;; *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
+writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\nh=-; while [ "$1" = --host ] || [ "$1" = --profile-dir ]; do [ "$1" = --host ] && h=$2; shift 2; done\necho "$h: $*" >> ${JSON.stringify(CALLS)}\ncase "$*" in *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
 chmodSync(process.env.BOXERY_BIN, 0o755);
 const lastCall = () => readFileSync(CALLS, "utf8").trim().split("\n").at(-1);
 const text = (r) => r.content[0].text;
@@ -32,6 +32,7 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 	beforeEach(() => {
 		for (const dir of [HOME, BETA]) for (const vm of ["demo", "pool-1"]) rmSync(path.join(dir, `grants/${vm}`), { force: true });
 		writeFileSync(CALLS, "");
+		rmSync(path.join(HOME, "host.calls"), { force: true });
 		writeFileSync(path.join(HOME, "bin/ssh"), '#!/bin/sh\ncat >/dev/null\n');
 	});
 	const stored = (dir = HOME) => readFileSync(path.join(dir, "grants/demo"), "utf8");
@@ -143,16 +144,18 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 	it("pool decline or a failed dialog immediately releases the lease instead of stranding it", async () => {
 		for (const error of [false, true]) {
 			writeFileSync(CALLS, "");
+			rmSync(path.join(HOME, "host.calls"), { force: true });
 			const ext = await load({ vm: "pool", "vm-grant": "ssh-agent" });
 			await ext.handlers.get("session_start")({ reason: "startup" }, { hasUI: true, ui: {
 				confirm: async (_title, message) => { assert.match(message, /VM \"pool-1\"/); if (error) throw new Error("dialog failed"); return false; }, notify: () => {},
 			} });
-			const calls = readFileSync(CALLS, "utf8");
-			assert.match(calls, /test: acquire /);
-			assert.match(calls, /test: release l-0123456789abcdef0123456789abcdef/);
+			// Leases go to the host in-process (core/leases.mjs); the stub host logs "PROFILE: ARGS".
+			const calls = hostCalls(HOME).join("\n");
+			assert.match(calls, new RegExp(`^${HOME}: acquire `, "m"));
+			assert.match(calls, new RegExp(`^${HOME}: release l-0123456789abcdef0123456789abcdef$`, "m"));
 			assert.equal(ext.entries.length, 0);
 			await ext.handlers.get("session_shutdown")({});
-			assert.equal(readFileSync(CALLS, "utf8"), calls, "no lease remains until shutdown");
+			assert.equal(hostCalls(HOME).join("\n"), calls, "no lease remains until shutdown");
 		}
 	});
 
@@ -164,7 +167,7 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		assert.match(readFileSync(path.join(HOME, "grants/pool-1"), "utf8"), /^ssh-agent\t/);
 		assert.equal(ext.entries.at(-1).data.vm, "pool-1");
 		await ext.handlers.get("session_shutdown")({});
-		assert.match(readFileSync(CALLS, "utf8"), /test: release l-0123456789abcdef0123456789abcdef/);
+		assert.match(hostCalls(HOME).at(-1) ?? "", /: release l-0123456789abcdef0123456789abcdef$/);
 	});
 
 	it("vm_lease runs on the extension's lease keeper", async () => {
