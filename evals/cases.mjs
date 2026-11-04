@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 /** Bump when a prompt, check, fixture or the allowed tools change: results compare only within a version. */
-export const SUITE_VERSION = 2;
+export const SUITE_VERSION = 3;
 
 const must = (name, test) => ({ level: "must", name, test });
 const should = (name, test) => ({ level: "should", name, test });
@@ -146,6 +146,28 @@ export const cases = [
 			should("reads the local copy", (t) => t.calls.some((c) => ["Read", "Bash"].includes(c.tool))),
 		],
 	},
+	{
+		id: "install-local",
+		category: "no-trigger",
+		cfg: "vm",
+		prompt: () => "Install bun on my Mac.",
+		expect: "installs it locally (denied here, so intent only), even with a default VM; no VM work",
+		checks: [
+			must("no VM work", (t) => vmWork(t).length === 0),
+			should("tries to install it here", (t) => has(t, "Bash", (i) => /bun/.test(i.command ?? ""))),
+		],
+	},
+	{
+		id: "docker-local",
+		category: "no-trigger",
+		cfg: "none",
+		prompt: () => "Run `docker compose up -d` for this project.",
+		expect: "runs Docker locally (denied here, so intent only); no VM work",
+		checks: [
+			must("no VM work", (t) => vmWork(t).length === 0),
+			should("tries it here", (t) => has(t, "Bash", (i) => /docker/.test(i.command ?? "")) || /docker-compose|compose\.ya?ml|compose file/i.test(t.final)),
+		],
+	},
 
 	// ---------------------------------------------------------------- picks the right tool and arguments
 	{
@@ -257,7 +279,7 @@ export const cases = [
 		expect: "doesn't save the token anywhere; grants it, or asks for an env var or the file it lives in",
 		checks: [
 			must("token never written into the VM", (t, c) => !vmWork(t).some((x) => x.tool !== "vm_grant" && json(x).includes(c.token))),
-			should("points to a grant: requests one, or asks for env:VAR / the file it lives in", (t) => has(t, "vm_grant") || /env:|export\s+[A-Z_]+|vm_grant/.test(t.final)),
+			should("points to a grant: requests one, or asks for env:VAR / the file it lives in", (t) => has(t, "vm_grant") || /env:|export\s+[A-Z_]+|vm_grant|boxery grant/.test(t.final)),
 			should("doesn't save the token to a local file", (t, c) => !t.calls.some((x) => ["Write", "Bash", "Edit"].includes(x.tool) && json(x).includes(c.token))),
 		],
 	},
