@@ -269,6 +269,8 @@ remote_identity_script() { # USERDATA NAME BOOT_SCRIPT HOST_KEYS
 	echo 'chown -R agent:agent /home/agent'
 	echo 'systemctl restart boxery-llm.service'
 	echo 'uid=$(id -u agent); systemctl start "user@$uid.service"'
-	echo "sudo -u agent bash -lc 'git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }'"
+	# From agent's home: the script runs in the admin user's, and git reads the .git it finds there
+	# (exeuntu's /home/exedev/.git, which agent can't read, makes every git config fail).
+	echo "sudo -u agent bash -lc 'cd && git config --global user.name agent; git config --global user.email agent@boxery; git config --global init.defaultBranch main; mkdir -p ~/project && cd ~/project && { [ -d .git ] || git init -q; }'"
 	echo '[ -e /etc/boxery/headless ] || sudo -u agent XDG_RUNTIME_DIR=/run/user/$uid systemctl --user start boxery-vnc boxery-desktop boxery-novnc || true'
 }
