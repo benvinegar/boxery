@@ -83,7 +83,7 @@ pause) vm "${pos[0]}"; echo paused >"$S/${pos[0]}/status"; echo '{}' ;;
 resume | restart) vm "${pos[0]}"; echo running >"$S/${pos[0]}/status"; echo '{}' ;;
 egress) vm "${pos[0]}"; echo "${pos[1]}" >"$S/${pos[0]}/egress"; echo '{}' ;;
 billing) [ "${pos[0]}" = plan ] || err "unknown billing command"; [ -z "${FAIL_PLAN:-}" ] || exit 255
-	echo "${PLAN:-{\"plan\":\"Personal\",\"max_cpus\":2,\"max_memory_gb\":4,\"max_disk_gb\":1024,\"max_vms\":50\}}" ;;
+	d='{"plan":"Personal","max_cpus":2,"max_memory_gb":4,"max_disk_gb":1024,"max_vms":50}'; echo "${PLAN:-$d}" ;;
 resize) vm "${pos[0]}"; [ -z "${FAIL_RESIZE:-}" ] || err "injected resize failure"; echo "${flags[*]}" >"$S/${pos[0]}/resized"; echo '{}' ;;
 *) err "unknown command $cmd" ;;
 esac
@@ -220,7 +220,7 @@ out=$(PLAN='{"plan":"Personal","max_cpus":8,"max_memory_gb":16,"max_disk_gb":400
 : >"$CALLS"
 FAIL_PLAN=1 "$H" resize big --cpus 16 2>"$tmp/err" && called "exe.dev resize $(V big) --cpu=8" && grep -F "using the last ones" "$tmp/err" >/dev/null &&
 	ok "billing unreachable: the last known limits, said so" || bad "cached: $(cat "$tmp/err") $(grep 'exe.dev resize' "$CALLS")"
-e=$("$H" resize big --disk 500 2>&1) && bad "a disk beyond the account's limit was accepted" ||
+e=$(PLAN='{"max_cpus":8,"max_memory_gb":16,"max_disk_gb":400}' "$H" resize big --disk 500 2>&1) && bad "a disk beyond the account's limit was accepted" ||
 	{ [[ $e == *"exe.dev disks are at most 400 GB on this account (asked for 500)"* && $(cat "$E/big/disk") == 30 ]] && ok "a disk beyond the account's limit is refused, size unchanged" || bad "disk: $e"; }
 : >"$CALLS"
 BOXERY_EXE_MAX_CPUS=1 "$H" resize big --cpus 4 >/dev/null 2>&1 && called "exe.dev resize $(V big) --cpu=1" && ok "BOXERY_EXE_MAX_CPUS overrides the account's limit" || bad "override: $(grep 'exe.dev resize' "$CALLS")"
@@ -229,6 +229,13 @@ BOXERY_EXE_MAX_CPUS=1 "$H" resize big --cpus 4 >/dev/null 2>&1 && called "exe.de
 [[ $(cat "$tmp/out") == "2 4096 []" ]] && grep -F "assuming 2 vCPU / 4 GB" "$tmp/err" >/dev/null && ok "no answer and none kept: 2 vCPU / 4 GB, said so" || bad "no plan: $(cat "$tmp/out" "$tmp/err")"
 (export PLAN='{"max_cpus":"$(touch '"$tmp"'/pwned4)","max_memory_gb":-3}'; BOXERY_EXE_DIR=$tmp/noplan2; mkdir -p "$tmp/noplan2"; . "$ROOT/host/backends/exe.sh"; log() { :; }; exe_limits; echo "$EXE_MAX_CPUS $EXE_MAX_MEM") >"$tmp/out" 2>/dev/null
 [[ $(cat "$tmp/out") == "2 4096" && ! -e $tmp/pwned4 ]] && ok "hostile or odd plan fields fall back to the defaults" || bad "hostile plan: $(cat "$tmp/out")"
+# A fork's creates read the limits at the same time. Live, with one shared temp file, a create's mv found
+# it already moved and, under the backend's set -e, its create failed. Caching is best effort.
+(BOXERY_EXE_DIR=$tmp/par; mkdir -p "$tmp/par"; . "$ROOT/host/backends/exe.sh"; log() { :; }; set -euo pipefail
+	mv() { return 1; }   # another create moved it first
+	exe_limits; echo "$EXE_MAX_CPUS" >"$tmp/par/out") 2>"$tmp/err" || true
+left=("$tmp"/par/plan.json.*)
+[[ $(cat "$tmp/par/out" 2>/dev/null) == 2 && ! -e ${left[0]} ]] && ok "a cache write that loses a race doesn't fail the create, and leaves no temp file" || bad "exe_limits under set -e: $(cat "$tmp/err") ${left[*]}"
 
 # --- stop / start
 : >"$CALLS"

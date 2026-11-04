@@ -132,7 +132,9 @@ exe_limits() {
 	[[ -z $EXE_MAX_CPUS || -z $EXE_MAX_MEM || -z $EXE_MAX_DISK ]] || return 0
 	local j f=$EXE_DIR/plan.json c m k
 	if j=$(exe_do "billing plan" 2>/dev/null) && jq -e '.max_cpus | type == "number"' <<<"$j" >/dev/null 2>&1; then
-		mkdir -p "$EXE_DIR"; jq '{max_cpus, max_memory_gb, max_disk_gb}' <<<"$j" >"$f.tmp" && mv "$f.tmp" "$f"
+		# Best effort, and a temp file of its own: a fork's creates all get here at once.
+		local tmp; tmp=$(mkdir -p "$EXE_DIR" && mktemp "$f.XXXXXX") &&
+			{ jq '{max_cpus, max_memory_gb, max_disk_gb}' <<<"$j" >"$tmp" && mv "$tmp" "$f" || rm -f "$tmp"; }
 	elif [[ -f $f ]]; then
 		j=$(cat "$f"); log "couldn't read the exe.dev account's limits; using the last ones ($f)"
 	else
