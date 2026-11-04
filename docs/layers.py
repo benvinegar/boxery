@@ -34,7 +34,7 @@ CELLS = [
     (3, 3, 0, 0, "Apple silicon", [], "card"),
     (0, 0, 1, 1, "libvirtd", [], "card"),
     (1, 1, 1, 1, "QEMU", [], "card"),
-    (0, 0, 2, 2, "none", [], "none"),
+    (0, 0, 2, 2, "boxery + systemd", [], "host"),  # boxery's backend is the manager
     (1, 1, 2, 2, "cloud-hypervisor", [], "card"),
     (2, 2, 1, 2, "KVM", [], "vm"),
     (0, 0, 3, 3, "gateway", [], "card"),
@@ -120,7 +120,7 @@ def svg(theme):
     height = PANEL_Y + panel_h + 20
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {height}" width="{W}" height="{height}" role="img" aria-labelledby="t d">
 <title id="t">What runs a boxery VM, layer by layer</title>
-<desc id="d">The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) has no manager, so boxery runs it directly; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers.</desc>
+<desc id="d">The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="{t["muted"]}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 <g font-family="{FONT}" text-anchor="middle" dominant-baseline="central">
 {chr(10).join(out)}

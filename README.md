@@ -84,7 +84,7 @@ The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stac
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/layers-dark.svg">
-    <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) has no manager, so boxery runs it directly; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers." width="680">
+    <img src="docs/layers-light.svg" alt="What runs a boxery VM, layer by layer. The boxery host is the orchestrator over every backend. On macOS, Lima (local): limactl manages Apple's Virtualization.framework, on the macOS kernel's hypervisor, on Apple silicon. On Linux: libvirt (fastest) manages QEMU; Cloud Hypervisor (minimal) is managed by boxery itself, with a systemd unit per VM; both run on KVM in the Linux kernel. OpenShell (restricted) goes through its gateway to a container that shares the host kernel, with no VM. In the cloud, exe.dev and boat (no hardware) are reached through their API, and the rest runs on their servers." width="680">
   </picture>
 </p>
 
@@ -93,7 +93,7 @@ The host runs VMs on your Mac, on Linux, or in the cloud. Each backend is a stac
 
 ### Experimental
 
-- **Linux: Cloud Hypervisor.** A leaner VMM on the same KVM, run by boxery directly.
+- **Linux: Cloud Hypervisor.** A leaner VMM on the same KVM, with no libvirt: boxery manages it itself, with a systemd unit per VM.
 - **Linux: [OpenShell](docs/openshell.md).** Headless sandboxes from [NVIDIA's OpenShell](https://github.com/NVIDIA/OpenShell), behind its gateway, with a policy on what each one can read and reach. With its Docker driver they're containers on the host's kernel, not VMs. No desktop, snapshots, forks or pool.
 - **Cloud: exe.dev and boat.dev.** VMs on the provider, with no hardware of your own. For long-running work, keep the host on an always-on machine such as a small VPS.
 
