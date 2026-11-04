@@ -8,6 +8,8 @@ pass=0; fail=0
 ok() { echo "  ✓ $*"; pass=$((pass + 1)); }
 bad() { echo "  ✗ $*"; fail=$((fail + 1)); }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+# GNU timeout on the controller; macOS has none (an alarm survives exec, and SIGALRM ends the command).
+limit() { if command -v timeout >/dev/null; then timeout "$@"; else perl -e 'alarm shift; exec @ARGV or exit 127' "$@"; fi; }
 cleanup() { "$A" rm "$VM" >/dev/null 2>&1 || true; [[ -n ${tun:-} ]] && kill "$tun" 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -75,7 +77,7 @@ echo "== laptop pi extension (vm_* tools, with the user's other extensions loade
 if command -v pi >/dev/null; then
 	ext=$(cd "$(dirname "$0")" && pwd)/extension/index.ts
 	lt=$(mktemp -d)
-	r=$(cd "$lt" && timeout 240 pi --no-session -e "$ext" --vm "$VM" -p "Use vm_bash to run hostname, then vm_write ext.txt containing EXT_OK, then run hostname with the local bash tool. Reply with exactly: VM=<vm hostname> LOCAL=<local hostname>" </dev/null 2>&1 | sed 's/\x1b\][^\x07]*\x07//g' | tail -1)
+	r=$(cd "$lt" && limit 240 pi --no-session -e "$ext" --vm "$VM" -p "Use vm_bash to run hostname, then vm_write ext.txt containing EXT_OK, then run hostname with the local bash tool. Reply with exactly: VM=<vm hostname> LOCAL=<local hostname>" </dev/null 2>&1 | sed 's/\x1b\][^\x07]*\x07//g' | tail -1) || r="(timed out or failed: ${r:-no output})"
 	[[ $r == *"VM=$VM"* ]] && ok "vm_bash ran in VM" || bad "vm_bash: $r"
 	[[ $r == *"LOCAL=$(hostname)"* ]] && ok "built-in bash stayed local" || bad "local bash: $r"
 	check "vm_write landed in VM" "$A" run "$VM" bash -c 'grep -q EXT_OK ~/project/ext.txt'
@@ -178,7 +180,9 @@ fi
 "$A" rm "${VM}a" >/dev/null 2>&1 || true; "$A" rm "${VM}b" >/dev/null 2>&1 || true
 
 echo "== resize (running VM: restart, new size inside the guest)"
-n=$("$A" run "$VM" nproc); m=$((n + 1))
+# One vCPU fewer when it has more than one: a hosted plan may not allow one more (exe.dev's Personal plan
+# caps a VM at 2), and shrinking restarts the VM just the same.
+n=$("$A" run "$VM" nproc); if ((n > 1)); then m=$((n - 1)); else m=$((n + 1)); fi
 if "$A" resize "$VM" --cpus "$m" >/dev/null; then
 	[[ $("$A" run "$VM" nproc) == "$m" ]] && ok "resize $n → $m vCPUs, visible in the guest" || bad "nproc after resize: $("$A" run "$VM" nproc)"
 	check "VM still has its files after resize" "$A" run "$VM" test -f answer.txt
