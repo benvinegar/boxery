@@ -1273,7 +1273,7 @@ export async function manage(a, opts = {}) {
 // Rules both forms of the guidance carry: when to reach for a VM at all, and how credentials get into one.
 /** What VMs suit. Long jobs only when the VMs run elsewhere: a VM on this machine sleeps with it. @param {boolean | null} remote */
 const whenVm = (remote) =>
-	"VMs suit what shouldn't or can't run on this machine: untrusted code (in a fresh VM; fetch it there, not here), Linux-only work, an isolated desktop and browser without this machine's logins, " +
+	"VMs suit what shouldn't or can't run on this machine: untrusted code (in a fresh VM; fetch it there, not here), dependencies the user doesn't want installed here, Linux-only work, an isolated desktop and browser without this machine's logins, " +
 	`${remote ? "long jobs that keep running while this machine sleeps, " : ""}and parallel attempts. What the user asks to install or run on their own machine still runs here.`;
 const CREDENTIALS =
 	"Access from this machine reaches a VM only through grants: if work in a VM fails for lack of it, request it with vm_grant right away. Never copy credentials into a VM yourself, and don't work around a declined grant.";
