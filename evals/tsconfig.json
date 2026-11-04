@@ -1,0 +1,7 @@
+{
+  // Checked like the tests: against the annotated sources' types, without annotating every callback.
+  // Run from the repo root as part of `npm run typecheck`, or here with `npm run typecheck`.
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "noImplicitAny": false, "useUnknownInCatchVariables": false },
+  "include": ["*.mjs", "lib/*.mjs"]
+}
