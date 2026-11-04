@@ -232,7 +232,7 @@ Before changing anything, it waits for VM operations already in flight in each p
 
 After `init`, it checks every profile the way its services run. `boxery-host ls` must work with the reaper's `PATH`, the lease store must open (`boxery-host pool ls`), and the LLM proxy must answer `/healthz`. If any check fails, the code goes back to the previous version, each profile's state goes back to its pre-upgrade copy, and `init` runs again.
 
-**The pre-upgrade copy.** Before it changes the code, `upgrade` saves each profile's state in `$BOXERY_CONF/pre-upgrade/` (`~/.config/boxery/pre-upgrade/` for the default profile). It holds a consistent copy of `leases.db`, made with `VACUUM INTO` while no operation runs, plus `tokens.json`, `edge/`, `vm-shapes/` and `vm-kind/`. A rollback restores all of it, because the new version may have migrated the lease store or rewritten those files. The database is restored in place, so processes that have it open see the old contents. Leases taken before the upgrade carry on. A claim made during the upgrade is undone, and its client gets an error and can retry.
+**The pre-upgrade copy.** Before it changes the code, `upgrade` saves each profile's state in `$BOXERY_CONF/pre-upgrade/` (`~/.config/boxery/pre-upgrade/` for the default profile). It holds a consistent copy of `leases.db`, made with `VACUUM INTO` while no operation runs, plus `tokens.json`, `edge/`, `vm-shapes/`, `vm-kind/` and `vm-os/`. A rollback restores all of it, because the new version may have migrated the lease store or rewritten those files. The database is restored in place, so processes that have it open see the old contents. Leases taken before the upgrade carry on. A claim made during the upgrade is undone, and its client gets an error and can retry.
 
 The copy stays after a successful upgrade, until the next upgrade replaces it. It is the way back if the new version turns out to be broken in a way the checks didn't catch. For each profile, with no boxery command running:
 
@@ -241,7 +241,7 @@ systemctl --user stop boxery-proxy boxery-reaper.timer    # macOS: launchctl boo
 # put the previous version back: git checkout <old commit>, or npm install -g boxery-vm@<old version>
 cd ~/.config/boxery                                        # or the profile's BOXERY_CONF
 rm -f leases.db-wal leases.db-shm && cp pre-upgrade/leases.db leases.db
-cp pre-upgrade/tokens.json . && for d in edge vm-shapes vm-kind; do rm -rf "$d"; [ ! -d "pre-upgrade/$d" ] || cp -R "pre-upgrade/$d" .; done
+cp pre-upgrade/tokens.json . && for d in edge vm-shapes vm-kind vm-os; do rm -rf "$d"; [ ! -d "pre-upgrade/$d" ] || cp -R "pre-upgrade/$d" .; done
 boxery-host init                                           # restarts the services
 ```
 

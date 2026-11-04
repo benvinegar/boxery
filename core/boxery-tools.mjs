@@ -40,7 +40,7 @@ import * as core from "./boxery-core.mjs";
  *   removing?: (name: string, host: HostProfile) => Promise<void> | void }} Session
  */
 
-const where = "in a boxery VM (default: the current VM). Relative paths are under /home/agent/project; ~ is /home/agent.";
+const where = `in a boxery VM (default: the current VM). Relative paths are under ${core.PROJECT}; ~ is ${core.REMOTE_HOME}.`;
 export const VM_PARAM = { type: "string", description: "VM name (default: the current VM)" };
 export const HOST_PARAM = {
 	type: "string",
@@ -103,7 +103,7 @@ export const TOOLS = [
 		name: "vm_bash",
 		title: "VM bash",
 		engine: "bash",
-		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd /home/agent/project. Use rg / fdfind / ls for searching. Output keeps the last ${core.MAX_LINES} lines / ${core.MAX_BYTES / 1024}KB.`,
+		description: `Run a bash command ${where} Login shell, user "agent" with passwordless sudo, cwd ${core.PROJECT}. Use rg / fdfind / ls for searching. Output keeps the last ${core.MAX_LINES} lines / ${core.MAX_BYTES / 1024}KB.`,
 		parameters: obj({ command: { type: "string" }, timeout: { type: "number", description: "Seconds (default 120)" } }, ["command"]),
 		annotations: { destructiveHint: true, openWorldHint: true },
 		run: (vm, a, x) => core.bashTool(vm, a, x),
@@ -325,7 +325,7 @@ export const TOOLS = [
 			"The user approves or declines in a prompt you cannot answer; on approval the grant is added and applied. " +
 			"spec: `llm:chatgpt` | `llm:openai` | `llm:anthropic` | `llm:ollama` (an LLM provider through the host proxy; a VM has none until granted, so a 403 'llm:X is not granted' from 127.0.0.1:8088 means request it), `github` (git over https and the GitHub API; the token stays on the host proxy, never in the VM; readonly:true for clone/fetch and reads), " +
 			"`ssh-agent` (git over ssh with the user's keys, while they're connected), `env:VAR` (the variable's value from this machine), " +
-			"or `file:LOCAL[=REMOTE]` (LOCAL on this machine; REMOTE relative to /home/agent, default project/<name>; e.g. `file:~/.npmrc=.npmrc`). " +
+			`or \`file:LOCAL[=REMOTE]\` (LOCAL on this machine; REMOTE relative to ${core.REMOTE_HOME}, default project/<name>; e.g. \`file:~/.npmrc=.npmrc\`). ` +
 			"Prefer `github` for GitHub. Granted values live in the VM's memory, not its disk or snapshots. Request each thing once; if the user declines, don't ask again. " +
 			"Where the client can't prompt, you get the command for the user to run. vm_info {action:'grants'} shows what the VM already has.",
 		parameters: obj(

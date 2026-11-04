@@ -34,7 +34,7 @@ echo "$b64" | base64 -d | jq -e '.providers["openai-codex"].baseUrl == "http://1
 expect_fail "duplicate name rejected" "$H" new a1
 for n in A1 1a 'a;b' '../x' "$(printf 'a%.0s' {1..32})"; do expect_fail "invalid name '$n' rejected" "$H" new "$n"; done
 "$H" ls | grep -Eq '^a1 *running *127.0.0.1:22[0-9]* .* - +[a-z]+$' && ok "ls (LEASE column '-' for pets)" || bad "ls: $("$H" ls)"
-"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", ssh_addr: .[0].ssh_addr, disk_size: 10, disk_used: 0.5, tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true, guest: .[0].guest} and (.[0].guest.status | IN("current", "outdated", "unknown")) and (.[0].ssh_addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
+"$H" ls --json | jq -e 'length == 1 and .[0] == {name: "a1", state: "running", ssh_addr: .[0].ssh_addr, disk_size: 10, disk_used: 0.5, tunnel: null, lease: null, shape: "custom", cpus: 2, mem: 2048, desktop: true, os: "linux", guest: .[0].guest} and (.[0].guest.status | IN("current", "outdated", "unknown")) and (.[0].ssh_addr | test("^127\\.0\\.0\\.1:22[0-9]+$"))' >/dev/null && ok "ls --json" || bad "ls --json: $("$H" ls --json)"
 [[ $("$H" ip a1) == 127.0.0.1 ]] && ok "ip" || bad ip
 expect "stop" "$H" stop a1
 expect_fail "ip of stopped VM fails" "$H" ip a1
@@ -141,18 +141,23 @@ expect_fail "--layers with --from is refused" "$H" new hr4 --headless --from hl@
 [[ ! -d $BOXERY_FAKE_DIR/hr2 && ! -d $BOXERY_FAKE_DIR/hr3 && ! -d $BOXERY_FAKE_DIR/hr4 ]] && ok "...and makes no VM" || bad "refused --layers made a VM"
 "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].desktop == false' >/dev/null && ok "ls --json: desktop false" || bad "ls --json: $("$H" ls --json)"
 "$H" ls | grep -Eq '^hl .* headless +- +[a-z]+$' && ok "ls shows the KIND" || bad "ls: $("$H" ls)"
+[[ $(cat "$BOXERY_CONF/vm-os/hl") == linux ]] && "$H" ls --json | jq -e 'map(select(.name == "hl"))[0].os == "linux"' >/dev/null && ok "new records the guest OS; ls --json: os" || bad "os record: $("$H" ls --json)"
 ! grep -q '^users:' "$BOXERY_FAKE_DIR/a2/user-data" && ! grep -q 'boxery-provision' "$BOXERY_FAKE_DIR/a2/user-data" && ok "desktop seeds are unchanged (no users:, no layers)" || bad "desktop seed changed"
+echo testos >"$BOXERY_CONF/vm-os/hl"   # stands in for a second guest OS: images and forks inherit the record as it is
 "$H" snap hl s1 >/dev/null 2>&1
 out=$("$H" new hl2 --from hl@s1 2>&1) && [[ $(cat "$BOXERY_FAKE_DIR/hl2/from") == hl@s1 ]] && ! grep -q boxery-provision "$BOXERY_FAKE_DIR/hl2/user-data" && ok "new --from a headless image: no base, no reprovisioning" || bad "from headless image: $out"
 "$H" ls --json | jq -e 'map(select(.name == "hl2"))[0].desktop == false' >/dev/null && ok "...and stays headless" || bad "hl2 kind"
+"$H" ls --json | jq -e 'map(select(.name == "hl2"))[0].os == "testos"' >/dev/null && ok "...with its source's guest OS" || bad "hl2 os: $("$H" ls --json)"
 "$H" new hl3 --from hl@s1 --headless >/dev/null 2>&1 && ok "--headless with a headless image is fine" || bad "hl3"
 out=$("$H" fork hl hf 2>&1) && "$H" ls --json | jq -e 'map(select(.name == "hf"))[0].desktop == false' >/dev/null && ok "a fork of a headless VM is headless" || bad "fork: $out"
+[[ $(cat "$BOXERY_CONF/vm-os/hf") == testos ]] && ok "a fork has its source's guest OS" || bad "fork os: $(cat "$BOXERY_CONF/vm-os/hf" 2>&1)"
+rm "$BOXERY_CONF/vm-os/a2"; "$H" ls --json | jq -e 'map(select(.name == "a2"))[0].os == "linux"' >/dev/null && ok "no OS record (a VM from before records): linux" || bad "a2 os: $("$H" ls --json)"
 mv "$tmp/base.off" "$BOXERY_FAKE_DIR/.base"
 "$H" snap a2 d1 >/dev/null 2>&1
 out=$("$H" new dx --from a2@d1 --headless 2>&1) && bad "--headless with a desktop image accepted" || { [[ $out == *"has a desktop"* && ! -d $BOXERY_FAKE_DIR/dx ]] && ok "--headless with a desktop image is refused" || bad "refusal: $out"; }
 "$H" fork a2 df >/dev/null 2>&1 && "$H" ls --json | jq -e 'map(select(.name == "df"))[0].desktop == true' >/dev/null && ok "a fork of a desktop VM is a desktop" || bad "desktop fork"
-"$H" rm hl >/dev/null 2>&1 && [[ ! -e $BOXERY_CONF/vm-kind/hl ]] && ok "rm drops the kind record" || bad "kind record left"
-BOXERY_FAKE_FAIL_NEW=1 "$H" new hlf --headless >/dev/null 2>&1 || true; [[ ! -e $BOXERY_CONF/vm-kind/hlf && ! -d $BOXERY_FAKE_DIR/hlf ]] && ok "a failed headless new leaves no record" || bad "hlf leftovers"
+"$H" rm hl >/dev/null 2>&1 && [[ ! -e $BOXERY_CONF/vm-kind/hl && ! -e $BOXERY_CONF/vm-os/hl ]] && ok "rm drops the kind and OS records" || bad "kind/os record left"
+BOXERY_FAKE_FAIL_NEW=1 "$H" new hlf --headless >/dev/null 2>&1 || true; [[ ! -e $BOXERY_CONF/vm-kind/hlf && ! -e $BOXERY_CONF/vm-os/hlf && ! -d $BOXERY_FAKE_DIR/hlf ]] && ok "a failed headless new leaves no record" || bad "hlf leftovers"
 for n in hl2 hl3 hf df; do "$H" rm "$n" >/dev/null 2>&1; done
 # The desktop build's cloud-config: the template with every layer at its marker
 bu=$tmp/cache/base-user-data.yaml

@@ -1,10 +1,12 @@
 // VM lifecycle commands: new, fork, rm, start, stop, resize. Each runs inside a supervised worker that
 // holds the VMs' lifecycle locks for its whole duration (boxery-operations.mjs, docs/lifecycle.md).
 import { randomBytes } from "node:crypto";
+import { DEFAULT_OS } from "../guests/index.mjs";
+import * as linux from "../guests/linux.mjs";
 import { deleteBuildRecord, refreshBuild } from "./build-info.mjs";
 import { captureVm, cleanupVmImages } from "./images.mjs";
 import { deleteHostKey } from "./hostkeys.mjs";
-import { deleteVmKind, setVmKind, vmKind } from "./kinds.mjs";
+import { deleteVmType, setVmKind, setVmOs, vmKind, vmOs } from "./kinds.mjs";
 import { issueToken, writeSeed } from "./seed.mjs";
 import { deleteVmShape, setVmShape, shapeSize, vmShape } from "./shapes.mjs";
 import { fail, log, print, stamp, validImage, validName, validNum } from "./util.mjs";
@@ -83,11 +85,11 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	cpus ||= String(base.cpus); mem ||= String(base.mem); disk ||= String(base.disk);
 	if (!(Number(cpus) >= 1 && Number(mem) >= 1 && Number(disk) >= 1)) fail("--cpus, --mem and --disk must be >= 1");
 	if (await rt.vms.exists(name)) fail(`${name} already exists`);
-	// Where the disk comes from: an image (its VM's kind), the stock image (headless), or the desktop base.
-	let kind = "desktop", src = "", provision = "";
+	// Where the disk comes from: an image (its VM's kind and OS), the stock image (headless), or the desktop base.
+	let kind = "desktop", os = DEFAULT_OS, src = "", provision = "";
 	if (from) {
 		if (!await rt.vms.imageExists(from)) fail(`no such image: ${from} (boxery-host images)`);
-		kind = vmKind(rt.conf, from.split("@")[0]); src = from;
+		kind = vmKind(rt.conf, from.split("@")[0]); os = vmOs(rt.conf, from.split("@")[0]); src = from;
 		if (headless && kind !== "headless") fail(`${from} has a desktop, and a VM made from an image keeps it (drop --headless)`);
 	} else if (headless) {
 		kind = "headless"; src = "stock"; provision = ["plumbing", "devtools", ...layers].join(" ");
@@ -101,11 +103,12 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	await rt.vms.call("backend_new", [name, cpus, mem, disk, userdata, src]);
 	if (rt.backend !== "openshell") setVmShape(rt.conf, name, { shape: label, cpus, mem, disk });
 	setVmKind(rt.conf, name, kind);
+	setVmOs(rt.conf, name, os);
 	const ep = await rt.vms.waitEndpoint(name);
 	log(rt.backend === "openshell" ? `${name}: waiting for restricted gateway SSH` : `${name} reachable at ${ep.host}:${ep.port}; waiting for ssh + cloud-init${provision ? ` (installing ${provision})` : ""}`);
 	await rt.waitSsh(name, ep);
 	if (rt.backend === "openshell") {
-		await mustRun(rt, ep, 'test "$(id -u)" != 0 && test "$HOME" = /home/agent && test -d ~/project && test -f /etc/boxery/headless || exit 1; for tool in bash node tar python3 setsid file git tmux; do command -v "$tool" >/dev/null || exit 1; done');
+		await mustRun(rt, ep, `test "$(id -u)" != 0 && test "$HOME" = ${linux.home} && test -d ${linux.project} && test -f ${linux.configDir}/headless || exit 1; for tool in bash node tar python3 setsid file git tmux; do command -v "$tool" >/dev/null || exit 1; done`);
 		rt.done(action);
 		log(`${name} ready (restricted headless; policy and credentials managed by OpenShell)`);
 		return `${name} ${ep.host}:${ep.port}`;
@@ -123,7 +126,7 @@ export async function createVm(rt, { name, shape, cpus, mem, disk, from, headles
 	// source's lease holder), and nothing pushed by grants (tmpfs, so normally gone already).
 	if (from) {
 		try { await setPetKeys(rt, name); } catch { fail(`could not reset ssh keys on ${name}`); }
-		await rt.guest.run(ep, 'rm -rf "/run/user/$(id -u)/boxery"');
+		await rt.guest.run(ep, `rm -rf "${linux.grantsDir}"`);
 	}
 	if (kind === "desktop" && await rt.guest.run(ep, NOVNC) !== 0) log("warning: noVNC not answering yet");
 	await refreshBuild(rt, name, ep); // what it was built with (from an image or fork: its source's software)
@@ -211,7 +214,7 @@ export async function rm(rt, [name]) {
 	if (!await rt.vms.exists(name)) fail(`no such vm: ${name}`);
 	const action = rt.intent("remove", name);
 	await rt.vms.call("backend_rm", [name]);
-	deleteVmShape(rt.conf, name); deleteVmKind(rt.conf, name); deleteBuildRecord(rt.conf, name, true);
+	deleteVmShape(rt.conf, name); deleteVmType(rt.conf, name); deleteBuildRecord(rt.conf, name, true);
 	// Forks and image readers hold this source's lock until all copies are independent.
 	await cleanupVmImages(rt, name);
 	rt.deleteToken(name);
