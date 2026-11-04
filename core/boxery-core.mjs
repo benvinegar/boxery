@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import * as linux from "../guests/linux.mjs";
 import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
+import { VALID_DEST, shellWord } from "./ssh-config.mjs";
 import { acquireLease, releaseLease, renewLease } from "./leases.mjs";
 import { parseGrantRequest, grantPrompt, grantCommand, listGrants, addGrants } from "./grants.mjs";
 export { parseGrantRequest, grantPrompt, listGrants, applyGrants, revokeGrants } from "./grants.mjs";
@@ -135,7 +136,6 @@ function registeredProfileDirs() {
 		} catch { return []; }
 	});
 }
-const VALID_DEST = /^(?!-)[A-Za-z0-9_.@:%+-]+$/;
 // A small regular file, or null. Nonblocking so a FIFO is rejected by fstat instead of hanging.
 /** @param {string} file */
 function readProfileFile(file, max = 64 * 1024) {
@@ -145,28 +145,6 @@ function readProfileFile(file, max = 64 * 1024) {
 		const st = fstatSync(fd);
 		return st.isFile() && st.size <= max ? readFileSync(fd, "utf8") : null;
 	} catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
-}
-// One shell word as `boxery setup` writes it (literal(): '…' with '\'' for quotes), or a plain word.
-// Anything needing expansion ($, `, globs…) is unknown: profile configs are never executed here.
-/** @param {string} s */
-function shellWord(s) {
-	let out = "";
-	for (let i = 0; i < s.length;) {
-		const c = s[i];
-		if (c === "'") {
-			const j = s.indexOf("'", i + 1);
-			if (j < 0) return null;
-			out += s.slice(i + 1, j); i = j + 1;
-		} else if (c === '"') {
-			const j = s.indexOf('"', i + 1);
-			if (j < 0 || /[$`\\]/.test(s.slice(i + 1, j))) return null;
-			out += s.slice(i + 1, j); i = j + 1;
-		} else if (c === "\\" && i + 1 < s.length) { out += s[i + 1]; i += 2; }
-		else if (c === " " || c === "\t") return /^[ \t]*(#.*)?$/.test(s.slice(i)) ? out : null;
-		else if (/[A-Za-z0-9_.@:%+\-/~,=]/.test(c)) { out += c; i++; }
-		else return null;
-	}
-	return out;
 }
 /** Where a profile's VM host runs: "local" (the machine running the controller), an ssh destination, or null (unset/unparsed). @param {HostRef} [host] */
 export function hostDestination(host) {
