@@ -1,7 +1,7 @@
 // host/backend.sh + backend.mjs (the only way Node reaches a hypervisor backend), guest.mjs and
 // config.mjs, against the fake backend and a stub ssh. No SQLite: runs on every supported Node.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -104,6 +104,14 @@ test("Lima starts and renders cloud-config with the host's Node when PATH node i
 	assert.match(readFileSync(startLog, "utf8"), /--ssh-port [1-9][0-9]* /);
 	assert.match(readFileSync(rendered, "utf8"), /echo aGVsbG8= \| base64 -d > "\/tmp\/hello"/);
 	assert.equal(existsSync(`${userdata}.files.sh`), false);
+});
+
+test("backend scripts run node only as the host's Node (BOXERY_NODE), never from PATH", () => {
+	const scripts = ["host/backend.sh", ...readdirSync(path.join(ROOT, "host/backends"), { recursive: true, encoding: "utf8" })
+		.filter((f) => f.endsWith(".sh")).map((f) => path.join("host/backends", f))];
+	const bare = scripts.flatMap((f) => readFileSync(path.join(ROOT, f), "utf8").split("\n")
+		.map((l, i) => `${f}:${i + 1}: ${l.trim()}`).filter((l) => /(?:^[^:]+:\d+: |[;&|({]\s*|\bneed\s+)node(?:[\s;]|$)/.test(l)));
+	assert.deepEqual(bare, []);
 });
 
 test("a failing backend call keeps its exit status and says whether it reported the error", async () => {

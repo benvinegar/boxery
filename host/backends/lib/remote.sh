@@ -193,7 +193,7 @@ remote_build_script() { # POST_FN OK_MARKER [EXTRA_PRE_COMMAND…] → script on
 	echo 'set -e'
 	echo 'id agent >/dev/null 2>&1 || useradd -m -s /bin/bash -c "boxery agent" -G sudo,adm agent'
 	echo 'echo "agent ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/90-boxery-agent; chmod 440 /etc/sudoers.d/90-boxery-agent'
-	node "$ROOT/host/cloudconfig-sh.mjs" "$BASE_USERDATA" || return 1
+	"${BOXERY_NODE:-node}" "$ROOT/host/cloudconfig-sh.mjs" "$BASE_USERDATA" || return 1
 	echo 'cat >/usr/local/sbin/boxery-remote-post.sh <<'"'"'BOXERY_POST'"'"
 	"$post"
 	echo 'BOXERY_POST'
@@ -261,7 +261,7 @@ remote_hostname_restore() {
 #                    the platform gives every machine its own and pins it through its API (boat.dev)
 remote_identity_script() { # USERDATA NAME BOOT_SCRIPT HOST_KEYS
 	echo 'set -e'
-	node "$ROOT/host/cloudconfig-sh.mjs" "$1" || return 1
+	"${BOXERY_NODE:-node}" "$ROOT/host/cloudconfig-sh.mjs" "$1" || return 1
 	echo 'install -d -m 700 -o agent -g agent /home/agent/.ssh'
 	echo "cat >/home/agent/.ssh/authorized_keys <<'BOXERY_KEYS'"
 	awk '/^ssh_authorized_keys:/{f=1;next} f&&/^  - /{sub(/^  - /,""); gsub(/^"|"$/,""); print; next} f{f=0}' "$1"
