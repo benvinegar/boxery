@@ -1065,9 +1065,9 @@ kill) need_host; cmd_kill "$@" ;;
 attach) need_host; cmd_attach "$@" ;;
 desktop) need_host; cmd_desktop "$@" ;;
 forward) need_host; cmd_forward "$@" ;;
-acquire) leases_node acquire "$@" ;;
-renew) leases_node renew "$@" ;;
-release) leases_node release "$@" ;;
+acquire) need_host; leases_node acquire "$@" ;;
+renew) need_host; leases_node renew "$@" ;;
+release) need_host; leases_node release "$@" ;;
 leases) leases_node leases "$@" ;;
 pool) need_host; [ -z "${2:-}" ] || drop_master "$2"; h pool "$@"; [ -z "${2:-}" ] || drop_master "$2" ;;
 # GitHub Actions runners on the host's pool (docs/github-runners.md): `once` (local runners) runs here with

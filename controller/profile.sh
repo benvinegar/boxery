@@ -117,11 +117,15 @@ is_local() { [ "$HOST" = local ]; }
 local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}" ;; *) printf '%s\n' "$HOST_BIN" ;; esac; }
 # ssh joins argv with spaces and the remote shell re-parses it, so every argument is quoted
 # (unquoted snapshot names or flags would be executed on the host). stdin passes through.
-h() {
+h() { host_cmd "" "$@"; }
+# h, replacing this shell (Node's core/profile.mjs): a timeout or Ctrl-C there then reaches the host command.
+h_exec() { host_cmd exec "$@"; }
+host_cmd() { # ""|exec ARG...
+	local x=$1; shift
 	need_host
 	check_target
-	if is_local; then "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
-	else ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
+	if is_local; then $x "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
+	else $x ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
 }
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.

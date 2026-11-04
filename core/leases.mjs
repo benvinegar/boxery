@@ -14,8 +14,9 @@ import { profileRun } from "./profile.mjs";
 
 /** A lease this machine holds. expires: unix seconds. @typedef {{ name: string, id: string, expires: number, ttl: number | null, holder: string | null, file: string }} LeaseRecord */
 /** log: progress and warnings for a person (the CLI prints them to stderr). interactiveCommands: grant
- *  --cmd helpers may prompt (CLI only). timeout: ms for the host call, 0 for none. stderr: see profileRun.
- *  @typedef {{ log?: (line: string) => void, interactiveCommands?: boolean, timeout?: number, stderr?: "pipe" | "inherit" }} LeaseOpts */
+ *  --cmd helpers may prompt (CLI only). timeout: ms for each host or profile call, 0 for none (default:
+ *  per call). signal: abort (Ctrl-C) stops the host call and cleans up. stderr: see profileRun.
+ *  @typedef {{ log?: (line: string) => void, interactiveCommands?: boolean, timeout?: number, signal?: AbortSignal, stderr?: "pipe" | "inherit" }} LeaseOpts */
 
 export const VALID_LEASE = /^l-[0-9a-f]{32}$/;
 const PUSHED = new Set(["env", "file", "http", "llm"]);
@@ -111,7 +112,7 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 	try {
 		await keygen(tmp, `boxery-lease ${holder}`);
 		out = await profileRun("host", ["acquire", "--holder", holder, "--ttl", String(t), "--wait", String(w)], {
-			input: readFileSync(`${tmp}.pub`, "utf8"), timeout: opts.timeout ?? (w + 300) * 1000, stderr: opts.stderr,
+			input: readFileSync(`${tmp}.pub`, "utf8"), timeout: opts.timeout ?? (w + 300) * 1000, signal: opts.signal, stderr: opts.stderr,
 		});
 	} catch (e) { cleanup(); throw e; }
 	const m = /^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32}) ([0-9]+)$/.exec(out.split("\n").at(-1) ?? "");
@@ -122,12 +123,23 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 		throw new Error(`bad response from host: ${out.slice(0, 300)}`);
 	}
 	const [, name, id, exp] = m;
-	renameSync(tmp, keyFile(id)); renameSync(`${tmp}.pub`, `${keyFile(id)}.pub`);
 	/** @type {LeaseRecord} */
 	const rec = { name, id, expires: Number(exp), ttl: t, holder, file: recordFile(id) };
-	writeRecord(rec);
-	await profileRun("close", [name]);
-	await profileRun("config");
+	// The host holds the lease now. Without the local record, key and ssh_config entry it is unusable,
+	// and nothing here would renew or release it: give it back rather than strand it until its TTL.
+	try {
+		renameSync(tmp, keyFile(id)); renameSync(`${tmp}.pub`, `${keyFile(id)}.pub`);
+		writeRecord(rec);
+		await profileRun("close", [name], { timeout: opts.timeout });
+		await profileRun("config", [], { timeout: opts.timeout });
+	} catch (e) {
+		const why = /** @type {Error} */ (e).message;
+		await profileRun("host", ["release", id], { timeout: 180_000 }).catch(() => {});
+		cleanup();
+		for (const f of [rec.file, keyFile(id), `${keyFile(id)}.pub`]) rmSync(f, { force: true });
+		await profileRun("config", [], { timeout: opts.timeout }).catch(() => {});
+		throw new Error(`leased ${name} but could not set it up on this machine (${why}); released it again`);
+	}
 	await reapplyGrants(name, opts);
 	return rec;
 }
@@ -136,9 +148,12 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 export async function renewLease(ref, ttl, opts = {}) {
 	const rec = needLease(ref);
 	const t = seconds("--ttl", ttl ?? rec.ttl ?? "");
-	const out = await profileRun("host", ["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, stderr: opts.stderr });
+	const out = await profileRun("host", ["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, signal: opts.signal, stderr: opts.stderr });
 	const m = /^\S+ ([0-9]+)$/.exec(out.split("\n").at(-1) ?? ""); // NAME EXPIRES
 	if (!m) throw new Error(`bad response from host: ${out.slice(0, 300)}`);
+	// A release that ran while the host answered (another process, or the session ending) removed the
+	// record: don't bring it back, pointing at a deleted key.
+	if (readRecord(rec.file)?.id !== rec.id) throw new Error(`lease ${rec.id} was released meanwhile`);
 	writeRecord({ ...rec, expires: Number(m[1]) });
 	return { ...rec, expires: Number(m[1]), ttl: t };
 }
@@ -150,7 +165,7 @@ export async function renewLease(ref, ttl, opts = {}) {
  */
 export async function releaseLease(ref, opts = {}) {
 	const rec = needLease(ref);
-	await profileRun("close", [rec.name]);
+	await profileRun("close", [rec.name], { timeout: opts.timeout });
 	try { await profileRun("host", ["release", rec.id], { timeout: opts.timeout ?? 180_000, stderr: opts.stderr }); }
 	catch { opts.log?.(`boxery: host did not release ${rec.id} (already expired?); forgetting it locally`); }
 	for (const f of [rec.file, keyFile(rec.id), `${keyFile(rec.id)}.pub`]) rmSync(f, { force: true });
@@ -158,7 +173,7 @@ export async function releaseLease(ref, opts = {}) {
 	const grants = path.join(currentHost().dir, "grants");
 	rmSync(path.join(grants, rec.name), { force: true });
 	rmSync(path.join(grants, `.${rec.name}.edge`), { force: true });
-	await profileRun("config");
+	await profileRun("config", [], { timeout: opts.timeout });
 	return rec;
 }
 
