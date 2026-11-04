@@ -1,7 +1,7 @@
 // Lease state machine (host/boxery-leases.mjs): transitions, fencing, expiry, reboot, concurrency.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, test } from "node:test";
@@ -217,7 +217,7 @@ const rows = () => db.prepare("SELECT * FROM vm_records ORDER BY name").all().ma
 /** @param {string} name @param {string} kind @param {string} os @param {string | null} [shape] @param {number | null} [cpus] @param {number | null} [mem] @param {number | null} [disk] */
 const rec = (name, kind, os, shape = null, cpus = null, mem = null, disk = null) => ({ name, kind, os, shape, cpus, mem, disk });
 
-it("v1 → v2 imports the record files, with defaults for the records a VM lacks, and leaves the files alone", async () => {
+it("v1 → v2 imports the record files, with defaults for the records a VM lacks, and retires them", async () => {
 	const c = L.claim(db, "h", 600, KEY);
 	L.commit(db, c.name, c.gen);
 	const files = {
@@ -240,11 +240,32 @@ it("v1 → v2 imports the record files, with defaults for the records a VM lacks
 		rec("osonly", "desktop", "linux"),
 		rec("torn", "desktop", "linux"),
 	]);
-	for (const [f, content] of Object.entries(files)) assert.equal(readFileSync(path.join(conf(), f), "utf8"), content, `${f} untouched`);
+	for (const [f, content] of Object.entries(files)) {
+		const [dir, ...rest] = f.split("/");
+		assert.equal(existsSync(path.join(conf(), dir)), false, `${dir} retired`);
+		assert.equal(readFileSync(path.join(conf(), `${dir}.imported`, ...rest), "utf8"), content, `${f} kept as it was`);
+	}
 	assert.equal(L.get(db, c.name).state, "LEASED", "lease rows are kept");
 	db.close();
 	db = L.open(file); // opening again imports nothing again
 	assert.equal(rows().length, 6);
+	// A store recreated later (deleted by hand) doesn't bring the retired records back.
+	db.close();
+	for (const f of [file, `${file}-wal`, `${file}-shm`]) rmSync(f, { force: true });
+	db = L.open(file);
+	assert.deepEqual(rows(), []);
+});
+
+it("v1 → v2: a record file that can't be read counts as missing; the store still opens", async () => {
+	await oldStore(1, { "vm-kind/locked": "headless\n", "vm-os/locked": "linux\n", "vm-os/dir/x": "" });
+	chmodSync(path.join(conf(), "vm-kind/locked"), 0o000);
+	try {
+		db = L.open(file);
+		assert.equal(L.schemaVersion(db), 2);
+		// root reads the file anyway; anyone else gets the default kind
+		const kind = process.getuid?.() === 0 ? "headless" : "desktop";
+		assert.deepEqual(rows(), [rec("dir", "desktop", "linux"), rec("locked", kind, "linux")]);
+	} finally { chmodSync(path.join(conf(), "vm-kind.imported/locked"), 0o644); }
 });
 
 it("v1 → v2 with no record files, and a store from before versioning with some", async () => {

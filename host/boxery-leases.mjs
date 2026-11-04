@@ -22,7 +22,7 @@
 // Env (tests): BOXERY_NOW (epoch seconds), BOXERY_BOOT_ID.
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_OS } from "../guests/index.mjs";
@@ -136,18 +136,19 @@ const SCHEMA_V2 = `
 
 /** v1 → v2: the record files next to the store ($CONF/vm-kind/NAME, vm-os/NAME, vm-shapes/NAME.json)
  *  become rows. A VM with only some files gets the defaults for the rest (desktop, linux, no size: ls
- *  reads it from the backend). The files stay as they were, for the pre-upgrade copy of the release that
- *  wrote them; nothing reads them after this. @param {DatabaseSync} db @param {string} conf */
+ *  reads it from the backend). A file that can't be read counts as missing, like a torn one: one bad
+ *  file must not keep the store from opening. open() then retires the directories (retireRecordFiles).
+ *  @param {DatabaseSync} db @param {string} conf */
 function importRecordFiles(db, conf) {
 	/** @param {string} dir @param {string} [ext] */
 	const names = (dir, ext = "") => {
 		try { return readdirSync(path.join(conf, dir)).filter((f) => f.endsWith(ext) && VALID_NAME.test(f.slice(0, f.length - ext.length))).map((f) => f.slice(0, f.length - ext.length)); }
-		catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return []; throw e; }
+		catch { return []; } // none, or unreadable
 	};
 	/** @param {string} dir @param {string} name */
 	const token = (dir, name) => {
 		try { return readFileSync(path.join(conf, dir, name), "utf8").trim(); }
-		catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "ENOENT") return ""; throw e; }
+		catch { return ""; } // none, or unreadable (a directory, no permission)
 	};
 	/** @param {string} name @returns {(string | number | null)[]} shape, cpus, mem, disk */
 	const size = (name) => {
@@ -161,6 +162,17 @@ function importRecordFiles(db, conf) {
 		insert.run(name, token("vm-kind", name) === "headless" ? "headless" : "desktop", token("vm-os", name) || DEFAULT_OS, ...size(name));
 	}
 }
+const RECORD_DIRS = ["vm-kind", "vm-os", "vm-shapes"];
+/** After the import has committed: DIR → DIR.imported, so the files can't be imported again (a store
+ *  recreated later) and plainly aren't read. The release that wrote them restores them from its
+ *  pre-upgrade copy if the upgrade rolls back. Best effort: the rows are already in. @param {string} conf */
+function retireRecordFiles(conf) {
+	for (const d of RECORD_DIRS) {
+		const from = path.join(conf, d), to = `${from}.imported`;
+		if (!existsSync(from)) continue;
+		try { rmSync(to, { recursive: true, force: true }); renameSync(from, to); } catch { /* left in place: harmless */ }
+	}
+}
 
 /** @param {DatabaseSync} db @returns {number} */
 export const schemaVersion = (db, schema = "main") => /** @type {{ user_version: number }} */ (db.prepare(`PRAGMA ${schema}.user_version`).get()).user_version;
@@ -170,13 +182,14 @@ function checkVersion(file, v) {
 	throw new Error(`${file} has schema version ${v}, newer than this boxery understands (${SCHEMA_VERSION}): a newer release wrote it. `
 		+ "Upgrade boxery, or restore the copy taken before the upgrade (see Upgrading in docs/install.md)");
 }
-/** @param {DatabaseSync} db @param {string} file */
+/** true if this call imported the record files (v1 → v2). @param {DatabaseSync} db @param {string} file */
 function migrate(db, file) {
 	const v = schemaVersion(db); // again, under the write lock: another opener may have migrated it
 	checkVersion(file, v);
 	if (v < 1) db.exec(SCHEMA_V1); // a new store, or one from before versioning (same tables)
 	if (v < 2) { db.exec(SCHEMA_V2); importRecordFiles(db, path.dirname(file)); }
 	if (v !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+	return v < 2;
 }
 
 /** @param {string} file */
@@ -189,7 +202,8 @@ export function open(file) {
 		retryBusy(() => db.exec("PRAGMA journal_mode = WAL"));
 		const v = schemaVersion(db);
 		checkVersion(file, v);
-		if (v !== SCHEMA_VERSION) retryBusy(() => tx(db, () => migrate(db, file)));
+		// Only the opener whose migration imported retires the files, and only once that has committed.
+		if (v !== SCHEMA_VERSION && retryBusy(() => tx(db, () => migrate(db, file)))) retireRecordFiles(path.dirname(file));
 	} catch (e) {
 		db.close();
 		throw e;

@@ -97,8 +97,10 @@ async function lsJson(rt, refresh = false) {
 	let pool = [];
 	/** @type {Record<string, VmRecord>} */
 	let records = {};
-	// Listing VMs must not depend on the store: without it, VMs list with the defaults (desktop, linux, the backend's size).
-	try { pool = leases.list(rt.db()); records = vmRecords(rt.db()); } catch {}
+	// Listing VMs must not depend on the store: without it, VMs list with the defaults (desktop, linux, the
+	// backend's size), and a warning says so.
+	try { pool = leases.list(rt.db()); records = vmRecords(rt.db()); }
+	catch (e) { log(`warning: cannot read the host's store (${/** @type {Error} */ (e).message}); kinds, guest OSes, shapes and leases below are defaults`); }
 	const lease = Object.fromEntries(pool.map((r) => [r.name, { state: r.state.toLowerCase(), holder: r.holder, expires_at: r.expires_at }]));
 	/** @type {Record<string, ShapeRecord | null>} */
 	const sizes = Object.fromEntries(Object.entries(records).map(([n, r]) => [n, r.size]));

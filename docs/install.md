@@ -247,7 +247,7 @@ boxery-host init                                           # restarts the servic
 
 Anything recorded since the upgrade is lost: leases, new VMs' tokens and sizes, edge grants. Restore soon after the upgrade, and recreate what you need.
 
-The lease store records its schema version. A boxery older than the store refuses to open it, with an error that says so, rather than misreading it. So `--ref` to a release older than the store's schema fails its checks and rolls back. Releases from before the version was recorded don't check it.
+The lease store records its schema version. A boxery older than the store refuses to open it, with an error that says so, rather than misreading it. So `--ref` to a release older than the store's schema fails its checks and rolls back. Releases from before the version was recorded (0.8 and earlier) don't check it, so going back to one isn't supported: it would run on the newer store, without the VM records it holds (each VM's kind, guest OS and size), and VMs made meanwhile would lose them when you upgrade again.
 
 Hosts installed before `upgrade` existed need one manual update, on the host:
 

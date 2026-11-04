@@ -159,6 +159,10 @@ out=$("$H" new hlx --from hl@s1 2>&1) && bad "new --from an unknown guest OS acc
 out=$("$H" fork hl hfx 2>&1) && bad "fork of an unknown guest OS accepted" || { [[ $out == *"unknown guest OS: testos"* && ! -d $BOXERY_FAKE_DIR/hfx && -z $("$H" images 2>/dev/null | grep '@fork-') ]] && ok "...and so is a fork, before capturing anything" || bad "fork refusal: $out"; }
 [[ $(sql "SELECT count(*) n FROM vm_records WHERE name IN ('hlx','hfx')") == '[{"n":0}]' ]] && ok "...with no record left" || bad "records: $(sql "SELECT * FROM vm_records")"
 sql "UPDATE vm_records SET os='linux' WHERE name='hl'" >/dev/null
+# A store ls can't read (a newer release's): it still lists, says the records are defaults
+sql "PRAGMA user_version = 99" >/dev/null
+out=$("$H" ls --json 2>"$tmp/err") && jq -e 'map(select(.name == "hl"))[0].desktop' <<<"$out" >/dev/null && grep -q "warning: cannot read the host's store" "$tmp/err" && ok "ls without the store: lists with defaults, and warns" || bad "ls without store: $out $(cat "$tmp/err")"
+sql "PRAGMA user_version = 2" >/dev/null
 sql "DELETE FROM vm_records WHERE name='a2'" >/dev/null; "$H" ls --json | jq -e 'map(select(.name == "a2"))[0] | .os == "linux" and .desktop' >/dev/null && ok "no record (a VM from before records): desktop, linux" || bad "a2: $("$H" ls --json)"
 mv "$tmp/base.off" "$BOXERY_FAKE_DIR/.base"
 "$H" snap a2 d1 >/dev/null 2>&1
