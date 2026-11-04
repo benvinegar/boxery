@@ -138,7 +138,11 @@ lima_apply_cloudconfig() { # FILE build|vm [NAME]
 	rm -f "$f.files.sh"
 }
 
-backend_has_base() { lima_exists_inst "$LIMA_BASE"; }
+backend_has_base() { # exit 2 when it can't tell, so a missing limactl isn't reported as a missing base (#143)
+	command -v limactl >/dev/null || { echo "boxery-host: limactl not found (PATH=$PATH); install Lima, or put limactl on PATH for non-interactive ssh sessions" >&2; exit 2; }
+	local j; j=$(lima_json "$LIMA_BASE") || { echo "boxery-host: cannot inspect Lima instances (limactl list failed)" >&2; exit 2; }
+	[[ -n $j ]]
+}
 backend_exists() { lima_exists_inst "$(linst "$1")"; }
 
 backend_new() { # NAME CPUS MEM_MIB DISK_GIB USERDATA_FILE [SOURCE: VM@LABEL image | stock]
