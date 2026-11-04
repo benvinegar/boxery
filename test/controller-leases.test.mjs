@@ -49,7 +49,7 @@ test("a lease the host granted but this machine can't record is released, not st
 	// ssh_config can't be replaced: the setup after the host's acquire fails.
 	chmodSync(home, 0o555);
 	try {
-		await assert.rejects(leases.acquireLease({ ttl: 600 }), /leased pool-1 but could not set it up on this machine .*released it again/);
+		await assert.rejects(leases.acquireLease({ ttl: 600 }), /leased pool-1 but could not set it up on this machine .*released it again/s);
 	} finally { chmodSync(home, 0o755); }
 	assert.deepEqual(calls().map((c) => c.split(" ")[0]), ["acquire", "release"]);
 	assert.equal(calls()[1], `release ${LEASE_ID}`);
