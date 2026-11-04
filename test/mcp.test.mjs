@@ -82,6 +82,7 @@ case "$*" in
 "grants granted --json") echo '[{"kind":"ssh-agent"}]' ;;
 "grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
 "version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"local","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
+"capabilities --json") echo '{"schemaVersion":1,"backend":{"id":"boat"},"platform":{"supported":true,"tested":false},"capabilities":{"headless":{"availability":"unavailable"},"diskSnapshots":{"availability":"unknown"}}}' ;;
 "images --json") echo '[{"image":"fakevm@s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
 "new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
@@ -385,6 +386,11 @@ describe("protocol features", () => {
 		assert.match(images.content[0].text, /^fakevm@s1\t2026-10-01T00:00:00Z\t1\.2G$/);
 		assert.equal(images.structuredContent.images[0].image, "fakevm@s1");
 		assert.ok(Array.isArray((await c.tool("vm_info", { action: "hosts" })).structuredContent.hosts));
+		const report = await c.tool("vm_info", { action: "capabilities" });
+		assert.equal(report.structuredContent.capabilities.backend.id, "boat");
+		assert.equal(report.structuredContent.capabilities.platform.tested, false);
+		assert.equal(report.structuredContent.capabilities.capabilities.diskSnapshots.availability, "unknown");
+		assert.equal(report.structuredContent.capabilities.capabilities.headless.availability, "unavailable");
 		const version = await c.tool("vm_info", { action: "version" });
 		assert.equal(version.structuredContent.behind, true);
 		assert.equal(version.structuredContent.host.version, "0.7.0");
@@ -394,7 +400,7 @@ describe("protocol features", () => {
 	});
 
 	test("vm_manage has no lookup actions and needs an explicit vm", async () => {
-		for (const action of ["list", "shapes", "grants", "snaps", "images"]) {
+		for (const action of ["list", "shapes", "grants", "snaps", "images", "capabilities"]) {
 			const r = await c.tool("vm_manage", { action, vm: "fakevm" });
 			assert.equal(r.isError, true, action);
 			assert.match(r.content[0].text, new RegExp(`use vm_info \\{action:"${action}"\\}`), action);

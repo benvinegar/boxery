@@ -1033,6 +1033,8 @@ export const listVms = () => boxeryJson(["ls"]);
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 /** @type {() => Promise<Shapes>} */
 export const listShapes = () => boxeryJson(["shapes"]);
+/** Selected boxery-host's report, not this controller's platform. */
+export const backendCapabilities = () => boxeryJson(["capabilities"]);
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 /** @type {(name: string) => Promise<SnapInfo[]>} */

@@ -7,6 +7,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { HOST_ENV } from "../host/config.mjs";
+import { backendMetadata, platformStatus } from "../backends/index.mjs";
 import { OPENSHELL_NO_PROVIDERS, openShellProviders } from "../host/openshell-config.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -88,6 +89,10 @@ function savedSettings(conf) {
 export async function setupOpenShell(argv, { env = process.env, run = execute, ask, interactive = Boolean(process.stdin.isTTY), log = (text) => console.error(text) } = {}) {
 	const o = parseSetupArgs(argv);
 	if (o.help) { log(HELP); return; }
+	const metadata = backendMetadata("openshell");
+	const platform = platformStatus(metadata, { host: { os: process.platform, arch: process.arch }, runtime: "gateway" });
+	if (!platform.supported) throw new Error(`OpenShell adapter does not support boxery-host on ${process.platform}/${process.arch}; use a supported host (see boxery-host backends --json)`);
+	if (!platform.tested) log("OpenShell is experimental; this host/gateway driver combination is not recorded as Boxery-tested. Recorded validation: " + metadata.tested.map((t) => `${t.host.os}/${t.host.arch} with ${t.runtime}`).join(", "));
 	const home = path.resolve(env.HOME || homedir());
 	const profile = o.profile || o.name;
 	const conf = path.join(home, ".config", `boxery-${profile}`);

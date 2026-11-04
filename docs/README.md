@@ -25,7 +25,8 @@
 ## Reference
 
 - **[Security model](security.md)**: the credential proxy, isolation, and threat model.
-- **[Backends](../host/backends/README.md)**: libvirt, Lima, and the backend contract.
+- **[Backend support](backends.md)**: queryable platforms, validation, requirements and conditional capabilities.
+- **[Backend implementations](../host/backends/README.md)**: libvirt, Lima, hosted runtimes and the backend contract.
 - **[OpenShell (experimental)](openshell.md)**: policy-enforced headless sandboxes, capabilities and setup.
 - **[Lifecycle recovery](lifecycle.md)**: operation locks, crash recovery, reconciliation and upgrade precautions.
 - **[Host module boundaries](host-modules.md)**: Node lease policy, runtime adapters, state stores and shell backends.

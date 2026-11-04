@@ -231,7 +231,7 @@ done
 j=$(lsj)
 jq -e 'map(select(.name == "v1"))[0] | .state == "running" and .ssh_addr == "127.0.0.1:22601" and .disk_size == 51 and .disk_used == null' <<<"$j" >/dev/null && ok "ls --json: running, tunnel address, disk" || bad "ls: $j"
 jq -e 'map(select(.name == "v1"))[0] | .tunnel == "up"' <<<"$j" >/dev/null && ok "ls --json: the tunnel's state" || bad "tunnel: $j"
-e=$("$H" new hl --headless 2>&1) && bad "headless accepted" || { [[ $e == *"headless VMs (new --headless) aren't supported on boat"* ]] && ok "new --headless is refused clearly" || bad "headless: $e"; }
+e=$("$H" new hl --headless 2>&1) && bad "headless accepted" || { [[ $e == *"boat: headless is unavailable"* && $e == *"use build-base and a desktop VM on a paid plan, or another backend"* ]] && ok "new --headless is refused clearly" || bad "headless: $e"; }
 jq -e 'map(.name) | sort == ["v1", "v2"]' <<<"$j" >/dev/null && ok "ls lists boxery VMs only (not the base, builders or the account's other sandboxes)" || bad "ls names: $j"
 [[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "4 8192 51" ]] && ok "backend_size: the boat type's size" || bad "size: $("$ROOT/host/backend.sh" backend_size v1 2>&1)"
 "$H" rm v2 >/dev/null 2>&1

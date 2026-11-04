@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import path from "node:path";
 import { discover } from "./boxery-upgrade.mjs";
+import { checkBackend } from "./capabilities.mjs";
 import { defaultConf, HOST_ENV } from "./config.mjs";
 import { ensureHostKey, hasHostKey } from "./hostkeys.mjs";
 import { baseUserdata } from "./seed.mjs";
@@ -343,7 +344,8 @@ export async function init(rt) {
 async function initProfile(rt, others) {
 	checkServiceHome();
 	// Only a profile's first init: re-running init (or an upgrade) never fails over an existing setup.
-	if (!existsSync(path.join(rt.conf, "host.env"))) checkProfiles(rt, others);
+	// backend_check below still runs every time; it's the authority on what's installed.
+	if (!existsSync(path.join(rt.conf, "host.env"))) { checkProfiles(rt, others); checkBackend(rt.backend, { env: rt.env }); }
 	need("nc"); need("ps");
 	await rt.vms.call("backend_check");
 	mkdirSync(rt.conf, { recursive: true });
