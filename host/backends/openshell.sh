@@ -1,7 +1,7 @@
 # shellcheck shell=bash disable=SC2154
 # Experimental restricted workloads. The gateway, not guest authorized_keys, authenticates access.
-os_call() { node "$ROOT/host/backends/lib/openshell.mjs" "$@"; }
-backend_check() { need openshell; need node; need ssh; os_call check; }
+os_call() { "${BOXERY_NODE:-node}" "$ROOT/host/backends/lib/openshell.mjs" "$@"; }
+backend_check() { need openshell; need "${BOXERY_NODE:-node}"; need ssh; os_call check; }
 backend_init() { os_call check; }
 backend_proxy_services() { :; }
 guest_proxy_upstream() { die "OpenShell uses its own providers; Boxery proxy grants are not supported"; }
