@@ -4,7 +4,7 @@
 
 boxery has two halves:
 
-- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev or boat.dev (both experimental).
+- **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev or boat.dev (both experimental). It can also drive headless [OpenShell](openshell.md) sandboxes (experimental).
 - **The controller** is the `boxery` CLI on your laptop. It's bash + ssh, and it's what the pi extension and the MCP server call.
 
 They can be the same machine.
@@ -17,12 +17,14 @@ They can be the same machine.
 | A physical Linux machine (KVM) | The same machine | [`libvirt`](#linux-host-libvirtkvm), [`cloud-hypervisor`](#linux-host-cloud-hypervisor-experimental) | libvirt: stable, fastest. Cloud Hypervisor: experimental |
 | exe.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. a VPS) | [`exe`](#exedev-experimental) | Experimental |
 | boat.dev (cloud) | Your local machine, or any remote machine with ssh (e.g. a VPS) | [`boat`](#boatdev-experimental) | Experimental |
+| OpenShell sandboxes (Linux) | Any machine that can reach an OpenShell gateway | [`openshell`](#policy-enforced-headless-sandboxes-openshell-experimental) | Experimental. Headless only: no desktop, snapshots, forks or pools |
 
 - **To try it out**, use the machine you're on: Lima on a Mac, libvirt on a Linux desktop or laptop. Everything stays local.
 - **For the fastest VMs**, use a physical Linux machine: a home server, an old desktop, or a dedicated server. A VPS works only if it offers nested virtualization (check for `/dev/kvm`), and most don't.
 - **With no hardware of your own**, run the VMs on exe.dev or boat.dev. The host can stay on your local machine, but it keeps a tunnel open to each VM and agents lose their LLM while it sleeps, so for long-running work put it on an always-on machine such as a small VPS.
+- **For locked-down headless work**, use OpenShell. Its policy limits what each sandbox can read and reach on the network, but there's no root, desktop, snapshots, forks or pool.
 
-Agents see the same tools on every backend. One MCP server can [route across several hosts](hosts.md), and one machine can run [two backends side by side](#a-second-backend-on-the-same-machine).
+Agents see the same tools on every backend, except OpenShell, which has only the shell, file and job tools. One MCP server can [route across several hosts](hosts.md), and one machine can run [two backends side by side](#a-second-backend-on-the-same-machine).
 
 ## Setup
 
@@ -31,6 +33,7 @@ Agents see the same tools on every backend. One MCP server can [route across sev
 - [Linux host (Cloud Hypervisor, experimental)](#linux-host-cloud-hypervisor-experimental)
 - [exe.dev (experimental)](#exedev-experimental)
 - [boat.dev (experimental)](#boatdev-experimental)
+- [OpenShell (experimental)](#policy-enforced-headless-sandboxes-openshell-experimental)
 - [Laptop / controller](#laptop--controller)
 - [LLM providers for in-VM agents](#llm-providers-for-in-vm-agents)
 - [Verify](#verify)
