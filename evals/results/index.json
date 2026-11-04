@@ -2580,6 +2580,160 @@
           "shouldTotal": 3
         }
       }
+    },
+    {
+      "id": "2026-11-04-f5a21fa-claude-opus-5-5",
+      "started": "2026-11-04T13:46:46.901Z",
+      "model": "claude-opus-5-5",
+      "cli": "2.1.317",
+      "commit": "f5a21fa01a2f7a48c217ab4fa7d8c0ca3e6a40c0",
+      "describe": "v0.10.0-27-gf5a21fa",
+      "suite": {
+        "version": 4,
+        "hash": "77564a29a51e"
+      },
+      "dirty": false,
+      "runs": 66,
+      "passed": 66,
+      "should": {
+        "ok": 54,
+        "total": 57
+      },
+      "cost": 6.89,
+      "cases": {
+        "explicit-run": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "untrusted-script": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "linux-tests": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "linux-tests-default-vm": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 3
+        },
+        "screenshot": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "browser": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "local-file": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "local-edit": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "local-git": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "general-question": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "local-file-default-vm": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "install-local": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "docker-local": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "parallel-fork": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "headless-new": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "checkpoint": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "background-job": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "no-modify": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 0,
+          "shouldTotal": 0
+        },
+        "other-vm": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "gui-detached": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 3,
+          "shouldTotal": 3
+        },
+        "git-credentials": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        },
+        "pasted-token": {
+          "runs": 3,
+          "passed": 3,
+          "shouldOk": 6,
+          "shouldTotal": 6
+        }
+      }
     }
   ]
 }
