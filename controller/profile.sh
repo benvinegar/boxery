@@ -94,6 +94,11 @@ literal_args() { local out="" a; for a in "$@"; do out="$out $(literal "$a")"; d
 # Double-quoted local-shell arguments also pass OpenSSH's ProxyCommand quote validator.
 shell_double() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//\$/\\\$}; s=${s//\`/\\\`}; printf '"%s"' "$s"; }
 ssh_value() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//%/%%}; printf '"%s"' "$s"; }
+# One ssh_config argument, for a string whose percents are already escaped.
+ssh_word() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+# ProxyCommand goes through a shell, KnownHostsCommand doesn't: ssh splits it into argv itself and
+# needs an absolute executable. So run the same command line through /bin/sh, with %H as "$1".
+known_hosts_command() { printf '/bin/sh -c %s sh %%H' "$(ssh_word "exec $1 known-hosts \"\$1\"")"; }
 # Include applies glob expansion after SSH-config parsing; preserve literal path characters.
 ssh_include_value() {
 	local s=$1
@@ -144,7 +149,12 @@ host_pins_keys() {
 # (after upgrade-host). Asked at most once a day while the host is older.
 refresh_ssh_config() {
 	[ -f "$SSH_CONF" ] && [ -n "$HOST" ] || return 0
-	! grep -q '^  KnownHostsCommand ' "$SSH_CONF" || return 0
+	# Up to 0.9.0 a remote host's KnownHostsCommand was a shell line ssh can't run (relative `ssh`,
+	# shell quoting): every VM failed host key verification. Rewrite those; a host that pins keys stays one.
+	if grep -q '^  KnownHostsCommand ' "$SSH_CONF"; then
+		grep -q '^  KnownHostsCommand /bin/sh -c ' "$SSH_CONF" || write_ssh_config
+		return 0
+	fi
 	local probe="$CONF_DIR/.host-pins-keys-checked"
 	if [ -f "$probe" ] && [ -z "$(find "$probe" -mmin +1440 2>/dev/null)" ]; then return 0; fi
 	if host_pins_keys; then write_ssh_config; rm -f "$probe"
@@ -185,7 +195,7 @@ write_ssh_config() {
 			# prints the known_hosts line for %H (NAME.boxery, the name ssh matches keys against; nothing
 			# for a VM without one, which ssh then refuses). No local known_hosts: a VM's key changes on
 			# the host (new, fork, pin), and the host's record is the only one.
-			echo "  KnownHostsCommand $proxy known-hosts %H"
+			echo "  KnownHostsCommand $(known_hosts_command "$proxy")"
 			echo "  StrictHostKeyChecking yes"
 			echo "  UserKnownHostsFile none"
 			echo "  GlobalKnownHostsFile none"
