@@ -110,4 +110,18 @@ if [[ -n ${1:-} ]]; then
 	[[ ! -f $BOXERY_CONF/edge/$1.json ]] && ok "release clears edge routes" || bad "edge routes survived release"
 else bad "acquire for edge test"; fi
 
+# --- a client that leaves while acquire --wait waits never gets a lease it can't use
+# Fill the pool, start a waiting acquire whose stdout nobody reads (the client's ssh is gone), free a VM.
+held=""
+while out=$(echo "$K1" | "$H" acquire --holder filler 2>/dev/null); do set -- $out; held="$held $2"; done
+mkfifo "$tmp/gone"
+( echo "$K2" | "$H" acquire --holder leaver --wait 60 >"$tmp/gone" 2>"$tmp/gone.err"; echo $? >"$tmp/gone.rc" ) &
+exec 7<"$tmp/gone"; exec 7<&-   # open and close the read end: the reply hits a closed pipe (EPIPE)
+sleep 1
+set -- $held; "$H" release "$1" >/dev/null 2>&1
+for _ in $(seq 100); do [[ -f $tmp/gone.rc ]] && break; sleep 0.2; done
+[[ $(cat "$tmp/gone.rc" 2>/dev/null) != 0 ]] && grep -q "client left" "$tmp/gone.err" && ok "acquire whose client left fails (it can't hand the lease over)" || bad "rc $(cat "$tmp/gone.rc" 2>/dev/null): $(cat "$tmp/gone.err")"
+! PATTERN="leaver" has "$H" pool ls && ok "...and released that lease: nobody holds a VM for it" || bad "stranded: $("$H" pool ls | tr '\n' '|')"
+for l in $held; do "$H" release "$l" >/dev/null 2>&1 || true; done
+
 echo "passed: $pass  failed: $fail"; ((fail == 0))

@@ -44,6 +44,15 @@ export function parseOptions(args, defaults, flags) {
 /** --json anywhere in ARGS: [true, ARGS without it]. @param {string[]} args @returns {[boolean, string[]]} */
 const jsonFlag = (args) => [args.includes("--json"), args.filter((a) => a !== "--json")];
 
+/** Write to stdout; false if nobody reads it any more (EPIPE: the client is gone). @param {string} text @returns {Promise<boolean>} */
+function writeOut(text) {
+	return new Promise((resolve) => {
+		// The 'error' event can follow the write callback: keep a listener, or it is an uncaught exception.
+		process.stdout.on("error", () => resolve(false));
+		process.stdout.write(text, (e) => resolve(!e));
+	});
+}
+
 /** @returns {Promise<string>} */
 function publicKey() {
 	return new Promise((resolve, reject) => {
@@ -106,7 +115,14 @@ export async function runLifecycle(rt, command, args) {
 			const [json, rest] = jsonFlag(args);
 			const { only, ...options } = parseOptions(rest, { holder: "", ttl: 1800, wait: 0, only: "" }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait", "--only": "only" });
 			const claim = await flows.acquire({ ...options, ...(only ? { only: only.split(",").map(nameOf) } : {}), pubkey: await publicKey() });
-			process.stdout.write(json ? `${JSON.stringify({ name: claim.name, lease_id: claim.lease_id, expires_at: claim.expires_at })}\n` : `${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
+			const reply = json ? `${JSON.stringify({ name: claim.name, lease_id: claim.lease_id, expires_at: claim.expires_at })}\n` : `${claim.name} ${claim.lease_id} ${claim.expires_at}\n`;
+			// A client that left while we waited (Ctrl-C, a timeout: ssh gone, nobody reading) would never learn
+			// of this lease, nor renew or release it. Its reply can't be written then: give the VM back.
+			if (!await writeOut(reply)) {
+				rt.log(`${claim.name}: the client left before it got its lease; releasing ${claim.lease_id}`);
+				await flows.release(claim.lease_id);
+				throw Object.assign(new Error("the client left before it got its lease (released it)"), { exitCode: 1 });
+			}
 			break;
 		}
 		case "renew": {
