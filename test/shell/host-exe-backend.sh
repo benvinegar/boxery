@@ -35,11 +35,6 @@ echo "$*" >>"$d/edge.log"
 case "$*" in
 "sudo bash -s") n=$(ls "$d" | grep -c '^script\.' || true); cat >"$d/script.$((n + 1))" ;;
 *boxery-exe.ok*) echo "${BUILD_RESULT:-ok}" ;;
-# exe.dev LLM integration probe (exe_llm_guard): LLM_INT=1 attaches llm.int.exe.xyz; REFLECT_LLM=NAME
-# lists another LLM integration through Reflection; LLM_PROBE_CODE overrides the status (000 = unreachable).
-*llm-probe*)
-	if [ -n "${LLM_PROBE_CODE:-}" ]; then echo "llm-probe $LLM_PROBE_CODE"; elif [ -n "${LLM_INT:-}" ]; then echo "llm-probe 200"; else echo "llm-probe 403"; fi
-	[ -z "${REFLECT_LLM:-}" ] || printf '{"integrations":[{"name":"reflection","type":"reflection"},{"name":"%s","type":"llm"}]}\n' "$REFLECT_LLM" ;;
 esac
 exit 0
 STUB
@@ -194,40 +189,41 @@ grep -x 'ListenAddress 127.0.0.1' "$X" >/dev/null && grep -F 'boxery-exe-boot.se
 ! grep -F '/home/agent/.boxery/token' "$X" >/dev/null && grep -F '/home/agent/.boxery/token' "$S/$(V hx)/script.2" >/dev/null && ok "identity (proxy token) comes after, in its own script" || bad "script order"
 "$H" rm hx >/dev/null 2>&1
 
-# --- exe.dev integrations: one that reaches a VM would get it around the proxy and its grants
-grep -F 'llm-probe' "$S/$(V v1)/edge.log" >/dev/null && called "exe.dev integrations list" && ok "new checks the VM for exe.dev integrations, from inside and through the API" || bad "no integration check on new"
+# --- exe.dev integrations: allowed (the owner's choice), but boxery says when one reaches a VM
+called "exe.dev integrations list" && ok "new checks which exe.dev integrations reach the VM" || bad "no integration check on new"
 ints() { cp "$INTS" "$tmp/ints.saved"; jq "$1" "$tmp/ints.saved" >"$INTS"; }   # FILTER: change the account's integrations
 unints() { mv "$tmp/ints.saved" "$INTS"; }
-refused() { # DESC WANT ENV…: new lx is refused naming WANT (empty: can't check), and leaves nothing behind
+warned() { # DESC WANT CMD…: CMD succeeds and its warning names WANT (empty: says it couldn't check, or no warning with NONE)
 	local d=$1 want=$2 e; shift 2
-	if e=$(env "$@" "$H" new lx 2>&1); then bad "$d: new succeeded"; "$H" rm lx >/dev/null 2>&1; return; fi
-	if [[ -n $want ]]; then [[ $e == *"can reach exe.dev integration(s) that hold credentials: $want."* ]] && ok "$d: new refused, names the integration" || bad "$d: $e"
-	else [[ $e == *"couldn't check lx for exe.dev integrations"* ]] && ok "$d: can't tell → refused (fails closed)" || bad "$d: $e"; fi
-	! "$H" ls 2>/dev/null | grep -q '^lx ' && [[ -z $(jq -r '.vms[].vm_name' <<<"$(fake-exe ls 2>/dev/null)" | grep -- '-lx$') ]] && ok "$d: nothing left behind" || bad "$d: lx left behind"
+	if ! e=$("$@" 2>&1); then bad "$d: failed: $e"; return; fi
+	case $want in
+	NONE) [[ $e != *"exe.dev integration"* ]] && ok "$d: no warning" || bad "$d: $e" ;;
+	"") [[ $e == *"couldn't check which exe.dev integrations reach"* ]] && ok "$d: says it couldn't check, still succeeds" || bad "$d: $e" ;;
+	*) [[ $e == *"can use exe.dev integration(s) $want, with credentials exe.dev holds"* ]] && ok "$d: succeeds, warns naming $want" || bad "$d: $e" ;;
+	esac
 	LAST=$e
 }
-refused "llm.int answers" llm LLM_INT=1
-refused "Reflection lists another LLM integration" team-llm REFLECT_LLM=team-llm
-refused "llm.int unreachable" "" LLM_PROBE_CODE=000
-refused "llm.int answers 502" "" LLM_PROBE_CODE=502
-refused "integrations list fails" "" FAIL_INT=1
+warned "no credential integration (notify and reflection on auto:all)" NONE "$H" new lx; "$H" rm lx >/dev/null 2>&1
+warned "integrations list fails" "" env FAIL_INT=1 "$H" new lx; "$H" rm lx >/dev/null 2>&1
 ints '. + [{"name":"anth","type":"anthropic-wif","attachments":["auto:all"],"isTeam":false}]'
-refused "an Anthropic workload-identity integration on auto:all (not llm-typed)" anth X=1
-[[ $LAST == *"ssh exe.dev integrations detach anth auto:all"* && $LAST == *"affects the account's other VMs too"* && $LAST == *"BOXERY_EXE_ALLOW_INTEGRATIONS=NAME"* ]] && ok "… with the detach command, what it affects, and the opt-in" || bad "fix: $LAST"
-out=$(BOXERY_EXE_ALLOW_INTEGRATIONS=other,anth "$H" new lx 2>&1) && ok "BOXERY_EXE_ALLOW_INTEGRATIONS allows one on purpose" || bad "allow: $out"
+warned "an Anthropic workload-identity integration on auto:all" anth "$H" new lx
+[[ $LAST == *"ssh exe.dev integrations detach anth auto:all"* && $LAST == *"affects the account's other VMs too"* && $LAST == *"BOXERY_EXE_ALLOW_INTEGRATIONS=NAME"* ]] && ok "… with the detach command, what it affects, and how to silence it" || bad "fix: $LAST"
+"$H" rm lx >/dev/null 2>&1
+warned "BOXERY_EXE_ALLOW_INTEGRATIONS silences a named one" NONE env BOXERY_EXE_ALLOW_INTEGRATIONS=other,anth "$H" new lx
 "$H" rm lx >/dev/null 2>&1; unints
 ints 'map(if .name == "llm" then .attachments = ["tag:gpu"] | .isTeam = true else . end)'
-expect "an integration on a tag the VM doesn't have doesn't count" "$H" new lx
+warned "an integration on a tag the VM doesn't have doesn't count" NONE "$H" new lx
 "$H" rm lx >/dev/null 2>&1; unints
 expect "stop v2" "$H" stop v2
-e=$(LLM_INT=1 "$H" start v2 2>&1) && bad "start succeeded with an LLM integration attached" ||
-	{ [[ $e == *"refusing to start v2"* && $(st "$(V v2)") == paused && ! -f $UNITS/boxery-exe-bxtest-v-v2.service ]] && ok "start: integration attached later (auto:all) → refused, paused again, no tunnel" || bad "start: $e / $(st "$(V v2)")"; }
+ints 'map(if .name == "llm" then .attachments = ["auto:all"] else . end)'
+warned "start: llm attached later (auto:all)" llm "$H" start v2
+[[ $(st "$(V v2)") == running && -f $UNITS/boxery-exe-bxtest-v-v2.service ]] && ok "… and v2 runs with its tunnel" || bad "start: $(st "$(V v2)")"
+unints; expect "stop v2" "$H" stop v2
 echo '["gpu"]' >"$S/$(V v2)/tags"
 ints 'map(if .name == "llm" then .attachments = ["tag:gpu"] | .isTeam = true else . end)'
-e=$("$H" start v2 2>&1) && bad "start succeeded with a team integration on the VM's tag" ||
-	{ [[ $e == *"integrations detach llm tag:gpu --team"* && $(st "$(V v2)") == paused ]] && ok "start: a team integration on one of the VM's tags → refused, with --team in the fix" || bad "tag: $e"; }
+warned "start: a team integration on one of the VM's tags" llm "$H" start v2
+[[ $LAST == *"integrations detach llm tag:gpu --team"* ]] && ok "… with --team in the detach command" || bad "tag: $LAST"
 unints; rm "$S/$(V v2)/tags"
-expect "start v2 once detached" "$H" start v2
 
 # --- size / resize
 [[ $("$ROOT/host/backend.sh" backend_size v1 2>/dev/null) == "2 4096 20" ]] && ok "backend_size: the size exe.dev was given (capped)" || bad "size: $("$ROOT/host/backend.sh" backend_size v1 2>&1)"
@@ -314,9 +310,9 @@ new=$(V v1)
 grep -F "$new.exe.xyz" "$E/v1/tunnel.sh" >/dev/null && ok "tunnel follows the new exe.dev name" || bad "tunnel.sh: $(cat "$E/v1/tunnel.sh")"
 expect_fail "revert to an unknown snapshot fails" "$H" revert v1 nope
 # A reimage (revert, pool reset) is a new exe.dev VM: auto:all integrations attach to it too.
-old=$(V v1)
-e=$(LLM_INT=1 "$H" revert v1 s1 2>&1) && bad "revert succeeded with an LLM integration attached" ||
-	{ [[ $e == *"can reach exe.dev integration(s) that hold credentials: llm."* && $(V v1) == "$old" && $(gens v1) == "$old " && $(st "$old") == running ]] && ok "reimage: refused copy removed, VM left on its old disk" || bad "reimage guard: $e / $(gens v1)"; }
+ints 'map(if .name == "llm" then .attachments = ["auto:all"] else . end)'
+warned "reimage: llm on auto:all" llm "$H" revert v1 s1
+unints
 
 # --- new --from / fork
 : >"$CALLS"
@@ -415,16 +411,11 @@ J='[{"name":"llm","type":"llm","attachments":["auto:all","tag:gpu"]},{"name":"gh
 [[ $(exe_int_attached "$J" '["gpu"]' bxtest-v000002-b | cut -f2 | paste -sd, -) == "auto:all,tag:gpu" ]] && ok "integrations: tag:T counts for a VM tagged T" || bad "tags"
 [[ $(exe_int_attached "$J" '[]' "" | cut -f1,2 | paste -sd, - | tr '\t' ' ') == "llm auto:all,gh vm:bxtest-v000001-a" ]] && ok "integrations at init: auto:all and boxery's own vm: attachments" || bad "init set: $(exe_int_attached "$J" '[]' "")"
 [[ $(BOXERY_EXE_ALLOW_INTEGRATIONS=llm; . "$ROOT/host/backends/exe.sh"; exe_int_attached "$J" '[]' "" | cut -f1) == gh && ! -e $tmp/pwned3 ]] && ok "integrations: allowed names skipped; hostile names and specs dropped" || bad "allow/hostile"
-# init (#41): offers to detach what reaches boxery's VMs; asks on the terminal (exe_ask), else says what to run
+# init (#41): lists what reaches boxery's VMs, with the detach commands; changes nothing
 ints '. + [{"name":"anth","type":"anthropic-wif","attachments":["auto:all","vm:bxtest-vabcdef-x"],"isTeam":false}]'
-e=$( (exe_ask() { return 2; }; backend_init) 2>&1); log() { :; }
-[[ $(jq -c '.[] | select(.name == "anth") | .attachments' "$INTS") == '["auto:all","vm:bxtest-vabcdef-x"]' ]] && ok "init without a terminal changes nothing" || bad "init no tty: $(cat "$INTS")"
-: >"$CALLS"
-e=$( (log() { echo "$*" >&2; }; exe_ask() { return 2; }; backend_init) 2>&1)
-[[ $e == *"'anth' is attached to auto:all"* && $e == *"ssh exe.dev integrations detach anth auto:all"* && $e == *"ssh exe.dev integrations detach anth vm:bxtest-vabcdef-x"* ]] && ok "init without a terminal: names each attachment and the command" || bad "init msg: $e"
-e=$( (log() { echo "$*" >&2; }; exe_ask() { echo "ASK $1" >&2; [[ $1 == *auto:all* ]]; }; backend_init) 2>&1)
-[[ $e == *"ASK Detach 'anth' from auto:all? Your other exe.dev VMs lose it too"* && $(jq -c '.[] | select(.name == "anth") | .attachments' "$INTS") == '["vm:bxtest-vabcdef-x"]' ]] && ok "init: a yes detaches it (and says what auto:all affects)" || bad "init yes: $e / $(cat "$INTS")"
-[[ $e == *"detach anth vm:bxtest-vabcdef-x"* ]] && ok "init: a no leaves it, with the command" || bad "init no: $e"
+e=$( (log() { echo "$*" >&2; }; backend_init) 2>&1)
+[[ $e == *"every boxery VM can use exe.dev integration(s) anth"* && $e == *"ssh exe.dev integrations detach anth auto:all"* && $e == *"ssh exe.dev integrations detach anth vm:bxtest-vabcdef-x"* ]] && ok "init: names each attachment and the command" || bad "init msg: $e"
+[[ $(jq -c '.[] | select(.name == "anth") | .attachments' "$INTS") == '["auto:all","vm:bxtest-vabcdef-x"]' ]] && ok "init changes nothing on the account" || bad "init: $(cat "$INTS")"
 e=$( (log() { echo "$*" >&2; }; FAIL_INT=1 backend_init) 2>&1) && [[ $e == *"couldn't list exe.dev integrations"* ]] && ok "init: integrations unreachable → a warning, init still succeeds" || bad "init fail: $e"
 unints
 # launchd (macOS hosts)
