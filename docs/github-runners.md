@@ -84,7 +84,7 @@ The host keeps runners waiting all the time: a service (the runner manager) with
 
 ```
 GitHub ◄── REST API (token in runners.env) ── boxery-host runners run (host service)
-  │                                                │ acquire --holder github-runner --only ci-1,ci-2   (pool lease, renewed)
+  │                                                │ acquire --holder github-runner --only ci-1,ci-2 --json   (pool lease, renewed)
   │ one job                                        │ POST …/actions/runners/generate-jitconfig        (single-use config)
   ▼                                                ▼ ssh ci-1 boxery-runner start < JIT config
 runner in ci-1 (agent user) ──── job ends, runner exits ──► release → reset to ci-1@boxery-clean ──► next runner
@@ -131,7 +131,7 @@ The token lives in `~/.config/boxery/runners.env` (`GITHUB_TOKEN=…`, mode `060
 
 The manager (`boxery-host runners run`, the user service `boxery-runners`, or the launchd agent `dev.boxery-runners` on macOS; `runners start` turns it on) keeps `count` slots. Each slot:
 
-1. leases a free VM from `--vms` (`boxery-host acquire --holder github-runner --only …`, the pool's own locks and fencing), and keeps renewing that lease;
+1. leases a free VM from `--vms` (`boxery-host acquire --holder github-runner --only … --json`, the pool's own locks and fencing), and keeps renewing that lease;
 2. checks the VM has the runner and hasn't run one (`boxery-runner status`);
 3. asks GitHub for a JIT config (`POST /repos/OWNER/REPO/actions/runners/generate-jitconfig`, or `/orgs/ORG/…`, with the name, labels, runner group and work folder `_work`);
 4. starts the runner as `agent` in the transient unit `boxery-runner.service`, with that config on ssh's stdin and self-update off (the image pins the version);

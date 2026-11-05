@@ -17,6 +17,7 @@ chmodSync(path.join(dir, "bin/ssh"), 0o755);
 process.env.PATH = `${path.join(dir, "bin")}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
 const leases = await import("../core/leases.mjs");
+const profile = await import("../core/profile.mjs");
 const leasesDir = path.join(home, "leases");
 const statMode = (/** @type {string} */ f) => statSync(f).mode & 0o777;
 const readdirNames = (/** @type {string} */ d) => (existsSync(d) ? readdirSync(d) : []);
@@ -76,4 +77,62 @@ test("renew: unknown lease and bad ttl are local errors; a host failure is marke
 		await assert.rejects(leases.renewLease("pool-1"), (e) => /** @type {any} */ (e).fromHost === true && /lease expired/.test(/** @type {Error} */ (e).message));
 	} finally { rmSync(path.join(dir, "renew-fails")); }
 	assert.equal((await leases.renewLease(LEASE_ID)).ttl, 600, "ttl defaults to the acquired one");
+});
+
+test("leaseReply reads a current host's JSON and an older host's line", () => {
+	const exp = { name: "pool-1", lease_id: LEASE_ID, expires_at: 1793462400 };
+	assert.deepEqual(leases.leaseReply(JSON.stringify(exp), true), exp);
+	assert.deepEqual(leases.leaseReply(`pool-1 ${LEASE_ID} 1793462400`, false), exp);
+	assert.deepEqual(leases.leaseReply("pool-1 1793462400", false), { ...exp, lease_id: null });
+	for (const bad of ["", "{", '{"name":"Bad","lease_id":"l-x","expires_at":1}', `{"name":"pool-1","lease_id":"${LEASE_ID}","expires_at":"1"}`]) assert.equal(leases.leaseReply(bad, true), null, bad);
+	assert.equal(leases.leaseReply("nonsense", false), null);
+});
+
+test("a host that predates --json gets the old commands, and its line is read", async () => {
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;"));
+	rmSync(path.join(home, "host-lease-json"), { force: true });
+	try {
+		const r = await leases.acquireLease({ ttl: 600 });
+		assert.equal(r.id, LEASE_ID);
+		assert.equal((await leases.renewLease("pool-1", 900)).expires, 9999999999);
+		assert.ok(calls().filter((c) => /^(acquire|renew) /.test(c)).every((c) => !c.includes("--json")), calls().join("\n"));
+		await leases.releaseLease("pool-1");
+	} finally { writeFileSync(hostbin, orig); }
+	assert.ok(!existsSync(path.join(home, "host-lease-json")), "not remembered for an older host");
+	profile.forgetHostFeatures(); // (in a real process: asked again after 10 minutes)
+	await leases.acquireLease({ ttl: 600 });
+	assert.match(calls().filter((c) => c.startsWith("acquire ")).at(-1) ?? "", / --json$/);
+	assert.ok(existsSync(path.join(home, "host-lease-json")), "remembered once the host supports it");
+});
+
+test("a host that stops understanding --json (downgraded, or HOST changed) is asked again, without it", async () => {
+	profile.forgetHostFeatures();
+	await leases.acquireLease({ ttl: 600 }); // remembers host-lease-json
+	assert.ok(existsSync(path.join(home, "host-lease-json")));
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	// An older host: no --json in help, and it rejects the flag before doing anything (as parseOptions does).
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;")
+		.replace('json=; for a; do [ "$a" != --json ] || json=1; done', 'for a; do [ "$a" != --json ] || { echo "boxery-host: unknown flag --json" >&2; exit 1; }; done; json='));
+	try {
+		assert.equal((await leases.renewLease("pool-1", 900)).expires, 9999999999);
+		assert.ok(!existsSync(path.join(home, "host-lease-json")), "the marker is forgotten");
+		const renews = calls().filter((c) => c.startsWith("renew "));
+		assert.deepEqual(renews.slice(-2).map((c) => c.endsWith("--json")), [true, false], renews.join("\n"));
+		await leases.releaseLease("pool-1");
+	} finally { writeFileSync(hostbin, orig); }
+});
+
+test("a --json failure while the host can't be reached keeps --json (no answer is not a downgrade)", async () => {
+	profile.forgetHostFeatures();
+	await leases.acquireLease({ ttl: 600 });
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	writeFileSync(hostbin, "#!/bin/sh\necho 'ssh: connect to host: Connection refused' >&2; exit 255\n"); // unreachable
+	try {
+		await assert.rejects(leases.renewLease("pool-1", 900), /Connection refused/);
+		assert.ok(existsSync(path.join(home, "host-lease-json")), "the marker stays");
+	} finally { writeFileSync(hostbin, orig); }
+	assert.match(String((await leases.renewLease("pool-1", 900)).expires), /^9999999999$/);
+	assert.match(calls().filter((c) => c.startsWith("renew ")).at(-1) ?? "", / --json$/);
+	await leases.releaseLease("pool-1");
 });

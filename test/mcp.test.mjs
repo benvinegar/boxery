@@ -584,7 +584,7 @@ describe("older protocol versions", () => {
 describe("leases", () => {
 	const LEASE = "l-0123456789abcdef0123456789abcdef";
 	// Leases run in-process (core/leases.mjs) against the stub host, not through the controller CLI.
-	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2));
+	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2)).filter((c) => c !== "help"); // (help: the --json probe)
 
 	test("vm_lease acquires, tracks, renews and releases pool VMs per session; leases end with the session", async () => {
 		const c = client();
@@ -599,19 +599,19 @@ describe("leases", () => {
 			assert.equal(await lease({ action: "list" }), "this session holds no leases");
 			await err("vm_lease", { action: "acquire", ttl: 5 }, /ttl must be/);
 			assert.match(await lease({ action: "acquire", ttl: 600, wait: 5 }), new RegExp(`^leased pool-1 \\(lease ${LEASE}, ttl 600s.*\ncurrent VM: pool-1$`));
-			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 600 --wait 5$/);
+			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 600 --wait 5 --json$/);
 			assert.match(await lease({ action: "list" }), new RegExp(`^pool-1\t${LEASE}\texpires in 600s .*\tcurrent$`));
 			assert.match((await c.tool("vm_info", { action: "list" })).content[0].text, /current: pool-1/);
 			await err("vm_manage", { action: "rm", vm: "pool-1" }, /leased from the pool/);
 			assert.equal(await lease({ action: "renew", ttl: 900 }), "renewed pool-1 for 900s");
-			assert.equal(calls().at(-1), `renew ${LEASE} --ttl 900`);
+			assert.equal(calls().at(-1), `renew ${LEASE} --ttl 900 --json`);
 			await err("vm_lease", { action: "renew", vm: "fakevm" }, /holds no lease on fakevm/);
 			assert.match(await lease({ action: "release" }), /^released pool-1; .*\nno current VM$/);
 			assert.equal(calls().at(-1), `release ${LEASE}`);
 			await err("vm_bash", { command: "true" }, /no current VM/);
 			await err("vm_lease", { action: "release", vm: "pool-1" }, /holds no lease/);
 			assert.doesNotMatch(await lease({ action: "acquire", use: false }), /current VM/);
-			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 1800 --wait 60$/);
+			assert.match(calls().at(-1) ?? "", /^acquire --holder \S+ --ttl 1800 --wait 60 --json$/);
 		} finally {
 			c.p.stdin.end(); // stdio session over: its leases are released before the server exits
 			await new Promise((r) => c.p.on("exit", r));
@@ -622,7 +622,7 @@ describe("leases", () => {
 
 describe("grant requests (vm_grant)", () => {
 	// Leases run in-process (core/leases.mjs) against the stub host, not through the controller CLI.
-	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2));
+	const calls = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2)).filter((c) => c !== "help"); // (help: the --json probe)
 	const grantCalls = () => calls().filter((l) => l.startsWith("grant "));
 	const elicitClient = async (protocolVersion = "2025-06-18", elicitation = {}, extraEnv = {}) => {
 		const c = client(["--vm", "fakevm"], extraEnv);

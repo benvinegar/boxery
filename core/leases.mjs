@@ -10,7 +10,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { currentHost, VALID_NAME } from "./boxery-core.mjs";
 import { applyGrants, listGrants } from "./grant-operations.mjs";
-import { closeMaster, hostRun, writeSshConfig } from "./profile.mjs";
+import { closeMaster, hostLeaseJson, hostRun, writeSshConfig } from "./profile.mjs";
 
 /** A lease this machine holds. expires: unix seconds. @typedef {{ name: string, id: string, expires: number, ttl: number | null, holder: string | null, file: string }} LeaseRecord */
 /** log: progress and warnings for a person (the CLI prints them to stderr). interactiveCommands: grant
@@ -94,6 +94,41 @@ function keygen(file, comment) {
 	});
 }
 
+/**
+ * The host's answer to acquire or renew: {name, lease_id, expires_at} with --json; from a host that
+ * predates it, the line "NAME LEASE_ID EXPIRES" (acquire) or "NAME EXPIRES" (renew). null if it is neither.
+ * @param {string} out @param {boolean} json @returns {{ name: string, lease_id: string | null, expires_at: number } | null}
+ */
+export function leaseReply(out, json) {
+	const last = out.split("\n").filter((l) => l.trim()).at(-1) ?? ""; // (the reply is the last line)
+	if (json) {
+		let r;
+		try { r = JSON.parse(last); } catch { return null; }
+		return VALID_NAME.test(r?.name ?? "") && VALID_LEASE.test(r?.lease_id ?? "") && Number.isSafeInteger(r?.expires_at) ? { name: r.name, lease_id: r.lease_id, expires_at: r.expires_at } : null;
+	}
+	const a = /^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32}) ([0-9]+)$/.exec(last);
+	if (a) return { name: a[1], lease_id: a[2], expires_at: Number(a[3]) };
+	const r = /^(\S+) ([0-9]+)$/.exec(last);
+	return r ? { name: r[1], lease_id: null, expires_at: Number(r[2]) } : null;
+}
+
+/**
+ * acquire/renew on the host, with --json when it answers that way. A --json call that fails makes us ask
+ * the host again: one that no longer understands it (downgraded, or HOST changed) is asked without.
+ * Safe to repeat: boxery-host rejects an unknown flag before doing anything.
+ * @param {string[]} args @param {import("./profile.mjs").HostRunOpts} runOpts @returns {Promise<{ out: string, json: boolean }>}
+ */
+async function leaseCall(args, runOpts) {
+	const json = await hostLeaseJson({ signal: runOpts.signal });
+	if (!json) return { out: await hostRun(args, runOpts), json };
+	try { return { out: await hostRun([...args, "--json"], runOpts), json }; }
+	catch (e) {
+		const err = /** @type {{ fromHost?: boolean, exitCode?: number }} */ (e);
+		if (!err.fromHost || err.exitCode !== 1 || await hostLeaseJson({ signal: runOpts.signal, recheck: true })) throw e;
+		return { out: await hostRun(args, runOpts), json: false };
+	}
+}
+
 export const defaultHolder = () => `${process.env.USER || "user"}@${hostname().split(".")[0]}`;
 
 /**
@@ -109,21 +144,21 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 	mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700);
 	const tmp = path.join(dir, `.new-${process.pid}-${Date.now()}`);
 	const cleanup = () => { rmSync(tmp, { force: true }); rmSync(`${tmp}.pub`, { force: true }); };
-	let out;
+	let out, json;
 	try {
 		await keygen(tmp, `boxery-lease ${holder}`);
-		out = await hostRun(["acquire", "--holder", holder, "--ttl", String(t), "--wait", String(w)], {
+		({ out, json } = await leaseCall(["acquire", "--holder", holder, "--ttl", String(t), "--wait", String(w)], {
 			input: readFileSync(`${tmp}.pub`, "utf8"), timeout: opts.timeout ?? (w + 300) * 1000, signal: opts.signal, stderr: opts.stderr,
-		});
+		}));
 	} catch (e) { cleanup(); throw e; }
-	const m = /^([a-z][a-z0-9-]{0,30}) (l-[0-9a-f]{32}) ([0-9]+)$/.exec(out.split("\n").at(-1) ?? "");
-	if (!m) {
+	const reply = leaseReply(out, json);
+	if (!reply?.lease_id) {
 		cleanup();
 		const leaked = out.match(/l-[0-9a-f]{32}/)?.[0]; // never leave a lease we can't use on the host
 		if (leaked) await hostRun(["release", leaked], { timeout: 180_000 }).catch(() => {});
 		throw new Error(`bad response from host: ${out.slice(0, 300)}`);
 	}
-	const [, name, id, exp] = m;
+	const { name, lease_id: id, expires_at: exp } = reply;
 	/** @type {LeaseRecord} */
 	const rec = { name, id, expires: Number(exp), ttl: t, holder, file: recordFile(id) };
 	// The host holds the lease now. Without the local record, key and ssh_config entry it is unusable,
@@ -149,14 +184,14 @@ export async function acquireLease({ ttl = 1800, wait = 0, holder = defaultHolde
 export async function renewLease(ref, ttl, opts = {}) {
 	const rec = needLease(ref);
 	const t = seconds("--ttl", ttl ?? rec.ttl ?? "");
-	const out = await hostRun(["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, signal: opts.signal, stderr: opts.stderr });
-	const m = /^\S+ ([0-9]+)$/.exec(out.split("\n").at(-1) ?? ""); // NAME EXPIRES
-	if (!m) throw new Error(`bad response from host: ${out.slice(0, 300)}`);
+	const { out, json } = await leaseCall(["renew", rec.id, "--ttl", String(t)], { timeout: opts.timeout ?? 60_000, signal: opts.signal, stderr: opts.stderr });
+	const reply = leaseReply(out, json);
+	if (!reply || (reply.lease_id !== null && reply.lease_id !== rec.id)) throw new Error(`bad response from host: ${out.slice(0, 300)}`);
 	// A release that ran while the host answered (another process, or the session ending) removed the
 	// record: don't bring it back, pointing at a deleted key.
 	if (readRecord(rec.file)?.id !== rec.id) throw new Error(`lease ${rec.id} was released meanwhile`);
-	writeRecord({ ...rec, expires: Number(m[1]) });
-	return { ...rec, expires: Number(m[1]), ttl: t };
+	writeRecord({ ...rec, expires: reply.expires_at });
+	return { ...rec, expires: reply.expires_at, ttl: t };
 }
 
 /**

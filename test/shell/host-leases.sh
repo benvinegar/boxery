@@ -42,9 +42,12 @@ for n in p1 p2; do "$H" new "$n" >/dev/null 2>&1; "$H" pool add "$n" >/dev/null 
 out=$(echo "$K1" | "$H" acquire --holder alice@mac --ttl 600 2>/dev/null); set -- $out; L1n=$1 L1=$2
 [[ $L1 =~ ^l-[0-9a-f]{32}$ ]] && ok "acquire → NAME LEASE_ID EXPIRES ($L1n)" || bad "acquire: $out"
 grep -q holder1 "$(vmfile "$L1n" .ssh/authorized_keys)" && ok "lease key installed in the VM" || bad "lease key missing"
-out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 2>/dev/null); set -- $out2; L2n=$1
+out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 --json 2>/dev/null)
+jq -e '(.name | test("^p[12]$")) and (.lease_id | test("^l-[0-9a-f]{32}$")) and (.expires_at | type) == "number" and (keys | length) == 3' <<<"$out2" >/dev/null \
+	&& ok "acquire --json → {name, lease_id, expires_at}" || bad "acquire --json: $out2"
+L2n=$(jq -r .name <<<"$out2")
 [[ $L2n != "$L1n" ]] && ok "second acquire gets the other VM" || bad "same VM twice: $L1n $L2n"
-if echo "$K2" | "$H" acquire --holder carol --ttl 600 >/dev/null 2>&1; then bad "acquire succeeded on an exhausted pool"; else [[ $? == 4 ]] && ok "exhausted pool → exit 4" || bad "wrong exit code"; fi
+if echo "$K2" | "$H" acquire --holder carol --ttl 600 --json >/dev/null 2>&1; then bad "acquire succeeded on an exhausted pool"; else [[ $? == 4 ]] && ok "exhausted pool → exit 4" || bad "wrong exit code"; fi
 PATTERN="^$L1n  *.*leased" has "$H" ls && ok "ls shows LEASED" || bad "ls lease column: $("$H" ls 2>&1 | tr '\n' '|')"
 "$H" ls --json | jq -e --arg n "$L1n" '.[] | select(.name == $n) | .lease.state == "leased" and .lease.holder == "alice@mac" and (.lease.expires_at | type) == "number"' >/dev/null && ok "ls --json carries lease state" || bad "ls --json: $("$H" ls --json)"
 "$H" ls --json | jq -e '.[] | select(.name == "pet") | .lease == null' >/dev/null && ok "ls --json: pets have lease null" || bad "ls --json pet"
@@ -53,6 +56,10 @@ if "$H" rm "$L1n" >/dev/null 2>&1; then bad "rm of a pool VM allowed"; else ok "
 
 echo "agent was here" >"$(vmfile "$L1n" project-file)"
 "$H" renew "$L1" --ttl 900 >/dev/null 2>&1 && ok "renew" || bad renew
+j=$("$H" renew "$L1" --ttl 900 --json 2>/dev/null)
+jq -e --arg n "$L1n" --arg l "$L1" '.name == $n and .lease_id == $l and (.expires_at | type) == "number" and (keys | length) == 3' <<<"$j" >/dev/null \
+	&& ok "renew --json → {name, lease_id, expires_at}" || bad "renew --json: $j"
+"$H" help | grep -q '^  renew LEASE \[--ttl S\] \[--json\]' && ok "help advertises renew --json (controllers probe it)" || bad "help: no renew --json"
 "$H" release "$L1" >/dev/null 2>&1 && ok "release" || bad release
 ! grep -q holder1 "$(vmfile "$L1n" .ssh/authorized_keys)" && ok "release removed the lease key (fenced)" || bad "old key still authorized"
 [[ ! -e $(vmfile "$L1n" project-file) ]] && ok "release reset the VM to its clean snapshot" || bad "leftover state after release"

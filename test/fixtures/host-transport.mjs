@@ -1,6 +1,7 @@
 // Offline host transport for in-process grant and lease operations: only host/VM SSH effects are faked.
 // The stub host records each call as "PROFILE_DIR: ARGS" in ROOT/host.calls (hostCalls), answers lease
-// commands for pool-1 (renew fails while ROOT/renew-fails exists) and swallows edge-set input.
+// commands for pool-1 in JSON, as a current host does (renew fails while ROOT/renew-fails exists), and
+// swallows edge-set input.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -12,10 +13,14 @@ export function hostTransport(root, profiles) {
 	const calls = JSON.stringify(path.join(root, "host.calls")), fail = JSON.stringify(path.join(root, "renew-fails"));
 	writeFileSync(hostbin, `#!/bin/sh
 printf '%s: %s\\n' "$BOXERY_STUB_PROFILE" "$*" >> ${calls}
+json=; for a; do [ "$a" != --json ] || json=1; done
 case "$1" in
+help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;
 edge-set) cat > /dev/null ;;
-acquire) cat > /dev/null; echo "pool-1 ${LEASE_ID} $(( $(date +%s) + 600 ))" ;;
-renew) [ ! -f ${fail} ] || { echo "lease expired" >&2; exit 1; }; echo "pool-1 9999999999" ;;
+acquire) cat > /dev/null; e=$(( $(date +%s) + 600 ))
+  if [ -n "$json" ]; then printf '{"name":"pool-1","lease_id":"%s","expires_at":%s}\n' ${LEASE_ID} "$e"; else echo "pool-1 ${LEASE_ID} $e"; fi ;;
+renew) [ ! -f ${fail} ] || { echo "lease expired" >&2; exit 1; }
+  if [ -n "$json" ]; then echo '{"name":"pool-1","lease_id":"${LEASE_ID}","expires_at":9999999999}'; else echo "pool-1 9999999999"; fi ;;
 esac
 `);
 	chmodSync(hostbin, 0o755);

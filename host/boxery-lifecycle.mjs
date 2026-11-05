@@ -41,6 +41,9 @@ export function parseOptions(args, defaults, flags) {
 	return /** @type {T} */ (result);
 }
 
+/** --json anywhere in ARGS: [true, ARGS without it]. @param {string[]} args @returns {[boolean, string[]]} */
+const jsonFlag = (args) => [args.includes("--json"), args.filter((a) => a !== "--json")];
+
 /** @returns {Promise<string>} */
 function publicKey() {
 	return new Promise((resolve, reject) => {
@@ -99,16 +102,19 @@ export async function runLifecycle(rt, command, args) {
 	switch (command) {
 		case "acquire": {
 			// --only A,B: lease one of these pool VMs and no other (the GitHub runner manager, host/runners.mjs).
-			const { only, ...options } = parseOptions(args, { holder: "", ttl: 1800, wait: 0, only: "" }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait", "--only": "only" });
+			// --json: {"name","lease_id","expires_at"} (docs/cli.md); without it the line "NAME LEASE_ID EXPIRES" older controllers read.
+			const [json, rest] = jsonFlag(args);
+			const { only, ...options } = parseOptions(rest, { holder: "", ttl: 1800, wait: 0, only: "" }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait", "--only": "only" });
 			const claim = await flows.acquire({ ...options, ...(only ? { only: only.split(",").map(nameOf) } : {}), pubkey: await publicKey() });
-			process.stdout.write(`${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
+			process.stdout.write(json ? `${JSON.stringify({ name: claim.name, lease_id: claim.lease_id, expires_at: claim.expires_at })}\n` : `${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
 			break;
 		}
 		case "renew": {
-			const id = leaseOf(args[0]);
-			const { ttl } = parseOptions(args.slice(1), { ttl: 1800 }, { "--ttl": "ttl" });
+			const [json, rest] = jsonFlag(args);
+			const id = leaseOf(rest[0]);
+			const { ttl } = parseOptions(rest.slice(1), { ttl: 1800 }, { "--ttl": "ttl" });
 			const row = store.renew(id, ttl);
-			process.stdout.write(`${row.name} ${row.expires_at}\n`);
+			process.stdout.write(json ? `${JSON.stringify({ name: row.name, lease_id: id, expires_at: row.expires_at })}\n` : `${row.name} ${row.expires_at}\n`);
 			break;
 		}
 		case "release": await flows.release(leaseOf(args[0])); break;
