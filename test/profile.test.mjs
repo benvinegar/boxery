@@ -22,7 +22,7 @@ exec sh -c "$*"
 chmodSync(path.join(bin, "ssh"), 0o755);
 // boxery-host: records argv (one per line), echoes stdin back, exits with $EXIT.
 const hostbin = path.join(dir, "host bin's");
-writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; daemon) (sleep 3; :) & echo started ;; slowtail) echo first; (sleep 0.5; echo late >&2) & ;; *) cat ;; esac\n`);
+writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; daemon) (sleep 3; :) & echo started ;; slowtail) echo first; (sleep 0.5; echo late) & ;; chatty) (i=0; while [ $i -lt 50 ]; do echo noise; sleep 0.3; i=$((i + 1)); done) & echo started ;; *) cat ;; esac\n`);
 chmodSync(hostbin, 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
@@ -139,11 +139,18 @@ test("hostRun settles soon after the command exits, even if something it started
 
 test("hostRun keeps what the command's children still write within the quiet second", async () => {
 	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
-	assert.equal(await P.hostRun(["slowtail"], { host }), "first");
+	assert.equal(await P.hostRun(["slowtail"], { host }), "first\nlate");
 	await assert.rejects(P.hostRun(["fail"], { host }), /it broke/);
 	// A busy event loop (1.5s of synchronous work) while output waits in the pipe: none of it is dropped.
 	const pending = P.hostRun(["slowtail"], { host });
 	await new Promise((r) => setTimeout(r, 50));
 	const until = Date.now() + 1500; while (Date.now() < until) { /* block */ }
-	assert.equal(await pending, "first");
+	assert.equal(await pending, "first\nlate");
+});
+
+test("hostRun gives up on output that never stops, 10 s after the command exits", async () => {
+	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
+	const t0 = Date.now();
+	assert.match(await P.hostRun(["chatty"], { host, timeout: 0 }), /^started/);
+	assert.ok(Date.now() - t0 < 12_000, `took ${Date.now() - t0}ms`); // (its loop ends by itself after 15 s)
 });

@@ -71,7 +71,7 @@ function needHost(host, c) {
  * boxery-host ARGS on the profile's host (directly for HOST=local, else over ssh), with stdin `input`.
  * Resolves with trimmed stdout (raw: as is). A timeout or abort signal stops that process (for a remote
  * host: its ssh; the command on the host keeps running). It settles a second after the command exits and
- * its output goes quiet, even if something it started still holds that output open. stderr "inherit" passes diagnostics through
+ * its output goes quiet (at most 10 s after it exits), even if something it started still holds that output open. stderr "inherit" passes diagnostics through
  * (the CLI): a failure that exited on its own is then `reported`. Otherwise stderr is the error
  * message. A failure of the host command (exit status, or it could not start) is `fromHost`, with its
  * `exitCode` and `stdout`; an abort is the AbortError itself.
@@ -87,23 +87,23 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 		const child = spawn(cmd, argv, { stdio: ["pipe", "pipe", stderr], signal, env: c.env });
 		// Our own timer, not spawn's: that one is never cleared when the command can't start (ENOENT), and
 		// would hold this process open for the whole timeout.
-		const timer = timeout > 0 ? setTimeout(() => child.kill(), timeout) : undefined;
+		// (Also cuts the pipes: once the command has exited, kill() does nothing to what holds them.)
+		const timer = timeout > 0 ? setTimeout(() => { child.kill(); if (exited) cut(); }, timeout) : undefined;
 		const done = () => clearTimeout(timer);
 		// Something the command started (a backend's daemon, a killed ssh's leftovers) may keep our pipes
 		// open after it exits: don't wait for that ('close' then follows). Only after a second with no output,
 		// and after a poll of the pipes (setImmediate), so what the command wrote is never cut off.
-		let exited = false, quiet = /** @type {NodeJS.Timeout | undefined} */ (undefined);
-		const settleSoon = () => {
-			clearTimeout(quiet);
-			quiet = setTimeout(() => setImmediate(() => { child.stdout?.destroy(); child.stderr?.destroy(); }), 1000).unref();
-		};
-		child.on("exit", () => { exited = true; settleSoon(); });
+		// A hard limit too: something that keeps writing after the command exited must not hold us forever.
+		let exited = false, quiet = /** @type {NodeJS.Timeout | undefined} */ (undefined), hard = quiet;
+		const cut = () => setImmediate(() => { child.stdout?.destroy(); child.stderr?.destroy(); });
+		const settleSoon = () => { clearTimeout(quiet); quiet = setTimeout(cut, 1000).unref(); };
+		child.on("exit", () => { exited = true; settleSoon(); hard = setTimeout(cut, 10_000).unref(); });
 		/** @type {Buffer[]} */
 		const out = [];
 		/** @type {Buffer[]} */
 		const err = [];
 		let size = 0, errSize = 0, failed = false;
-		child.stdout?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); size += d.length; if (size > MAX_OUTPUT) child.kill(); else out.push(d); });
+		child.stdout?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); size += d.length; if (size > MAX_OUTPUT) { child.kill(); cut(); } else out.push(d); });
 		child.stderr?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); if (errSize < 64 * 1024) { errSize += d.length; err.push(d); } });
 		child.on("error", (e) => {
 			failed = true; done();
@@ -111,7 +111,7 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 			reject(code === "ENOENT" || code === "EACCES" ? Object.assign(new Error(`cannot run ${cmd}: ${e.message}`), { fromHost: true, exitCode: 127 }) : e);
 		});
 		child.on("close", (code, sig) => {
-			done(); clearTimeout(quiet);
+			done(); clearTimeout(quiet); clearTimeout(hard);
 			if (failed) return;
 			const text = Buffer.concat(out).toString("utf8");
 			if (code === 0) return resolve(raw ? text : text.trim());
