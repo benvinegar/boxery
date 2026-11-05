@@ -585,13 +585,15 @@ describe("background jobs", { skip }, () => {
 		symlinkSync(CLI, linked);
 		const r = await cli(["run", "--bg", "fakevm", "true"], {}, linked);
 		assert.equal(r.code, 0, r.stderr);
-		const lonely = path.join(dir, "lonely-boxery");
+		// A copy of the shim away from its checkout can't find the CLI: one clear line, not a stack trace.
+		const lonely = path.join(dir, "lonely", "controller", "boxery");
+		mkdirSync(path.dirname(lonely), { recursive: true });
 		writeFileSync(lonely, readFileSync(CLI));
 		chmodSync(lonely, 0o755);
 		const missing = await cli(["wait", "fakevm", r.stdout.trim()], {}, lonely);
 		assert.equal(missing.code, 1);
 		assert.equal(missing.stderr.trim().split("\n").length, 1, missing.stderr);
-		assert.match(missing.stderr, /profile\.sh/);
+		assert.match(missing.stderr, /controller\/cli\.mjs/);
 	});
 
 	// ------------------------------------------------------------ MCP

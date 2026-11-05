@@ -3,7 +3,6 @@
 // action fails here until it names its CLI command (or says why there is none), and so does a new
 // CLI command. Where both exist, prefer one implementation (boxery cp runs vm_copy's own code).
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { TOOLS } from "../core/boxery-tools.mjs";
 
@@ -59,13 +58,11 @@ const CLI_ONLY = {
 	patch: "rewrites a VM's software and may restart it under running agents; the user's to run (vm_info list shows outdated VMs)",
 };
 
+// controller/cli.mjs's command table, plus what it handles before selecting a host (help, host, setup).
+const { COMMANDS, PRE_HOST } = await import("../controller/cli.mjs");
+const ALIASES = new Set(["list"]); // ls's other name
 function cliCommands() {
-	const src = readFileSync(new URL("../controller/boxery", import.meta.url), "utf8");
-	const top = src.slice(src.lastIndexOf("\ncase $cmd in\n"));
-	const arms = [...top.slice(0, top.indexOf("\nesac")).matchAll(/^([a-z][a-z-]*(?: \| [a-z-]+)*)\)/gm)];
-	const cmds = new Set(arms.map((m) => m[1].split(" | ")[0])); // ls | list: one command, its first name
-	for (const m of src.matchAll(/^if \[ "\$cmd" = ([a-z-]+) \]/gm)) cmds.add(m[1]); // host
-	return cmds;
+	return new Set([...Object.keys(COMMANDS).filter((c) => !ALIASES.has(c)), ...PRE_HOST]);
 }
 
 const mapped = () =>

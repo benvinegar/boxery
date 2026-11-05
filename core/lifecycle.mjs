@@ -12,9 +12,9 @@ import { closeMaster, hostRun, profileConfig, writeSshConfig } from "./profile.m
 /** @import { GrantSpec } from "./boxery-core.mjs" */
 /** @import { HostRunOpts } from "./profile.mjs" */
 
-/** What the CLI and the tools pass down. log: diagnostics for a person (warnings, grant notes).
- *  quietGrants: like the CLI's `grants apply --quiet`, only boxery: lines of a re-apply are logged.
- *  @typedef {Pick<HostRunOpts, "signal" | "timeout" | "stdin" | "stdout" | "stderr" | "onData"> & { log?: (line: string) => void }} LifecycleOpts */
+/** What the CLI and the tools pass down. log: diagnostics for a person (warnings, the boxery: lines of a
+ *  grant re-apply). say: results beside the host's (what granting or re-applying grants did; default: log).
+ *  @typedef {Pick<HostRunOpts, "signal" | "timeout" | "stdin" | "stdout" | "stderr" | "onData"> & { log?: (line: string) => void, say?: (line: string) => void }} LifecycleOpts */
 
 const PUSHED = new Set(["env", "file", "http", "llm"]);
 const VALID_SNAP = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -28,7 +28,9 @@ export function needSnap(s) {
 
 /** boxery-host ARGS for lifecycle: diagnostics pass through like the CLI's (stderr) unless piped.
  *  @param {string[]} args @param {LifecycleOpts} [opts] */
-const host = (args, { log: _log, ...opts } = {}) => hostRun(args, { timeout: 0, ...opts });
+const host = (args, { log: _log, say: _say, ...opts } = {}) => hostRun(args, { timeout: 0, ...opts });
+/** @param {LifecycleOpts} opts */
+const sayer = (opts) => opts.say ?? opts.log;
 
 /** Pushed (tmpfs) grants are gone after a restart: push them again. quiet: only boxery: lines are logged.
  *  Never fails the operation. @param {string} vm @param {LifecycleOpts} opts @param {{ always?: boolean, quiet?: boolean }} [how] */
@@ -36,7 +38,8 @@ async function reapply(vm, opts, { always = false, quiet = true } = {}) {
 	try {
 		if (!always && !listGrants(vm).some((g) => PUSHED.has(g.kind))) return;
 		const out = await applyGrants(vm, { interactiveCommands: opts.stdin === "inherit" });
-		for (const line of out.split("\n")) if (!quiet || line.startsWith("boxery:")) opts.log?.(line);
+		if (!quiet) sayer(opts)?.(out);
+		else for (const line of out.split("\n")) if (line.startsWith("boxery:")) opts.log?.(line);
 	} catch (e) { opts.log?.(`boxery: ${/** @type {Error} */ (e).message}`); }
 }
 
@@ -73,7 +76,7 @@ export async function newVm(name, { from, headless, layers, grants = [], ...size
 	if (from != null && !VALID_IMAGE.test(from)) throw new Error(`invalid image name: ${from} (use VM@SNAP)`);
 	if (layers != null && !/^[a-z0-9,-]+$/.test(layers)) throw new Error(`invalid layer list: ${layers}`);
 	const out = await host(["new", name, ...(headless ? ["--headless"] : []), ...(layers != null ? ["--layers", layers] : []), ...sizeArgs(size), ...(from ? ["--from", from] : [])], opts);
-	if (grants.length) opts.log?.(await addGrants(name, grants, { interactiveCommands: opts.stdin === "inherit" }));
+	if (grants.length) sayer(opts)?.(await addGrants(name, grants, { interactiveCommands: opts.stdin === "inherit" }));
 	return out;
 }
 
@@ -91,7 +94,7 @@ export async function forkVm(src, dsts, { grants = [], ...size } = {}, opts = {}
 	let failure, out = "";
 	try { out = await host(["fork", src, ...dsts, ...sizeArgs(size)], opts); } catch (e) { failure = e; }
 	if (grants.length) for (const d of dsts) {
-		try { opts.log?.(await addGrants(d, grants, { interactiveCommands: opts.stdin === "inherit" })); }
+		try { sayer(opts)?.(await addGrants(d, grants, { interactiveCommands: opts.stdin === "inherit" })); }
 		catch { opts.log?.(`boxery: could not apply grants to ${d}`); }
 	}
 	if (failure) throw failure;
@@ -189,7 +192,7 @@ export async function patch(args, opts = {}) {
 /** VMs on the host with this machine's grants (docs/cli.md: boxery ls --json). refresh: read guest
  *  software from running VMs first. @param {{ refresh?: boolean }} [how] @param {LifecycleOpts} [opts] */
 export async function listVms({ refresh = false } = {}, opts = {}) {
-	const out = await hostRun(["ls", "--json", ...(refresh ? ["--refresh"] : [])], { timeout: 120_000, signal: opts.signal });
+	const out = await hostRun(["ls", "--json", ...(refresh ? ["--refresh"] : [])], { timeout: 120_000, signal: opts.signal, stderr: opts.stderr });
 	if (!out.startsWith("[")) throw new Error(`host returned no JSON for 'ls --json' (update boxery-host on ${(await profileConfig()).host})`);
 	/** @type {Array<Record<string, unknown> & { name: string }>} */
 	const rows = JSON.parse(out);
@@ -206,7 +209,7 @@ export function grantSummary(name) {
 
 /** `boxery ls`: the host's table with a GRANTS column. @param {{ refresh?: boolean }} [how] @param {LifecycleOpts} [opts] */
 export async function listTable({ refresh = false } = {}, opts = {}) {
-	const out = await hostRun(["ls", ...(refresh ? ["--refresh"] : [])], { timeout: 120_000, signal: opts.signal, raw: true });
+	const out = await hostRun(["ls", ...(refresh ? ["--refresh"] : [])], { timeout: 120_000, signal: opts.signal, stderr: opts.stderr, raw: true });
 	return out.split("\n").filter((l) => l.length).map((line) => {
 		const n = line.split(" ")[0];
 		const col = n === "NAME" ? "GRANTS" : /^[a-z][a-z0-9-]{0,30}$/.test(n) ? grantSummary(n) : "-";

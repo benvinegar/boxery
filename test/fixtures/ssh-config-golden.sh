@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render ssh_config with the Bash controller's write_ssh_config (controller/profile.sh) for each case
+# Render ssh_config with the Bash controller's write_ssh_config (test/fixtures/bash-profile.sh) for each case
 # test/ssh-config.test.mjs checks core/ssh-config.mjs against.
 #   bash test/fixtures/ssh-config-golden.sh ROOT OUT_DIR   (re)write OUT_DIR/CASE.{case,ssh_config}
 #   bash test/fixtures/ssh-config-golden.sh ROOT -         print each as "=== CASE" + its ssh_config,
@@ -19,7 +19,7 @@ render() { # CASE HOST HOST_BIN HOST_PROFILE IDENTITY PINS DIRNAME LEASES GRANTS
 	(
 		export BOXERY_HOME=$base/home
 		# shellcheck source=/dev/null
-		. "$ROOT/controller/profile.sh"
+		. "$ROOT/test/fixtures/bash-profile.sh"
 		set_profile_paths "$dir"
 		# shellcheck disable=SC2034  # read by profile.sh
 		HOST=$2 HOST_BIN=$3 HOST_PROFILE=$4 IDENTITY=$5 selected=x

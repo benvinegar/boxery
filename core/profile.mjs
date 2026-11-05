@@ -1,13 +1,12 @@
-// A host profile from Node: its config (where boxery-host is and how to reach it), commands on that host,
-// its ssh_config and shared ssh connections. The CLI's Bash equivalents are in controller/profile.sh;
-// the ssh_config text and quoting are core/ssh-config.mjs, shared with it.
+// A host profile: its config (where boxery-host is and how to reach it), commands on that host, its
+// ssh_config and shared ssh connections. The ssh_config text and quoting are core/ssh-config.mjs.
+// Used by the CLI (controller/), the MCP server and the pi extension alike.
 // (Imports boxery-core, which imports this module through leases/grants: fine while nothing here runs at load.)
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os, { homedir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { currentHost } from "./boxery-core.mjs";
+import { BOXERY_HOME, currentHost } from "./boxery-core.mjs";
 import { DEFAULT_HOST_BIN, checkTarget, localHostBin, parseConfig, remoteCommand, renderSshConfig } from "./ssh-config.mjs";
 /** @import { HostProfile } from "./boxery-core.mjs" */
 /** @import { Target } from "./ssh-config.mjs" */
@@ -18,11 +17,15 @@ const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/, VALID_LEASE = /^l-[0-9a-f]{32}$/;
 /** A profile's target, and the environment host commands get: the caller's, or the one sourcing the
  *  config leaves exported. @typedef {Target & { env: NodeJS.ProcessEnv }} ProfileConfig */
 
-const profileLib = fileURLToPath(new URL("../controller/profile.sh", import.meta.url));
-// Exactly as the CLI loads a profile (set -eu; select_profile sources config), then the values and the
-// exported environment, NUL-separated (compgen -e and ${!v}: Bash 3.2).
-// END marks a complete answer: a config that `exit`s or `return`s early must not read as an empty one.
-const SOURCE = 'set -eu; . "$1"; select_profile "$2" "$3" >&2; printf "%s\\0" "$HOST" "$HOST_BIN" "$HOST_PROFILE" "$IDENTITY"; while IFS= read -r v; do printf "%s=%s\\0" "$v" "${!v}"; done < <(compgen -e); printf "END\\0"';
+// A computed config is sourced as the CLI always has: set -eu, with the profile's paths and the defaults
+// set first (a config may use $CONF_DIR), then the values and the exported environment, NUL-separated
+// (compgen -e and ${!v}: Bash 3.2). END marks a complete answer: a config that `exit`s or `return`s early
+// must not read as an empty one.
+const SOURCE = `set -eu
+selected=$1 CONF_DIR=$2; CONF_FILE=$2/config SSH_CONF=$2/ssh_config GRANTS_DIR=$2/grants LEASES_DIR=$2/leases ROOT_DIR=$3
+HOST="" HOST_BIN=$4 HOST_PROFILE="" IDENTITY=""
+. "$CONF_FILE" >&2
+printf "%s\\0" "$HOST" "$HOST_BIN" "$HOST_PROFILE" "$IDENTITY"; while IFS= read -r v; do printf "%s=%s\\0" "$v" "\${!v}"; done < <(compgen -e); printf "END\\0"`;
 
 /**
  * Read the profile's config. Plain assignments to the controller's settings (what `boxery setup` writes)
@@ -43,7 +46,7 @@ export async function profileConfig(host = currentHost(), { signal } = {}) {
 	if (parsed) {
 		return Object.freeze({ host: parsed.HOST ?? "", hostBin: parsed.HOST_BIN ?? DEFAULT_HOST_BIN, hostProfile: parsed.HOST_PROFILE ?? "", identity: parsed.IDENTITY ?? "", env: process.env });
 	}
-	const out = await new Promise((resolve, reject) => execFile("bash", ["-c", SOURCE, "boxery-config", profileLib, host.name, host.dir], { maxBuffer: MAX_OUTPUT, timeout: 30_000, signal },
+	const out = await new Promise((resolve, reject) => execFile("bash", ["-c", SOURCE, "boxery-config", host.name, host.dir, BOXERY_HOME, DEFAULT_HOST_BIN], { maxBuffer: MAX_OUTPUT, timeout: 30_000, signal },
 		(e, stdout, stderr) => (e ? reject(e.name === "AbortError" ? e : new Error(`could not load ${file}: ${(stderr || e.message).trim()}`)) : resolve(stdout))));
 	const fields = /** @type {string} */ (out).split("\0").slice(0, -1);
 	if (fields.length < 5 || fields.at(-1) !== "END") throw new Error(`could not load ${file}: it stopped before the end (exit or return?)`);
@@ -64,6 +67,16 @@ function needHost(host, c) {
 	checkTarget(c);
 }
 
+/** The process that runs boxery-host ARGS on the profile's host: [command, argv] (spawn it with config.env).
+ *  Checks the target first, as the CLI's h does. @param {HostProfile} host @param {ProfileConfig} c @param {string[]} args
+ *  @returns {[string, string[]]} */
+export function hostCommand(host, c, args) {
+	needHost(host, c);
+	return c.host === "local"
+		? [localHostBin(c.hostBin, c.env.HOME ?? homedir()), [...(c.hostProfile ? ["--profile", c.hostProfile] : []), ...args]]
+		: ["ssh", ["-o", "LogLevel=ERROR", "--", c.host, remoteCommand(c, args)]];
+}
+
 /** raw: stdout as is (default: trimmed). config: the profile's, already loaded. onData: every chunk of
  *  output as it arrives, from either stream (when piped), e.g. for progress. stdin "inherit" (instead of
  *  `input`) and stdout "inherit": the CLI passing a command straight through (stdout then resolves "").
@@ -82,10 +95,7 @@ function needHost(host, c) {
  */
 export async function hostRun(args, { input, signal, host = currentHost(), timeout = 120_000, stdin = "pipe", stdout = "pipe", stderr = "pipe", raw = false, config, onData } = {}) {
 	const c = config ?? await profileConfig(host, { signal });
-	needHost(host, c);
-	const [cmd, argv] = c.host === "local"
-		? [localHostBin(c.hostBin, c.env.HOME ?? homedir()), [...(c.hostProfile ? ["--profile", c.hostProfile] : []), ...args]]
-		: ["ssh", ["-o", "LogLevel=ERROR", "--", c.host, remoteCommand(c, args)]];
+	const [cmd, argv] = hostCommand(host, c, args);
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, argv, { stdio: [stdin, stdout, stderr], signal, env: c.env });
 		// Our own timer, not spawn's: that one is never cleared when the command can't start (ENOENT), and
@@ -207,4 +217,29 @@ export async function closeMaster(vm, { host = currentHost(), timeout = 30_000, 
 		child.on("error", () => { clearTimeout(timer); resolve(undefined); });
 		child.on("close", () => { clearTimeout(timer); resolve(undefined); });
 	});
+}
+
+/**
+ * An ssh_config written before the host pinned VM keys trusts any VM key: rewrite it once the host does
+ * (after upgrade-host), asking at most once a day while it doesn't. A 0.9.0 KnownHostsCommand (a shell
+ * line ssh can't run) is rewritten too. Before every CLI command, like the Bash controller's refresh_ssh_config.
+ * @param {{ host?: HostProfile, warn?: (line: string) => void }} [opts]
+ */
+export async function refreshSshConfig({ host = currentHost(), warn = () => {} } = {}) {
+	if (!existsSync(host.sshConf)) return;
+	const c = await profileConfig(host);
+	if (!c.host) return;
+	const text = readFileSync(host.sshConf, "utf8");
+	if (/^ {2}KnownHostsCommand /m.test(text)) {
+		if (!/^ {2}KnownHostsCommand \/bin\/sh -c /m.test(text)) await writeSshConfig({ host, config: c });
+		return;
+	}
+	const probe = path.join(host.dir, ".host-pins-keys-checked");
+	const st = statSync(probe, { throwIfNoEntry: false });
+	if (st && Date.now() - st.mtimeMs < 24 * 3600_000) return;
+	if (await hostPinsKeys(host, c)) { await writeSshConfig({ host, config: c }); rmSync(probe, { force: true }); }
+	else {
+		writeFileSync(probe, "");
+		warn(`boxery: host ${host.name} doesn't pin VM ssh host keys yet, so VM connections aren't verified; run: boxery upgrade-host`);
+	}
 }

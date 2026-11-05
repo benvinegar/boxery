@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Shared trusted host-profile and SSH configuration plumbing for the Bash CLI (Bash 3.2). Node has its
-# own (core/profile.mjs, core/ssh-config.mjs); test/ssh-config.test.mjs keeps their ssh_config and
-# quoting identical. Node loads a computed config through select_profile here, so both read it alike.
+# shellcheck disable=SC2088 # tilde strings below intentionally refer to the target home
+# The Bash controller's profile and ssh_config plumbing (it was controller/profile.sh), kept as the reference
+# the Node controller (core/ssh-config.mjs, core/profile.mjs) is held to: test/ssh-config.test.mjs compares
+# their ssh_config files and quoting word for word. Not used at runtime. (Bash 3.2.)
 # Registry: host-registry/NAME contains one absolute profile directory; default-host contains NAME.
 # Every host is a registered NAME; BOXERY_HOME itself is only the registry root.
 ROOT_DIR="${BOXERY_HOME:-$HOME/.boxery}"

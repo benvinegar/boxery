@@ -1,6 +1,6 @@
 // A host profile's ssh_config and host command line, as pure functions: the quoting OpenSSH and the
-// shells in between need, and the file itself. Same output as the Bash controller's write_ssh_config
-// (controller/profile.sh; test/ssh-config.test.mjs checks them against each other). No I/O here.
+// shells in between need, and the file itself. Same output as the Bash controller's write_ssh_config was
+// (test/ssh-config.test.mjs holds it to test/fixtures/bash-profile.sh, that code). No I/O here.
 
 export const DEFAULT_HOST_BIN = "~/.local/bin/boxery-host";
 

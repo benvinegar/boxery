@@ -2,7 +2,7 @@
 
 ← [Docs](README.md)
 
-- [`boxery`](#boxery-your-laptop) runs on your laptop (bash 3.2 + ssh).
+- [`boxery`](#boxery-your-laptop) runs on your laptop (Node ≥ 22.13 + ssh).
 - [`boxery-host`](#boxery-host-the-vm-host) runs on the VM host. You'll rarely call it directly.
 - [JSON output](#json-output): `--json` on every listing command, for scripts and agents.
 
