@@ -27,20 +27,27 @@ before(() => {
 		mkdirSync(path.join(vmroot(host), "project"), { recursive: true });
 		mkdirSync(path.join(profile(host), "grants"));
 		writeFileSync(path.join(profile(host), "grants/fakevm"), `file\tPROFILE:${host}\tfixture\n`);
-		writeFileSync(path.join(profile(host), "config"), "# fake controller config\n");
+		// Each profile's host is the stub below, tagged with the profile: lifecycle and listings reach it in-process.
+		writeFileSync(path.join(profile(host), "config"), `HOST=local\nHOST_BIN='${path.join(dir, "bin", "boxery-host")}'\nexport STUB_TAG='PROFILE:${host}'\n`);
+		writeFileSync(path.join(profile(host), "host-pins-keys"), "");
 		writeFileSync(path.join(profile(host), "ssh_config"), "# fake SSH config\n");
 		writeFileSync(path.join(dir, "home", "host-registry", host), `${profile(host)}\n`);
 		writeFileSync(path.join(vmroot(host), "calls"), "");
 	}
 	writeFileSync(path.join(dir, "home", "default-host"), "alpha\n");
+	// The controller CLI: only registry commands (host add/rm) still run it.
 	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash
 pdir=""
 if [ "$1" = --host ]; then shift 2; [ "$1" != --profile-dir ] || { pdir=$2; shift 2; }; fi
 tag="PROFILE:$(basename "\${pdir:-$BOXERY_HOME}")"
+printf '%s\\nCOMMAND:%s\\n' "$tag" "$*"
+`);
+	// boxery-host for both profiles: says which profile reached it (STUB_TAG, from the profile's config).
+	writeFileSync(path.join(bin, "boxery-host"), `#!/usr/bin/env bash
 case "$*" in
-"ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$tag" ;;
-"grants "*" --json") printf '[{"kind":"file","local":"%s","remote":"fixture"}]\\n' "$tag" ;;
-*) printf '%s\\nCOMMAND:%s\\n' "$tag" "$*" ;;
+"ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$STUB_TAG" ;;
+help) : ;;
+*) printf '%s\\nCOMMAND:%s\\n' "$STUB_TAG" "$*" ;;
 esac
 `);
 	writeFileSync(path.join(bin, "ssh"), `#!/usr/bin/env bash
@@ -61,7 +68,7 @@ esac
 cd "$vmroot" && HOST_TAG=$host HOME="$vmroot" exec bash -c "$cmd"
 `);
 	writeFileSync(path.join(bin, "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n");
-	for (const f of ["boxery", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
+	for (const f of ["boxery", "boxery-host", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
 	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery"), BOXERY_RUNTIME_DIR: path.join(dir, "runtime") };
 });
 after(() => {
@@ -126,7 +133,7 @@ const [a,b] = await Promise.all(['alpha','beta'].map(h => c.withHost(h, async ()
   c.sshOk('fakevm', 'printf %s "$HOST_TAG"'),
   c.listVms()
  ]);
- assert.equal(listed[0].ssh_addr, 'PROFILE:' + h, 'JSON subprocess stays host-scoped');
+ assert.equal(listed[0].ssh_addr, 'PROFILE:' + h, 'host calls stay host-scoped');
  return ssh.toString();
 })));
 assert.deepEqual([a,b], ['alpha','beta']);

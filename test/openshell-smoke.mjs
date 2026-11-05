@@ -6,7 +6,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { bashTool, boxeryCli, copyTool, editTool, hostBackend, jobsTool, readTool, screenshot, withHost, writeTool } from "../core/boxery-core.mjs";
+import { execFile } from "node:child_process";
+import { bashTool, copyTool, currentHost, editTool, hostBackend, jobsTool, readTool, screenshot, withHost, writeTool } from "../core/boxery-core.mjs";
+
+const CLI = path.resolve(import.meta.dirname, "../controller/boxery");
+/** The real CLI on the current host (this smoke test checks what the user's commands do). @param {string[]} args */
+const boxeryCli = (args) => new Promise((resolve, reject) => {
+	execFile(CLI, ["--host", currentHost().name, ...args], { timeout: 600_000, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => (e ? reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`)) : resolve(`${stdout}${stderr}`.trim())));
+});
 
 const host = process.argv[2];
 if (!host) throw new Error("usage: node test/openshell-smoke.mjs HOST (uses the bundled offline policy)");

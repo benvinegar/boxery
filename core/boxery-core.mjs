@@ -14,6 +14,8 @@ import { q } from "./shell.mjs";
 import { streamCopy } from "./copy-stream.mjs";
 import { VALID_DEST, shellWord } from "./ssh-config.mjs";
 import { acquireLease, releaseLease, renewLease } from "./leases.mjs";
+import * as lifecycle from "./lifecycle.mjs";
+import { versions as versionInfo } from "./versions.mjs";
 import { parseGrantRequest, grantPrompt, grantCommand, listGrants, addGrants } from "./grants.mjs";
 export { parseGrantRequest, grantPrompt, listGrants, applyGrants, revokeGrants } from "./grants.mjs";
 export { requestUserGrants, prepareUserGrants, approveGrantSpecs } from "./grant-approval.mjs";
@@ -358,18 +360,6 @@ export async function sshOk(vm, script, opts = {}) {
 	const r = await sshRun(vm, script, opts);
 	if (r.code !== 0) throw new Error(r.stderr.trim() || `command failed (exit ${r.code})`);
 	return r.stdout;
-}
-
-/** opts.progress(line): called with each non-empty output line as it arrives (MCP progress). @param {string[]} args @param {number} [timeoutMs] @param {ProgressOpts} [opts] @returns {Promise<string>} */
-export function boxeryCli(args, timeoutMs = 300_000, { progress } = {}) {
-	return new Promise((resolve, reject) => {
-		const command = controllerCommand(args);
-		const child = execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
-			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
-			else resolve(`${stdout}${stderr}`.trim());
-		});
-		if (progress) for (const s of [child.stdout, child.stderr]) s?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
-	});
 }
 
 /** The last non-empty line of an output chunk, for progress messages. */
@@ -990,43 +980,31 @@ process.exit(0);`;
 
 // ---------------------------------------------------------------- lifecycle
 
-/** Run a controller command with --json and parse its stdout (stderr is diagnostics only). @param {string[]} args @param {number} [timeoutMs] @returns {Promise<any>} */
-export function boxeryJson(args, timeoutMs = 60_000) {
-	const command = controllerCommand([...args, "--json"]);
-	return new Promise((resolve, reject) => {
-		execFile(BOXERY, command.args, { env: command.env, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
-			if (e) return reject(new Error(`boxery ${args.join(" ")} --json: ${(stderr || e.message).trim()}`));
-			try {
-				resolve(JSON.parse(stdout));
-			} catch {
-				reject(new Error(`boxery ${args.join(" ")} --json: not JSON: ${stdout.slice(0, 200)}`));
-			}
-		});
-	});
-}
-
 /** VMs on the host: [{name, state, ssh_addr, disk_size, disk_used, tunnel, lease, shape, cpus, mem, desktop, grants}]
  *  (fields: docs/cli.md). ssh_addr is "HOST:PORT" as the host reaches the VM; disk_size and disk_used are GiB. */
 /** @type {() => Promise<VmInfo[]>} */
-export const listVms = () => boxeryJson(["ls"]);
+export const listVms = async () => /** @type {any} */ (await lifecycle.listVms());
 
 /** VM sizes defined on the host: {default, shapes: {NAME: {cpus, mem, disk}}} (docs/shapes.md). */
 /** @type {() => Promise<Shapes>} */
-export const listShapes = () => boxeryJson(["shapes"]);
+export const listShapes = () => lifecycle.hostJson(["shapes"]);
 /** Selected boxery-host's report, not this controller's platform. */
-export const backendCapabilities = () => boxeryJson(["capabilities"]);
+export const backendCapabilities = () => lifecycle.hostJson(["capabilities"]);
 
 /** Snapshots of VM NAME: [{name, created, size}] (docs/cli.md). */
 /** @type {(name: string) => Promise<SnapInfo[]>} */
-export const listSnaps = (name) => boxeryJson(["snaps", assertName(name)]);
+export const listSnaps = (name) => lifecycle.hostJson(["snaps", assertName(name)]);
 
 /** Every image on the host (snapshots, addressed VM@SNAP): [{image, created, size}] (docs/cli.md). */
 /** @type {() => Promise<ImageInfo[]>} */
-export const listImages = () => boxeryJson(["images"]);
+export const listImages = () => lifecycle.hostJson(["images"]);
 
 /** Controller and host versions: {controller: {version, describe}, host: {name, version, describe, install} | null, behind}. */
 /** @type {() => Promise<Versions>} */
-export const versions = () => boxeryJson(["version"]);
+export const versions = async () => {
+	const { controller, host, behind } = await versionInfo();
+	return /** @type {Versions} */ ({ controller, host, behind });
+};
 
 /** @param {Versions} versions */
 export function formatVersions({ controller, host, behind }) {
@@ -1185,7 +1163,7 @@ export async function ensureVm(name, notify = () => {}) {
 	assertName(name);
 	if (!(await vmExists(name))) {
 		notify(`boxery: creating VM "${name}" (~15s)…`);
-		await boxeryCli(["new", name]);
+		await lifecycle.newVm(name, {}, { timeout: 300_000 });
 	}
 	await sshOk(name, "true", { timeoutMs: 30_000 });
 }
@@ -1196,47 +1174,64 @@ export function needVm(a) {
 	return assertName(a.vm);
 }
 
-/** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: see boxeryCli. @param {ManageArgs} a @param {ProgressOpts} [opts] @returns {Promise<string>} */
+/** vm_manage actions that don't touch "current VM" state (callers handle use/none). opts.progress: each line of output as it arrives. @param {ManageArgs} a @param {ProgressOpts} [opts] @returns {Promise<string>} */
 export async function manage(a, opts = {}) {
 	const { action, vm, snapshot, to, shape, from, cpus, mem, disk, headless } = a;
 	const need = () => needVm(a);
-	const sizeArgs = () =>
-		Object.entries({ cpus, mem, disk }).flatMap(([k, v]) => {
-			if (v == null) return [];
-			if (!Number.isSafeInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
-			return [`--${k}`, String(v)];
-		});
-	const shapeArgs = () => [...(shape == null || shape === "" ? [] : ["--shape", assertShape(shape)]), ...sizeArgs()];
+	const size = () => {
+		for (const [k, v] of Object.entries({ cpus, mem, disk })) if (v != null && (!Number.isSafeInteger(v) || v < 1)) throw new Error(`${k} must be a positive integer`);
+		return { shape: shape == null || shape === "" ? null : assertShape(shape), cpus, mem, disk };
+	};
+	const run = progressRun(opts);
 	switch (action) {
 		case "fork": {
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
 			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
-			return boxeryCli(["fork", need(), ...dsts, ...shapeArgs()], 900_000, opts);
+			return run((o) => lifecycle.forkVm(need(), dsts, size(), o), 900_000);
 		}
 		case "new":
-			return boxeryCli(["new", vm ? need() : newName(), ...shapeArgs(), ...(from ? ["--from", assertImage(from)] : []), ...(headless ? ["--headless"] : [])], undefined, opts);
+			return run((o) => lifecycle.newVm(vm ? need() : newName(), { ...size(), from: from ? assertImage(from) : null, headless: !!headless }, o), 300_000);
 		case "rm":
-			return boxeryCli(["rm", need()], 120_000, opts);
+			return run((o) => lifecycle.rmVm(need(), o), 120_000);
 		case "start":
+			return run((o) => lifecycle.startVm(need(), o), 300_000);
 		case "stop":
-			return boxeryCli([action, need()], 300_000, opts);
+			return run((o) => lifecycle.stopVm(need(), o), 300_000);
 		case "resize": {
-			const args = sizeArgs();
-			if (!args.length) throw new Error("resize needs cpus, mem and/or disk");
-			return boxeryCli(["resize", need(), ...args], 600_000, opts);
+			const s = size();
+			if (s.cpus == null && s.mem == null && s.disk == null) throw new Error("resize needs cpus, mem and/or disk");
+			return run((o) => lifecycle.resizeVm(need(), s, o), 600_000);
 		}
 		case "snap":
-			return boxeryCli(["snap", need(), ...(snapshot ? [assertSnap(snapshot)] : [])], 600_000, opts);
+			return run((o) => lifecycle.snapVm(need(), snapshot ? assertSnap(snapshot) : null, o), 600_000);
 		case "revert":
-			return boxeryCli(["revert", need(), assertSnap(snapshot)], 600_000, opts);
+			return run((o) => lifecycle.revertVm(need(), assertSnap(snapshot), o), 600_000);
 		case "snap-rm":
-			return boxeryCli(["snap-rm", need(), assertSnap(snapshot)], 120_000);
+			return run((o) => lifecycle.snapRm(need(), assertSnap(snapshot), o), 120_000);
 		case "build-base":
-			return boxeryCli(["build-base"], 1_800_000, opts);
+			return run((o) => lifecycle.buildBase(o), 1_800_000);
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
+}
+
+/** Run a lifecycle operation for a tool: its output and diagnostics (the host's stderr and grant notes)
+ *  come back as one text, as the CLI would print them; progress gets each line as it arrives.
+ *  @param {ProgressOpts} opts @returns {(fn: (o: import("./lifecycle.mjs").LifecycleOpts) => Promise<string>, timeout: number) => Promise<string>} */
+function progressRun({ progress } = {}) {
+	return async (fn, timeout) => {
+		/** @type {string[]} */
+		const notes = [];
+		const onData = progress ? (/** @type {Buffer} */ d) => { const l = lastLine(d); if (l) progress(l); } : undefined;
+		try {
+			const out = await fn({ timeout, onData, log: (l) => notes.push(l) });
+			return [out, ...notes].filter(Boolean).join("\n").trim();
+		} catch (e) {
+			const err = /** @type {Error} */ (e);
+			throw new Error([err.message, ...notes].filter(Boolean).join("\n").trim());
+		}
+	};
 }
 
 // ---------------------------------------------------------------- shared prompt text

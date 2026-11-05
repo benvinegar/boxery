@@ -61,7 +61,7 @@ test("a renew answered after a release doesn't bring the record back", async () 
 	await leases.acquireLease({ ttl: 600 });
 	// The host answers renew only after a release (another process) has removed the record.
 	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
-	writeFileSync(hostbin, orig.replace("renew) ", `renew) rm -f ${JSON.stringify(path.join(leasesDir, `${LEASE_ID}.lease`))}; `));
+	writeFileSync(hostbin, orig.replace("renew*) ", `renew*) rm -f ${JSON.stringify(path.join(leasesDir, `${LEASE_ID}.lease`))}; `));
 	try {
 		await assert.rejects(leases.renewLease("pool-1", 900), /was released meanwhile/);
 	} finally { writeFileSync(hostbin, orig); }
@@ -90,7 +90,7 @@ test("leaseReply reads a current host's JSON and an older host's line", () => {
 
 test("a host that predates --json gets the old commands, and its line is read", async () => {
 	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
-	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;"));
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE';", "help) echo '  renew LEASE [--ttl S] | release LEASE';"));
 	rmSync(path.join(home, "host-lease-json"), { force: true });
 	try {
 		const r = await leases.acquireLease({ ttl: 600 });
@@ -112,7 +112,7 @@ test("a host that stops understanding --json (downgraded, or HOST changed) is as
 	assert.ok(existsSync(path.join(home, "host-lease-json")));
 	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
 	// An older host: no --json in help, and it rejects the flag before doing anything (as parseOptions does).
-	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;")
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE';", "help) echo '  renew LEASE [--ttl S] | release LEASE';")
 		.replace('json=; for a; do [ "$a" != --json ] || json=1; done', 'for a; do [ "$a" != --json ] || { echo "boxery-host: unknown flag --json" >&2; exit 1; }; done; json='));
 	try {
 		assert.equal((await leases.renewLease("pool-1", 900)).expires, 9999999999);

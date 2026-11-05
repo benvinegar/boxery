@@ -10,7 +10,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
 import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
+import { hostArgs, hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -69,26 +69,8 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	writeFileSync(path.join(bin, "import"), `#!/usr/bin/env bash\nfor a; do :; done; printf '%s' "\${a%%:*}-bytes"\n`);
 	chmodSync(path.join(bin, "xdotool"), 0o755);
 	chmodSync(path.join(bin, "import"), 0o755);
-	writeFileSync(
-		path.join(bin, "boxery"),
-		`#!/usr/bin/env bash
-[ "$1" != --host ] || shift 4 # --host NAME --profile-dir DIR
-echo "$*" >> "$BOXERY_HOME/calls"
-case "$*" in
-"ls --json") echo '[{"name":"fakevm","state":"running","ssh_addr":"10.0.0.2:22","disk_size":40,"disk_used":1.5,"tunnel":null,"lease":null,"shape":"standard","cpus":4,"mem":8192,"grants":[{"kind":"ssh-agent"},{"kind":"env","var":"TOKEN","cmd":null}]}]' ;;
-"shapes --json") echo '{"default":"standard","shapes":{"standard":{"cpus":4,"mem":8192,"disk":40},"large":{"cpus":8,"mem":16384,"disk":80}}}' ;;
-"grants granted --json") echo '[{"kind":"ssh-agent"}]' ;;
-"grants "*" --json") echo '[{"kind":"file","local":"/l/.env","remote":"/home/agent/project/.env"}]' ;;
-"version --json") echo '{"controller":{"version":"0.8.0","describe":"v0.8.0"},"host":{"name":"local","version":"0.7.0","describe":null,"install":"npm"},"behind":true}' ;;
-"capabilities --json") echo '{"schemaVersion":1,"backend":{"id":"boat"},"platform":{"supported":true,"tested":false},"capabilities":{"headless":{"availability":"unavailable"},"diskSnapshots":{"availability":"unknown"}}}' ;;
-"images --json") echo '[{"image":"fakevm@s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
-"snaps "*" --json") echo '[{"name":"s1","created":"2026-10-01T00:00:00Z","size":"1.2G"}]' ;;
-"new slow"*) echo "==> creating slow"; sleep 1.2; echo "==> slow is ready" ;;
-*) echo "stub boxery $*" ;;
-esac
-exit 0
-`,
-	);
+	// Every controller operation runs in-process against the stub host (fixtures/host-transport.mjs); the CLI is never spawned.
+	writeFileSync(path.join(bin, "boxery"), "#!/bin/sh\necho \"spawned the controller CLI: $*\" >&2\nexit 99\n");
 	chmodSync(path.join(bin, "ssh"), 0o755);
 	chmodSync(path.join(bin, "boxery"), 0o755);
 	env = /** @type {NodeJS.ProcessEnv} */ ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") });
@@ -280,7 +262,7 @@ describe("stdio", () => {
 	test("vm_manage uses the controller and tracks the current VM per session", async () => {
 		const list = (await c.tool("vm_info", { action: "list" })).content[0].text;
 		assert.match(list, /current: fakevm/);
-		assert.match(list, /^fakevm +running +10\.0\.0\.2:22 +1\.5\/40GiB +standard +desktop +- +ssh-agent,env:TOKEN$/m, "list is rendered from ls --json");
+		assert.match(list, /^fakevm +running +10\.0\.0\.2:22 +1\.5\/40GiB +standard +desktop +- +file:\/home\/agent\/project\/\.env$/m, "list: the host's ls --json, with this machine's grants");
 		assert.match((await c.tool("vm_manage", { action: "none" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_bash", { command: "x" })).content[0].text, /no current VM/);
 		assert.match((await c.tool("vm_info", { action: "grants", vm: "fakevm" })).content[0].text, /file:\/l\/\.env → \/home\/agent\/project\/\.env/);
@@ -288,9 +270,9 @@ describe("stdio", () => {
 	});
 
 	test("vm_manage fork passes validated names to the controller", async () => {
-		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: ["try-a", "try-b"] })).content[0].text, /stub boxery fork fakevm try-a try-b/);
-		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "one" })).content[0].text, /stub boxery fork fakevm one$/m);
-		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm" })).content[0].text, /stub boxery fork fakevm pi-[0-9a-f]{6}/);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: ["try-a", "try-b"] })).content[0].text, /stub host fork fakevm try-a try-b/);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "one" })).content[0].text, /stub host fork fakevm one$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm" })).content[0].text, /stub host fork fakevm pi-[0-9a-f]{6}/);
 		const bad = await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: ["ok", "x; touch /tmp/pwned"] });
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid VM name/);
@@ -301,9 +283,9 @@ describe("stdio", () => {
 		const shapes = (await c.tool("vm_info", { action: "shapes" })).content[0].text;
 		assert.match(shapes, /^standard \(default\) +4 +8 GiB +40 GiB$/m);
 		assert.match(shapes, /^large +8 +16 GiB +80 GiB$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", vm: "big", shape: "large" })).content[0].text, /stub boxery new big --shape large$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", vm: "plain" })).content[0].text, /stub boxery new plain$/m);
-		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "f1", shape: "large" })).content[0].text, /stub boxery fork fakevm f1 --shape large$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "big", shape: "large" })).content[0].text, /stub host new big --shape large$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "plain" })).content[0].text, /stub host new plain$/m);
+		assert.match((await c.tool("vm_manage", { action: "fork", vm: "fakevm", to: "f1", shape: "large" })).content[0].text, /stub host fork fakevm f1 --shape large$/m);
 		const bad = await c.tool("vm_manage", { action: "new", vm: "x", shape: "large; touch /tmp/pwned" });
 		assert.equal(bad.isError, true);
 		assert.match(bad.content[0].text, /invalid shape/);
@@ -316,23 +298,23 @@ describe("stdio", () => {
 			assert.equal(r.isError, true, JSON.stringify(a));
 			assert.match(r.content[0].text, re);
 		};
-		assert.match(await out({ action: "start", vm: "fakevm" }), /stub boxery start fakevm$/m);
-		assert.match(await out({ action: "stop", vm: "fakevm" }), /stub boxery stop fakevm$/m);
-		assert.match(await out({ action: "resize", vm: "fakevm", cpus: 8, disk: 80 }), /stub boxery resize fakevm --cpus 8 --disk 80$/m);
+		assert.match(await out({ action: "start", vm: "fakevm" }), /stub host start fakevm$/m);
+		assert.match(await out({ action: "stop", vm: "fakevm" }), /stub host stop fakevm$/m);
+		assert.match(await out({ action: "resize", vm: "fakevm", cpus: 8, disk: 80 }), /stub host resize fakevm --cpus 8 --disk 80$/m);
 		await err({ action: "resize", vm: "fakevm" }, /resize needs/);
 		await err({ action: "resize", vm: "fakevm", mem: "8192; touch /tmp/pwned" }, /mem must be a positive integer/);
 		await err({ action: "resize", vm: "fakevm", cpus: 0 }, /cpus must be a positive integer/);
-		assert.match(await out({ action: "snap-rm", vm: "fakevm", snapshot: "s1" }), /stub boxery snap-rm fakevm s1$/m);
+		assert.match(await out({ action: "snap-rm", vm: "fakevm", snapshot: "s1" }), /stub host snap-rm fakevm s1$/m);
 		await err({ action: "snap-rm", vm: "fakevm" }, /invalid snapshot name/);
-		assert.match(await out({ action: "new", vm: "copy", from: "fakevm@s1" }), /stub boxery new copy --from fakevm@s1$/m);
-		assert.match(await out({ action: "new", vm: "big", shape: "large", mem: 32768 }), /stub boxery new big --shape large --mem 32768$/m);
-		assert.match(await out({ action: "fork", vm: "fakevm", to: "f2", cpus: 2 }), /stub boxery fork fakevm f2 --cpus 2$/m);
+		assert.match(await out({ action: "new", vm: "copy", from: "fakevm@s1" }), /stub host new copy --from fakevm@s1$/m);
+		assert.match(await out({ action: "new", vm: "big", shape: "large", mem: 32768 }), /stub host new big --shape large --mem 32768$/m);
+		assert.match(await out({ action: "fork", vm: "fakevm", to: "f2", cpus: 2 }), /stub host fork fakevm f2 --cpus 2$/m);
 		for (const from of ["fakevm", "fakevm@s1@x", "x;y@s1", "fakevm@-s"]) await err({ action: "new", vm: "x", from }, /invalid image/);
 	});
 
 	test("vm_manage new headless:true passes --headless; desktop tools refuse a headless VM", async () => {
-		assert.match((await c.tool("vm_manage", { action: "new", vm: "hl", headless: true })).content[0].text, /stub boxery new hl --headless$/m);
-		assert.match((await c.tool("vm_manage", { action: "new", vm: "dt", headless: false })).content[0].text, /stub boxery new dt$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "hl", headless: true })).content[0].text, /stub host new hl --headless$/m);
+		assert.match((await c.tool("vm_manage", { action: "new", vm: "dt", headless: false })).content[0].text, /stub host new dt$/m);
 		mkdirSync(path.join(env.VMROOT, "etc/boxery"), { recursive: true });
 		writeFileSync(path.join(env.VMROOT, "etc/boxery/headless"), "no desktop\n");
 		try {

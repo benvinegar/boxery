@@ -149,7 +149,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (c.ephemeral) {
 			ctx?.ui?.notify?.(`boxery: removing throwaway VM "${c.name}"`, "info");
-			return core.withHost(c.host, () => core.boxeryCli(["rm", c.name], 120_000)).catch(() => {});
+			return core.withHost(c.host, () => core.manage({ action: "rm", vm: c.name })).catch(() => {});
 		}
 	}
 
@@ -207,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 			try {
 				await core.ensureVm(name, (m: string) => ctx?.ui?.notify?.(m, "info"));
 			} catch (e) {
-				if (ephemeral) await core.boxeryCli(["rm", name], 120_000).catch(() => {});
+				if (ephemeral) await core.manage({ action: "rm", vm: name }).catch(() => {});
 				throw e;
 			}
 			// Track cleanup ownership before any later grant/application error can occur.
@@ -410,7 +410,7 @@ export default function (pi: ExtensionAPI) {
 						case "rm":
 							if (!arg) throw new Error("usage: /vm rm NAME");
 							forgetBeforeRm(arg, sessionHost(), ctx, "use /vm off");
-							say(await core.boxeryCli(["rm", arg], 120_000));
+							say(await core.manage({ action: "rm", vm: arg }));
 							break;
 						case "grant":
 						case "revoke": {

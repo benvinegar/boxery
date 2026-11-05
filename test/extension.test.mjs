@@ -19,20 +19,21 @@ mkdirSync(path.join(HOME, "bin"));
 writeFileSync(path.join(HOME, "bin/ssh"), '#!/bin/sh\ncat >/dev/null\n');
 chmodSync(path.join(HOME, "bin/ssh"), 0o755);
 process.env.PATH = `${HOME}/bin:${process.env.PATH}`;
-// A stub controller: no grants yet; every call is recorded as "HOST: ARGS".
-const CALLS = path.join(HOME, "calls");
-writeFileSync(CALLS, "");
+// Controller operations run in-process against the stub host; the CLI must never be spawned.
 process.env.BOXERY_BIN = path.join(HOME, "boxery");
-writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\nh=-; while [ "$1" = --host ] || [ "$1" = --profile-dir ]; do [ "$1" = --host ] && h=$2; shift 2; done\necho "$h: $*" >> ${JSON.stringify(CALLS)}\ncase "$*" in *--json) echo '[]' ;; *) echo "==> granted" ;; esac\n`);
+writeFileSync(process.env.BOXERY_BIN, "#!/bin/sh\necho \"spawned the controller CLI: $*\" >&2\nexit 99\n");
 chmodSync(process.env.BOXERY_BIN, 0o755);
-const lastCall = () => readFileSync(CALLS, "utf8").trim().split("\n").at(-1);
+// The stub host's calls, as "HOST: ARGS" (feature probes left out).
+const hostName = (/** @type {string} */ dir) => (dir === BETA ? "beta" : dir === HOME ? "test" : dir);
+const calls = () => hostCalls(HOME).map((l) => { const i = l.indexOf(": "); return `${hostName(l.slice(0, i))}: ${l.slice(i + 2)}`; }).filter((l) => !l.endsWith(": help"));
+const resetCalls = () => rmSync(path.join(HOME, "host.calls"), { force: true });
+const lastCall = () => calls().at(-1);
 const text = (r) => r.content[0].text;
 
 describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript stripping + module.registerHooks)" }, () => {
 	beforeEach(() => {
 		for (const dir of [HOME, BETA]) for (const vm of ["demo", "pool-1"]) rmSync(path.join(dir, `grants/${vm}`), { force: true });
-		writeFileSync(CALLS, "");
-		rmSync(path.join(HOME, "host.calls"), { force: true });
+		resetCalls();
 		writeFileSync(path.join(HOME, "bin/ssh"), '#!/bin/sh\ncat >/dev/null\n');
 	});
 	const stored = (dir = HOME) => readFileSync(path.join(dir, "grants/demo"), "utf8");
@@ -52,7 +53,7 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		const ok = await grant.execute("1", { vm: "demo", spec: "ssh-agent", reason: "git over ssh" }, undefined, undefined, ui(true));
 		assert.match(text(ok), /^The user approved: demo now has ssh-agent/);
 		assert.match(stored(), /^ssh-agent\t/m);
-		assert.doesNotMatch(readFileSync(CALLS, "utf8"), /: grant /);
+		assert.doesNotMatch(calls().join("\n"), /: grant /);
 		rmSync(path.join(HOME, "grants/demo"));
 		assert.equal(asked[0].title, "boxery: grant VM access?");
 		assert.match(asked[0].message, /^Give VM "demo" on host "test" access to:/);
@@ -105,30 +106,30 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 
 	it("new/pool grant preflight rejects print mode or invalid specs before allocating resources", async () => {
 		for (const vm of ["new", "pool"]) for (const invalid of [false, true]) {
-			writeFileSync(CALLS, "");
+			resetCalls();
 			const notes = [];
 			const ext = await load({ vm, "vm-grant": invalid ? "env:1INVALID" : "ssh-agent" });
 			await ext.handlers.get("session_start")({ reason: "startup" }, { hasUI: invalid, ui: { confirm: async () => { throw new Error("must not prompt"); }, notify: (m) => notes.push(m) } });
 			await ext.handlers.get("session_shutdown")({});
 			assert.match(notes.join("\n"), invalid ? /unknown grant/ : /Grants need a person/);
-			assert.equal(readFileSync(CALLS, "utf8"), "", "no create/acquire (or cleanup) is needed");
+			assert.equal(calls().join("\n"), "", "no create/acquire (or cleanup) is needed");
 			assert.equal(ext.entries.length, 0);
 		}
 	});
 
 	it("throwaway grant approval precedes creation, and ownership survives shutdown", async () => {
 		for (const answer of [false, true]) {
-			writeFileSync(CALLS, "");
+			resetCalls();
 			const ext = await load({ vm: "new", "vm-grant": "ssh-agent" });
 			await ext.handlers.get("session_start")({ reason: "startup" }, { hasUI: true, ui: {
-				confirm: async () => { assert.equal(readFileSync(CALLS, "utf8"), ""); return answer; }, notify: () => {},
+				confirm: async () => { assert.equal(calls().join("\n"), ""); return answer; }, notify: () => {},
 			} });
 			await ext.handlers.get("session_shutdown")({});
-			const calls = readFileSync(CALLS, "utf8");
+			const seen = calls().join("\n");
 			if (answer) {
-				const name = calls.match(/test: new (pi-[a-f0-9]+)/)?.[1];
-				assert.ok(name, calls); assert.ok(calls.includes(`test: rm ${name}`), calls);
-			} else { assert.equal(calls, ""); assert.equal(ext.entries.length, 0); }
+				const name = seen.match(/test: new (pi-[a-f0-9]+)/)?.[1];
+				assert.ok(name, seen); assert.ok(seen.includes(`test: rm ${name}`), seen);
+			} else { assert.equal(seen, ""); assert.equal(ext.entries.length, 0); }
 		}
 	});
 
@@ -137,14 +138,13 @@ describe("pi extension", { skip: !canLoad && "needs Node >= 22.18 (TypeScript st
 		const ext = await load({ vm: "new", "vm-grant": "ssh-agent" });
 		await ext.handlers.get("session_start")({ reason: "startup" }, { hasUI: true, ui: { confirm: async () => true, notify: () => {} } });
 		await ext.handlers.get("session_shutdown")({});
-		const calls = readFileSync(CALLS, "utf8"), name = calls.match(/test: new (pi-[a-f0-9]+)/)?.[1];
-		assert.ok(name, calls); assert.ok(calls.includes(`test: rm ${name}`), calls);
+		const seen = calls().join("\n"), name = seen.match(/test: new (pi-[a-f0-9]+)/)?.[1];
+		assert.ok(name, seen); assert.ok(seen.includes(`test: rm ${name}`), seen);
 	});
 
 	it("pool decline or a failed dialog immediately releases the lease instead of stranding it", async () => {
 		for (const error of [false, true]) {
-			writeFileSync(CALLS, "");
-			rmSync(path.join(HOME, "host.calls"), { force: true });
+			resetCalls();
 			const ext = await load({ vm: "pool", "vm-grant": "ssh-agent" });
 			await ext.handlers.get("session_start")({ reason: "startup" }, { hasUI: true, ui: {
 				confirm: async (_title, message) => { assert.match(message, /VM \"pool-1\"/); if (error) throw new Error("dialog failed"); return false; }, notify: () => {},

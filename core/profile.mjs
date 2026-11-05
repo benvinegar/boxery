@@ -4,7 +4,7 @@
 // (Imports boxery-core, which imports this module through leases/grants: fine while nothing here runs at load.)
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import os, { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentHost } from "./boxery-core.mjs";
@@ -64,8 +64,11 @@ function needHost(host, c) {
 	checkTarget(c);
 }
 
-/** raw: stdout as is (default: trimmed). config: the profile's, already loaded.
- *  @typedef {{ input?: string, signal?: AbortSignal, host?: HostProfile, timeout?: number, stderr?: "pipe" | "inherit", raw?: boolean, config?: ProfileConfig }} HostRunOpts */
+/** raw: stdout as is (default: trimmed). config: the profile's, already loaded. onData: every chunk of
+ *  output as it arrives, from either stream (when piped), e.g. for progress. stdin "inherit" (instead of
+ *  `input`) and stdout "inherit": the CLI passing a command straight through (stdout then resolves "").
+ *  @typedef {{ input?: string, signal?: AbortSignal, host?: HostProfile, timeout?: number, stdin?: "pipe" | "inherit", stdout?: "pipe" | "inherit",
+ *    stderr?: "pipe" | "inherit", raw?: boolean, config?: ProfileConfig, onData?: (chunk: Buffer, stream: "stdout" | "stderr") => void }} HostRunOpts */
 
 /**
  * boxery-host ARGS on the profile's host (directly for HOST=local, else over ssh), with stdin `input`.
@@ -77,14 +80,14 @@ function needHost(host, c) {
  * `exitCode` and `stdout`; an abort is the AbortError itself.
  * @param {string[]} args @param {HostRunOpts} [opts] @returns {Promise<string>}
  */
-export async function hostRun(args, { input, signal, host = currentHost(), timeout = 120_000, stderr = "pipe", raw = false, config } = {}) {
+export async function hostRun(args, { input, signal, host = currentHost(), timeout = 120_000, stdin = "pipe", stdout = "pipe", stderr = "pipe", raw = false, config, onData } = {}) {
 	const c = config ?? await profileConfig(host, { signal });
 	needHost(host, c);
 	const [cmd, argv] = c.host === "local"
 		? [localHostBin(c.hostBin, c.env.HOME ?? homedir()), [...(c.hostProfile ? ["--profile", c.hostProfile] : []), ...args]]
 		: ["ssh", ["-o", "LogLevel=ERROR", "--", c.host, remoteCommand(c, args)]];
 	return new Promise((resolve, reject) => {
-		const child = spawn(cmd, argv, { stdio: ["pipe", "pipe", stderr], signal, env: c.env });
+		const child = spawn(cmd, argv, { stdio: [stdin, stdout, stderr], signal, env: c.env });
 		// Our own timer, not spawn's: that one is never cleared when the command can't start (ENOENT), and
 		// would hold this process open for the whole timeout.
 		// (Also cuts the pipes: once the command has exited, kill() does nothing to what holds them.)
@@ -103,8 +106,8 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 		/** @type {Buffer[]} */
 		const err = [];
 		let size = 0, errSize = 0, failed = false;
-		child.stdout?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); size += d.length; if (size > MAX_OUTPUT) { child.kill(); cut(); } else out.push(d); });
-		child.stderr?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); if (errSize < 64 * 1024) { errSize += d.length; err.push(d); } });
+		child.stdout?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); onData?.(d, "stdout"); size += d.length; if (size > MAX_OUTPUT) { child.kill(); cut(); } else out.push(d); });
+		child.stderr?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); onData?.(d, "stderr"); if (errSize < 64 * 1024) { errSize += d.length; err.push(d); } });
 		child.on("error", (e) => {
 			failed = true; done();
 			const code = /** @type {NodeJS.ErrnoException} */ (e).code;
@@ -117,7 +120,7 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 			if (code === 0) return resolve(raw ? text : text.trim());
 			const why = Buffer.concat(err).toString("utf8").trim();
 			reject(Object.assign(new Error(why || `boxery-host ${args[0] ?? ""} failed (${sig ? `signal ${sig}` : `exit ${code}`})`), {
-				exitCode: code ?? (sig ? 128 : 1), reported: stderr === "inherit" && code !== null, fromHost: true, stdout: text,
+				exitCode: code ?? (sig ? 128 + (os.constants.signals[sig] ?? 0) : 1), reported: stderr === "inherit" && code !== null, fromHost: true, stdout: text, signal: sig,
 			}));
 		});
 		child.stdin?.on("error", () => {}); // EPIPE if the command exits before reading
