@@ -1,0 +1,8 @@
+local
+~/.local/bin/boxery-host
+
+/k/id
+1
+p
+pool-1:l-0123456789abcdef0123456789abcdef pool-2:l-fedcba9876543210fedcba9876543210
+demo=ssh-agent||  w1=env|TOKEN|  w2=ssh-agent||
