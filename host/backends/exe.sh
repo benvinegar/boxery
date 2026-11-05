@@ -489,23 +489,24 @@ backend_image_rm() {
 # Idempotent: a retry makes a fresh copy and removes every other generation, the old VM and any copy
 # an interrupted run left behind.
 backend_reimage() {
-	backend_exists "$1" || die "no such vm: $1"
+	backend_exists "$1" || die_unchanged "no such vm: $1"
 	local d new img j v disk srcdisk flags; d=$(exe_dir "$1"); new=$(exe_vm_new "$1"); img=$(exe_img "$2")
-	j=$(exe_ls) || exit 1
-	exe_has "$img" "$j" || die "no such image: $2"
+	j=$(exe_ls) || exit 3
+	exe_has "$img" "$j" || die_unchanged "no such image: $2"
 	disk=$(cat "$d/disk" 2>/dev/null || echo 0); srcdisk=$(exe_disk_of_image "$img" "$j")
 	flags=$(exe_pool_flag)
 	# The image may come from before a resize: keep the VM's own CPU and memory.
 	local c m; if read -r c m _ <"$d/size" 2>/dev/null; then flags="$flags $(exe_sizes "$c" "$m")"; fi
 	if ((disk > ${srcdisk:-0})); then flags="$flags --disk=${disk}GB"; fi
 	[[ -z $EXE_EGRESS ]] || flags="$flags --egress=$EXE_EGRESS"
-	# Copy first, switch after: a failed copy leaves the VM as it was.
+	# Copy first, switch after: a failed copy leaves the VM as it was, and exits 3 (die_unchanged) so
+	# a failed revert isn't finished later by recovery.
 	# shellcheck disable=SC2086
-	exe_cp "$img" "$new" $flags || die "copying $2 failed"
+	exe_cp "$img" "$new" $flags || die_unchanged "copying $2 failed"
 	# A pool reset makes a new exe.dev VM, which auto:all integrations attach to. Check before switching.
 	if ! exe_llm_guard "$new" "$1"; then
 		exe_do rm "$new" >/dev/null 2>&1 || log "warning: could not remove the refused copy (ssh exe.dev rm $new)"
-		exit 1
+		exit 3
 	fi
 	exe_tunnel_stop "$1"
 	echo "$new" >"$d/vm.tmp" && mv "$d/vm.tmp" "$d/vm" || die "could not record $1's new exe.dev VM $new"
