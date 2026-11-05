@@ -122,3 +122,17 @@ test("a host that stops understanding --json (downgraded, or HOST changed) is as
 		await leases.releaseLease("pool-1");
 	} finally { writeFileSync(hostbin, orig); }
 });
+
+test("a --json failure while the host can't be reached keeps --json (no answer is not a downgrade)", async () => {
+	profile.forgetHostFeatures();
+	await leases.acquireLease({ ttl: 600 });
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	writeFileSync(hostbin, "#!/bin/sh\necho 'ssh: connect to host: Connection refused' >&2; exit 255\n"); // unreachable
+	try {
+		await assert.rejects(leases.renewLease("pool-1", 900), /Connection refused/);
+		assert.ok(existsSync(path.join(home, "host-lease-json")), "the marker stays");
+	} finally { writeFileSync(hostbin, orig); }
+	assert.match(String((await leases.renewLease("pool-1", 900)).expires), /^9999999999$/);
+	assert.match(calls().filter((c) => c.startsWith("renew ")).at(-1) ?? "", / --json$/);
+	await leases.releaseLease("pool-1");
+});

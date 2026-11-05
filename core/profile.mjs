@@ -128,7 +128,8 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 /** Does the host support something its `help` shows (PATTERN)? Remembered in the profile as MARKER once it
  *  does, like the CLI's host_pins_keys (which reads `help` whatever its exit status). A host that doesn't
  *  is remembered for 10 minutes in this process only: it may be upgraded. recheck: ask again, and forget
- *  the marker if it no longer does (a host downgraded, or HOST pointed at an older one).
+ *  the marker if it no longer does (a host downgraded, or HOST pointed at an older one). A host that
+ *  doesn't answer `help` at all changes nothing (recheck: what the marker says).
  *  @param {HostProfile} host @param {ProfileConfig} c @param {string} marker @param {RegExp} pattern
  *  @param {{ signal?: AbortSignal, recheck?: boolean }} [opts] */
 async function hostSupports(host, c, marker, pattern, { signal, recheck = false } = {}) {
@@ -136,11 +137,13 @@ async function hostSupports(host, c, marker, pattern, { signal, recheck = false 
 	if (!recheck && existsSync(file)) return true;
 	if (!c.host) return false;
 	if (!recheck && (unsupported.get(key) ?? 0) > Date.now()) return false;
+	// No answer at all (ssh failed, a timeout) says nothing about the host: only an answer counts.
 	const help = await hostRun(["help"], { host, config: c, timeout: 60_000, raw: true, signal }).catch((e) => {
 		if (e?.name === "AbortError") throw e;
 		return String(e?.stdout ?? "");
 	});
 	if (pattern.test(help)) { writeFileSync(file, ""); unsupported.delete(key); return true; }
+	if (!help.trim()) return recheck ? existsSync(file) : false;
 	rmSync(file, { force: true });
 	unsupported.set(key, Date.now() + 10 * 60_000);
 	return false;
