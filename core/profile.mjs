@@ -31,15 +31,17 @@ const SOURCE = 'set -eu; . "$1"; select_profile "$2" "$3" >&2; printf "%s\\0" "$
  */
 export async function profileConfig(host = currentHost(), { signal } = {}) {
 	const file = path.join(host.dir, "config");
-	// A sourced config costs a bash: remember its result while the file is unchanged. (Not while the
-	// caller's environment changes, which a config may read: the CLI runs once per command anyway.)
+	// A sourced config costs a bash per call, which adds up in a long-lived MCP server or pi session:
+	// remember its result for a minute while the file is unchanged. Within that minute, changes to what it
+	// reads besides itself (sourced files, $(…), the environment) aren't seen. A file modified in the last
+	// two seconds isn't remembered: a same-size edit within one timestamp tick would look unchanged.
 	const st = statSync(file, { throwIfNoEntry: false });
 	const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : "none";
 	const cached = sourced.get(file);
-	if (cached?.stamp === stamp) return cached.config;
+	if (cached?.stamp === stamp && Date.now() - cached.at < 60_000) return cached.config;
 	const parsed = parseConfig(st ? readFileSync(file, "utf8") : "");
 	if (parsed) {
-		return { host: parsed.HOST ?? "", hostBin: parsed.HOST_BIN ?? DEFAULT_HOST_BIN, hostProfile: parsed.HOST_PROFILE ?? "", identity: parsed.IDENTITY ?? "", env: process.env };
+		return Object.freeze({ host: parsed.HOST ?? "", hostBin: parsed.HOST_BIN ?? DEFAULT_HOST_BIN, hostProfile: parsed.HOST_PROFILE ?? "", identity: parsed.IDENTITY ?? "", env: process.env });
 	}
 	const out = await new Promise((resolve, reject) => execFile("bash", ["-c", SOURCE, "boxery-config", profileLib, host.name, host.dir], { maxBuffer: MAX_OUTPUT, timeout: 30_000, signal },
 		(e, stdout, stderr) => (e ? reject(e.name === "AbortError" ? e : new Error(`could not load ${file}: ${(stderr || e.message).trim()}`)) : resolve(stdout))));
@@ -49,11 +51,11 @@ export async function profileConfig(host = currentHost(), { signal } = {}) {
 	/** @type {NodeJS.ProcessEnv} */
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)));
 	for (const kv of fields.slice(4, -1)) { const i = kv.indexOf("="); if (i > 0) env[kv.slice(0, i)] = kv.slice(i + 1); }
-	const config = { host: fields[0], hostBin: fields[1], hostProfile: fields[2], identity: fields[3], env };
-	sourced.set(file, { stamp, config });
+	const config = Object.freeze({ host: fields[0], hostBin: fields[1], hostProfile: fields[2], identity: fields[3], env: Object.freeze(env) });
+	if (st && Date.now() - st.mtimeMs > 2000) sourced.set(file, { stamp, at: Date.now(), config });
 	return config;
 }
-/** @type {Map<string, { stamp: string, config: ProfileConfig }>} */
+/** @type {Map<string, { stamp: string, at: number, config: ProfileConfig }>} */
 const sourced = new Map();
 
 /** @param {HostProfile} host @param {ProfileConfig} c */
@@ -68,8 +70,8 @@ function needHost(host, c) {
 /**
  * boxery-host ARGS on the profile's host (directly for HOST=local, else over ssh), with stdin `input`.
  * Resolves with trimmed stdout (raw: as is). A timeout or abort signal stops that process (for a remote
- * host: its ssh; the command on the host keeps running). It settles at most a second after the command
- * exits, even if something it started still holds its output open. stderr "inherit" passes diagnostics through
+ * host: its ssh; the command on the host keeps running). It settles a second after the command exits and
+ * its output goes quiet, even if something it started still holds that output open. stderr "inherit" passes diagnostics through
  * (the CLI): a failure that exited on its own is then `reported`. Otherwise stderr is the error
  * message. A failure of the host command (exit status, or it could not start) is `fromHost`, with its
  * `exitCode` and `stdout`; an abort is the AbortError itself.
@@ -88,22 +90,28 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 		const timer = timeout > 0 ? setTimeout(() => child.kill(), timeout) : undefined;
 		const done = () => clearTimeout(timer);
 		// Something the command started (a backend's daemon, a killed ssh's leftovers) may keep our pipes
-		// open after it exits: don't wait for that ('close' then follows).
-		child.on("exit", () => setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); }, 1000).unref());
+		// open after it exits: don't wait for that ('close' then follows). Only after a second with no output,
+		// and after a poll of the pipes (setImmediate), so what the command wrote is never cut off.
+		let exited = false, quiet = /** @type {NodeJS.Timeout | undefined} */ (undefined);
+		const settleSoon = () => {
+			clearTimeout(quiet);
+			quiet = setTimeout(() => setImmediate(() => { child.stdout?.destroy(); child.stderr?.destroy(); }), 1000).unref();
+		};
+		child.on("exit", () => { exited = true; settleSoon(); });
 		/** @type {Buffer[]} */
 		const out = [];
 		/** @type {Buffer[]} */
 		const err = [];
 		let size = 0, errSize = 0, failed = false;
-		child.stdout?.on("data", (/** @type {Buffer} */ d) => { size += d.length; if (size > MAX_OUTPUT) child.kill(); else out.push(d); });
-		child.stderr?.on("data", (/** @type {Buffer} */ d) => { if (errSize < 64 * 1024) { errSize += d.length; err.push(d); } });
+		child.stdout?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); size += d.length; if (size > MAX_OUTPUT) child.kill(); else out.push(d); });
+		child.stderr?.on("data", (/** @type {Buffer} */ d) => { if (exited) settleSoon(); if (errSize < 64 * 1024) { errSize += d.length; err.push(d); } });
 		child.on("error", (e) => {
 			failed = true; done();
 			const code = /** @type {NodeJS.ErrnoException} */ (e).code;
 			reject(code === "ENOENT" || code === "EACCES" ? Object.assign(new Error(`cannot run ${cmd}: ${e.message}`), { fromHost: true, exitCode: 127 }) : e);
 		});
 		child.on("close", (code, sig) => {
-			done();
+			done(); clearTimeout(quiet);
 			if (failed) return;
 			const text = Buffer.concat(out).toString("utf8");
 			if (code === 0) return resolve(raw ? text : text.trim());
