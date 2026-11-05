@@ -65,18 +65,21 @@ function writeOut(text) {
  * @param {Runtime} rt @param {string} name @param {string} lease
  */
 async function releaseOrphan(rt, name, lease) {
-	const logFile = path.join(rt.conf, "lease-orphans.log");
-	const fd = openSync(logFile, "a", 0o600);
+	// The log is best effort: a log that can't be written mustn't stop the release.
+	let fd = /** @type {number | null} */ (null);
+	try { fd = openSync(path.join(rt.conf, "lease-orphans.log"), "a", 0o600); } catch { /* output to nowhere */ }
+	const note = (/** @type {string} */ m) => { if (fd !== null) try { writeSync(fd, `${new Date().toISOString()} ${name}: ${m}\n`); } catch { /* best effort */ } };
 	try {
-		writeSync(fd, `${new Date().toISOString()} ${name}: the client left before it got lease ${lease}; releasing it\n`);
+		note(`the client left before it got lease ${lease}; releasing it`);
 		const host = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
+		const out = fd ?? "ignore";
 		const code = await new Promise((resolve) => {
-			const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", host, "release", lease], { stdio: ["ignore", fd, fd], env: process.env });
+			const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", host, "release", lease], { stdio: ["ignore", out, out], env: process.env });
 			child.on("error", () => resolve(127));
 			child.on("close", (c) => resolve(c ?? 1));
 		});
-		if (code !== 0) writeSync(fd, `${new Date().toISOString()} ${name}: release of ${lease} failed (exit ${code}); the reaper resets it when it expires\n`);
-	} finally { closeSync(fd); }
+		if (code !== 0) note(`release of ${lease} failed (exit ${code}); the reaper resets it when it expires`);
+	} finally { if (fd !== null) closeSync(fd); }
 }
 
 /** @returns {Promise<string>} */
