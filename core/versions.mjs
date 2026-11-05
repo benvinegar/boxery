@@ -70,5 +70,5 @@ export async function versions({ withHost = true } = {}) {
 	const host = await hostVersion();
 	const note = host ? skewNote(controller, host, name)
 		: `host predates 'boxery-host version'; upgrade it by hand (git pull or npm update -g boxery-vm, then boxery-host init), after that: ${upgradeHint(name)}`;
-	return { controller, host, behind: !!note, note, configured };
+	return { controller, host, behind: !!note, note };
 }

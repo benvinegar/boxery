@@ -1188,48 +1188,59 @@ export async function manage(a, opts = {}) {
 			// to: one name or a list; default one fresh name. Returns "NAME ADDR" per fork.
 			const dsts = (Array.isArray(to) ? to : to ? [to] : [newName()]).map((n) => assertName(n));
 			if (dsts.length > 8) throw new Error("fork: at most 8 copies at once");
-			return run((o) => lifecycle.forkVm(need(), dsts, size(), o), 900_000);
+			return run((o) => lifecycle.forkVm(need(), dsts, size(), o), 900_000, `fork ${need()}`);
 		}
 		case "new":
-			return run((o) => lifecycle.newVm(vm ? need() : newName(), { ...size(), from: from ? assertImage(from) : null, headless: !!headless }, o), 300_000);
+			{
+			const name = vm ? need() : newName();
+			return run((o) => lifecycle.newVm(name, { ...size(), from: from ? assertImage(from) : null, headless: !!headless }, o), 300_000, `new ${name}`);
+		}
 		case "rm":
-			return run((o) => lifecycle.rmVm(need(), o), 120_000);
+			return run((o) => lifecycle.rmVm(need(), o), 120_000, `rm ${need()}`);
 		case "start":
-			return run((o) => lifecycle.startVm(need(), o), 300_000);
+			return run((o) => lifecycle.startVm(need(), o), 300_000, `start ${need()}`);
 		case "stop":
-			return run((o) => lifecycle.stopVm(need(), o), 300_000);
+			return run((o) => lifecycle.stopVm(need(), o), 300_000, `stop ${need()}`);
 		case "resize": {
 			const s = size();
 			if (s.cpus == null && s.mem == null && s.disk == null) throw new Error("resize needs cpus, mem and/or disk");
-			return run((o) => lifecycle.resizeVm(need(), s, o), 600_000);
+			return run((o) => lifecycle.resizeVm(need(), s, o), 600_000, `resize ${need()}`);
 		}
 		case "snap":
-			return run((o) => lifecycle.snapVm(need(), snapshot ? assertSnap(snapshot) : null, o), 600_000);
+			return run((o) => lifecycle.snapVm(need(), snapshot ? assertSnap(snapshot) : null, o), 600_000, `snap ${need()}`);
 		case "revert":
-			return run((o) => lifecycle.revertVm(need(), assertSnap(snapshot), o), 600_000);
+			return run((o) => lifecycle.revertVm(need(), assertSnap(snapshot), o), 600_000, `revert ${need()}`);
 		case "snap-rm":
-			return run((o) => lifecycle.snapRm(need(), assertSnap(snapshot), o), 120_000);
+			return run((o) => lifecycle.snapRm(need(), assertSnap(snapshot), o), 120_000, `snap-rm ${need()}`);
 		case "build-base":
-			return run((o) => lifecycle.buildBase(o), 1_800_000);
+			return run((o) => lifecycle.buildBase(o), 1_800_000, "build-base");
 		default:
 			throw new Error(`unknown action ${action}`);
 	}
 }
 
-/** Run a lifecycle operation for a tool: its output and diagnostics (the host's stderr and grant notes)
- *  come back as one text, as the CLI would print them; progress gets each line as it arrives.
- *  @param {ProgressOpts} opts @returns {(fn: (o: import("./lifecycle.mjs").LifecycleOpts) => Promise<string>, timeout: number) => Promise<string>} */
+/** Run a lifecycle operation for a tool: what the host printed (its stdout, then its stderr, where it reports
+ *  most results: "==> demo removed …") and the grant notes come back as one text, as the CLI used to give
+ *  it; progress gets each line as it arrives. A failure says which operation failed, with the host's last lines.
+ *  @param {ProgressOpts} opts @returns {(fn: (o: import("./lifecycle.mjs").LifecycleOpts) => Promise<string>, timeout: number, what: string) => Promise<string>} */
 function progressRun({ progress } = {}) {
-	return async (fn, timeout) => {
+	return async (fn, timeout, what) => {
 		/** @type {string[]} */
 		const notes = [];
-		const onData = progress ? (/** @type {Buffer} */ d) => { const l = lastLine(d); if (l) progress(l); } : undefined;
+		/** @type {Buffer[]} */
+		const errs = [];
+		const onData = (/** @type {Buffer} */ d, /** @type {"stdout" | "stderr"} */ stream) => {
+			if (stream === "stderr") errs.push(d);
+			const l = progress && lastLine(d); if (l) progress?.(l);
+		};
+		const stderrText = () => Buffer.concat(errs).toString("utf8").trim();
 		try {
 			const out = await fn({ timeout, onData, log: (l) => notes.push(l) });
-			return [out, ...notes].filter(Boolean).join("\n").trim();
+			return [out, stderrText(), ...notes].filter(Boolean).join("\n").trim();
 		} catch (e) {
-			const err = /** @type {Error} */ (e);
-			throw new Error([err.message, ...notes].filter(Boolean).join("\n").trim());
+			const err = /** @type {Error & { fromHost?: boolean }} */ (e);
+			const tail = (err.fromHost ? (stderrText() || err.message) : err.message).split("\n").slice(-20).join("\n");
+			throw new Error([`boxery ${what}: ${tail}`, ...notes].filter(Boolean).join("\n").trim());
 		}
 	};
 }

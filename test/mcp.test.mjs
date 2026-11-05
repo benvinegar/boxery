@@ -299,6 +299,10 @@ describe("stdio", () => {
 			assert.match(r.content[0].text, re);
 		};
 		assert.match(await out({ action: "start", vm: "fakevm" }), /stub host start fakevm$/m);
+		// The host reports most results on stderr ("==> …"): that is the tool's answer too.
+		assert.match(await out({ action: "stop", vm: "fakevm" }), /^==> stop fakevm$/m);
+		// A failure names the operation and keeps the host's reason.
+		await err({ action: "new", vm: "fail" }, /^boxery new fail: boxery-host: it broke$/m);
 		assert.match(await out({ action: "stop", vm: "fakevm" }), /stub host stop fakevm$/m);
 		assert.match(await out({ action: "resize", vm: "fakevm", cpus: 8, disk: 80 }), /stub host resize fakevm --cpus 8 --disk 80$/m);
 		await err({ action: "resize", vm: "fakevm" }, /resize needs/);

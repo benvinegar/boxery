@@ -171,7 +171,8 @@ export async function patch(args, opts = {}) {
 	const first = args[0] ?? "";
 	let names;
 	if (first === "--all") {
-		const listing = await hostRun(["ls"], { timeout: 120_000 }).catch(() => "");
+		// (Which VMs it may restart: their connections and grants are renewed after. A failed listing ends here.)
+		const listing = await hostRun(["ls"], { timeout: 120_000 });
 		names = listing.split("\n").slice(1).map((l) => l.trim().split(/\s+/)).filter(([n, st]) => n && st === "running").map(([n]) => n);
 	} else names = [assertName(first)];
 	for (const n of names) await closeMaster(n);
