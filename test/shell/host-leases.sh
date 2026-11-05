@@ -111,17 +111,21 @@ if [[ -n ${1:-} ]]; then
 else bad "acquire for edge test"; fi
 
 # --- a client that leaves while acquire --wait waits never gets a lease it can't use
-# Fill the pool, start a waiting acquire whose stdout nobody reads (the client's ssh is gone), free a VM.
+# Fill the pool, start a waiting acquire, then go away as an ssh client does: sshd closes the command's
+# stdout AND stderr (both pipes lose their reader). Then free a VM.
 held=""
 while out=$(echo "$K1" | "$H" acquire --holder filler 2>/dev/null); do set -- $out; held="$held $2"; done
-mkfifo "$tmp/gone"
-( echo "$K2" | "$H" acquire --holder leaver --wait 60 >"$tmp/gone" 2>"$tmp/gone.err"; echo $? >"$tmp/gone.rc" ) &
-exec 7<"$tmp/gone"; exec 7<&-   # open and close the read end: the reply hits a closed pipe (EPIPE)
+mkfifo "$tmp/gone.out" "$tmp/gone.err"
+( rc=0; echo "$K2" | "$H" acquire --holder leaver --wait 60 >"$tmp/gone.out" 2>"$tmp/gone.err" || rc=$?; echo "$rc" >"$tmp/gone.rc" ) &
+exec 7<"$tmp/gone.out" 8<"$tmp/gone.err"; exec 7<&- 8<&-   # its client has left: nobody reads either pipe
 sleep 1
 set -- $held; "$H" release "$1" >/dev/null 2>&1
-for _ in $(seq 100); do [[ -f $tmp/gone.rc ]] && break; sleep 0.2; done
-[[ $(cat "$tmp/gone.rc" 2>/dev/null) != 0 ]] && grep -q "client left" "$tmp/gone.err" && ok "acquire whose client left fails (it can't hand the lease over)" || bad "rc $(cat "$tmp/gone.rc" 2>/dev/null): $(cat "$tmp/gone.err")"
+for _ in $(seq 300); do [[ -s $tmp/gone.rc ]] && break; sleep 0.2; done
+[[ $(cat "$tmp/gone.rc" 2>/dev/null) == 1 ]] && ok "acquire whose client left exits 1 (it can't hand the lease over)" || bad "rc: $(cat "$tmp/gone.rc" 2>/dev/null)"
+for _ in $(seq 100); do grep -q "leaver" <<<"$("$H" pool ls 2>/dev/null)" || break; sleep 0.2; done
 ! PATTERN="leaver" has "$H" pool ls && ok "...and released that lease: nobody holds a VM for it" || bad "stranded: $("$H" pool ls | tr '\n' '|')"
+! PATTERN="broken" has "$H" pool ls && ok "...and the reset worked (its output wasn't the closed pipes)" || bad "broken: $("$H" pool ls | tr '\n' '|')"
+grep -q "the client left before it got lease l-" "$BOXERY_CONF/lease-orphans.log" && ok "...and logged it in lease-orphans.log" || bad "log: $(cat "$BOXERY_CONF/lease-orphans.log" 2>&1)"
 for l in $held; do "$H" release "$l" >/dev/null 2>&1 || true; done
 
 echo "passed: $pass  failed: $fail"; ((fail == 0))

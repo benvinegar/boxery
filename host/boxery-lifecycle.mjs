@@ -1,7 +1,11 @@
 // Lease runtime: binds lease-workflows.mjs (policy) to SQLite, the operation journal, backend effects
 // and the supervisor. Each locked step runs in a supervised worker (`__call CALLBACK …`) that holds the
 // VM's lifecycle lock; the held-lock entry points below check that lock before acting.
+import { spawn } from "node:child_process";
+import { closeSync, openSync, writeSync } from "node:fs";
+import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import * as leases from "./boxery-leases.mjs";
 import { copyBuildRecord } from "./build-info.mjs";
 import { reconcileAbandoned, supervise } from "./boxery-operations.mjs";
@@ -47,10 +51,32 @@ const jsonFlag = (args) => [args.includes("--json"), args.filter((a) => a !== "-
 /** Write to stdout; false if nobody reads it any more (EPIPE: the client is gone). @param {string} text @returns {Promise<boolean>} */
 function writeOut(text) {
 	return new Promise((resolve) => {
-		// The 'error' event can follow the write callback: keep a listener, or it is an uncaught exception.
-		process.stdout.on("error", () => resolve(false));
-		process.stdout.write(text, (e) => resolve(!e));
+		// The 'error' event can follow the write callback (host/cli.mjs keeps a listener for it too).
+		const gone = () => resolve(false);
+		process.stdout.once("error", gone);
+		process.stdout.write(text, (e) => { process.stdout.off("error", gone); resolve(!e); });
 	});
+}
+
+/**
+ * Release a lease whose client left before it got it. In a child of its own whose output goes to
+ * CONF/lease-orphans.log: ours went to the client, and is closed (a backend writing to it during the
+ * reset would die of SIGPIPE, and the VM end up BROKEN).
+ * @param {Runtime} rt @param {string} name @param {string} lease
+ */
+async function releaseOrphan(rt, name, lease) {
+	const logFile = path.join(rt.conf, "lease-orphans.log");
+	const fd = openSync(logFile, "a", 0o600);
+	try {
+		writeSync(fd, `${new Date().toISOString()} ${name}: the client left before it got lease ${lease}; releasing it\n`);
+		const host = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
+		const code = await new Promise((resolve) => {
+			const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", host, "release", lease], { stdio: ["ignore", fd, fd], env: process.env });
+			child.on("error", () => resolve(127));
+			child.on("close", (c) => resolve(c ?? 1));
+		});
+		if (code !== 0) writeSync(fd, `${new Date().toISOString()} ${name}: release of ${lease} failed (exit ${code}); the reaper resets it when it expires\n`);
+	} finally { closeSync(fd); }
 }
 
 /** @returns {Promise<string>} */
@@ -119,8 +145,7 @@ export async function runLifecycle(rt, command, args) {
 			// A client that left while we waited (Ctrl-C, a timeout: ssh gone, nobody reading) would never learn
 			// of this lease, nor renew or release it. Its reply can't be written then: give the VM back.
 			if (!await writeOut(reply)) {
-				rt.log(`${claim.name}: the client left before it got its lease; releasing ${claim.lease_id}`);
-				await flows.release(claim.lease_id);
+				await releaseOrphan(rt, claim.name, claim.lease_id);
 				throw Object.assign(new Error("the client left before it got its lease (released it)"), { exitCode: 1 });
 			}
 			break;

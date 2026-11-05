@@ -243,6 +243,10 @@ function awaitGate() {
 
 /** @param {string[]} argv */
 async function main(argv) {
+	// The client (ssh) may be gone: writing our output then fails with EPIPE. Diagnostics are best effort;
+	// a command that must know whether its reply arrived checks its own write (acquire).
+	process.stderr.on("error", () => {});
+	process.stdout.on("error", () => {});
 	let [command = "help", ...args] = argv;
 	if (command === "__worker") { awaitGate(); [command = "", ...args] = args; }
 	if (command === "init" && args[0] === "--backend") process.env.BOXERY_BACKEND = args[1] ?? "";
