@@ -7,7 +7,7 @@ import { constants } from "node:os";
 import { homedir } from "node:os";
 import path from "node:path";
 import { BOXERY_HOME, defaultHost, describeHosts, hostBackend, profileFromDirectory, registeredHosts, resolveHost } from "../core/boxery-core.mjs";
-import { hostRun, profileConfig, writeSshConfig } from "../core/profile.mjs";
+import { hostRun, profileConfig, stopHostCommands, writeSshConfig } from "../core/profile.mjs";
 import { DEFAULT_HOST_BIN, VALID_DEST, checkTarget, literal, localHostBin, remotePath, sshIncludeValue } from "../core/ssh-config.mjs";
 import { die, hostFailed, inherit, note, say } from "./lib.mjs";
 /** @import { HostProfile } from "../core/boxery-core.mjs" */
@@ -241,7 +241,11 @@ async function withRegistryLock(fn) {
 	catch (e) { die(/** @type {NodeJS.ErrnoException} */ (e).code === "EEXIST" ? "host registry is locked; retry" : `cannot lock the host registry: ${/** @type {Error} */ (e).message}`); }
 	closeSync(fd);
 	undo.lock = lock;
-	const handlers = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]).map((sig) => /** @type {[NodeJS.Signals, () => void]} */ ([sig, () => { cleanUp(); process.exit(128 + constants.signals[sig]); }]));
+	// (The host commands setup runs are stopped first: a TERM sent to us alone would otherwise leave them
+	// running, making a profile or registering a key after we said nothing was registered.)
+	const handlers = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]).map((sig) => /** @type {[NodeJS.Signals, () => void]} */ ([sig, () => {
+		void stopHostCommands(sig).finally(() => { cleanUp(); process.exit(128 + constants.signals[sig]); });
+	}]));
 	for (const [sig, h] of handlers) process.on(sig, h);
 	try { await fn(); } finally {
 		for (const [sig, h] of handlers) process.off(sig, h);

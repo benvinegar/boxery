@@ -67,6 +67,15 @@ function needHost(host, c) {
 	checkTarget(c);
 }
 
+/** Host commands running now (hostRun's), so a front-end that is told to stop can stop them first. @type {Set<import("node:child_process").ChildProcess>} */
+const running = new Set();
+/** Send SIG to every running host command and wait (up to 5 s) for them to end. @param {NodeJS.Signals} sig */
+export async function stopHostCommands(sig) {
+	const all = [...running];
+	for (const c of all) { try { c.kill(sig); } catch { /* gone */ } }
+	await Promise.race([Promise.all(all.map((c) => new Promise((r) => (c.exitCode !== null || c.signalCode !== null ? r(undefined) : c.once("close", r))))), new Promise((r) => setTimeout(r, 5000).unref())]);
+}
+
 /** The process that runs boxery-host ARGS on the profile's host: [command, argv] (spawn it with config.env).
  *  Checks the target first, as the CLI's h does. @param {HostProfile} host @param {ProfileConfig} c @param {string[]} args
  *  @returns {[string, string[]]} */
@@ -98,6 +107,7 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 	const [cmd, argv] = hostCommand(host, c, args);
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, argv, { stdio: [stdin, stdout, stderr], signal, env: c.env });
+		running.add(child); child.once("close", () => running.delete(child)); child.once("error", () => running.delete(child));
 		// Our own timer, not spawn's: that one is never cleared when the command can't start (ENOENT), and
 		// would hold this process open for the whole timeout.
 		// (Also cuts the pipes: once the command has exited, kill() does nothing to what holds them.)

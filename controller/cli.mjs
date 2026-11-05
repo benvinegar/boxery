@@ -438,9 +438,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 		const err = /** @type {Error & { exitCode?: number }} */ (e);
 		if (!(err instanceof CliError) || err.message) process.stderr.write(`boxery: ${err.message.replace(/^boxery: /, "")}\n`);
 		process.exitCode = err.exitCode ?? 1;
-		// A terminal command (ssh, a tunnel) ended by a signal: end by it too, so callers see WIFSIGNALED.
+		// A terminal command (ssh, a tunnel) ended by Ctrl-C, a TERM, HUP or PIPE: end by it too, so callers see
+		// WIFSIGNALED as with an exec'd ssh. (Not core-dumping signals: that would dump this process's core too.)
 		const sig = (await import("./lib.mjs")).killedBy;
-		if (sig && err instanceof CliError && err.exitCode === 128 + (constants.signals[sig] ?? 0)) {
+		if (sig && ["SIGINT", "SIGTERM", "SIGHUP", "SIGPIPE"].includes(sig) && err instanceof CliError && err.exitCode === 128 + (constants.signals[sig] ?? 0)) {
 			for (const name of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"])) process.removeAllListeners(name);
 			process.kill(process.pid, sig);
 		}

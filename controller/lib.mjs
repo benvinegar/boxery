@@ -64,6 +64,7 @@ export function needHost(s) {
  * @returns {Promise<number>}
  */
 export function inherit(cmd, args, { env = process.env, stdin = "inherit", input, stdout = "inherit" } = {}) {
+	killedBy = null; // (this command's, not an earlier one's)
 	return new Promise((resolve) => {
 		const child = spawn(cmd, args, { stdio: [input === undefined ? stdin : "pipe", stdout, "inherit"], env });
 		const ignore = () => {};
