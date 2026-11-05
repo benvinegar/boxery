@@ -10,7 +10,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { fakeTmux } from "./fake-tmux.mjs";
 import { guestFixture } from "./helpers/atomic-edit-fixture.mjs";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
+import { hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SERVER = path.join(ROOT, "mcp/boxery-mcp.mjs");
@@ -32,7 +32,7 @@ before(() => {
 	mkdirSync(path.join(dir, "home"));
 	writeFileSync(path.join(dir, "home/ssh_config"), "# fake\n");
 	registerHost(path.join(dir, "home"), "local");
-	grantTransport(dir, [path.join(dir, "home")]);
+	hostTransport(dir, [path.join(dir, "home")]);
 	writeFileSync(path.join(dir, "home/grants/granted"), "ssh-agent\t\t\n");
 	writeFileSync(path.join(dir, "home/grants/fakevm"), "file\t/l/.env\tproject/.env\n");
 	// ssh -F CONF -o BatchMode=yes NAME.boxery "bash -c '<script>'": run the script locally, cwd = fake VM home.

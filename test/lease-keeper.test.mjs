@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
+import { hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
 
 const dir = mkdtempSync(path.join(tmpdir(), "boxery-lease-"));
 const home = path.join(dir, "home");
 const failRenew = path.join(dir, "renew-fails");
 registerHost(home);
-grantTransport(dir, [home]);
+hostTransport(dir, [home]);
 mkdirSync(path.join(dir, "bin"));
 writeFileSync(path.join(dir, "bin/ssh"), "#!/bin/sh\nexit 0\n"); // -O exit: no shared connection to close
 chmodSync(path.join(dir, "bin/ssh"), 0o755);

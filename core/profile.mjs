@@ -3,7 +3,7 @@
 // the ssh_config text and quoting are core/ssh-config.mjs, shared with it.
 // (Imports boxery-core, which imports this module through leases/grants: fine while nothing here runs at load.)
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,24 +27,34 @@ const SOURCE = 'set -eu; . "$1"; select_profile "$2" "$3" >&2; printf "%s\\0" "$
 /**
  * Read the profile's config. Plain assignments to the controller's settings (what `boxery setup` writes)
  * are parsed; any other config is a trusted shell file, which bash sources as the CLI does.
- * @param {HostProfile} [host] @returns {Promise<ProfileConfig>}
+ * @param {HostProfile} [host] @param {{ signal?: AbortSignal }} [opts] @returns {Promise<ProfileConfig>}
  */
-export async function profileConfig(host = currentHost()) {
+export async function profileConfig(host = currentHost(), { signal } = {}) {
 	const file = path.join(host.dir, "config");
-	const parsed = parseConfig(existsSync(file) ? readFileSync(file, "utf8") : "");
+	// A sourced config costs a bash: remember its result while the file is unchanged. (Not while the
+	// caller's environment changes, which a config may read: the CLI runs once per command anyway.)
+	const st = statSync(file, { throwIfNoEntry: false });
+	const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : "none";
+	const cached = sourced.get(file);
+	if (cached?.stamp === stamp) return cached.config;
+	const parsed = parseConfig(st ? readFileSync(file, "utf8") : "");
 	if (parsed) {
 		return { host: parsed.HOST ?? "", hostBin: parsed.HOST_BIN ?? DEFAULT_HOST_BIN, hostProfile: parsed.HOST_PROFILE ?? "", identity: parsed.IDENTITY ?? "", env: process.env };
 	}
-	const out = await new Promise((resolve, reject) => execFile("bash", ["-c", SOURCE, "boxery-config", profileLib, host.name, host.dir], { maxBuffer: MAX_OUTPUT, timeout: 30_000 },
-		(e, stdout, stderr) => (e ? reject(new Error(`could not load ${file}: ${(stderr || e.message).trim()}`)) : resolve(stdout))));
+	const out = await new Promise((resolve, reject) => execFile("bash", ["-c", SOURCE, "boxery-config", profileLib, host.name, host.dir], { maxBuffer: MAX_OUTPUT, timeout: 30_000, signal },
+		(e, stdout, stderr) => (e ? reject(e.name === "AbortError" ? e : new Error(`could not load ${file}: ${(stderr || e.message).trim()}`)) : resolve(stdout))));
 	const fields = /** @type {string} */ (out).split("\0").slice(0, -1);
 	if (fields.length < 5 || fields.at(-1) !== "END") throw new Error(`could not load ${file}: it stopped before the end (exit or return?)`);
 	// compgen -e lists only plain names: exported functions and odd names keep the caller's values.
 	/** @type {NodeJS.ProcessEnv} */
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)));
 	for (const kv of fields.slice(4, -1)) { const i = kv.indexOf("="); if (i > 0) env[kv.slice(0, i)] = kv.slice(i + 1); }
-	return { host: fields[0], hostBin: fields[1], hostProfile: fields[2], identity: fields[3], env };
+	const config = { host: fields[0], hostBin: fields[1], hostProfile: fields[2], identity: fields[3], env };
+	sourced.set(file, { stamp, config });
+	return config;
 }
+/** @type {Map<string, { stamp: string, config: ProfileConfig }>} */
+const sourced = new Map();
 
 /** @param {HostProfile} host @param {ProfileConfig} c */
 function needHost(host, c) {
@@ -58,14 +68,15 @@ function needHost(host, c) {
 /**
  * boxery-host ARGS on the profile's host (directly for HOST=local, else over ssh), with stdin `input`.
  * Resolves with trimmed stdout (raw: as is). A timeout or abort signal stops that process (for a remote
- * host: its ssh; the command on the host keeps running). stderr "inherit" passes diagnostics through
+ * host: its ssh; the command on the host keeps running). It settles at most a second after the command
+ * exits, even if something it started still holds its output open. stderr "inherit" passes diagnostics through
  * (the CLI): a failure that exited on its own is then `reported`. Otherwise stderr is the error
  * message. A failure of the host command (exit status, or it could not start) is `fromHost`, with its
  * `exitCode` and `stdout`; an abort is the AbortError itself.
  * @param {string[]} args @param {HostRunOpts} [opts] @returns {Promise<string>}
  */
 export async function hostRun(args, { input, signal, host = currentHost(), timeout = 120_000, stderr = "pipe", raw = false, config } = {}) {
-	const c = config ?? await profileConfig(host);
+	const c = config ?? await profileConfig(host, { signal });
 	needHost(host, c);
 	const [cmd, argv] = c.host === "local"
 		? [localHostBin(c.hostBin, c.env.HOME ?? homedir()), [...(c.hostProfile ? ["--profile", c.hostProfile] : []), ...args]]
@@ -76,6 +87,9 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 		// would hold this process open for the whole timeout.
 		const timer = timeout > 0 ? setTimeout(() => child.kill(), timeout) : undefined;
 		const done = () => clearTimeout(timer);
+		// Something the command started (a backend's daemon, a killed ssh's leftovers) may keep our pipes
+		// open after it exits: don't wait for that ('close' then follows).
+		child.on("exit", () => setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); }, 1000).unref());
 		/** @type {Buffer[]} */
 		const out = [];
 		/** @type {Buffer[]} */
@@ -136,9 +150,10 @@ function sshConfigEntries(dir) {
 
 /** Rewrite the profile's ssh_config from its config, leases and grants, like the CLI's write_ssh_config
  *  (which doesn't check the target either: hostRun does, before running anything). Published whole
- *  (rename): other boxery processes and ssh -F read it meanwhile. @param {{ host?: HostProfile }} [opts] */
-export async function writeSshConfig({ host = currentHost() } = {}) {
-	const c = await profileConfig(host);
+ *  (rename): other boxery processes and ssh -F read it meanwhile. config: the profile's, already loaded.
+ *  @param {{ host?: HostProfile, config?: ProfileConfig }} [opts] */
+export async function writeSshConfig({ host = currentHost(), config } = {}) {
+	const c = config ?? await profileConfig(host);
 	const pins = await hostPinsKeys(host, c);
 	const text = renderSshConfig({ ...c, dir: host.dir, home: c.env.HOME ?? homedir(), pins, ...sshConfigEntries(host.dir) });
 	mkdirSync(host.dir, { recursive: true });
@@ -150,9 +165,9 @@ export async function writeSshConfig({ host = currentHost() } = {}) {
 }
 
 /** Close VM's shared (ControlMaster) connection: after a reset it points at a dead session. Never fails.
- *  @param {string} vm @param {{ host?: HostProfile, timeout?: number }} [opts] */
-export async function closeMaster(vm, { host = currentHost(), timeout = 30_000 } = {}) {
-	const env = await profileConfig(host).then((c) => c.env, () => process.env);
+ *  @param {string} vm @param {{ host?: HostProfile, timeout?: number, config?: ProfileConfig }} [opts] */
+export async function closeMaster(vm, { host = currentHost(), timeout = 30_000, config } = {}) {
+	const env = config ? config.env : await profileConfig(host).then((c) => c.env, () => process.env);
 	await new Promise((resolve) => {
 		const child = spawn("ssh", ["-F", host.sshConf, "-O", "exit", `${vm}.boxery`], { stdio: "ignore", env });
 		const timer = timeout > 0 ? setTimeout(() => child.kill(), timeout) : undefined;

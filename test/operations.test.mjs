@@ -42,9 +42,16 @@ const barrier = (name, point) => path.join(vms, ".barriers", `${name}.${point}`)
 const release = (name, point) => writeFileSync(`${barrier(name, point)}.release`, "go");
 const token = (name) => JSON.parse(/** @type {any} */ (readFileSync(path.join(conf, "tokens.json"))))[name];
 const locks = () => db.prepare("SELECT * FROM operation_locks").all();
-function operationAt(name, point) {
-	const id = readFileSync(barrier(name, point), "utf8").trim();
-	return db.prepare("SELECT * FROM operations WHERE id=?").get(id);
+// The operation paused at a barrier. The barrier file appears before the shell has written the id into
+// it (redirection creates it first), so wait for an id that names a row.
+/** @returns {Promise<any>} */
+async function operationAt(name, point) {
+	let op;
+	await until(() => {
+		const id = readFileSync(barrier(name, point), "utf8").trim();
+		return (op = id ? db.prepare("SELECT * FROM operations WHERE id=?").get(id) : undefined) != null;
+	});
+	return op;
 }
 function cleanJournal() {
 	assert.deepEqual(locks(), []);
@@ -115,7 +122,7 @@ it("duplicate creates serialize preflight and cannot rotate or delete the winnin
 it("a killed supervisor's live worker is stopped before partial-create cleanup and name reuse", async () => {
 	const first = run(["new", "same"], { BOXERY_FAKE_PAUSE: "new" });
 	await until(() => existsSync(barrier("same", "new")));
-	const op = operationAt("same", "new"), oldToken = token("same");
+	const op = await operationAt("same", "new"), oldToken = token("same");
 	assert.ok(O.identity(op.child));
 	first.kill("SIGKILL");
 	await until(() => O.identity(op.owner) == null);
@@ -266,7 +273,7 @@ it("abandoned key installation resets before the VM can be leased to someone els
 	await ok(["new", "pool"]); await ok(["pool", "add", "pool"]);
 	const acquire = run(["acquire", "--holder", "alice"], { BOXERY_TEST_KEY_PAUSE: "1" }, KEY);
 	await until(() => existsSync(barrier("pool", "key")));
-	const op = operationAt("pool", "key");
+	const op = await operationAt("pool", "key");
 	// The outer acquire process waits for a nested supervisor; kill that supervisor explicitly.
 	process.kill(op.owner, "SIGKILL");
 	await until(() => O.identity(op.owner) == null);
@@ -379,7 +386,7 @@ it("reconcile retries a killed reset immediately rather than waiting for the sta
 	writeFileSync(path.join(vms, "pool", "home", "dirty"), "work");
 	const reset = run(["release", lease], { BOXERY_FAKE_PAUSE: "reimage" });
 	await until(() => existsSync(barrier("pool", "reimage")));
-	const op = operationAt("pool", "reimage"); process.kill(op.owner, "SIGKILL");
+	const op = await operationAt("pool", "reimage"); process.kill(op.owner, "SIGKILL");
 	await until(() => O.identity(op.owner) == null);
 	await ok(["reconcile"]);
 	assert.equal(L.get(db, "pool").state, "FREE");

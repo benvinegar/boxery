@@ -22,7 +22,7 @@ exec sh -c "$*"
 chmodSync(path.join(bin, "ssh"), 0o755);
 // boxery-host: records argv (one per line), echoes stdin back, exits with $EXIT.
 const hostbin = path.join(dir, "host bin's");
-writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; *) cat ;; esac\n`);
+writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; daemon) sleep 10 & echo started ;; *) cat ;; esac\n`);
 chmodSync(hostbin, 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
@@ -107,4 +107,28 @@ test("writeSshConfig asks once whether the host pins keys, then remembers it; cl
 	assert.throws(() => readFileSync(calls), /ENOENT/, "no second probe");
 	await P.closeMaster("demo", { host });
 	assert.match(log()[0], /^close -F .* -O exit demo\.boxery$/);
+});
+
+test("a sourced config is loaded once while it is unchanged; abort reaches loading too", async () => {
+	const count = path.join(dir, "sourced");
+	rmSync(count, { force: true });
+	writeFileSync(path.join(home, "config"), `echo x >> ${q(count)}\nHOST=local\n`);
+	for (let i = 0; i < 3; i++) assert.equal((await P.profileConfig(host)).host, "local");
+	assert.equal(readFileSync(count, "utf8"), "x\n");
+	writeFileSync(path.join(home, "config"), `echo x >> ${q(count)}\nHOST=ben@h\n`);
+	assert.equal((await P.profileConfig(host)).host, "ben@h", "a changed file is read again");
+	writeFileSync(path.join(home, "config"), "sleep 5\nHOST=local\n");
+	const abort = new AbortController();
+	const pending = P.profileConfig(host, { signal: abort.signal });
+	setTimeout(() => abort.abort(), 50);
+	const t0 = Date.now();
+	await assert.rejects(pending, (e) => /** @type {Error} */ (e).name === "AbortError");
+	assert.ok(Date.now() - t0 < 2000);
+});
+
+test("hostRun settles soon after the command exits, even if something it started holds the output open", async () => {
+	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
+	const t0 = Date.now();
+	assert.equal(await P.hostRun(["daemon"], { host }), "started");
+	assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0}ms`);
 });
