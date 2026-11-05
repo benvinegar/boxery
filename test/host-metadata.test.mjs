@@ -35,7 +35,7 @@ function fixture() {
 		return r;
 	};
 	const cli = (args) => run(CLI, args);
-	const core = (host) => run(process.execPath, ["--input-type=module", "-e", `import * as c from ${JSON.stringify(CORE)}; await c.withHost(c.resolveHost(${JSON.stringify(host)}), () => c.boxeryCli(['ls']));`]);
+	const core = (host) => run(process.execPath, ["--input-type=module", "-e", `import * as c from ${JSON.stringify(CORE)}; await c.withHost(c.resolveHost(${JSON.stringify(host)}), () => c.listVms());`]);
 	return { dir, home, profile, pointer, selected, log, cli, core, run, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
