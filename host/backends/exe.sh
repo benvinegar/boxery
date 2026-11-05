@@ -171,7 +171,18 @@ backend_check() {
   Run 'ssh exe.dev' once in a terminal (re-registering with your account's email adds the key), or set BOXERY_EXE_KEY."
 	jq -e '.email' <<<"$out" >/dev/null 2>&1 || die "unexpected 'whoami' reply from exe.dev: ${out:0:200}"
 }
-backend_init() { mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure; }
+# A host with a battery is probably a laptop that sleeps (#42). macOS: pmset; Linux: sysfs.
+exe_host_has_battery() {
+	if [[ $(uname) == Darwin ]]; then pmset -g batt 2>/dev/null | grep -q InternalBattery
+	else grep -qx Battery "${EXE_POWER_SUPPLY:-/sys/class/power_supply}"/*/type 2>/dev/null; fi
+}
+backend_init() {
+	mkdir -p "$EXE_DIR/vms"; exe_prefix_ensure
+	exe_host_has_battery || return 0
+	log "warning: this host has a battery, so it may sleep. exe.dev VMs reach the LLM proxy only through this host's tunnels:
+    while it sleeps or is offline, agents lose their LLM mid-task. For long-running work, run boxery-host on an
+    always-on machine and use this one as a controller (docs/install.md#exedev-experimental)."
+}
 backend_proxy_services() { :; }   # per-VM tunnels carry the proxy; nothing host-wide
 guest_proxy_upstream() { echo "TCP:127.0.0.1:$EXE_GUEST_PORT"; }
 
