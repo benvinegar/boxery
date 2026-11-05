@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, test } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { LEASE_ID, grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
+import { LEASE_ID, hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
 
 const dir = mkdtempSync(path.join(tmpdir(), "boxery-cleases-"));
 const home = path.join(dir, "home");
 registerHost(home);
-grantTransport(dir, [home]);
+hostTransport(dir, [home]);
 mkdirSync(path.join(dir, "bin"));
 writeFileSync(path.join(dir, "bin/ssh"), "#!/bin/sh\nexit 0\n");
 chmodSync(path.join(dir, "bin/ssh"), 0o755);

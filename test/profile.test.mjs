@@ -2,7 +2,7 @@
 // commands on local and remote hosts, ssh_config publication. A stub ssh joins argv into one string
 // and runs it with sh -c, as real ssh does on the far side.
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, test } from "node:test";
@@ -22,7 +22,7 @@ exec sh -c "$*"
 chmodSync(path.join(bin, "ssh"), 0o755);
 // boxery-host: records argv (one per line), echoes stdin back, exits with $EXIT.
 const hostbin = path.join(dir, "host bin's");
-writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; *) cat ;; esac\n`);
+writeFileSync(hostbin, `#!/bin/sh\nfor a; do printf 'arg[%s]\\n' "$a"; done >> ${JSON.stringify(calls)}\n[ -z "$STUB_ENV" ] || echo "env $STUB_ENV" >> ${JSON.stringify(calls)}\n[ "$1" != --profile ] || shift 2\ncase "$1" in help) echo '  known-hosts NAME' ;; fail) echo 'it broke' >&2; exit 3 ;; sleepy) exec sleep 10 ;; daemon) (sleep 3; :) & echo started ;; slowtail) echo first; (sleep 0.5; echo late) & ;; chatty) (i=0; while [ $i -lt 50 ]; do echo noise; sleep 0.3; i=$((i + 1)); done) & echo started ;; *) cat ;; esac\n`);
 chmodSync(hostbin, 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
@@ -107,4 +107,50 @@ test("writeSshConfig asks once whether the host pins keys, then remembers it; cl
 	assert.throws(() => readFileSync(calls), /ENOENT/, "no second probe");
 	await P.closeMaster("demo", { host });
 	assert.match(log()[0], /^close -F .* -O exit demo\.boxery$/);
+});
+
+test("a sourced config is loaded once while it is unchanged; abort reaches loading too", async () => {
+	const count = path.join(dir, "sourced");
+	rmSync(count, { force: true });
+	writeFileSync(path.join(home, "config"), `echo x >> ${q(count)}\nHOST=local\n`);
+	const old = new Date(Date.now() - 10_000); utimesSync(path.join(home, "config"), old, old); // (a fresh file isn't remembered)
+	for (let i = 0; i < 3; i++) assert.equal((await P.profileConfig(host)).host, "local");
+	assert.equal(readFileSync(count, "utf8"), "x\n");
+	writeFileSync(path.join(home, "config"), `echo x >> ${q(count)}\nHOST=ben@h\n`);
+	assert.equal((await P.profileConfig(host)).host, "ben@h", "a changed file is read again");
+	assert.equal((await P.profileConfig(host)).host, "ben@h");
+	assert.equal(readFileSync(count, "utf8"), "x\nx\nx\n", "a file changed just now is read each time");
+	assert.ok(Object.isFrozen(await P.profileConfig(host)), "callers share it: frozen");
+	writeFileSync(path.join(home, "config"), "sleep 5\nHOST=local\n");
+	const abort = new AbortController();
+	const pending = P.profileConfig(host, { signal: abort.signal });
+	setTimeout(() => abort.abort(), 50);
+	const t0 = Date.now();
+	await assert.rejects(pending, (e) => /** @type {Error} */ (e).name === "AbortError");
+	assert.ok(Date.now() - t0 < 2000);
+});
+
+test("hostRun settles soon after the command exits, even if something it started holds the output open", async () => {
+	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
+	const t0 = Date.now();
+	assert.equal(await P.hostRun(["daemon"], { host }), "started");
+	assert.ok(Date.now() - t0 < 2900, `took ${Date.now() - t0}ms`);
+});
+
+test("hostRun keeps what the command's children still write within the quiet second", async () => {
+	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
+	assert.equal(await P.hostRun(["slowtail"], { host }), "first\nlate");
+	await assert.rejects(P.hostRun(["fail"], { host }), /it broke/);
+	// A busy event loop (1.5s of synchronous work) while output waits in the pipe: none of it is dropped.
+	const pending = P.hostRun(["slowtail"], { host });
+	await new Promise((r) => setTimeout(r, 50));
+	const until = Date.now() + 1500; while (Date.now() < until) { /* block */ }
+	assert.equal(await pending, "first\nlate");
+});
+
+test("hostRun gives up on output that never stops, 10 s after the command exits", async () => {
+	writeFileSync(path.join(home, "config"), `HOST=local\nHOST_BIN=${q(hostbin)}\n`);
+	const t0 = Date.now();
+	assert.match(await P.hostRun(["chatty"], { host, timeout: 0 }), /^started/);
+	assert.ok(Date.now() - t0 < 12_000, `took ${Date.now() - t0}ms`); // (its loop ends by itself after 15 s)
 });

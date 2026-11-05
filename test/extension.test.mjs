@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, it } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport, hostCalls } from "./fixtures/grant-transport.mjs";
+import { hostTransport, hostCalls } from "./fixtures/host-transport.mjs";
 import { canLoad, loadExtension as load } from "./helpers/pi-extension.mjs";
 
 const HOME = mkdtempSync(path.join(tmpdir(), "boxery-ext-")); // no real controller config
@@ -14,7 +14,7 @@ const BETA = path.join(HOME, "profiles", "beta");
 process.env.BOXERY_HOME = HOME;
 registerHost(HOME);
 registerHost(HOME, "beta", BETA);
-grantTransport(HOME, [HOME, BETA]);
+hostTransport(HOME, [HOME, BETA]);
 mkdirSync(path.join(HOME, "bin"));
 writeFileSync(path.join(HOME, "bin/ssh"), '#!/bin/sh\ncat >/dev/null\n');
 chmodSync(path.join(HOME, "bin/ssh"), 0o755);

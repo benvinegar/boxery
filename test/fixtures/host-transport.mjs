@@ -7,7 +7,7 @@ import path from "node:path";
 export const LEASE_ID = "l-0123456789abcdef0123456789abcdef";
 
 /** @param {string} root @param {string[]} profiles */
-export function grantTransport(root, profiles) {
+export function hostTransport(root, profiles) {
 	const hostbin = path.join(root, "grant-host");
 	const calls = JSON.stringify(path.join(root, "host.calls")), fail = JSON.stringify(path.join(root, "renew-fails"));
 	writeFileSync(hostbin, `#!/bin/sh

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, beforeEach, test } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
-import { grantTransport } from "./fixtures/grant-transport.mjs";
+import { hostTransport } from "./fixtures/host-transport.mjs";
 // Match canonical file-grant paths even when the OS temp directory is itself a symlink (macOS).
 const root = realpathSync(mkdtempSync(path.join(tmpdir(), "boxery-grant-test-")));
 const profile = path.join(root, "profile"), bin = path.join(root, "bin");
@@ -14,7 +14,7 @@ mkdirSync(bin);
 const registryRoot = path.join(root, "registry");
 process.env.BOXERY_HOME = registryRoot;
 registerHost(process.env.BOXERY_HOME, "local", profile);
-grantTransport(root, [profile]);
+hostTransport(root, [profile]);
 const config = readFileSync(path.join(profile, "config"), "utf8");
 const hostScript = `#!/bin/sh\nprintf '%s\\n' "$*" >> '${root}/host.calls'\ncase "$1" in edge-set) cat >/dev/null ;; ls) if [ "\${2:-}" = --json ]; then cat '${root}/inventory.json'; else cat '${root}/inventory.txt'; fi ;; esac\nexit 0\n`;
 writeFileSync(path.join(root, "grant-host"), hostScript);
@@ -176,7 +176,7 @@ test("pinned --profile-dir keeps listing and reapplying after the registry chang
 	const registry = path.join(registryRoot, "host-registry/local");
 	const other = path.join(root, "moved-profile");
 	mkdirSync(other, { recursive: true });
-	grantTransport(root, [other]);
+	hostTransport(root, [other]);
 	writeFileSync(path.join(other, "ssh_config"), "# other profile\n");
 	writeFileSync(path.join(root, "grant-host"), hostScript);
 	writeFileSync(path.join(other, "grants/demo"), "env\tOTHER_PROFILE\t\n");
