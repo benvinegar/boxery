@@ -42,7 +42,10 @@ for n in p1 p2; do "$H" new "$n" >/dev/null 2>&1; "$H" pool add "$n" >/dev/null 
 out=$(echo "$K1" | "$H" acquire --holder alice@mac --ttl 600 2>/dev/null); set -- $out; L1n=$1 L1=$2
 [[ $L1 =~ ^l-[0-9a-f]{32}$ ]] && ok "acquire → NAME LEASE_ID EXPIRES ($L1n)" || bad "acquire: $out"
 grep -q holder1 "$(vmfile "$L1n" .ssh/authorized_keys)" && ok "lease key installed in the VM" || bad "lease key missing"
-out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 2>/dev/null); set -- $out2; L2n=$1
+out2=$(echo "$K2" | "$H" acquire --holder bob@mac --ttl 600 --json 2>/dev/null)
+jq -e '(.name | test("^p[12]$")) and (.lease_id | test("^l-[0-9a-f]{32}$")) and (.expires_at | type) == "number" and (keys | length) == 3' <<<"$out2" >/dev/null \
+	&& ok "acquire --json → {name, lease_id, expires_at}" || bad "acquire --json: $out2"
+L2n=$(jq -r .name <<<"$out2")
 [[ $L2n != "$L1n" ]] && ok "second acquire gets the other VM" || bad "same VM twice: $L1n $L2n"
 if echo "$K2" | "$H" acquire --holder carol --ttl 600 --json >/dev/null 2>&1; then bad "acquire succeeded on an exhausted pool"; else [[ $? == 4 ]] && ok "exhausted pool → exit 4" || bad "wrong exit code"; fi
 PATTERN="^$L1n  *.*leased" has "$H" ls && ok "ls shows LEASED" || bad "ls lease column: $("$H" ls 2>&1 | tr '\n' '|')"

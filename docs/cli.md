@@ -220,7 +220,7 @@ runners run                     the runner manager in the foreground (what the s
 
 `runners` is described in [GitHub Actions runners](github-runners.md); `boxery runners …` on your machine passes the same arguments (and stdin, for `token`) to the host, except `runners once`, which runs on your machine with its `gh` login and drives the host's internal `runners __once`.
 
-`acquire` prints `NAME LEASE_ID EXPIRES` and `renew` prints `NAME EXPIRES`; with `--json`, both print `{"name","lease_id","expires_at"}` (expiry in unix seconds). The controller and the runner manager use `--json`, and fall back to the line for a host that predates it.
+`acquire` prints `NAME LEASE_ID EXPIRES` and `renew` prints `NAME EXPIRES`; with `--json`, both print `{"name","lease_id","expires_at"}` (expiry in unix seconds). The controller asks for `--json` when the host's `help` shows it (and falls back to the line for a host that predates it); the runner manager, part of the same install, always does.
 
 `reconcile` (also performed by `reap`) recovers abandoned lifecycle operations and checks inventory drift. Conflicting VM mutations are serialized through readiness/key installation, not just disk operations. See [Lifecycle coordination and recovery](lifecycle.md) for crash behavior, backend responsibilities and upgrade precautions.
 
@@ -421,6 +421,18 @@ Every pool VM and its lease state.
 | `expires_in` | number \| null | seconds left (only while `leased`; may be negative until the reaper runs) |
 
 Run it on the host, or from the controller as `boxery pool ls --json`.
+
+#### `boxery-host acquire … --json`, `boxery-host renew LEASE … --json`
+
+The lease just taken or extended: `{"name":"pool-1","lease_id":"l-0123456789abcdef0123456789abcdef","expires_at":1793462400}`.
+
+| Field | Type | |
+|---|---|---|
+| `name` | string | the pool VM |
+| `lease_id` | string | `l-` + 32 hex |
+| `expires_at` | number | expiry (unix seconds) |
+
+The controller (`boxery acquire`, `vm_lease`) asks for it when the host's `help` shows `renew … [--json]`; without `--json` the host prints `NAME LEASE_ID EXPIRES` / `NAME EXPIRES`.
 
 ## Configuration
 

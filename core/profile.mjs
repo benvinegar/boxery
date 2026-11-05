@@ -125,24 +125,36 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 	});
 }
 
-/** Does the host support something its `help` shows (PATTERN)? Asked once, then remembered in the profile
- *  as MARKER, like the CLI's host_pins_keys (which reads `help` whatever its exit status). A host that
- *  doesn't is asked again next time: it may have been upgraded since.
- *  @param {HostProfile} host @param {ProfileConfig} c @param {string} marker @param {RegExp} pattern */
-async function hostSupports(host, c, marker, pattern) {
-	const file = path.join(host.dir, marker);
-	if (existsSync(file)) return true;
+/** Does the host support something its `help` shows (PATTERN)? Remembered in the profile as MARKER once it
+ *  does, like the CLI's host_pins_keys (which reads `help` whatever its exit status). A host that doesn't
+ *  is remembered for 10 minutes in this process only: it may be upgraded. recheck: ask again, and forget
+ *  the marker if it no longer does (a host downgraded, or HOST pointed at an older one).
+ *  @param {HostProfile} host @param {ProfileConfig} c @param {string} marker @param {RegExp} pattern
+ *  @param {{ signal?: AbortSignal, recheck?: boolean }} [opts] */
+async function hostSupports(host, c, marker, pattern, { signal, recheck = false } = {}) {
+	const file = path.join(host.dir, marker), key = `${file}\0${c.host}`;
+	if (!recheck && existsSync(file)) return true;
 	if (!c.host) return false;
-	const help = await hostRun(["help"], { host, config: c, timeout: 60_000, raw: true }).catch((e) => String(e?.stdout ?? ""));
-	if (!pattern.test(help)) return false;
-	writeFileSync(file, "");
-	return true;
+	if (!recheck && (unsupported.get(key) ?? 0) > Date.now()) return false;
+	const help = await hostRun(["help"], { host, config: c, timeout: 60_000, raw: true, signal }).catch((e) => {
+		if (e?.name === "AbortError") throw e;
+		return String(e?.stdout ?? "");
+	});
+	if (pattern.test(help)) { writeFileSync(file, ""); unsupported.delete(key); return true; }
+	rmSync(file, { force: true });
+	unsupported.set(key, Date.now() + 10 * 60_000);
+	return false;
 }
+/** marker + host → until when it is known not to support it @type {Map<string, number>} */
+const unsupported = new Map();
+/** Forget what this process learned about hosts' features (tests: a stub host "upgraded" in place). */
+export const forgetHostFeatures = () => unsupported.clear();
 /** Does the host pin VM host keys (boxery-host known-hosts, #70)? @param {HostProfile} host @param {ProfileConfig} c */
 const hostPinsKeys = (host, c) => hostSupports(host, c, "host-pins-keys", /^ {2}known-hosts NAME/m);
-/** Does the host answer acquire/renew with --json? @param {HostProfile} [host] @param {ProfileConfig} [config] */
-export async function hostLeaseJson(host = currentHost(), config) {
-	return hostSupports(host, config ?? await profileConfig(host), "host-lease-json", /^ {2}renew LEASE \[--ttl S\] \[--json\]/m);
+/** Does the host answer acquire/renew with --json? recheck: see hostSupports.
+ *  @param {{ host?: HostProfile, signal?: AbortSignal, recheck?: boolean }} [opts] */
+export async function hostLeaseJson({ host = currentHost(), signal, recheck } = {}) {
+	return hostSupports(host, await profileConfig(host, { signal }), "host-lease-json", /^ {2}renew LEASE \[--ttl S\] \[--json\]/m, { signal, recheck });
 }
 
 /** The leases and ssh-agent grants ssh_config names. Stricter than the CLI's

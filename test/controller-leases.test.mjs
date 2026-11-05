@@ -17,6 +17,7 @@ chmodSync(path.join(dir, "bin/ssh"), 0o755);
 process.env.PATH = `${path.join(dir, "bin")}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
 const leases = await import("../core/leases.mjs");
+const profile = await import("../core/profile.mjs");
 const leasesDir = path.join(home, "leases");
 const statMode = (/** @type {string} */ f) => statSync(f).mode & 0o777;
 const readdirNames = (/** @type {string} */ d) => (existsSync(d) ? readdirSync(d) : []);
@@ -99,7 +100,25 @@ test("a host that predates --json gets the old commands, and its line is read", 
 		await leases.releaseLease("pool-1");
 	} finally { writeFileSync(hostbin, orig); }
 	assert.ok(!existsSync(path.join(home, "host-lease-json")), "not remembered for an older host");
+	profile.forgetHostFeatures(); // (in a real process: asked again after 10 minutes)
 	await leases.acquireLease({ ttl: 600 });
 	assert.match(calls().filter((c) => c.startsWith("acquire ")).at(-1) ?? "", / --json$/);
 	assert.ok(existsSync(path.join(home, "host-lease-json")), "remembered once the host supports it");
+});
+
+test("a host that stops understanding --json (downgraded, or HOST changed) is asked again, without it", async () => {
+	profile.forgetHostFeatures();
+	await leases.acquireLease({ ttl: 600 }); // remembers host-lease-json
+	assert.ok(existsSync(path.join(home, "host-lease-json")));
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	// An older host: no --json in help, and it rejects the flag before doing anything (as parseOptions does).
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;")
+		.replace('json=; for a; do [ "$a" != --json ] || json=1; done', 'for a; do [ "$a" != --json ] || { echo "boxery-host: unknown flag --json" >&2; exit 1; }; done; json='));
+	try {
+		assert.equal((await leases.renewLease("pool-1", 900)).expires, 9999999999);
+		assert.ok(!existsSync(path.join(home, "host-lease-json")), "the marker is forgotten");
+		const renews = calls().filter((c) => c.startsWith("renew "));
+		assert.deepEqual(renews.slice(-2).map((c) => c.endsWith("--json")), [true, false], renews.join("\n"));
+		await leases.releaseLease("pool-1");
+	} finally { writeFileSync(hostbin, orig); }
 });
