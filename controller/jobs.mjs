@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeMaster } from "../core/profile.mjs";
-import { CliError, die, duration, needVm, note, num, quit, rawBytes, say, vmSsh, vmSshCapture, warn } from "./lib.mjs";
+import { CliError, die, duration, needVm, note, num, quit, say, vmSsh, vmSshCapture, warn } from "./lib.mjs";
 /** @import { Selected } from "./lib.mjs" */
 
 // Probe for type stripping instead of matching versions (it arrived in 22.18 and 23.6, not 23.0).
@@ -40,11 +40,12 @@ const VALID_JOB = /^job-[a-z0-9-]+$/;
 /** @param {string | undefined} id */
 const needJob = (id) => (VALID_JOB.test(id ?? "") && /** @type {string} */ (id).length <= 40 ? /** @type {string} */ (id) : die(`invalid job id: ${id ?? ""} (see: boxery jobs NAME)`));
 
-/** run --bg: start ARGV in the VM as a job; its id. @param {Selected} s @param {string} name @param {string[]} argv @param {string} cwd */
+/** run --bg: start ARGV (each word's bytes) in the VM as a job, in CWD (bytes, or null: ~/project); its id.
+ *  @param {Selected} s @param {string} name @param {Buffer[]} argv @param {Buffer | null} cwd */
 export async function startJob(s, name, argv, cwd) {
 	// argv as NUL-terminated words, base64: survives ssh's re-parsing with no quoting at all.
-	const words = Buffer.concat(argv.flatMap((a) => [rawBytes(a), Buffer.from([0])]));
-	const cwdb = cwd ? rawBytes(cwd).toString("base64") : "-";
+	const words = Buffer.concat(argv.flatMap((a) => [a, Buffer.from([0])]));
+	const cwdb = cwd ? cwd.toString("base64") : "-";
 	const runner = readFileSync(jobsRunner()).toString("base64");
 	const r = await jobsVmCapture(s, name, ["start", words.toString("base64"), cwdb, runner, "--text"]);
 	if (r.code !== 0) quit(r.code);

@@ -14,7 +14,7 @@ import { refreshSshConfig } from "../core/profile.mjs";
 import { literal, literalArgs, remotePath } from "../core/ssh-config.mjs";
 import { controllerVersion, hostVersion, skewNote, upgradeHint } from "../core/versions.mjs";
 import { backendCommand, hostCommand, setupNamed } from "./hosts.mjs";
-import { CliError, VALID_SNAP, VALID_VM, commandLine, die, hasRawBytes, hostFailed, hostPass, needHost, needVm, note, rawBytes, say, select, vmSsh, vmSshCapture, warn } from "./lib.mjs";
+import { CliError, VALID_SNAP, VALID_VM, commandLine, die, hasRawBytes, hostFailed, hostPass, needHost, needVm, note, rawTail, say, select, vmSsh, vmSshCapture, warn } from "./lib.mjs";
 import { RUN_EXAMPLES, USAGE } from "./usage.mjs";
 /** @import { Selected } from "./lib.mjs" */
 
@@ -112,19 +112,23 @@ async function cmdRun(s, args) {
 		return;
 	}
 	const name = needVm(args[0]);
+	// The bytes of every word from NAME on, by position (the command line's own, for words that aren't UTF-8).
+	const raw = rawTail(args);
 	let cwd = "", i = 1;
+	/** @type {Buffer} */
+	let cwdRaw = Buffer.alloc(0);
 	for (; i < args.length; i++) {
-		if (args[i] === "--cwd") { if (!args[i + 1]) die(usage); cwd = args[++i]; }
+		if (args[i] === "--cwd") { if (!args[i + 1]) die(usage); cwd = args[++i]; cwdRaw = raw[i]; }
 		else if (args[i] === "--bg") bg = true;
 		else if (args[i] === "--") { i++; break; }
 		else break;
 	}
-	const argv = args.slice(i);
+	const argv = args.slice(i), argvRaw = raw.slice(i);
 	if (!argv.length) die(usage);
 	if (bg) {
 		await (await grants()).reapplyQuiet(s, name);
 		const { startJob } = await import("./jobs.mjs");
-		const id = await startJob(s, name, argv, cwd);
+		const id = await startJob(s, name, argvRaw, cwd ? cwdRaw : null);
 		say(id);
 		note(`boxery: started ${id} on ${name}   logs: boxery logs ${name} ${id} -f   wait: boxery wait ${name} ${id}`);
 		literalNote(name, argv);
@@ -135,9 +139,7 @@ async function cmdRun(s, args) {
 	else if (cwd.startsWith("/") || cwd === "~" || cwd.startsWith("~/")) line = `cd -- ${remotePath(cwd)} && ${line}`;
 	else line = `cd -- ${remotePath(`~/project/${cwd}`)} && ${line}`;
 	// Bytes that aren't UTF-8 can't be in our ssh's argv (Node encodes it): send that line base64.
-	if (hasRawBytes([...argv, cwd])) {
-		line = `eval "$(printf %s ${rawLine(argv, cwd).toString("base64")} | base64 -d)"`;
-	}
+	if (hasRawBytes([...argvRaw, cwdRaw])) line = `eval "$(printf %s ${rawLine(argvRaw, cwd ? cwdRaw : null).toString("base64")} | base64 -d)"`;
 	const rc = await vmSsh(s, [`${name}.boxery`, line]);
 	// The usual mistake is a whole command line in one argument; say how to run it instead.
 	if (rc === 127 && /\s/.test(argv[0])) warn(`hint: run takes the command and its arguments separately; for a shell line use: boxery run ${name} bash -c ${literal(argv[0])}`);
@@ -145,16 +147,17 @@ async function cmdRun(s, args) {
 	if (rc) throw new CliError("", rc);
 }
 
-/** run's remote command line as bytes, for arguments that aren't UTF-8. @param {string[]} argv @param {string} cwd */
+/** run's remote command line as bytes, for arguments that aren't UTF-8: the same line, built from bytes.
+ *  @param {Buffer[]} argv @param {Buffer | null} cwd */
 function rawLine(argv, cwd) {
 	const lit = (/** @type {Buffer} */ b) => Buffer.concat([Buffer.from("'"), Buffer.from(b.toString("latin1").replaceAll("'", "'\\''"), "latin1"), Buffer.from("'")]);
-	const words = Buffer.concat(argv.flatMap((a, i) => [Buffer.from(i ? " " : ""), lit(rawBytes(a))]));
-	const raw = rawBytes(cwd);
+	const words = Buffer.concat(argv.flatMap((a, i) => [Buffer.from(i ? " " : ""), lit(a)]));
+	const starts = (/** @type {string} */ p) => cwd?.subarray(0, p.length).equals(Buffer.from(p));
 	const cd = !cwd ? Buffer.from("cd ~/project 2>/dev/null; ")
-		: cwd === "~" ? Buffer.from('cd -- "$HOME" && ')
-		: cwd.startsWith("~/") ? Buffer.concat([Buffer.from('cd -- "$HOME"/'), lit(raw.subarray(2)), Buffer.from(" && ")])
-		: cwd.startsWith("/") ? Buffer.concat([Buffer.from("cd -- "), lit(raw), Buffer.from(" && ")])
-		: Buffer.concat([Buffer.from('cd -- "$HOME"/'), lit(Buffer.concat([Buffer.from("project/"), raw])), Buffer.from(" && ")]);
+		: cwd.equals(Buffer.from("~")) ? Buffer.from('cd -- "$HOME" && ')
+		: starts("~/") ? Buffer.concat([Buffer.from('cd -- "$HOME"/'), lit(cwd.subarray(2)), Buffer.from(" && ")])
+		: starts("/") ? Buffer.concat([Buffer.from("cd -- "), lit(cwd), Buffer.from(" && ")])
+		: Buffer.concat([Buffer.from('cd -- "$HOME"/'), lit(Buffer.concat([Buffer.from("project/"), cwd])), Buffer.from(" && ")]);
 	return Buffer.concat([cd, words]);
 }
 
@@ -240,7 +243,7 @@ async function cmdSessions(s, [vm, flag]) {
 		const [sn, w = "", c = "", at = ""] = l.split("\t");
 		// (control characters other than tab and newline were dropped, as the Bash JSON writer did)
 		return JSON.stringify({ name: sn.replace(/[\u0001-\u0008\u000b-\u001f]/g, ""), windows: num(w), created: num(c), attached: !["", "0"].includes(at) });
-	}).filter((_, i, all) => all[i] !== undefined);
+	});
 	say(rows.length ? `[\n${rows.join(",\n")}\n]` : "[]");
 }
 
@@ -375,6 +378,8 @@ export const COMMANDS = {
 
 /** @param {string[]} argv */
 async function main(argv) {
+	const [major, minor] = process.versions.node.split(".").map(Number);
+	if (major < 22 || (major === 22 && minor < 13)) die(`need Node >= 22.13 (this is ${process.version}); install a newer one, or set BOXERY_NODE`);
 	if (/[\n\t\r]/.test(BOXERY_HOME)) die("paths cannot contain line breaks or tabs");
 	let explicit = "", pinned = "";
 	if (argv[0] === "--host") {
@@ -404,7 +409,14 @@ async function main(argv) {
 		if (!path.isAbsolute(pinned)) die(`invalid profile directory: ${pinned}`);
 		if (/[\n\t\r]/.test(pinned)) die("paths cannot contain line breaks or tabs");
 		dir = pinned;
-	} else dir = resolveHost(name).dir;
+	} else {
+		// A registration whose profile was never set up (no config yet) is a host to configure, as before.
+		try { dir = resolveHost(name).dir; }
+		catch (e) {
+			if (!/^incomplete profile:/.test(/** @type {Error} */ (e).message)) throw e;
+			die(`host ${name} is not configured; run: boxery setup user@host|local --name ${name}`);
+		}
+	}
 	const command = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : null;
 	if (!command) { process.stdout.write(USAGE + RUN_EXAMPLES); throw new CliError("", 1); }
 	const s = await select(name, dir);
@@ -426,5 +438,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 		const err = /** @type {Error & { exitCode?: number }} */ (e);
 		if (!(err instanceof CliError) || err.message) process.stderr.write(`boxery: ${err.message.replace(/^boxery: /, "")}\n`);
 		process.exitCode = err.exitCode ?? 1;
+		// A terminal command (ssh, a tunnel) ended by a signal: end by it too, so callers see WIFSIGNALED.
+		const sig = (await import("./lib.mjs")).killedBy;
+		if (sig && err instanceof CliError && err.exitCode === 128 + (constants.signals[sig] ?? 0)) {
+			for (const name of /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"])) process.removeAllListeners(name);
+			process.kill(process.pid, sig);
+		}
 	}
 }

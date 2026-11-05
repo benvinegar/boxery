@@ -75,37 +75,42 @@ export function inherit(cmd, args, { env = process.env, stdin = "inherit", input
 			resolve(code);
 		};
 		child.on("error", (e) => { note(`boxery: cannot run ${cmd}: ${e.message}`); done(127); });
-		child.on("exit", (code, sig) => done(code ?? 128 + (sig ? constants.signals[sig] ?? 0 : 0)));
+		child.on("exit", (code, sig) => { if (sig) killedBy = sig; done(code ?? 128 + (sig ? constants.signals[sig] ?? 0 : 0)); });
 		if (input !== undefined && child.stdin) { child.stdin.on("error", () => {}); child.stdin.end(input); }
 	});
 }
+/** The signal that ended the last terminal command, if one did (cli.mjs then ends with it too, as an exec'd
+ *  ssh would have). @type {NodeJS.Signals | null} */
+export let killedBy = null;
 
 // ---------------------------------------------------------------- arguments as bytes
-// Node decodes argv as UTF-8: bytes that aren't are lost. The shim (controller/boxery) passes such
-// arguments as BOXERY_ARGV (base64 of each, NUL-terminated), and these give them back where they matter
-// (what run sends to the VM).
-/** @type {Map<string, Buffer>} */
-const RAW = new Map();
-/** The command line, from BOXERY_ARGV if the shim set it (it is removed from the environment). @returns {string[]} */
+// Node decodes argv as UTF-8: bytes that aren't are lost. When an argument isn't UTF-8, the shim
+// (controller/boxery) passes the whole command line as BOXERY_ARGV (each argument's bytes, NUL-terminated,
+// base64) and says so with ARGV_FROM_ENV in place of the arguments. The bytes are kept by position: two
+// arguments can decode to the same string (both U+FFFD) and still differ.
+export const ARGV_FROM_ENV = "--boxery-argv-from-env";
+/** The command line's arguments as bytes, by position. @type {Buffer[]} */
+let RAW = [];
+/** The command line (bytes decoded as UTF-8). BOXERY_ARGV is read only when the shim says it set it. @returns {string[]} */
 export function commandLine() {
 	const b64 = process.env.BOXERY_ARGV;
 	delete process.env.BOXERY_ARGV;
-	if (!b64) return process.argv.slice(2);
+	const argv = process.argv.slice(2);
+	if (argv.length !== 1 || argv[0] !== ARGV_FROM_ENV || !b64) { RAW = argv.map((a) => Buffer.from(a)); return argv; }
 	const bytes = Buffer.from(b64, "base64");
-	/** @type {string[]} */
-	const out = [];
-	for (let start = 0, i = 0; i < bytes.length; i++) {
-		if (bytes[i] !== 0) continue;
-		const b = Buffer.from(bytes.subarray(start, i)), s = b.toString("utf8");
-		if (!RAW.has(s)) RAW.set(s, b);
-		out.push(s); start = i + 1;
-	}
-	return out;
+	RAW = [];
+	for (let start = 0, i = 0; i < bytes.length; i++) if (bytes[i] === 0) { RAW.push(Buffer.from(bytes.subarray(start, i))); start = i + 1; }
+	return RAW.map((b) => b.toString("utf8"));
 }
-/** An argument's bytes as given on the command line (its UTF-8 if it came from elsewhere). @param {string} a */
-export const rawBytes = (a) => RAW.get(a) ?? Buffer.from(a);
-/** Do these arguments have bytes UTF-8 couldn't carry? @param {string[]} args */
-export const hasRawBytes = (args) => args.some((a) => !rawBytes(a).equals(Buffer.from(a)));
+/** The bytes of ARGS, which must be a tail of the command line (every parser here only drops leading
+ *  words): the command line's own bytes for them, else their UTF-8. @param {string[]} args @returns {Buffer[]} */
+export function rawTail(args) {
+	const tail = RAW.slice(RAW.length - args.length);
+	const same = tail.length === args.length && tail.every((b, i) => b.toString("utf8") === args[i]);
+	return same ? tail : args.map((a) => Buffer.from(a));
+}
+/** Do these bytes differ from their UTF-8 decoding (bytes UTF-8 can't carry)? @param {Buffer[]} raw */
+export const hasRawBytes = (raw) => raw.some((b) => !Buffer.from(b.toString("utf8")).equals(b));
 
 /** A command's output, captured: {code, stdout} (stderr passes through). @param {string} cmd @param {string[]} args
  *  @param {{ env?: NodeJS.ProcessEnv, input?: string | Buffer }} [opts] @returns {Promise<{ code: number, stdout: string }>} */

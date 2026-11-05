@@ -63,7 +63,9 @@ export async function runnersOnce(s, args) {
 	const [cmd, argv] = hostCommand(s.host, s.config, ["runners", "__once", ...(vms ? ["--vms", vms] : []), ...(labels ? ["--labels", labels] : [])]);
 	const host = spawn(cmd, argv, { stdio: ["pipe", "pipe", "inherit"], env: s.config.env });
 	host.stdin.on("error", () => {});
-	let open = true, stop = 0, id = "", name = "", vm = "", failed = "", outcome = "", busy = false, started = false;
+	let open = true, stop = 0, id = "", name = "", vm = "", failed = "", outcome = "", busy = false, started = false, abandon = false;
+	const lines = createInterface({ input: host.stdout });
+	host.on("error", (e) => { warn(`cannot run ${cmd}: ${e.message}`); failed = "host"; lines.close(); });
 	const closeHost = () => { if (open) { open = false; host.stdin.end(); } };
 	const send = (/** @type {string} */ text) => { if (open) host.stdin.write(text); };
 
@@ -80,7 +82,7 @@ export async function runnersOnce(s, args) {
 	const onSignal = () => {
 		stop++;
 		if (stop === 1) { closeHost(); note(`==> stopping the runner${vm ? ` and giving ${vm} back` : ""}`); }
-		else host.stdout.destroy(); // a second Ctrl-C: don't wait for the host (it cleans up anyway)
+		else { abandon = true; lines.close(); } // a second Ctrl-C: don't wait for the host (it cleans up anyway)
 	};
 	const signals = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
 	for (const sig of signals) process.on(sig, onSignal);
@@ -118,7 +120,6 @@ export async function runnersOnce(s, args) {
 
 	let rc = 1;
 	try {
-		const lines = createInterface({ input: host.stdout });
 		/** @type {Promise<void>[]} */
 		const pending = [];
 		for await (const line of lines) {
@@ -127,7 +128,7 @@ export async function runnersOnce(s, args) {
 			else if (["exited", "stopped", "lost", "failed"].includes(line)) outcome = line;
 		}
 		await Promise.all(pending);
-		await new Promise((resolve) => { if (host.exitCode !== null) resolve(undefined); else host.once("close", resolve); });
+		if (!abandon && !failed) await new Promise((resolve) => { if (host.exitCode !== null || host.signalCode !== null) resolve(undefined); else host.once("close", resolve); });
 		const { gone } = await deleteRegistration();
 		if (stop) { note("==> stopped"); rc = 130; }
 		else if (outcome === "exited" && (gone || busy)) { note(`==> done: ${name} ran its job; ${vm} is reset`); rc = 0; }
@@ -138,6 +139,8 @@ export async function runnersOnce(s, args) {
 		for (const sig of signals) process.off(sig, onSignal);
 		closeHost();
 		await deleteRegistration().catch(() => {});
+		// Not waiting for the host any more (a second Ctrl-C): its pipes mustn't keep this process alive.
+		if (abandon) { host.stdout.destroy(); host.unref(); }
 	}
 	if (rc) throw new CliError("", rc);
 }

@@ -2,7 +2,8 @@
 // profile directory, BOXERY_HOME/default-host → NAME) and each profile's config and ssh_config.
 // Registry files are data, read without following links (core/boxery-core.mjs); profile configs are
 // trusted shell files (core/profile.mjs).
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, existsSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants } from "node:os";
 import { homedir } from "node:os";
 import path from "node:path";
 import { BOXERY_HOME, defaultHost, describeHosts, hostBackend, profileFromDirectory, registeredHosts, resolveHost } from "../core/boxery-core.mjs";
@@ -108,7 +109,7 @@ async function setup(host, config, args, { setupProfile = "" } = {}) {
 		say("==> local mode: the VM host is this machine");
 		const bin = localHostBin(hostBin, env.HOME ?? homedir());
 		let executable = false;
-		try { executable = statSync(bin).isFile() && (statSync(bin).mode & 0o111) !== 0; } catch { /* missing */ }
+		try { accessSync(bin, fsConstants.X_OK); executable = statSync(bin).isFile(); } catch { /* missing or not executable by us */ }
 		if (!executable) die(`${bin} not found; run host/boxery-host init here first`);
 		if (await inherit(bin, ["help"], { env, stdout: "ignore" }) !== 0) die(`cannot run ${bin}`);
 	} else {
@@ -159,7 +160,8 @@ async function setup(host, config, args, { setupProfile = "" } = {}) {
 	} else {
 		const include = `Include ${sshIncludeValue(host.sshConf)}`;
 		const userConfig = path.join(env.HOME ?? homedir(), ".ssh", "config");
-		const lines = existsSync(userConfig) ? readFileSync(userConfig, "utf8").split("\n") : [];
+		let lines = /** @type {string[]} */ ([]);
+		try { if (statSync(userConfig).isFile()) lines = readFileSync(userConfig, "utf8").split("\n"); } catch { /* none, or unreadable: recommend it */ }
 		if (!lines.includes(include) && !lines.includes(`Include ${host.sshConf}`)) {
 			say("==> add this line to the TOP of ~/.ssh/config so 'ssh NAME.boxery', VS Code, Zed etc. work:");
 			say(`    ${include}`);
@@ -213,9 +215,10 @@ export async function hostCommand(args) {
 			setDefault(alias);
 		} else if (action === "rm") {
 			if (more.length) die("usage: boxery host rm NAME");
-			let isFile = false;
-			try { isFile = lstatSync(path.join(REGISTRY, alias)).isFile(); } catch { /* absent */ }
-			if (!isFile) die(`unknown host: ${alias}`);
+			// (A symlinked entry is malformed everywhere else; rm may still remove it: it only unlinks.)
+			let entry = false;
+			try { const st = lstatSync(path.join(REGISTRY, alias)); entry = st.isFile() || st.isSymbolicLink(); } catch { /* absent */ }
+			if (!entry) die(`unknown host: ${alias}`);
 			if (checkedDefault() === alias) die("cannot forget the default host; first run boxery host use OTHER");
 			rmSync(path.join(REGISTRY, alias));
 			say(`forgot ${alias}; profile data, VMs and grants were NOT deleted or revoked`);
@@ -223,14 +226,27 @@ export async function hostCommand(args) {
 	});
 }
 
-/** @param {() => Promise<void>} fn */
+/** What a signal must undo while the registry is locked: the lock, and a profile directory being made. */
+const undo = { lock: "", profile: "" };
+const cleanUp = () => { if (undo.profile) rmSync(undo.profile, { recursive: true, force: true }); if (undo.lock) rmSync(undo.lock, { force: true }); };
+
+/** Run FN holding the registry lock. A signal meanwhile (Ctrl-C at an init prompt) still removes the lock
+ *  and a half-made profile, then ends the command as the signal would (128+N), as Bash's EXIT trap did.
+ *  @param {() => Promise<void>} fn */
 async function withRegistryLock(fn) {
 	mkdirSync(REGISTRY, { recursive: true });
 	const lock = path.join(REGISTRY, ".lock");
 	let fd;
-	try { fd = openSync(lock, "wx"); } catch { die("host registry is locked; retry"); }
+	try { fd = openSync(lock, "wx"); }
+	catch (e) { die(/** @type {NodeJS.ErrnoException} */ (e).code === "EEXIST" ? "host registry is locked; retry" : `cannot lock the host registry: ${/** @type {Error} */ (e).message}`); }
 	closeSync(fd);
-	try { await fn(); } finally { rmSync(lock, { force: true }); }
+	undo.lock = lock;
+	const handlers = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]).map((sig) => /** @type {[NodeJS.Signals, () => void]} */ ([sig, () => { cleanUp(); process.exit(128 + constants.signals[sig]); }]));
+	for (const [sig, h] of handlers) process.on(sig, h);
+	try { await fn(); } finally {
+		for (const [sig, h] of handlers) process.off(sig, h);
+		rmSync(lock, { force: true }); undo.lock = "";
+	}
 }
 
 /** @param {string} name */
@@ -255,18 +271,19 @@ async function hostAdd(alias, args, { locked = false } = {}) {
 	} else {
 		dir = path.join(BOXERY_HOME, "profiles", alias);
 		if (present(dir)) die(`profile data already exists: ${dir} (import it explicitly)`);
+		plainPath(dir);
 		mkdirSync(dir, { recursive: true });
-		let done = false;
-		try {
-			const host = { name: alias, dir, sshConf: path.join(dir, "ssh_config") };
-			/** @type {ProfileConfig} */
-			const fresh = { host: "", hostBin: DEFAULT_HOST_BIN, hostProfile: "", identity: "", env: process.env };
-			await setup(host, fresh, args, { setupProfile: alias });
-			done = true;
-		} finally { if (!done) rmSync(dir, { recursive: true, force: true }); }
+		undo.profile = dir; // removed on any way out until it is registered
+		const host = { name: alias, dir, sshConf: path.join(dir, "ssh_config") };
+		/** @type {ProfileConfig} */
+		const fresh = { host: "", hostBin: DEFAULT_HOST_BIN, hostProfile: "", identity: "", env: process.env };
+		try { await setup(host, fresh, args, { setupProfile: alias }); }
+		catch (e) { cleanUp(); undo.profile = ""; throw e; }
 	}
 	plainPath(dir);
-	publish(path.join(REGISTRY, alias), `${dir}\n`);
+	try { publish(path.join(REGISTRY, alias), `${dir}\n`); }
+	catch (e) { if (undo.profile) { rmSync(undo.profile, { recursive: true, force: true }); undo.profile = ""; } throw e; }
+	undo.profile = "";
 	if (checkedDefault() == null) { setDefault(alias); say(`registered ${alias} (${dir}); it is the default host`); }
 	else say(`registered ${alias} (${dir}); select with: boxery host use ${alias}`);
 }

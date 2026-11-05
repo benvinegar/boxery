@@ -2,8 +2,10 @@
 # boxery: the controller CLI, on your machine (macOS or Linux). Entry point only: every command runs in Node
 # (controller/cli.mjs, Node >= 22.13), like host/boxery-host on the host. This shim finds that Node and this
 # checkout or package (through npm's bin symlink), and passes the arguments on byte for byte: Node decodes
-# argv as UTF-8, so when one isn't valid UTF-8 they all go, as bytes, in BOXERY_ARGV instead.
+# argv as UTF-8, so when one isn't valid UTF-8 they all go, as bytes, in BOXERY_ARGV instead (and the only
+# argument is then --boxery-argv-from-env).
 set -eu
+unset CDPATH BOXERY_ARGV # (cd would print the directory; and only this shim sets BOXERY_ARGV)
 s=${BASH_SOURCE[0]}
 while [ -L "$s" ]; do d=$(cd -P "$(dirname "$s")" && pwd); s=$(readlink "$s"); case $s in /*) ;; *) s=$d/$s ;; esac; done
 root=$(cd -P "$(dirname "$s")/.." && pwd)
@@ -11,13 +13,13 @@ node=${BOXERY_NODE:-node}
 command -v "$node" >/dev/null 2>&1 || { echo "boxery: node not found (need Node >= 22.13; install it, or set BOXERY_NODE)" >&2; exit 1; }
 cli=$root/controller/cli.mjs
 [ -f "$cli" ] || { echo "boxery: missing $cli; run boxery from its checkout or package" >&2; exit 1; }
-# Plain ASCII (the usual case) needs no check. Otherwise node says whether the bytes are UTF-8.
-nonascii=""
-for a in "$@"; do case $a in *[$'\x80'-$'\xff']*) nonascii=1; break ;; esac; done 2>/dev/null
-if [ -n "$nonascii" ]; then
+# Plain ASCII (the usual case) needs no check: a byte above 0x7f is found in the C locale (whatever the
+# user's), and then node says whether the bytes are UTF-8.
+nonascii() { local LC_ALL=C a; for a in "$@"; do case $a in *[![:print:][:space:]]*) return 0 ;; esac; done; return 1; }
+if nonascii "$@"; then
 	argv=$(for a in "$@"; do printf '%s\0' "$a"; done | base64 | tr -d '\n')
-	if ! BOXERY_ARGV=$argv "$node" -e 'const b = Buffer.from(process.env.BOXERY_ARGV, "base64"); process.exit(require("node:buffer").isUtf8(b) ? 0 : 1)'; then
-		BOXERY_ARGV=$argv exec "$node" --disable-warning=ExperimentalWarning "$cli"
+	if ! BOXERY_ARGV=$argv "$node" -e 'process.exit(require("node:buffer").isUtf8(Buffer.from(process.env.BOXERY_ARGV, "base64")) ? 0 : 1)'; then
+		BOXERY_ARGV=$argv exec "$node" --disable-warning=ExperimentalWarning "$cli" --boxery-argv-from-env
 	fi
 fi
 exec "$node" --disable-warning=ExperimentalWarning "$cli" "$@"

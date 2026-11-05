@@ -47,7 +47,7 @@ function ask(s, vm, specs) {
 		const buf = Buffer.alloc(1);
 		for (;;) {
 			let n = 0;
-			try { n = readSync(tty, buf, 0, 1, null); } catch (e) { if (/** @type {NodeJS.ErrnoException} */ (e).code === "EAGAIN") continue; break; }
+			try { n = readSync(tty, buf, 0, 1, null); } catch { break; }
 			if (n === 0 || buf[0] === 0x0a) break;
 			answer += String.fromCharCode(buf[0]);
 		}
