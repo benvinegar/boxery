@@ -156,7 +156,7 @@ A backend is **stable** when every line below holds. This is the bar libvirt and
 | 5 | Live: lifecycle | What `e2e.sh` doesn't cover: `build-base`, `new --headless`, `new --from`, `stop`/`start`, pool lease and reset, and every account or plan option the docs offer (or that option is listed as unverified) |
 | 6 | Live: interruptions | A create and a capture killed mid-way, then `reconcile`: no VM, image or local state is left, including work the platform finishes after the CLI died |
 | 7 | Live: host reboot | After a host reboot with VMs running, each VM is in the state the docs say and is reachable, at most after `start` |
-| 8 | Security | A guest reaches credentials only through the boxery proxy, with its per-VM token and grants: no platform feature (integrations, credential stores, metadata services) or other host service gets it around them. Its sshd accepts only boxery's lease-fenced keys, through the pinned endpoint |
+| 8 | Security | A guest reaches credentials only through the boxery proxy, with its per-VM token and grants. No host service or platform feature (integrations, credential stores, metadata services) gets it around them, unless the account owner turned that feature on and the backend warns about it wherever it reaches a VM. Its sshd accepts only boxery's lease-fenced keys, through the pinned endpoint |
 | 9 | Security notes | Every remaining limit (what the platform, its admins or the account's key can do) is in the backend's security notes and [docs/security.md](../../docs/security.md) |
 | 10 | Docs | `docs/install.md` gives requirements, account or plan prerequisites and setup; the backend's section here gives layout, lifecycle mapping, recovery, security notes and a verification record (date, host OS and arch, platform plan or version, timings). Nothing the docs state is contradicted by the platform, and no "Not verified yet" item touches lines 4–8 |
 | 11 | One answer | Every statement of stability agrees: the `docs/install.md` table, the backend's heading here, `ARCHITECTURE.md` (backends row, roadmap), the README's Status, `stability` in `backends/index.mjs`, and the "works with" artwork |
@@ -288,7 +288,7 @@ Scorecard against [what stable means](#what-stable-means-for-a-backend) (2026-11
 | 5 | Live: lifecycle | pass | Every item on both hosts, and `BOXERY_EXE_EGRESS`. `BOXERY_EXE_POOL` (Work plans only) stays listed as unverified |
 | 6 | Live: interruptions | pass | Creates killed at four points and a capture: every copy that landed was removed by `reconcile`, and none landed later. Needs #169 |
 | 7 | Live: host reboot | pass | Linux (systemd, linger): tunnels back 21 s after the reboot, no login. macOS: not tried; LaunchAgents load at login, which the docs now say |
-| 8 | Security | pass with #167 | Every credential integration is refused, through the API and from inside the VM; fails closed |
+| 8 | Security | pass with #167 | exe.dev integrations are the owner's to use: `init`, `new`, `start` and reimages warn about each credential one that reaches a VM, with the detach command. New accounts attach `llm` to every VM, so until it's detached agents can use the account's LLM credits without a grant |
 | 9 | Security notes | pass with #167 | `docs/security.md` has the exe.dev entry |
 | 10 | Docs | pass with #168, #178 | Sizes fixed in #168, live results above. An always-on host is a declared requirement and `init` warns on a battery (#178, deciding [#42](https://github.com/modem-dev/boxery/issues/42)) |
 | 11 | One answer | pass | Experimental everywhere it's stated |
