@@ -42,7 +42,7 @@ boxery release "$NAME"           # give it back; the VM is reset
 boxery leases                    # what you hold
 ```
 
-`acquire` exits with status 4 if no VM is free before `--wait` runs out.
+`acquire` exits with status 4 if no VM is free before `--wait` runs out. If you give up first (Ctrl-C), the host notices when it can't hand over a lease it got for you, gives that VM back and notes it in `lease-orphans.log` in its config directory. That needs the connection to close cleanly: if it just drops (a laptop going to sleep), sshd can hold it open for a long time, and the lease's TTL is what frees the VM.
 
 Pool VMs can also run GitHub Actions jobs, each in a freshly reset VM: the host's runner manager holds a lease per runner (holder `github-runner`) on the VMs you give it, and `boxery runners once` holds one for a single job (holder `github-runner-local`). See [GitHub Actions runners](github-runners.md).
 

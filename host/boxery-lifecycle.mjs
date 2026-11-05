@@ -1,7 +1,11 @@
 // Lease runtime: binds lease-workflows.mjs (policy) to SQLite, the operation journal, backend effects
 // and the supervisor. Each locked step runs in a supervised worker (`__call CALLBACK …`) that holds the
 // VM's lifecycle lock; the held-lock entry points below check that lock before acting.
+import { spawn } from "node:child_process";
+import { closeSync, openSync, writeSync } from "node:fs";
+import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import * as leases from "./boxery-leases.mjs";
 import { copyBuildRecord } from "./build-info.mjs";
 import { reconcileAbandoned, supervise } from "./boxery-operations.mjs";
@@ -43,6 +47,40 @@ export function parseOptions(args, defaults, flags) {
 
 /** --json anywhere in ARGS: [true, ARGS without it]. @param {string[]} args @returns {[boolean, string[]]} */
 const jsonFlag = (args) => [args.includes("--json"), args.filter((a) => a !== "--json")];
+
+/** Write to stdout; false if nobody reads it any more (EPIPE: the client is gone). @param {string} text @returns {Promise<boolean>} */
+function writeOut(text) {
+	return new Promise((resolve) => {
+		// The 'error' event can follow the write callback (host/cli.mjs keeps a listener for it too).
+		const gone = () => resolve(false);
+		process.stdout.once("error", gone);
+		process.stdout.write(text, (e) => { process.stdout.off("error", gone); resolve(!e); });
+	});
+}
+
+/**
+ * Release a lease whose client left before it got it. In a child of its own whose output goes to
+ * CONF/lease-orphans.log: ours went to the client, and is closed (a backend writing to it during the
+ * reset would die of SIGPIPE, and the VM end up BROKEN).
+ * @param {Runtime} rt @param {string} name @param {string} lease
+ */
+async function releaseOrphan(rt, name, lease) {
+	// The log is best effort: a log that can't be written mustn't stop the release.
+	let fd = /** @type {number | null} */ (null);
+	try { fd = openSync(path.join(rt.conf, "lease-orphans.log"), "a", 0o600); } catch { /* output to nowhere */ }
+	const note = (/** @type {string} */ m) => { if (fd !== null) try { writeSync(fd, `${new Date().toISOString()} ${name}: ${m}\n`); } catch { /* best effort */ } };
+	try {
+		note(`the client left before it got lease ${lease}; releasing it`);
+		const host = fileURLToPath(new URL("./boxery-host.mjs", import.meta.url));
+		const out = fd ?? "ignore";
+		const code = await new Promise((resolve) => {
+			const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", host, "release", lease], { stdio: ["ignore", out, out], env: process.env });
+			child.on("error", () => resolve(127));
+			child.on("close", (c) => resolve(c ?? 1));
+		});
+		if (code !== 0) note(`release of ${lease} failed (exit ${code}); the reaper resets it when it expires`);
+	} finally { if (fd !== null) closeSync(fd); }
+}
 
 /** @returns {Promise<string>} */
 function publicKey() {
@@ -106,7 +144,13 @@ export async function runLifecycle(rt, command, args) {
 			const [json, rest] = jsonFlag(args);
 			const { only, ...options } = parseOptions(rest, { holder: "", ttl: 1800, wait: 0, only: "" }, { "--holder": "holder", "--ttl": "ttl", "--wait": "wait", "--only": "only" });
 			const claim = await flows.acquire({ ...options, ...(only ? { only: only.split(",").map(nameOf) } : {}), pubkey: await publicKey() });
-			process.stdout.write(json ? `${JSON.stringify({ name: claim.name, lease_id: claim.lease_id, expires_at: claim.expires_at })}\n` : `${claim.name} ${claim.lease_id} ${claim.expires_at}\n`);
+			const reply = json ? `${JSON.stringify({ name: claim.name, lease_id: claim.lease_id, expires_at: claim.expires_at })}\n` : `${claim.name} ${claim.lease_id} ${claim.expires_at}\n`;
+			// A client that left while we waited (Ctrl-C, a timeout: ssh gone, nobody reading) would never learn
+			// of this lease, nor renew or release it. Its reply can't be written then: give the VM back.
+			if (!await writeOut(reply)) {
+				await releaseOrphan(rt, claim.name, claim.lease_id);
+				throw Object.assign(new Error("the client left before it got its lease (released it)"), { exitCode: 1 });
+			}
 			break;
 		}
 		case "renew": {
