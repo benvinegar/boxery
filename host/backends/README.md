@@ -290,7 +290,7 @@ Scorecard against [what stable means](#what-stable-means-for-a-backend) (2026-11
 | 7 | Live: host reboot | pass | Linux (systemd, linger): tunnels back 21 s after the reboot, no login. macOS: not tried; LaunchAgents load at login, which the docs now say |
 | 8 | Security | pass with #167 | Every credential integration is refused, through the API and from inside the VM; fails closed |
 | 9 | Security notes | pass with #167 | `docs/security.md` has the exe.dev entry |
-| 10 | Docs | fail | Sizes fixed in #168, live results above. Open: whether an always-on host is a requirement ([#42](https://github.com/modem-dev/boxery/issues/42)), which the docs must then state |
+| 10 | Docs | pass with #168, #178 | Sizes fixed in #168, live results above. An always-on host is a declared requirement and `init` warns on a battery (#178, deciding [#42](https://github.com/modem-dev/boxery/issues/42)) |
 | 11 | One answer | pass | Experimental everywhere it's stated |
 
 ## boat (experimental)
