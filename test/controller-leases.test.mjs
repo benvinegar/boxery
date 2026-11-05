@@ -77,3 +77,29 @@ test("renew: unknown lease and bad ttl are local errors; a host failure is marke
 	} finally { rmSync(path.join(dir, "renew-fails")); }
 	assert.equal((await leases.renewLease(LEASE_ID)).ttl, 600, "ttl defaults to the acquired one");
 });
+
+test("leaseReply reads a current host's JSON and an older host's line", () => {
+	const exp = { name: "pool-1", lease_id: LEASE_ID, expires_at: 1793462400 };
+	assert.deepEqual(leases.leaseReply(JSON.stringify(exp), true), exp);
+	assert.deepEqual(leases.leaseReply(`pool-1 ${LEASE_ID} 1793462400`, false), exp);
+	assert.deepEqual(leases.leaseReply("pool-1 1793462400", false), { ...exp, lease_id: null });
+	for (const bad of ["", "{", '{"name":"Bad","lease_id":"l-x","expires_at":1}', `{"name":"pool-1","lease_id":"${LEASE_ID}","expires_at":"1"}`]) assert.equal(leases.leaseReply(bad, true), null, bad);
+	assert.equal(leases.leaseReply("nonsense", false), null);
+});
+
+test("a host that predates --json gets the old commands, and its line is read", async () => {
+	const hostbin = path.join(dir, "grant-host"), orig = readFileSync(hostbin, "utf8");
+	writeFileSync(hostbin, orig.replace("help) echo '  renew LEASE [--ttl S] [--json] | release LEASE' ;;", "help) echo '  renew LEASE [--ttl S] | release LEASE' ;;"));
+	rmSync(path.join(home, "host-lease-json"), { force: true });
+	try {
+		const r = await leases.acquireLease({ ttl: 600 });
+		assert.equal(r.id, LEASE_ID);
+		assert.equal((await leases.renewLease("pool-1", 900)).expires, 9999999999);
+		assert.ok(calls().filter((c) => /^(acquire|renew) /.test(c)).every((c) => !c.includes("--json")), calls().join("\n"));
+		await leases.releaseLease("pool-1");
+	} finally { writeFileSync(hostbin, orig); }
+	assert.ok(!existsSync(path.join(home, "host-lease-json")), "not remembered for an older host");
+	await leases.acquireLease({ ttl: 600 });
+	assert.match(calls().filter((c) => c.startsWith("acquire ")).at(-1) ?? "", / --json$/);
+	assert.ok(existsSync(path.join(home, "host-lease-json")), "remembered once the host supports it");
+});

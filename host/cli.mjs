@@ -69,8 +69,8 @@ const usage = (/** @type {{ backend: string, conf: string }} */ { backend, conf 
   edge-set NAME [--lease ID] < routes.json   set the VM's edge credential routes (used by boxery grant http:…)
 
   pool add NAME | rm NAME [--force] | ls [--json]   shared pool of leasable VMs
-  acquire --holder H [--ttl S] [--wait S] [--only NAME,…]   lease a free pool VM (lease ssh pubkey on stdin)
-  renew LEASE [--ttl S] | release LEASE | reap | reconcile
+  acquire --holder H [--ttl S] [--wait S] [--only NAME,…] [--json]   lease a free pool VM (lease ssh pubkey on stdin)
+  renew LEASE [--ttl S] [--json] | release LEASE | reap | reconcile
 
   runners status [--json] | start | stop | token < FILE | config [--repo O/R | --org ORG] [--vms NAME,…] …
                             GitHub Actions runners, one job per freshly reset pool VM (docs/github-runners.md)

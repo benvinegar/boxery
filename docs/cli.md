@@ -207,8 +207,8 @@ pin NAME [--from-guest]         re-pin running NAME's ssh host key; prints its S
 proxy-log [N]
 
 pool add NAME | rm NAME [--force] | ls [--json]
-acquire --holder H [--ttl S] [--wait S] [--only NAME,…]   (lease ssh pubkey on stdin; --only: one of these VMs)
-renew LEASE [--ttl S] | release LEASE | reap | reconcile
+acquire --holder H [--ttl S] [--wait S] [--only NAME,…] [--json]   (lease ssh pubkey on stdin; --only: one of these VMs)
+renew LEASE [--ttl S] [--json] | release LEASE | reap | reconcile
 
 runners config [--repo OWNER/REPO | --org ORG] [--vms NAME,…] [--count N] [--labels L,…] [--group ID] [--ttl S] [--api URL] [--prefix P]
                                 configure GitHub Actions runners (saved in runners.json; no flags: print it)
@@ -219,6 +219,8 @@ runners run                     the runner manager in the foreground (what the s
 ```
 
 `runners` is described in [GitHub Actions runners](github-runners.md); `boxery runners …` on your machine passes the same arguments (and stdin, for `token`) to the host, except `runners once`, which runs on your machine with its `gh` login and drives the host's internal `runners __once`.
+
+`acquire` prints `NAME LEASE_ID EXPIRES` and `renew` prints `NAME EXPIRES`; with `--json`, both print `{"name","lease_id","expires_at"}` (expiry in unix seconds). The controller and the runner manager use `--json`, and fall back to the line for a host that predates it.
 
 `reconcile` (also performed by `reap`) recovers abandoned lifecycle operations and checks inventory drift. Conflicting VM mutations are serialized through readiness/key installation, not just disk operations. See [Lifecycle coordination and recovery](lifecycle.md) for crash behavior, backend responsibilities and upgrade precautions.
 

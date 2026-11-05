@@ -125,17 +125,24 @@ export async function hostRun(args, { input, signal, host = currentHost(), timeo
 	});
 }
 
-/** Does the host pin VM host keys (boxery-host known-hosts, #70)? Asked once, then remembered in the
- *  profile (host-pins-keys), like the CLI's host_pins_keys (which reads `help` whatever its exit status).
- *  @param {HostProfile} host @param {ProfileConfig} c */
-async function hostPinsKeys(host, c) {
-	const marker = path.join(host.dir, "host-pins-keys");
-	if (existsSync(marker)) return true;
+/** Does the host support something its `help` shows (PATTERN)? Asked once, then remembered in the profile
+ *  as MARKER, like the CLI's host_pins_keys (which reads `help` whatever its exit status). A host that
+ *  doesn't is asked again next time: it may have been upgraded since.
+ *  @param {HostProfile} host @param {ProfileConfig} c @param {string} marker @param {RegExp} pattern */
+async function hostSupports(host, c, marker, pattern) {
+	const file = path.join(host.dir, marker);
+	if (existsSync(file)) return true;
 	if (!c.host) return false;
 	const help = await hostRun(["help"], { host, config: c, timeout: 60_000, raw: true }).catch((e) => String(e?.stdout ?? ""));
-	if (!/^ {2}known-hosts NAME/m.test(help)) return false;
-	writeFileSync(marker, "");
+	if (!pattern.test(help)) return false;
+	writeFileSync(file, "");
 	return true;
+}
+/** Does the host pin VM host keys (boxery-host known-hosts, #70)? @param {HostProfile} host @param {ProfileConfig} c */
+const hostPinsKeys = (host, c) => hostSupports(host, c, "host-pins-keys", /^ {2}known-hosts NAME/m);
+/** Does the host answer acquire/renew with --json? @param {HostProfile} [host] @param {ProfileConfig} [config] */
+export async function hostLeaseJson(host = currentHost(), config) {
+	return hostSupports(host, config ?? await profileConfig(host), "host-lease-json", /^ {2}renew LEASE \[--ttl S\] \[--json\]/m);
 }
 
 /** The leases and ssh-agent grants ssh_config names. Stricter than the CLI's

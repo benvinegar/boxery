@@ -22,7 +22,7 @@ writeFileSync(process.env.BOXERY_BIN, "#!/bin/sh\necho 'spawned the CLI' >&2\nex
 chmodSync(process.env.BOXERY_BIN, 0o755);
 const core = await import("../core/boxery-core.mjs");
 
-const log = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2));
+const log = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2)).filter((c) => c !== "help"); // (help: the --json probe)
 const reset = () => rmSync(path.join(dir, "host.calls"), { force: true });
 const until = async (pred) => {
 	for (let i = 0; i < 100 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
@@ -40,8 +40,8 @@ test("acquire validates, parses NAME LEASE_ID and renews on a heartbeat while al
 	assert.equal(k.find("pool-1"), l);
 	assert.equal(k.find("other"), null);
 	await until(() => log().filter((c) => c.startsWith("renew")).length >= 2);
-	assert.match(log()[0], /^acquire --holder \S+ --ttl 600 --wait 3$/);
-	assert.equal(log()[1], "renew l-0123456789abcdef0123456789abcdef --ttl 600");
+	assert.match(log()[0], /^acquire --holder \S+ --ttl 600 --wait 3 --json$/);
+	assert.equal(log()[1], "renew l-0123456789abcdef0123456789abcdef --ttl 600 --json");
 	assert.ok(existsSync(path.join(home, "leases/l-0123456789abcdef0123456789abcdef.key")), "lease key kept locally");
 
 	alive = false; // an idle session stops renewing; the lease is left to expire on the host
@@ -79,7 +79,7 @@ test("renew with a new ttl keeps it; a failed renew loses the lease; releaseAll 
 	const k = new core.LeaseKeeper({ everyMs: () => 60_000 });
 	await k.acquire({ ttl: 600 });
 	assert.equal((await k.renew("pool-1", 1200)).ttl, 1200);
-	assert.equal(log().at(-1), "renew l-0123456789abcdef0123456789abcdef --ttl 1200");
+	assert.equal(log().at(-1), "renew l-0123456789abcdef0123456789abcdef --ttl 1200 --json");
 	await assert.rejects(k.renew("pool-1", 30), /ttl must be/);
 	writeFileSync(failRenew, "");
 	await assert.rejects(k.renew("pool-1"), /is gone/);
@@ -87,7 +87,7 @@ test("renew with a new ttl keeps it; a failed renew loses the lease; releaseAll 
 	assert.equal(k.list().length, 0);
 
 	await k.acquire({});
-	assert.match(/** @type {string} */ (log().at(-1)), /^acquire --holder \S+ --ttl 1800 --wait 60$/);
+	assert.match(/** @type {string} */ (log().at(-1)), /^acquire --holder \S+ --ttl 1800 --wait 60 --json$/);
 	await k.releaseAll();
 	assert.equal(log().at(-1), "release l-0123456789abcdef0123456789abcdef");
 	assert.equal(k.list().length, 0);

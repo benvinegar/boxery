@@ -543,6 +543,13 @@ function boxeryHost(rt, args, { input = "", quiet = [] } = {}) {
 		});
 	});
 }
+/** acquire/renew --json → {name, lease_id, expires_at}, or null if it isn't one. @param {string} out */
+function leaseReply(out) {
+	try {
+		const r = JSON.parse(out);
+		return VALID_NAME.test(r?.name ?? "") && /^l-[0-9a-f]{32}$/.test(r?.lease_id ?? "") && Number.isSafeInteger(r?.expires_at) ? /** @type {{ name: string, lease_id: string, expires_at: number }} */ (r) : null;
+	} catch { return null; }
+}
 const lastLine = (/** @type {string} */ s) => s.trim().split("\n").at(-1)?.replace(/^boxery-host: /, "") ?? "";
 
 /** @param {Runtime} rt @param {number} ttl @param {string} [holder] @returns {RunnerPool} */
@@ -551,18 +558,18 @@ export function hostPool(rt, ttl, holder = HOLDER) {
 		async acquire(only) {
 			// The lease key is the host's own management key: it is in every pool VM anyway, and nobody but
 			// the host needs to log in to a runner VM.
-			const r = await boxeryHost(rt, ["acquire", "--holder", holder, "--ttl", String(ttl), "--only", only.join(",")],
+			const r = await boxeryHost(rt, ["acquire", "--holder", holder, "--ttl", String(ttl), "--only", only.join(","), "--json"],
 				{ input: `${rt.guest.hostPubkey()}\n`, quiet: [4] });
 			if (r.code === 4) return null;
-			const [vm, lease, expires] = r.out.trim().split(" ");
-			if (r.code !== 0 || !VALID_NAME.test(vm ?? "") || !/^l-[0-9a-f]{32}$/.test(lease ?? "")) throw new Error(lastLine(r.err) || `acquire exited ${r.code}`);
-			return { vm, lease, expires: Number(expires) };
+			const reply = r.code === 0 ? leaseReply(r.out) : null;
+			if (!reply) throw new Error(lastLine(r.err) || `acquire exited ${r.code}`);
+			return { vm: reply.name, lease: reply.lease_id, expires: reply.expires_at };
 		},
 		async renew(lease) {
-			const r = await boxeryHost(rt, ["renew", lease, "--ttl", String(ttl)], { quiet: [1] });
-			const expires = Number(r.out.trim().split(" ")[1]);
-			if (r.code !== 0 || !expires) throw new Error(lastLine(r.err) || `renew exited ${r.code}`);
-			return expires;
+			const r = await boxeryHost(rt, ["renew", lease, "--ttl", String(ttl), "--json"], { quiet: [1] });
+			const reply = r.code === 0 ? leaseReply(r.out) : null;
+			if (!reply) throw new Error(lastLine(r.err) || `renew exited ${r.code}`);
+			return reply.expires_at;
 		},
 		async release(lease) {
 			const r = await boxeryHost(rt, ["release", lease]);
