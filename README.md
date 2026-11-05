@@ -149,7 +149,9 @@ And ask: *"Clone my repo in a VM, start the dev server, and screenshot the homep
 You can also drive VMs yourself with the [CLI](docs/cli.md): `boxery attach demo`, `boxery desktop demo`.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/modem-dev/boxery/master/docs/computer-use.png" alt="A boxery VM's desktop: Chrome being driven by a laptop agent through vm_browser" width="760">
+  <img src="https://raw.githubusercontent.com/modem-dev/boxery/master/docs/computer-use.png" alt="A boxery VM's XFCE desktop: a Vite dev server and htop in terminals, a file manager, and Chrome showing the app on localhost" width="760">
+  <br>
+  <sub>Every VM is a full Linux desktop your agent can drive: terminals, a file manager, and a real Chrome showing the dev server it just started.</sub>
 </p>
 
 ## Documentation
