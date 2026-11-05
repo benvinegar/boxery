@@ -195,9 +195,11 @@ test("shared grant operations and CLI preparation refuse OpenShell before approv
 		await assert.rejects(addGrants("demo", [{ kind: "llm", spec: "llm:openai", provider: "openai" }]), /OpenShell providers\/policy/);
 		await assert.rejects(applyGrants("demo"), /OpenShell providers/);
 	});
-	const prepared = spawnSync(process.execPath, [path.resolve(import.meta.dirname, "../controller/grants.mjs"), "restricted", profile, "prepare", "demo", "llm:openai"], { env, encoding: "utf8" });
+	// The CLI refuses it too, before asking anyone (a pinned profile directory, as MCP/pi pass it).
+	const prepared = spawnSync(path.resolve(import.meta.dirname, "../controller/boxery"), ["--host", "restricted", "--profile-dir", profile, "grant", "demo", "llm:openai"], { env, encoding: "utf8" });
 	assert.equal(prepared.status, 1);
 	assert.match(prepared.stderr, /OpenShell providers\/policy/);
+	assert.doesNotMatch(prepared.stderr, /grants need a person/);
 	assert.equal(existsSync(`${profile}/grants`), false);
 });
 

@@ -267,7 +267,7 @@ STUB2
 chmod +x "$tmp/bin/sshjoin"
 rm -f "$tmp/pwned"
 ( ssh() { "$tmp/bin/sshjoin" "$@"; }; export -f ssh
-  . /dev/stdin <<<"$(sed -n '/^literal()/p; /^literal_args()/p' "$ROOT/controller/profile.sh")"
+  . /dev/stdin <<<"$(sed -n '/^literal()/p; /^literal_args()/p' "$ROOT/test/fixtures/bash-profile.sh")"
   cmdline="echo $(literal_args snap w2 "x; touch $tmp/pwned #")"
   sh -c "$cmdline" >/dev/null )
 [ ! -e "$tmp/pwned" ] && ok "remote transport quotes every argument" || bad "INJECTION via remote transport"

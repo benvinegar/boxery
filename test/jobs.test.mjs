@@ -486,6 +486,27 @@ describe("background jobs", { skip }, () => {
 		if (rawDir) assert.match(cwd, /2f64ff72$/, "cwd bytes unchanged");
 	});
 
+	test("distinct arguments that decode to the same text stay distinct, in run and run --bg", async () => {
+		// \xff, \xfe and a real U+FFFD all decode to U+FFFD; a\xc3 and a\xc4 both to "a\uFFFD".
+		const words = `$'\\xff' $'\\xfe' $'\\xef\\xbf\\xbd' $'a\\xc3' $'a\\xc4'`;
+		const show = `for a; do printf %s "$a" | od -An -v -tx1 | tr -d " \\n"; echo; done`;
+		const want = ["ff", "fe", "efbfbd", "61c3", "61c4"];
+		const fg = spawnSync("bash", ["-c", `exec "$0" run fakevm bash -c '${show}' x ${words}`, CLI], { env, encoding: "latin1" });
+		assert.equal(fg.status, 0, fg.stderr);
+		assert.deepEqual(fg.stdout.trim().split("\n"), want, "run");
+		const bg = spawnSync("bash", ["-c", `exec "$0" run --bg fakevm bash -c '${show}' x ${words}`, CLI], { env, encoding: "latin1" });
+		assert.equal(bg.status, 0, bg.stderr);
+		const id = bg.stdout.trim();
+		assert.equal((await cli(["wait", "fakevm", id])).code, 0);
+		assert.deepEqual((await cli(["logs", "fakevm", id])).stdout.trim().split("\n"), want, "run --bg");
+	});
+
+	test("BOXERY_ARGV from the environment is not a command line", async () => {
+		const r = await cli(["jobs", "fakevm", "--json"], { BOXERY_ARGV: Buffer.from("run\0fakevm\0touch\0injected\0").toString("base64") });
+		assert.equal(r.code, 0, r.stderr);
+		assert.equal(existsSync(path.join(vmhome(), "project/injected")), false);
+	});
+
 	test("wait --timeout on an unreachable VM fails at once, not after minutes of retries", async () => {
 		const t0 = Date.now();
 		const r = await cli(["wait", "nosuchvm", "job-20260101-000000-aaaaaa", "--timeout", "10"]);
@@ -585,13 +606,15 @@ describe("background jobs", { skip }, () => {
 		symlinkSync(CLI, linked);
 		const r = await cli(["run", "--bg", "fakevm", "true"], {}, linked);
 		assert.equal(r.code, 0, r.stderr);
-		const lonely = path.join(dir, "lonely-boxery");
+		// A copy of the shim away from its checkout can't find the CLI: one clear line, not a stack trace.
+		const lonely = path.join(dir, "lonely", "controller", "boxery");
+		mkdirSync(path.dirname(lonely), { recursive: true });
 		writeFileSync(lonely, readFileSync(CLI));
 		chmodSync(lonely, 0o755);
 		const missing = await cli(["wait", "fakevm", r.stdout.trim()], {}, lonely);
 		assert.equal(missing.code, 1);
 		assert.equal(missing.stderr.trim().split("\n").length, 1, missing.stderr);
-		assert.match(missing.stderr, /profile\.sh/);
+		assert.match(missing.stderr, /controller\/cli\.mjs/);
 	});
 
 	// ------------------------------------------------------------ MCP

@@ -1,6 +1,6 @@
 // core/ssh-config.mjs against the Bash controller: the ssh_config each renders for the same profile, and
 // the quoting helpers word for word. Golden files (test/fixtures/ssh-config) were rendered by
-// controller/profile.sh's write_ssh_config; a live check renders them again with this checkout's Bash.
+// the Bash controller's write_ssh_config (test/fixtures/bash-profile.sh); a live check renders them again.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -12,7 +12,7 @@ import * as S from "../core/ssh-config.mjs";
 const ROOT = path.resolve(import.meta.dirname, "..");
 const FIX = path.join(ROOT, "test/fixtures/ssh-config");
 const cases = readdirSync(FIX).filter((f) => f.endsWith(".case")).map((f) => f.slice(0, -5)).sort();
-const profileSh = path.join(ROOT, "controller/profile.sh");
+const profileSh = path.join(ROOT, "test/fixtures/bash-profile.sh");
 
 /** A golden case as its .case file lists it (host, host bin, host profile, identity, pins, dir, leases, grants). @param {string} name */
 function load(name) {

@@ -5,7 +5,7 @@
 boxery has two halves:
 
 - **The VM host** runs the VMs, the LLM credential proxy and the lease reaper. It can be a Linux box with KVM (recommended), a Mac with Lima, or any machine with ssh driving VMs on exe.dev or boat.dev (both experimental). It can also drive headless [OpenShell](openshell.md) sandboxes (experimental).
-- **The controller** is the `boxery` CLI on your laptop. It's bash + ssh, and it's what the pi extension and the MCP server call.
+- **The controller** is the `boxery` CLI on your laptop (Node + ssh). The pi extension and the MCP server run the same code.
 
 They can be the same machine.
 
@@ -166,7 +166,7 @@ Backend details: [host/backends/README.md](../host/backends/README.md).
 
 ## Laptop / controller
 
-Needs only bash (3.2 is fine), ssh and a browser.
+Needs Node ≥ 22.13, ssh and a browser (and bash, which macOS and Linux have).
 
 ```bash
 npm install -g boxery-vm            # or: git clone + ln -s ~/boxery/controller/boxery onto your PATH
