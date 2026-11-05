@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Shared trusted host-profile and SSH configuration plumbing (Bash 3.2).
+# Shared trusted host-profile and SSH configuration plumbing for the Bash CLI (Bash 3.2). Node has its
+# own (core/profile.mjs, core/ssh-config.mjs); test/ssh-config.test.mjs keeps their ssh_config and
+# quoting identical. Node loads a computed config through select_profile here, so both read it alike.
 # Registry: host-registry/NAME contains one absolute profile directory; default-host contains NAME.
 # Every host is a registered NAME; BOXERY_HOME itself is only the registry root.
 ROOT_DIR="${BOXERY_HOME:-$HOME/.boxery}"
@@ -117,16 +119,11 @@ is_local() { [ "$HOST" = local ]; }
 local_host_bin() { case $HOST_BIN in "~/"*) printf '%s\n' "$HOME/${HOST_BIN#\~/}" ;; *) printf '%s\n' "$HOST_BIN" ;; esac; }
 # ssh joins argv with spaces and the remote shell re-parses it, so every argument is quoted
 # (unquoted snapshot names or flags would be executed on the host). stdin passes through.
-h() { host_cmd "" "$@"; }
-# h, replacing this shell (Node's core/profile.mjs): a timeout or Ctrl-C there then reaches the host command
-# (HOST=local) or the ssh (a remote host; the command on the host keeps running).
-h_exec() { host_cmd exec "$@"; }
-host_cmd() { # ""|exec ARG...
-	local x=$1; shift
+h() {
 	need_host
 	check_target
-	if is_local; then $x "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
-	else $x ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
+	if is_local; then "$(local_host_bin)" ${HOST_PROFILE:+--profile "$HOST_PROFILE"} "$@"
+	else ssh -o LogLevel=ERROR -- "$HOST" "exec $(remote_bin)$(profile_args) $(literal_args "$@")"; fi
 }
 vm_ssh() { ssh -F "$SSH_CONF" "$@"; }
 # Close the shared (ControlMaster) connection; required after revert/stop/rm or it points at a dead session.

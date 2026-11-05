@@ -30,10 +30,15 @@ test("renders the same ssh_config as the Bash controller (golden files)", () => 
 	for (const c of cases) assert.equal(S.renderSshConfig(load(c)), readFileSync(path.join(FIX, `${c}.ssh_config`), "utf8"), c);
 });
 
-test("the golden files are still what this checkout's Bash renders", () => {
-	const out = execFileSync("bash", [path.join(ROOT, "test/fixtures/ssh-config-golden.sh"), ROOT, "-"], { encoding: "utf8" });
+test("the golden files are still what this checkout's Bash renders, and Node writes the same file", () => {
+	// Each case's profile directory (config, leases, grants) is written once, and both write ssh_config from it.
+	const out = execFileSync("bash", [path.join(ROOT, "test/fixtures/ssh-config-golden.sh"), ROOT, "-"], { encoding: "utf8", env: { ...process.env, NODE: process.execPath } });
 	const section = (/** @type {string} */ title) => `${out.split(`=== ${title}\n`)[1]?.split("\n=== ")[0]?.replace(/\n$/, "")}\n`;
-	for (const c of cases) assert.equal(section(c), readFileSync(path.join(FIX, `${c}.ssh_config`), "utf8"), `${c}: regenerate with: bash test/fixtures/ssh-config-golden.sh . test/fixtures/ssh-config`);
+	for (const c of cases) {
+		const golden = readFileSync(path.join(FIX, `${c}.ssh_config`), "utf8");
+		assert.equal(section(c), golden, `${c}: regenerate with: bash test/fixtures/ssh-config-golden.sh . test/fixtures/ssh-config`);
+		assert.equal(section(`${c} (node)`), golden, `${c}: core/profile.mjs writeSshConfig`);
+	}
 });
 
 // Strings that exercise every escape: quotes, $, `, \, %, spaces, ~, globs, unicode.

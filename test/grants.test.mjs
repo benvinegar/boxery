@@ -248,19 +248,20 @@ test("an incomplete registry entry does not block apply or hide its directory fr
 	} finally { rmSync(registry); }
 });
 
-test("post-commit config and close failures explicitly report saved but not fully applied", async () => {
-	for (const fn of ["write_ssh_config", "drop_master"]) {
-		writeFileSync(path.join(profile, "config"), `${config}\n${fn}() { echo '${fn} failed' >&2; return 1; }\n`);
+test("a post-commit ssh_config failure explicitly reports saved but not fully applied", { skip: process.getuid?.() === 0 && "root ignores the read-only directory" }, async () => {
+	chmodSync(profile, 0o555); // ssh_config can't be replaced
+	try {
 		const out = await grants.addGrants("demo", [core.parseGrantRequest({ spec: "ssh-agent" })]);
-		assert.match(out, /are saved, but the change is not fully applied/);
-		assert.ok(out.includes(`${fn} failed`));
-		assert.match(readFileSync(store, "utf8"), /^ssh-agent\t/);
-	}
+		assert.match(out, /are saved, but the change is not fully applied \(refreshing SSH configuration: .*(EACCES|permission denied)/is);
+	} finally { chmodSync(profile, 0o755); }
+	assert.match(readFileSync(store, "utf8"), /^ssh-agent\t/);
 });
 
 test("cancellation after commit finishes SSH configuration and application", async () => {
+	// The host answers the known-hosts probe only once released: cancellation lands mid-reconfiguration.
 	const ready = path.join(root, "config-ready"), release = path.join(root, "config-release");
-	writeFileSync(path.join(profile, "config"), `${config}\nwrite_ssh_config() { : > '${ready}'; while [ ! -f '${release}' ]; do sleep 0.01; done; printf 'ForwardAgent yes\\n' > "$SSH_CONF"; }\n`);
+	rmSync(path.join(profile, "host-pins-keys"));
+	writeFileSync(path.join(root, "grant-host"), `#!/bin/sh\ncase "$1" in help) : > '${ready}'; while [ ! -f '${release}' ]; do sleep 0.01; done; echo '  known-hosts NAME' ;; edge-set) cat >/dev/null ;; esac\n`);
 	const abort = new AbortController();
 	const pending = grants.addGrants("demo", [core.parseGrantRequest({ spec: "ssh-agent" })], { signal: abort.signal });
 	try {
@@ -269,8 +270,8 @@ test("cancellation after commit finishes SSH configuration and application", asy
 		assert.equal(existsSync(store), true);
 		abort.abort(); writeFileSync(release, "");
 		assert.doesNotMatch(await pending, /not fully applied/);
-		assert.match(readFileSync(path.join(profile, "ssh_config"), "utf8"), /ForwardAgent yes/);
-	} finally { writeFileSync(release, ""); await pending; }
+		assert.match(readFileSync(path.join(profile, "ssh_config"), "utf8"), /^Host demo\.boxery\n {2}ForwardAgent yes$/m);
+	} finally { writeFileSync(release, ""); await pending; writeFileSync(path.join(profile, "host-pins-keys"), ""); rmSync(ready, { force: true }); rmSync(release, { force: true }); }
 });
 
 test("cancellation while waiting for the store lock makes no change", async () => {
