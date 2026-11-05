@@ -1229,11 +1229,14 @@ function progressRun({ progress } = {}) {
 		const notes = [];
 		/** @type {Buffer[]} */
 		const errs = [];
+		let errSize = 0;
 		const onData = (/** @type {Buffer} */ d, /** @type {"stdout" | "stderr"} */ stream) => {
-			if (stream === "stderr") errs.push(d);
+			if (stream === "stderr") { errs.push(d); errSize += d.length; while (errSize > 256 * 1024 && errs.length > 1) errSize -= /** @type {Buffer} */ (errs.shift()).length; }
 			const l = progress && lastLine(d); if (l) progress?.(l);
 		};
-		const stderrText = () => Buffer.concat(errs).toString("utf8").trim();
+		// What a long run (build-base: download progress, backend logs) wrote is too much for a tool's answer: the
+		// last 40 lines, each \r-redrawn line (progress bars) as it ended.
+		const stderrText = () => Buffer.concat(errs).toString("utf8").trim().split("\n").map((l) => l.split("\r").filter(Boolean).at(-1) ?? "").slice(-40).join("\n");
 		try {
 			const out = await fn({ timeout, onData, log: (l) => notes.push(l) });
 			return [out, stderrText(), ...notes].filter(Boolean).join("\n").trim();
