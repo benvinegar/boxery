@@ -28,7 +28,7 @@ checked by `test/backend-capabilities.test.mjs`.
 | libvirt | stable | linux/x64 | linux/x64 / kvm | host: kvm | None |
 | lima | stable | linux/x64, linux/arm64, darwin/x64, darwin/arm64 | darwin/arm64 / vz | host: vz, qemu | None |
 | cloud-hypervisor | experimental | linux/x64, linux/arm64 | linux/arm64 / kvm | host: kvm | resize: unsupported |
-| exe | experimental | linux/x64, linux/arm64, darwin/x64, darwin/arm64 | Not recorded | remote: exe.dev | None |
+| exe | experimental | linux/x64, linux/arm64, darwin/x64, darwin/arm64 | darwin/arm64 / exe.dev, linux/arm64 / exe.dev | remote: exe.dev | None |
 | openshell | experimental | linux/x64, linux/arm64, darwin/x64, darwin/arm64 | linux/x64 / docker | gateway (local or remote): gateway, docker, podman, microvm, kubernetes | desktop: unsupported; diskSnapshots: unsupported; fork: unsupported; restore: unsupported; resize: unsupported; pools: unsupported; leases: unsupported; guestSudo: unsupported; grants: unsupported |
 | boat | experimental | linux/x64, linux/arm64, darwin/x64, darwin/arm64 | Not recorded | remote: boat.dev | desktop: conditional (Paid boat.dev saved-snapshot access); headless: unsupported; diskSnapshots: conditional (Paid boat.dev saved-snapshot access); fork: conditional (Paid boat.dev saved-snapshot access); restore: conditional (Paid boat.dev saved-snapshot access); pools: conditional (Paid boat.dev saved-snapshot access); leases: conditional (Paid boat.dev saved-snapshot access) |
 <!-- backend-metadata:end -->

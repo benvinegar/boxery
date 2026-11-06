@@ -143,6 +143,26 @@ The image contract maps onto most VM platforms:
 
 Run `bash test/shell/host-images.sh` against the fake backend to see the behaviour every backend has to match.
 
+### What stable means for a backend
+
+A backend is **stable** when every line below holds. This is the bar libvirt and Lima were promoted on (offline suites, `e2e.sh` 19/19 on both, their `tested` entries), written down. Lines 6 and 7 matter most for hosted backends, where the platform keeps working after the CLI dies and the host is a separate machine. A backend that misses a line stays experimental, and its section says which lines it misses.
+
+| # | | Requirement |
+|---|---|---|
+| 1 | Contract | Every function in the [VM](#vms), [image](#images-one-primitive-for-snapshots-forks-and-pool-resets) and [crash recovery](#crash-recovery-contract) tables, following their rules (images disk-only and independent, inventory errors never an empty host, only its own namespace touched). Each capability it doesn't offer is declared unsupported in [`backends/index.mjs`](../../backends/index.mjs) |
+| 2 | Offline tests | `test/shell/host-NAME-backend.sh`, against command doubles (no hypervisor, no account), run by `npm run test:shell`: every lifecycle function, capture of a running VM, a failed create or capture leaving nothing behind, every recovery hook run twice, inventory failing when the platform is unreachable, a create killed mid-way recovered by `reconcile`, and the host's or account's other VMs untouched |
+| 3 | Declaration | `stability`, `supported`, `requirements` and `capabilities` in `backends/index.mjs`, and a `tested` entry for every host configuration that passed lines 4–7 |
+| 4 | Live: e2e | `e2e.sh` passes from a controller on current code, on every host OS the docs say the backend runs on. For a backend with host-side tunnels, that means both supervisors: systemd user units with linger (Linux) and launchd (macOS) |
+| 5 | Live: lifecycle | What `e2e.sh` doesn't cover: `build-base`, `new --headless`, `new --from`, `stop`/`start`, pool lease and reset, and every account or plan option the docs offer (or that option is listed as unverified) |
+| 6 | Live: interruptions | A create and a capture killed mid-way, then `reconcile`: no VM, image or local state is left, including work the platform finishes after the CLI died |
+| 7 | Live: host reboot | After a host reboot with VMs running, each VM is in the state the docs say and is reachable, at most after `start` |
+| 8 | Security | A guest reaches credentials only through the boxery proxy, with its per-VM token and grants. No host service or platform feature (integrations, credential stores, metadata services) gets it around them, unless the account owner turned that feature on and the backend warns about it wherever it reaches a VM. Its sshd accepts only boxery's lease-fenced keys, through the pinned endpoint |
+| 9 | Security notes | Every remaining limit (what the platform, its admins or the account's key can do) is in the backend's security notes and [docs/security.md](../../docs/security.md) |
+| 10 | Docs | `docs/install.md` gives requirements, account or plan prerequisites and setup; the backend's section here gives layout, lifecycle mapping, recovery, security notes and a verification record (date, host OS and arch, platform plan or version, timings). Nothing the docs state is contradicted by the platform, and no "Not verified yet" item touches lines 4–8 |
+| 11 | One answer | Every statement of stability agrees: the `docs/install.md` table, the backend's heading here, `ARCHITECTURE.md` (backends row, roadmap), the README's Status, `stability` in `backends/index.mjs`, and the "works with" artwork |
+
+Each live check is recorded where it was run: the backend's section here, and a `tested` entry in `backends/index.mjs`.
+
 ### Remote backends
 
 A backend whose VMs live on a hosted platform (exe.dev, boat.dev, and likely Daytona, #61) faces the same problems every time: the guest has no cloud-init, the host may be a laptop behind NAT, and boxery-host wants a stable `HOST PORT` for each VM's sshd. [`lib/remote.sh`](lib/remote.sh) solves them once:
@@ -203,7 +223,7 @@ Known gaps:
 
 ## exe (experimental)
 
-Runs VMs on [exe.dev](https://exe.dev) instead of local KVM, so the host can be any machine with ssh (a Mac works). Everything goes through exe.dev's ssh API (`ssh exe.dev CMD --json`); the host needs an exe.dev account whose key ssh offers first, or `BOXERY_EXE_KEY`. Verified end to end on a Personal-plan account (November 2026): build, new, snapshots, revert, fork, `new --from`, stop/start, resize, rm.
+Runs VMs on [exe.dev](https://exe.dev) instead of local KVM, so the host can be any machine with ssh (a Mac works). Everything goes through exe.dev's ssh API (`ssh exe.dev CMD --json`); the host needs an exe.dev account whose key ssh offers first, or `BOXERY_EXE_KEY`. Verified end to end on a Personal-plan account (November 2026): build, new, snapshots, revert, fork, `new --from`, stop/start, resize, rm; and again on 2026-11-04 on both host OSes, below.
 
 ```bash
 ssh exe.dev whoami                  # must print your account, not "Please complete registration"
@@ -215,7 +235,7 @@ ssh exe.dev whoami                  # must print your account, not "Please compl
 |---|---|
 | Names | exe.dev VM names are global, so every name starts with a per-host prefix (`BOXERY_EXE_PREFIX`, default `bx<6 hex>-`, generated by `init` into `$BOXERY_EXE_DIR/prefix`): `PREFIXvGEN-NAME` VMs, `PREFIXi-HASH` images, `PREFIXbase`, `PREFIXbuild`. GEN (6 hex) is new for every disk a VM gets (`new`, `revert`, pool resets), and the current name is kept in `$BOXERY_EXE_DIR/vms/NAME/vm`: exe.dev's edge keeps routing a deleted VM's name for minutes (`ssh` says "VM not found", `-R` forwards are refused), so VM names are never reused. The account's other VMs are never listed or touched |
 | ssh | exe.dev's edge authenticates `ssh NAME.exe.xyz` with the **account's** keys and never uses the guest's sshd (exeuntu masks `ssh.service`). boxery's lease fencing needs the guest's own `authorized_keys`, so the build enables sshd on the guest's **loopback only** (`AllowUsers agent`, keys only), and each VM gets a supervised host-side tunnel: `ssh -N NAME.exe.xyz -L 127.0.0.1:PORT:127.0.0.1:22 -R 127.0.0.1:18088:127.0.0.1:PROXY_PORT`. The VM's endpoint is `127.0.0.1:PORT` (`BOXERY_EXE_PORT_BASE` + slot, default 22401…), as on Lima. Controllers and lease holders only ever reach the guest's sshd through it. The edge (account key → `exedev`, passwordless sudo) is the backend's admin channel for build, identity and `sync`, like host root on libvirt |
-| Tunnels | systemd user unit `boxery-exe-PREFIXv-NAME.service` on Linux, launchd agent `dev.boxery-exe-PREFIXv-NAME` on macOS (`BOXERY_EXE_SUPERVISOR`); the label and port stay when the exe.dev name changes. Enabled while the VM runs, so they come back after a host reboot (exe.dev VMs keep running while the host is down). The supervisor restarts a dropped tunnel every 5 s (`ServerAliveInterval` 15 s × 4 notices a dead connection within a minute). `ls` reports each tunnel's state (local checks, no API call): `up` (supervised and its `-L` end accepts connections), `connecting` (supervised, not connected: host offline or just awake, exe.dev unreachable, VM paused outside boxery) or `down` (not supervised); a running VM whose tunnel isn't up shows that state in place of its address. `connect`, `ip`, and the waits in `new`/`start`/`revert`/`resize` (`BOXERY_EXE_TUNNEL_WAIT`, 120 s) fail with that state, the tunnel's last error, where its log is (`$BOXERY_EXE_DIR/vms/NAME/tunnel.log` on launchd, `journalctl --user -u UNIT` on systemd) and the fix, instead of an ssh timeout |
+| Tunnels | systemd user unit `boxery-exe-PREFIXv-NAME.service` on Linux, launchd agent `dev.boxery-exe-PREFIXv-NAME` on macOS (`BOXERY_EXE_SUPERVISOR`); the label and port stay when the exe.dev name changes. Enabled while the VM runs, so they come back after a host reboot: on Linux at boot (with linger), on macOS when you log in (exe.dev VMs keep running while the host is down). The supervisor restarts a dropped tunnel every 5 s (`ServerAliveInterval` 15 s × 4 notices a dead connection within a minute). `ls` reports each tunnel's state (local checks, no API call): `up` (supervised and its `-L` end accepts connections), `connecting` (supervised, not connected: host offline or just awake, exe.dev unreachable, VM paused outside boxery) or `down` (not supervised); a running VM whose tunnel isn't up shows that state in place of its address. `connect`, `ip`, and the waits in `new`/`start`/`revert`/`resize` (`BOXERY_EXE_TUNNEL_WAIT`, 120 s) fail with that state, the tunnel's last error, where its log is (`$BOXERY_EXE_DIR/vms/NAME/tunnel.log` on launchd, `journalctl --user -u UNIT` on systemd) and the fix, instead of an ssh timeout |
 | Host availability | **Run the exe host on an always-on machine** and use laptops as controllers only. Each VM's tunnel carries both its ssh endpoint (`-L`) and its only route to the LLM proxy (`-R`), so while the host sleeps or is offline, agents lose their LLM mid-task and nobody can ssh in; the VMs themselves keep running and the tunnels reconnect once the host is back. On Linux, enable linger so the user units run without a login session. Moving LLM traffic off the host (exe.dev's HTTP-proxy integration with keys held at exe.dev) is discussed in [#42](https://github.com/modem-dev/boxery/issues/42); it would give up per-VM tokens and can't serve OAuth/subscription providers |
 | Proxy | Guest `127.0.0.1:8088` → socat → guest `127.0.0.1:18088` (the tunnel's `-R` end, `BOXERY_EXE_GUEST_PORT`) → host `127.0.0.1:PROXY_PORT`. Credentials stay on the host. exe.dev's own HTTP-proxy integration can't be used instead: its target must be a public URL |
 | Identity | exeuntu has no cloud-init, so like Lima the backend replays the cloud-config over the edge (`host/cloudconfig-sh.mjs` for `write_files`), **replaces** `authorized_keys`, and gives every VM a fresh machine-id, ssh host keys and hostname. exe.dev's init resets the hostname and `/etc/hosts` to the exe.dev name at every boot, so the base's `boxery-exe-boot.service` restores boxery's (from `/etc/boxery/hostname`) and grows `/` to the disk exe.dev gave the VM. A copy boots fresh from disk, so RAM and tmpfs grants never travel. The devtools layer keeps exeuntu's `opencode` and `pi` if the `agent` user can run them and replaces them otherwise (exeuntu's `pi` links into exedev's home); exeuntu's `claude` and `codex` stay |
@@ -231,13 +251,47 @@ Security notes:
 - New exe.dev accounts attach an `llm` integration to every VM (`auto:all`). A guest could use it to reach the account's LLM credits at `https://llm.int.exe.xyz`, outside the boxery proxy and its `llm:` grants. So `new`, `start` and reimages (revert, pool resets) check each VM from the inside before it's usable: `llm.int.exe.xyz` must answer 403/404, and Reflection, if attached, must list no `llm`-type integration. A VM that can reach one is refused (a new or reimaged copy is removed; a started VM is paused again), and so is one that can't be checked. Fix it once per account: `ssh exe.dev integrations detach llm auto:all`, plus any `vm:`/`tag:` attachments `ssh exe.dev integrations list` shows.
 - First connections trust exe.dev's host keys on first use (`$BOXERY_EXE_DIR/known_hosts`). exe.dev documents its fingerprint as `SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo`.
 
+Live runs, 2026-11-04, Personal plan (2 vCPU / 4 GB, region nyc), code from #167–#172 merged on master. Two hosts, each with its own profile and prefix:
+
+| | macOS 26.6 arm64, launchd | Ubuntu 24.04 arm64 (a Lima VM), systemd 255 user units, linger |
+|---|---|---|
+| `build-base` | 131 s | 111 s |
+| `e2e.sh` | 43 of 44 (183 s). The one failure: opencode, because ollama wasn't running on the host. The laptop pi extension check was skipped (this Mac's `pi`, with its own extensions, didn't answer) | create, isolation, desktop, MCP, grants, leases (pool join, lease fencing, reset on release), fork, rm pass. No LLM provider was set up on this host, so pi, opencode and the checks that use pi's file (revert, `new --from`) were covered by hand instead |
+| `new` / `new --headless` | 15–17 s / 63 s | 14 s / 62 s |
+| snap / revert / `new --from` | 9 / 14 / 15 s | 10 / 15 / 14 s |
+| fork into 2 | 33 s | 24 s |
+| stop / start | 4 / 9 s | 4 / 8 s |
+| resize (running: down, disk grown; back up; stopped then start) | 14–15 s each, seen in the guest | 10 s each, seen in the guest |
+| `BOXERY_EXE_EGRESS=integrations` | | new, headless new, an image and `new --from` all `integrations`; no internet (`000`), the proxy and integrations answer |
+| Host reboot, 2 VMs running | not tried (this was the user's Mac; LaunchAgents load at login) | host back in 20 s, both tunnels `up` 21 s after the reboot without a login, files and LLM bridge intact |
+| Interrupted create and capture | killed 0, 0.7, 1.0 and 1.5 s after `cp` was sent, and a capture at 1.0 s: from 1.0 s on, the copy had landed when the CLI died; `reconcile` removed every one, and nothing appeared in the next 3–5 minutes | |
+| Account limits | `billing plan` read at init (2 / 4 / 1024). exe.dev refuses a VM beyond them (`--memory cannot exceed 4 GB…`), so boxery caps there | same |
+
+Found and fixed in these runs: a failed revert finished later by recovery (#169), a fork's parallel creates racing on the cached account limits so that one failed (#168), the agent's git identity never set on exeuntu (#171), `e2e.sh` on macOS controllers and small plans (#172).
+
 Not verified yet:
-- A `cp` still running after its CLI was killed (the recovery note above).
-- Work-plan pools and `--egress=integrations`.
-- Linux hosts (systemd user units); the live run used a Mac (launchd).
+- Work-plan pools (`BOXERY_EXE_POOL`): the account is Personal, which has no pools. What `billing plan` reports for a pool VM's limit is unknown too.
+- A host reboot on macOS (launchd).
+- The integration guard refusing a VM live (it was checked against the fake exe.dev; on the live account, `llm` was already detached and nothing else that holds credentials was attached).
 
 Not supported:
 - No HTTPS (`POST /exec`) transport: its 30 s limit is too short for `cp`, `new` and the build, and the tunnels need ssh anyway.
+
+Scorecard against [what stable means](#what-stable-means-for-a-backend) (2026-11-04, after the live runs above; lines marked "with #N" pass once that PR is merged):
+
+| # | | exe | Evidence and what's left |
+|---|---|---|---|
+| 1 | Contract | pass | Every VM, image and recovery function. No `backend_host_key`: the endpoint is the tunnel's loopback end, trusted like Lima's |
+| 2 | Offline tests | pass | `test/shell/host-exe-backend.sh` (125 checks on master, 187 with #167–#171) covers every item on the list |
+| 3 | Declaration | pass | `tested`: macOS arm64 and Linux arm64 (2026-11-04). No x64 host was tried |
+| 4 | Live: e2e | pass | Both host OSes, on current code (table above). The gaps came from the test hosts, not exe: no ollama on either, no LLM provider on the Linux host (those checks were done by hand there) |
+| 5 | Live: lifecycle | pass | Every item on both hosts, and `BOXERY_EXE_EGRESS`. `BOXERY_EXE_POOL` (Work plans only) stays listed as unverified |
+| 6 | Live: interruptions | pass | Creates killed at four points and a capture: every copy that landed was removed by `reconcile`, and none landed later. Needs #169 |
+| 7 | Live: host reboot | pass | Linux (systemd, linger): tunnels back 21 s after the reboot, no login. macOS: not tried; LaunchAgents load at login, which the docs now say |
+| 8 | Security | pass with #167 | exe.dev integrations are the owner's to use: `init`, `new`, `start` and reimages warn about each credential one that reaches a VM, with the detach command. New accounts attach `llm` to every VM, so until it's detached agents can use the account's LLM credits without a grant |
+| 9 | Security notes | pass with #167 | `docs/security.md` has the exe.dev entry |
+| 10 | Docs | pass with #168, #178 | Sizes fixed in #168, live results above. An always-on host is a declared requirement and `init` warns on a battery (#178, deciding [#42](https://github.com/modem-dev/boxery/issues/42)) |
+| 11 | One answer | pass | Experimental everywhere it's stated |
 
 ## boat (experimental)
 
