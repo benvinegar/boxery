@@ -163,6 +163,17 @@ export function hostBackend(host) {
 	const name = text?.replace(/\n$/, "");
 	return name && VALID_HOST.test(name) ? name : null; // one line, like the controller's valid_vm
 }
+/** Backends whose VMs run on the host machine itself; the others (exe, boat) run in the cloud. */
+const ON_HOST_BACKENDS = ["lima", "libvirt", "cloud-hypervisor"];
+/**
+ * Whether a host's VMs run somewhere other than the machine the controller runs on (an ssh host, or a
+ * cloud backend), or null when the profile doesn't say. @param {string | null} destination @param {string | null} backend
+ */
+export function vmsAreRemote(destination, backend) {
+	if (destination && destination !== "local") return true;
+	if (backend && !ON_HOST_BACKENDS.includes(backend)) return true;
+	return destination === "local" && backend ? false : null;
+}
 /**
  * Registered hosts with where each runs: {name, dir, default, destination, backend, same_as}. Reads only local
  * profile files (never sources them, never contacts a host). same_as names the other entries registered for
@@ -1133,7 +1144,7 @@ export async function grantRequest(vm, a, { approve, localCwd, signal } = {}) {
 		return { text: `The approval prompt failed (${/** @type {Error | undefined} */ (e)?.message ?? e}), so nothing was granted. ${manual}`, isError: true };
 	}
 	if (answer !== "accept")
-		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up: carry on without it, or ask them how to proceed.` };
+		return { text: `The user ${answer === "decline" ? "declined" : "dismissed"} the request; ${vm} did not get ${g.spec}. Don't ask for it again unless the user brings it up, and don't get it into the VM another way (vm_copy, vm_write, vm_bash): carry on without it, or ask them how to proceed.` };
 	const out = await addGrants(vm, [g], { signal });
 	return { text: `The user approved: ${vm} now has ${g.spec}. New login shells (vm_bash runs one) pick it up.\n${out}` };
 }
@@ -1235,12 +1246,26 @@ function progressRun({ progress } = {}) {
 
 // ---------------------------------------------------------------- shared prompt text
 
-/** The agent's standing instructions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
+// Rules both forms of the guidance carry: when to reach for a VM at all, and how credentials get into one.
+/** What VMs suit. Long jobs only when the VMs run elsewhere: a VM on this machine sleeps with it. @param {boolean | null} remote */
+const whenVm = (remote) =>
+	"VMs suit what shouldn't or can't run on this machine: untrusted code (in a fresh VM; fetch it there, not here), dependencies the user doesn't want installed here, Linux-only work, an isolated desktop and browser without this machine's logins, " +
+	`${remote ? "long jobs that keep running while this machine sleeps, " : ""}and parallel attempts. What the user asks to install or run on their own machine still runs here.`;
+const CREDENTIALS =
+	"Access from this machine reaches a VM only through grants: if work in a VM fails for lack of it, request it with vm_grant right away. Never copy credentials into a VM yourself, and don't work around a declined grant.";
+
+/** The agent's standing instructions: principles only; the specifics live in the tool descriptions. host: the session's host name. @param {string | null | undefined} current @param {{ localToolsNote?: string, host?: string }} [opts] */
 export function guidance(current, { localToolsNote, host } = {}) {
-	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on the user's LOCAL machine, not the VM. Use them only when you deliberately need something local.";
-	const hostLine = host ? `Current host: ${host}. VM selections belong only to that host. Every vm_* tool accepts optional host (vm_info {action:'hosts'} lists them).\n` : "";
+	const local = localToolsNote ?? "Your other tools (shell, file read/write/edit) act on this machine, not a VM; use them only when you mean to work here.";
+	let remote = null;
+	try { remote = vmsAreRemote(hostDestination(host), hostBackend(host)); } catch { /* no registered host in offline callers */ }
+	const hostLine = host ? `Current host: ${host}. Every vm_* tool accepts optional host (vm_info {action:'hosts'} lists them).\n` : "";
 	if (!current)
-		return `${hostLine}boxery: vm_manage creates and vm_info lists remote Linux desktop VMs; vm_bash/vm_read/vm_write/vm_edit/vm_copy and computer-use tools (vm_screenshot, vm_click, vm_type, vm_key, vm_scroll, vm_browser) operate them (pass \`vm\`, or vm_manage {action:'use'} to set a default). ${local}`;
+		return hostLine + [
+			`boxery gives you remote Linux VMs: vm_manage creates them, vm_info lists them, and the other vm_* tools work in one (pass \`vm\`, or set a default with vm_manage {action:'use'}). ${local}`,
+			whenVm(remote),
+			CREDENTIALS,
+		].join("\n");
 	let restricted = false;
 	try { restricted = hostBackend(host) === "openshell"; } catch { /* no registered host in offline callers */ }
 	if (restricted) return hostLine + [
@@ -1250,15 +1275,13 @@ export function guidance(current, { localToolsNote, host } = {}) {
 		"OpenShell manages credentials and egress policy, not Boxery grants. Policy denials are intentional: ask the user for narrowly scoped access; never bypass controls or copy credentials into the sandbox.",
 	].join("\n");
 	return hostLine + [
-		`The user's project work happens in a remote Linux VM named "${current}" (Ubuntu 24.04, user "agent", passwordless sudo), project directory ${PROJECT}.`,
-		"Use the vm_* tools for that work: vm_bash, vm_read, vm_write, vm_edit (and vm_copy to move files between this machine and the VM).",
-		local,
-		"Unless it was created headless, the VM has an XFCE desktop on DISPLAY=:1 the user may be watching; GUI programs started via vm_bash appear there (start them detached: `setsid nohup prog >/dev/null 2>&1 &`). A headless VM has /etc/boxery/headless and no desktop tools.",
-		"See and operate it with vm_screenshot, vm_click, vm_type, vm_key, vm_scroll (screenshot-pixel coordinates). For web pages prefer vm_browser (Playwright → Chrome on that desktop).",
-		"Access the user granted this VM from their machine (ssh agent for git over ssh, env vars, files such as .env) is already set up in login shells; vm_info {action:'grants'} lists it. " +
-			"If something is missing (a 401 from a registry, git asking for credentials), request it with vm_grant, which asks the user. Never copy credentials into the VM with vm_copy or vm_write: they would land on its disk and in its snapshots.",
-		`Servers started in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`. vm_manage creates/removes/snapshots VMs and vm_info lists them; every vm_* tool takes an optional \`vm\`.`,
-		"To try several approaches in parallel, or to keep a known-good state before something risky, use vm_manage {action:'fork', vm, to:[...]}: each copy gets the VM's disk (files, installed packages, git state; not running processes) and is a separate VM you address with `vm`. Remove copies you don't need with vm_manage {action:'rm'}.",
+		`The user's project lives in the remote Linux VM "${current}" (Ubuntu 24.04, user "agent", passwordless sudo) at ${PROJECT}; do that work with vm_bash, vm_read, vm_write and vm_edit (vm_copy moves files between here and the VM). ${local}`,
+		"If a request could mean a local file or the VM's copy, say which you used.",
+		"Unless headless, the VM has a desktop on DISPLAY=:1 the user may be watching: drive it with vm_screenshot, vm_click, vm_type, vm_key and vm_scroll, and web pages with vm_browser.",
+		`Grants the user already gave this VM are set up in login shells (vm_info {action:'grants'} lists them). ${CREDENTIALS}`,
+		`Servers in the VM are reachable from the user's machine with \`boxery forward ${current} PORT\`.`,
+		"Before a risky change, snapshot the VM (vm_manage snap; revert restores it). For parallel attempts, fork it (vm_manage fork, to:[...]): copies get the disk, not running processes; remove them when done.",
+		whenVm(remote),
 	].join("\n");
 }
 

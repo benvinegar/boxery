@@ -1,0 +1,36 @@
+{
+  "suite": {
+    "version": 4,
+    "hash": "77564a29a51e",
+    "dirty": false
+  },
+  "boxery": {
+    "commit": "6d09eca4bf07525853e8cd6ed0c9471d1bdd72f8",
+    "describe": "v0.10.0-25-g6d09eca",
+    "dirty": false,
+    "host": {
+      "controller": "0.9.0",
+      "host": "0.9.0"
+    }
+  },
+  "claude": {
+    "cli": "2.1.317",
+    "model": "claude-opus-5-5"
+  },
+  "node": "v24.22.1",
+  "platform": "darwin-arm64",
+  "command": "node evals/run.mjs --save --only untrusted-script,linux-tests,browser,install-local,docker-local,background-job --model claude-opus-5-5 --concurrency 6",
+  "options": {
+    "repeat": 3,
+    "only": "untrusted-script,linux-tests,browser,install-local,docker-local,background-job",
+    "model": "claude-opus-5-5",
+    "toolSearch": null,
+    "vm": "demo",
+    "otherVm": "hunk-perf"
+  },
+  "started": "2026-11-04T13:11:41.526Z",
+  "finished": "2026-11-04T13:12:23.993Z",
+  "runs": 18,
+  "passed": 18,
+  "cost": 2
+}

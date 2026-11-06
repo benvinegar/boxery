@@ -1,0 +1,248 @@
+[
+  {
+    "id": "install-local",
+    "category": "no-trigger",
+    "expect": "installs it locally (denied here, so intent only), even with a default VM; no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 7,
+        "cost": 0.0043,
+        "ms": 12759
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 6,
+        "cost": 0.0048,
+        "ms": 14730
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 5,
+        "cost": 0.0041,
+        "ms": 11374
+      }
+    ]
+  },
+  {
+    "id": "docker-local",
+    "category": "no-trigger",
+    "expect": "runs Docker locally (denied here, so intent only); no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 2,
+        "cost": 0.0026,
+        "ms": 7495
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Glob",
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.0037,
+        "ms": 11968
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.0032,
+        "ms": 8606
+      }
+    ]
+  }
+]

@@ -1,0 +1,36 @@
+{
+  "suite": {
+    "version": 1,
+    "hash": "66c49e28613b",
+    "dirty": false
+  },
+  "boxery": {
+    "commit": "205f984e0de0a8910de9c8f5afa52a603a8ace74",
+    "describe": "v0.8.0-57-g205f984",
+    "dirty": false,
+    "host": {
+      "controller": "0.9.0",
+      "host": "0.9.0"
+    }
+  },
+  "claude": {
+    "cli": "2.1.317",
+    "model": "claude-haiku-5-5"
+  },
+  "node": "v24.22.1",
+  "platform": "darwin-arm64",
+  "command": "node evals/run.mjs --save --model claude-haiku-5-5 --concurrency 5",
+  "options": {
+    "repeat": 3,
+    "only": null,
+    "model": "claude-haiku-5-5",
+    "toolSearch": null,
+    "vm": "demo",
+    "otherVm": "hunk-perf"
+  },
+  "started": "2026-11-04T02:20:04.937Z",
+  "finished": "2026-11-04T02:22:10.861Z",
+  "runs": 60,
+  "passed": 59,
+  "cost": 0.25
+}

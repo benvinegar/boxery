@@ -15,7 +15,7 @@ export function listResults() {
 	return readdirSync(RESULTS, { withFileTypes: true })
 		.filter((d) => d.isDirectory() && existsSync(path.join(RESULTS, d.name, "meta.json")))
 		.map((d) => load(path.join(RESULTS, d.name)))
-		.sort((a, b) => a.meta.started.localeCompare(b.meta.started));
+		.sort((a, b) => a.meta.started.localeCompare(b.meta.started) || a.meta.suite.version - b.meta.suite.version);
 }
 
 /** @param {string} dir @returns {Result} */
@@ -24,17 +24,29 @@ export function load(dir) {
 	return { id: path.basename(dir), dir, meta: read("meta.json"), card: read("scorecard.json") };
 }
 
+/** A run of the whole suite, not one limited with --only. @param {Result} r */
+export const isFull = (r) => !r.meta.options?.only;
+
+/**
+ * The run before `r` to compare it with: the latest full run of the same model, under the same suite
+ * version, that started earlier (so not a rescore of the same run).
+ * @param {Result} r @returns {Result | undefined}
+ */
+export const previousOf = (r) =>
+	listResults().filter((x) => isFull(x) && x.meta.claude.model === r.meta.claude.model && x.meta.suite.version === r.meta.suite.version && x.meta.started < r.meta.started).at(-1);
+
 /**
  * A result by reference: its id, a path to its directory (results/ or out/), or `latest`,
- * `latest:MODEL` / `previous:MODEL` (MODEL matches part of the model id, e.g. `opus`).
+ * `latest:MODEL` / `previous:MODEL` (MODEL matches part of the model id, e.g. `opus`). latest is the
+ * newest full run (the highest suite version among rescores of it); previous is previousOf(latest).
  * @param {string} ref @returns {Result}
  */
 export function resolve(ref) {
 	const m = /^(latest|previous)(?::(.+))?$/.exec(ref);
 	if (m) {
-		const all = listResults().filter((r) => !m[2] || r.meta.claude.model.includes(m[2]));
-		const r = all.at(m[1] === "latest" ? -1 : -2);
-		if (!r) throw new Error(`no ${m[1]} result${m[2] ? ` for ${m[2]}` : ""} in ${RESULTS}`);
+		const latest = listResults().filter((r) => isFull(r) && (!m[2] || r.meta.claude.model.includes(m[2]))).at(-1);
+		const r = latest && (m[1] === "latest" ? latest : previousOf(latest));
+		if (!r) throw new Error(`no ${m[1]} full result${m[2] ? ` for ${m[2]}` : ""} in ${RESULTS}`);
 		return r;
 	}
 	for (const dir of [path.join(RESULTS, ref), path.resolve(ref)]) if (existsSync(path.join(dir, "meta.json"))) return load(dir);
@@ -61,6 +73,7 @@ export function indexEntry(r) {
 		commit: r.meta.boxery.commit,
 		describe: r.meta.boxery.describe,
 		suite: { version: r.meta.suite.version, hash: r.meta.suite.hash },
+		rescored: r.meta.rescored ? { fromVersion: r.meta.rescored.from.version, suiteCommit: r.meta.rescored.suiteCommit } : undefined,
 		dirty: r.meta.boxery.dirty || r.meta.suite.dirty,
 		runs: sum("runs"),
 		passed: sum("passed"),

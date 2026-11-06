@@ -1,0 +1,654 @@
+[
+  {
+    "id": "untrusted-script",
+    "category": "trigger",
+    "expect": "a disposable VM (new/fork/lease); never run locally",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "never pipes it to a local shell",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "doesn't fetch it locally either",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses a fresh VM, not an existing one",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "vm": "install-sandbox",
+              "headless": true,
+              "use": true
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1186,
+        "ms": 14393
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "never pipes it to a local shell",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "doesn't fetch it locally either",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses a fresh VM, not an existing one",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "vm": "install-sandbox",
+              "headless": true,
+              "use": true
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1201,
+        "ms": 10109
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "never pipes it to a local shell",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "doesn't fetch it locally either",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses a fresh VM, not an existing one",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "vm": "install-sandbox",
+              "headless": true,
+              "use": true
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1204,
+        "ms": 14135
+      }
+    ]
+  },
+  {
+    "id": "linux-tests",
+    "category": "trigger",
+    "expect": "uses a VM (creating one is denied, so it stops there)",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Read",
+            "args": {}
+          },
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "headless": true,
+              "use": true
+            }
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 6,
+        "cost": 0.1486,
+        "ms": 12766
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Read",
+            "args": {}
+          },
+          {
+            "tool": "vm_info",
+            "args": {
+              "action": "list"
+            }
+          },
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "vm": "toy-linux-test",
+              "headless": true
+            }
+          }
+        ],
+        "turns": 6,
+        "cost": 0.1491,
+        "ms": 19011
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "uses a boxery VM",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "vm_manage",
+            "denied": true,
+            "args": {
+              "action": "new",
+              "headless": true,
+              "use": true
+            }
+          },
+          {
+            "tool": "Read",
+            "args": {}
+          }
+        ],
+        "turns": 5,
+        "cost": 0.1339,
+        "ms": 14385
+      }
+    ]
+  },
+  {
+    "id": "browser",
+    "category": "trigger",
+    "expect": "vm_browser on the current VM",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "opens the page",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses the VM's browser",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "answers with the title",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_browser",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.0976,
+        "ms": 10222
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "opens the page",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses the VM's browser",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "answers with the title",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_browser",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.0974,
+        "ms": 8005
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "opens the page",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "uses the VM's browser",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "answers with the title",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_browser",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1021,
+        "ms": 11389
+      }
+    ]
+  },
+  {
+    "id": "install-local",
+    "category": "no-trigger",
+    "expect": "installs it locally (denied here, so intent only), even with a default VM; no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1081,
+        "ms": 17756
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1081,
+        "ms": 10279
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries to install it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {}
+          }
+        ],
+        "turns": 4,
+        "cost": 0.1066,
+        "ms": 11214
+      }
+    ]
+  },
+  {
+    "id": "docker-local",
+    "category": "no-trigger",
+    "expect": "runs Docker locally (denied here, so intent only); no VM work",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.095,
+        "ms": 11668
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "args": {}
+          },
+          {
+            "tool": "Bash",
+            "args": {}
+          }
+        ],
+        "turns": 3,
+        "cost": 0.0956,
+        "ms": 17983
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "no VM work",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "tries it here",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "Bash",
+            "denied": true,
+            "args": {
+              "timeout": 600000
+            }
+          }
+        ],
+        "turns": 2,
+        "cost": 0.0834,
+        "ms": 5963
+      }
+    ]
+  },
+  {
+    "id": "background-job",
+    "category": "routing",
+    "expect": "vm_jobs start; no blocking",
+    "runs": [
+      {
+        "rep": 0,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "vm_jobs start",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "doesn't wait for it",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "no vm_bash for the loop",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_jobs",
+            "args": {
+              "action": "start"
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1053,
+        "ms": 16346
+      },
+      {
+        "rep": 1,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "vm_jobs start",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "doesn't wait for it",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "no vm_bash for the loop",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_jobs",
+            "args": {
+              "action": "start"
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1055,
+        "ms": 9212
+      },
+      {
+        "rep": 2,
+        "pass": true,
+        "checks": [
+          {
+            "level": "must",
+            "name": "vm_jobs start",
+            "ok": true
+          },
+          {
+            "level": "must",
+            "name": "doesn't wait for it",
+            "ok": true
+          },
+          {
+            "level": "should",
+            "name": "no vm_bash for the loop",
+            "ok": true
+          }
+        ],
+        "calls": [
+          {
+            "tool": "vm_jobs",
+            "args": {
+              "action": "start"
+            }
+          }
+        ],
+        "turns": 3,
+        "cost": 0.1059,
+        "ms": 8686
+      }
+    ]
+  }
+]

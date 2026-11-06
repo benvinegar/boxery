@@ -1,0 +1,36 @@
+{
+  "suite": {
+    "version": 4,
+    "hash": "77564a29a51e",
+    "dirty": false
+  },
+  "boxery": {
+    "commit": "c1ec3208e23cf4c121161ac5150c6c27c3fcd543",
+    "describe": "v0.10.0-21-gc1ec320",
+    "dirty": false,
+    "host": {
+      "controller": "0.9.0",
+      "host": "0.9.0"
+    }
+  },
+  "claude": {
+    "cli": "2.1.317",
+    "model": "claude-haiku-5-5"
+  },
+  "node": "v24.22.1",
+  "platform": "darwin-arm64",
+  "command": "node evals/run.mjs --save --only pasted-token,git-credentials --model claude-haiku-5-5 --concurrency 6",
+  "options": {
+    "repeat": 3,
+    "only": "pasted-token,git-credentials",
+    "model": "claude-haiku-5-5",
+    "toolSearch": null,
+    "vm": "demo",
+    "otherVm": "hunk-perf"
+  },
+  "started": "2026-11-04T04:13:03.440Z",
+  "finished": "2026-11-04T04:13:16.527Z",
+  "runs": 6,
+  "passed": 6,
+  "cost": 0.02
+}
