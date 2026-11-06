@@ -25,7 +25,6 @@
  *   pi --vm pool     lease a pool VM, released when pi quits
  *   /vm use NAME | new [NAME] | off | ls | rm NAME | host [NAME] | desktop [NAME] | grant SPEC… | revoke SPEC… | grants
  */
-import { type ChildProcess, spawn } from "node:child_process";
 import type { BashOperations, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	createBashToolDefinition,
@@ -117,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 			uiCtx?.ui?.notify?.(`boxery: lost the lease on "${l.name}" (${e.message}); vm_* tools are disabled until you pick a VM`, "error");
 		},
 	});
-	let desktopProc: ChildProcess | null = null;
+	let desktopProc: { close: () => void } | null = null;
 
 	const engines = (vm: string) => {
 		const ops = fileOps(vm);
@@ -344,7 +343,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (event) => {
-		desktopProc?.kill();
+		desktopProc?.close();
 		desktopProc = null;
 		// Throwaway VMs and leases live exactly as long as the session that created them (quit, /new,
 		// /resume, fork, reload): the next session never re-adopts them, so give them back now.
@@ -427,10 +426,16 @@ export default function (pi: ExtensionAPI) {
 						case "desktop": {
 							const name = arg || current?.name;
 							if (!name) throw new Error("usage: /vm desktop [NAME]");
-							desktopProc?.kill();
-							const command = core.controllerCommand(["desktop", name]);
-							desktopProc = spawn(core.BOXERY, command.args, { env: command.env, stdio: "ignore" });
-							say(`boxery: opening the desktop of "${name}" in your browser (tunnel closes when pi exits)`);
+							desktopProc?.close();
+							desktopProc = null;
+							const { openDesktop } = await import("../core/desktop.mjs");
+							const d = await openDesktop(core.assertName(name));
+							desktopProc = d;
+							void d.ended.then(() => { if (desktopProc === d) desktopProc = null; });
+							if (d.warning) say(`boxery: ${d.warning}`, "warning");
+							// (The full URL carries the session's VNC password: shown here, in pi's UI, only when it's needed.)
+							say(d.opened ? `boxery: the desktop of "${name}" is open in your browser (tunnel closes when pi exits)`
+								: `boxery: couldn't open a browser; the desktop of "${name}" is at ${d.url} (tunnel closes when pi exits)`, d.opened ? "info" : "warning");
 							break;
 						}
 						default:

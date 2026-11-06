@@ -1,5 +1,5 @@
 // Test helper: load extension/index.ts against a stub pi, recording what it registers. Set BOXERY_HOME
-// and BOXERY_BIN before the first load: core reads them at import.
+// before the first load: core reads it at import.
 import * as nodeModule from "node:module"; // namespace import: Node < 22.15 has no registerHooks export
 
 /** Loading .ts needs TypeScript stripping and module.registerHooks (Node >= 22.18). */

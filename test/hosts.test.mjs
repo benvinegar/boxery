@@ -1,7 +1,7 @@
 // Isolated host-aware core/MCP regressions. No real SSH, HOME, credentials or VM host.
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -35,19 +35,21 @@ before(() => {
 		writeFileSync(path.join(vmroot(host), "calls"), "");
 	}
 	writeFileSync(path.join(dir, "home", "default-host"), "alpha\n");
-	// The controller CLI: only registry commands (host add/rm) still run it.
-	writeFileSync(path.join(bin, "boxery"), `#!/usr/bin/env bash
-pdir=""
-if [ "$1" = --host ]; then shift 2; [ "$1" != --profile-dir ] || { pdir=$2; shift 2; }; fi
-tag="PROFILE:$(basename "\${pdir:-$BOXERY_HOME}")"
-printf '%s\\nCOMMAND:%s\\n' "$tag" "$*"
-`);
+	// The controller CLI is never run by MCP: a stub that says so.
+	writeFileSync(path.join(bin, "boxery"), `#!/bin/sh\ntouch ${JSON.stringify(path.join(dir, "cli-spawned"))}\nexit 99\n`);
 	// boxery-host for both profiles: says which profile reached it (STUB_TAG, from the profile's config).
 	writeFileSync(path.join(bin, "boxery-host"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(path.join(dir, "host-invocations"))}
+[ "$1" != --profile ] || shift 2
 case "$*" in
 "ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$STUB_TAG" ;;
-help) : ;;
-*) printf '%s\\nCOMMAND:%s\\n' "$STUB_TAG" "$*" ;;
+help) echo '  capabilities' ;;
+"init --backend broken") echo "backend check failed" >&2; exit 1 ;;
+"init --backend slow") sleep 30 ;;
+"init --backend "*|"capabilities --check") echo "==> $*" >&2 ;;
+add-key) cat >/dev/null ;;
+backend) echo lima ;;
+*) printf '%s\\nCOMMAND:%s\\n' "\${STUB_TAG:-PROFILE:new}" "$*" ;;
 esac
 `);
 	writeFileSync(path.join(bin, "ssh"), `#!/usr/bin/env bash
@@ -69,7 +71,7 @@ cd "$vmroot" && HOST_TAG=$host HOME="$vmroot" exec bash -c "$cmd"
 `);
 	writeFileSync(path.join(bin, "setsid"), "#!/usr/bin/env bash\n[ \"$1\" != -w ] || shift\nexec perl -e 'setpgrp(0,0); exec @ARGV or die' -- \"$@\"\n");
 	for (const f of ["boxery", "boxery-host", "ssh", "setsid"]) chmodSync(path.join(bin, f), 0o755);
-	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_BIN: path.join(bin, "boxery"), BOXERY_RUNTIME_DIR: path.join(dir, "runtime") };
+	env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: path.join(dir, "isolated-home"), BOXERY_HOME: path.join(dir, "home"), BOXERY_VM: "", BOXERY_RUNTIME_DIR: path.join(dir, "runtime") };
 });
 after(() => {
 	for (const c of clients) c.close();
@@ -96,13 +98,13 @@ function client(args = [], overrides = {}) {
 		waiting.set(i, resolve);
 		p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method, params })}\n`);
 	});
-	const c = { call, tool: async (name, a) => (await call("tools/call", { name, arguments: a })).result, close: () => p.kill() };
+	const c = { call, tool: async (name, a) => (await call("tools/call", { name, arguments: a })).result, close: () => p.kill(), end: () => p.stdin.end() };
 	clients.push(c);
 	return c;
 }
 
 // Run core in its own process, rather than mutate global process.env for profile selection.
-test("core registry, default resolution, trusted contexts and per-call subprocess args", () => {
+test("core registry, default resolution and trusted contexts, per call", () => {
 	const script = `
 import assert from 'node:assert/strict';
 import {writeFileSync} from 'node:fs';
@@ -113,7 +115,6 @@ try {
  writeFileSync(c.BOXERY_HOME + '/default-host', 'beta\\n');
  assert.equal(c.resolveHost().name, 'beta');
  assert.equal(c.currentHost().name, 'alpha', 'implicit pi transport default stays pinned');
- assert.deepEqual(c.controllerCommand(['desktop','fakevm']).args, ['--host', 'alpha', '--profile-dir', c.resolveHost('alpha').dir, 'desktop', 'fakevm']);
 } finally {writeFileSync(c.BOXERY_HOME + '/default-host', 'alpha\\n');}
 
 assert.throws(() => c.resolveHost('legacy'), /unknown host/, 'legacy is not a built-in host');
@@ -127,8 +128,6 @@ assert.equal(loc.host.name, 'beta'); assert.equal(loc.vm, 'fakevm');
 const before = {...process.env};
 const [a,b] = await Promise.all(['alpha','beta'].map(h => c.withHost(h, async () => {
  await c.sleep(h === 'alpha' ? 20 : 1);
- const cmd = c.controllerCommand(['ls']);
- assert.deepEqual(cmd.args.slice(0, 4), ['--host', h, '--profile-dir', c.resolveHost(h).dir]);
  const [ssh, listed] = await Promise.all([
   c.sshOk('fakevm', 'printf %s "$HOST_TAG"'),
   c.listVms()
@@ -169,24 +168,60 @@ test("all MCP schemas accept host; default/startup selection and VM ownership fa
 	assert.match(text(await other.tool("vm_bash", { command: 'echo "$HOST_TAG"' })), /^beta\n/);
 });
 
-test("vm_manage host_add/host_rm run against the registry root with only validated arguments; build-base on the call's host", async () => {
+test("vm_manage host_add/host_rm change the registry in-process, with only validated arguments; build-base on the call's host", async () => {
 	const c = client(["--host", "beta"]);
+	// A local host: the stub boxery-host answers help/capabilities/add-key/backend, and records init.
+	// (host_add takes no host-bin: the default ~/.local/bin/boxery-host, here the stub.)
+	mkdirSync(path.join(env.HOME, ".local", "bin"), { recursive: true });
+	writeFileSync(path.join(env.HOME, ".local", "bin", "boxery-host"), readFileSync(path.join(dir, "bin", "boxery-host")));
+	chmodSync(path.join(env.HOME, ".local", "bin", "boxery-host"), 0o755);
+	mkdirSync(path.join(env.HOME, ".ssh"), { recursive: true });
+	writeFileSync(path.join(env.HOME, ".ssh", "id_ed25519.pub"), "ssh-ed25519 AAAAtest me@laptop\n");
 	const out = text(await c.tool("vm_manage", { action: "host_add", name: "gamma", dest: "local", backend: "exe" }));
-	assert.match(out, /PROFILE:home\nCOMMAND:host add gamma local --backend exe\n/, "registry root, not the session's profile");
+	assert.match(out, /==> creating host profile gamma \(exe backend/);
+	assert.match(out, /registered gamma \(.*profiles\/gamma\); select with: boxery host use gamma/, "the registry root's profiles, not the session's");
 	assert.match(out, /action:"host", host:"gamma"/);
-	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "delta", dest: "me@box", profile: "exe" })), /COMMAND:host add delta me@box --profile exe\n/);
-	// Registers, then builds on the new host's profile (here an existing fixture so the stub can resolve it).
-	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "alpha", dest: "local", backend: "lima", buildBase: true })), /PROFILE:alpha\nCOMMAND:build-base/);
+	assert.equal(readFileSync(path.join(dir, "home", "host-registry", "gamma"), "utf8"), `${path.join(dir, "home", "profiles", "gamma")}\n`);
+	assert.match(readFileSync(path.join(dir, "home", "profiles", "gamma", "config"), "utf8"), /^HOST_PROFILE='gamma'$/m);
+	assert.match(readFileSync(path.join(dir, "host-invocations"), "utf8"), /^--profile gamma init --backend exe$/m);
+	// A failing setup registers nothing and leaves no profile behind.
+	const bad = await c.tool("vm_manage", { action: "host_add", name: "delta", dest: "local", backend: "broken" });
+	assert.equal(bad.isError, true); assert.match(text(bad), /host add delta: boxery-host --profile delta init --backend broken failed/);
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", "delta")), false);
+	assert.equal(existsSync(path.join(dir, "home", "profiles", "delta")), false);
+	// Registers, then builds on the new host's profile.
+	assert.match(text(await c.tool("vm_manage", { action: "host_add", name: "epsilon", dest: "local", buildBase: true })), /registered epsilon[\s\S]*COMMAND:build-base/);
 	for (const bad of [{ name: "Bad", dest: "local" }, { name: "gamma", dest: "-oProxyCommand=x" }, { name: "gamma", dest: "a b" },
 		{ name: "gamma", dest: "local", backend: "../x" }, { name: "gamma", dest: "local", profile: "-x" }, { name: "gamma" }, { name: "gamma", dest: "local", host: "beta" }])
 		assert.equal((await c.tool("vm_manage", { action: "host_add", ...bad })).isError, true, JSON.stringify(bad));
 	assert.match(text(await c.tool("vm_info", { action: "list" })), /host: beta/, "session host unchanged");
-	// build-base on the call's host; host_rm forgets a registration against the registry root.
+	// build-base on the call's host; host_rm forgets a registration (only that).
 	assert.match(text(await c.tool("vm_manage", { action: "build-base", host: "alpha" })), /PROFILE:alpha\nCOMMAND:build-base$/);
-	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "gamma" })), /^PROFILE:home\nCOMMAND:host rm gamma$/);
-	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "beta" })), /COMMAND:host rm beta\nthis session still uses beta/);
-	for (const bad of [{ name: "../x" }, {}, { name: "gamma", host: "beta" }])
+	assert.equal(text(await c.tool("vm_manage", { action: "host_rm", name: "gamma" })), "forgot gamma; profile data, VMs and grants were NOT deleted or revoked");
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", "gamma")), false);
+	assert.equal(existsSync(path.join(dir, "home", "profiles", "gamma", "config")), true);
+	assert.match(text(await c.tool("vm_manage", { action: "host_rm", name: "beta" })), /^forgot beta;.*\nthis session still uses beta/);
+	const def = await c.tool("vm_manage", { action: "host_rm", name: "alpha" });
+	assert.equal(def.isError, true); assert.match(text(def), /cannot forget the default host/);
+	for (const bad of [{ name: "../x" }, {}, { name: "gamma", host: "beta" }, { name: "nosuch" }])
 		assert.equal((await c.tool("vm_manage", { action: "host_rm", ...bad })).isError, true, JSON.stringify(bad));
+	// The CLI was never run.
+	assert.equal(existsSync(path.join(dir, "cli-spawned")), false);
+	// The server going away mid-registration (its client closed stdin) gives the registry back: no lock,
+	// no half-made profile, and the host command it ran is stopped.
+	writeFileSync(path.join(dir, "home", "host-registry", "beta"), `${profile("beta")}\n`); // (re-registered: removed above)
+	const leaving = client(["--host", "beta"]);
+	let answer = null;
+	void leaving.tool("vm_manage", { action: "host_add", name: "zeta", dest: "local", backend: "slow" }).then((r) => (answer = r));
+	for (let i = 0; i < 100 && !existsSync(path.join(dir, "home", "host-registry", ".lock")); i++) await delay(50);
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", ".lock")), true, `zeta's registration holds the lock (${JSON.stringify(answer)})`);
+	leaving.end();
+	for (let i = 0; i < 100 && existsSync(path.join(dir, "home", "host-registry", ".lock")); i++) await delay(50);
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", ".lock")), false, "the lock went with the server");
+	assert.equal(existsSync(path.join(dir, "home", "profiles", "zeta")), false);
+	// (Back to the fixture's registry for the tests after this one.)
+	for (const n of ["epsilon"]) rmSync(path.join(dir, "home", "host-registry", n), { force: true });
+	for (const n of ["gamma", "epsilon"]) rmSync(path.join(dir, "home", "profiles", n), { recursive: true, force: true });
 });
 
 test("startup host failures, BOXERY_VM and alias replacement cannot inherit a different profile's VM", async () => {

@@ -212,11 +212,14 @@ async function endSession(session) {
 	await session.keeper.releaseAll();
 }
 
-for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"])
-	process.on(sig, async () => {
-		await Promise.all([...allSessions].map(endSession));
-		process.exit(0);
-	});
+/** Before the server exits: sessions' leases go back, and a host registration in progress gives the
+ *  registry back (its lock would otherwise block every later host add). */
+async function shutdown() {
+	await Promise.all([...allSessions].map(endSession));
+	await (await import("../core/registry.mjs")).releaseRegistry();
+	process.exit(0);
+}
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, shutdown);
 
 const instructions = (/** @type {Session} */ s) =>
 	core.guidance(s.current, {
@@ -377,6 +380,7 @@ function serveStdio() {
 	});
 	process.stdin.on("end", async () => {
 		await endSession(session);
+		await (await import("../core/registry.mjs")).releaseRegistry();
 		process.exit(0);
 	});
 	log(`stdio ready${DEFAULT_VM ? ` (current VM: ${DEFAULT_VM})` : ""}`);

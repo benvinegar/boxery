@@ -5,10 +5,10 @@
 // other one can't have it; this test fails until it is.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { before, describe, it } from "node:test";
+import { before, describe, it, test } from "node:test";
 import { registerHost } from "./fixtures/register-host.mjs";
 import { canLoad, loadExtension } from "./helpers/pi-extension.mjs";
 
@@ -22,9 +22,6 @@ const PI_ONLY = {};
 
 const HOME = mkdtempSync(path.join(tmpdir(), "boxery-frontends-"));
 process.env.BOXERY_HOME = HOME;
-process.env.BOXERY_BIN = path.join(HOME, "boxery");
-writeFileSync(process.env.BOXERY_BIN, "#!/bin/sh\necho '[]'\n");
-chmodSync(process.env.BOXERY_BIN, 0o755);
 registerHost(HOME);
 // After BOXERY_HOME: core reads it at import (a static import would see the developer's real registry).
 const { TOOLS } = await import("../core/boxery-tools.mjs");
@@ -103,4 +100,17 @@ describe("front-ends", () => {
 		assert.match(section.boxery, hostLine, "pi");
 		assert.match(instructions, hostLine, "MCP");
 	});
+});
+
+test("agents' front ends (core, MCP, pi) never run the controller CLI", () => {
+	// The CLI (controller/) is a front end of core, never the other way round.
+	for (const dir of ["core", "mcp", "extension"]) {
+		for (const f of readdirSync(new URL(`../${dir}/`, import.meta.url), { recursive: true }).map(String)) {
+			if (!/\.(mjs|ts|sh)$/.test(f)) continue;
+			// (Code only: comments may say what the CLI does.)
+			const src = readFileSync(new URL(`../${dir}/${f}`, import.meta.url), "utf8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*\*)/.test(l)).join("\n");
+			assert.doesNotMatch(src, /controller\/(boxery|cli\.mjs)|["'`]\.\.\/controller\/|["'`]controller["'`]/, `${dir}/${f} reaches into controller/`);
+			assert.doesNotMatch(src, /\b(spawn|spawnSync|execFile|execFileSync|exec)\(\s*["'`]boxery["'`]|BOXERY_BIN/, `${dir}/${f} runs the boxery CLI`);
+		}
+	}
 });
