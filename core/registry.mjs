@@ -82,10 +82,12 @@ async function hostSays(io, args, host, c, o = {}) {
 function check(io, cmd, args, env) {
 	return new Promise((resolve) => {
 		const child = spawn(cmd, args, { stdio: ["ignore", "ignore", io.terminal ? "inherit" : "pipe"], env });
+		// A tool's call must end (and give the registry back): two minutes at most. A person can Ctrl-C.
+		const timer = io.terminal ? undefined : setTimeout(() => { io.note(`boxery: ${cmd} took over 2 minutes; stopped`); child.kill(); }, 120_000);
 		let err = "";
 		child.stderr?.on("data", (d) => { if (err.length < 16_384) err += d; });
-		child.on("error", (e) => { io.note(`boxery: cannot run ${cmd}: ${e.message}`); resolve(127); });
-		child.on("close", (code) => { if (err.trim()) io.note(err.trim()); resolve(code ?? 1); });
+		child.on("error", (e) => { clearTimeout(timer); io.note(`boxery: cannot run ${cmd}: ${e.message}`); resolve(127); });
+		child.on("close", (code) => { clearTimeout(timer); if (err.trim()) io.note(err.trim()); resolve(code ?? 1); });
 	});
 }
 
@@ -117,7 +119,7 @@ export async function setup(host, config, dest, { key = "", hostBin = config.hos
 	} else {
 		io.say(`==> checking ssh to ${dest}`);
 		// (A tool can't answer a password or host-key prompt: BatchMode. The CLI's user can.)
-		if (await check(io, "ssh", ["-o", "LogLevel=ERROR", ...(io.terminal ? [] : ["-o", "BatchMode=yes"]), "--", dest, `${remotePath(hostBin)} help >/dev/null`], env) !== 0)
+		if (await check(io, "ssh", ["-o", "LogLevel=ERROR", ...(io.terminal ? [] : ["-o", "BatchMode=yes", "-o", "ConnectTimeout=30"]), "--", dest, `${remotePath(hostBin)} help >/dev/null`], env) !== 0)
 			fail(`cannot run ${hostBin} on ${dest} (is it installed? did you run boxery-host init?)`);
 	}
 	/** @param {string[]} a @param {HostRunOpts} [o] */
@@ -191,9 +193,17 @@ export async function recordBackend(host, config) {
 
 // ---------------------------------------------------------------- the registry lock
 
-/** What a signal must undo while the registry is locked: the lock, and a profile directory being made. */
+/** What must be undone if this process ends while the registry is locked: the lock, and a profile
+ *  directory being made. (Synchronous: it also runs inside process.exit.) */
 const undo = { lock: "", profile: "" };
-const cleanUp = () => { if (undo.profile) rmSync(undo.profile, { recursive: true, force: true }); if (undo.lock) rmSync(undo.lock, { force: true }); };
+const cleanUp = () => { if (undo.profile) rmSync(undo.profile, { recursive: true, force: true }); if (undo.lock) rmSync(undo.lock, { force: true }); undo.profile = ""; undo.lock = ""; };
+/** For a long-lived process (MCP) that is about to exit: stop the host commands a registration is running,
+ *  and give the registry back. Safe to call with nothing held. */
+export async function releaseRegistry() {
+	if (!undo.lock) return;
+	await stopHostCommands("SIGTERM");
+	cleanUp();
+}
 
 /** Run FN holding the registry lock. onSignal (the CLI): a signal meanwhile (Ctrl-C at an init prompt)
  *  stops the host commands, removes the lock and a half-made profile, and ends the process as the signal
@@ -211,8 +221,11 @@ export async function withRegistryLock(fn, { onSignal = false } = {}) {
 		void stopHostCommands(sig).finally(() => { cleanUp(); process.exit(128 + constants.signals[sig]); });
 	}])) : [];
 	for (const [sig, h] of handlers) process.on(sig, h);
+	// However this process ends meanwhile (an MCP server exiting mid-call), the lock doesn't outlive it.
+	process.on("exit", cleanUp);
 	try { return await fn(); } finally {
 		for (const [sig, h] of handlers) process.off(sig, h);
+		process.off("exit", cleanUp);
 		rmSync(lock, { force: true }); undo.lock = "";
 	}
 }

@@ -45,6 +45,7 @@ case "$*" in
 "ls --json") printf '[{"name":"fakevm","state":"running","ssh_addr":"%s"}]\\n' "$STUB_TAG" ;;
 help) echo '  capabilities' ;;
 "init --backend broken") echo "backend check failed" >&2; exit 1 ;;
+"init --backend slow") sleep 30 ;;
 "init --backend "*|"capabilities --check") echo "==> $*" >&2 ;;
 add-key) cat >/dev/null ;;
 backend) echo lima ;;
@@ -97,7 +98,7 @@ function client(args = [], overrides = {}) {
 		waiting.set(i, resolve);
 		p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method, params })}\n`);
 	});
-	const c = { call, tool: async (name, a) => (await call("tools/call", { name, arguments: a })).result, close: () => p.kill() };
+	const c = { call, tool: async (name, a) => (await call("tools/call", { name, arguments: a })).result, close: () => p.kill(), end: () => p.stdin.end() };
 	clients.push(c);
 	return c;
 }
@@ -206,8 +207,19 @@ test("vm_manage host_add/host_rm change the registry in-process, with only valid
 		assert.equal((await c.tool("vm_manage", { action: "host_rm", ...bad })).isError, true, JSON.stringify(bad));
 	// The CLI was never run.
 	assert.equal(existsSync(path.join(dir, "cli-spawned")), false);
+	// The server going away mid-registration (its client closed stdin) gives the registry back: no lock,
+	// no half-made profile, and the host command it ran is stopped.
+	writeFileSync(path.join(dir, "home", "host-registry", "beta"), `${profile("beta")}\n`); // (re-registered: removed above)
+	const leaving = client(["--host", "beta"]);
+	let answer = null;
+	void leaving.tool("vm_manage", { action: "host_add", name: "zeta", dest: "local", backend: "slow" }).then((r) => (answer = r));
+	for (let i = 0; i < 100 && !existsSync(path.join(dir, "home", "host-registry", ".lock")); i++) await delay(50);
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", ".lock")), true, `zeta's registration holds the lock (${JSON.stringify(answer)})`);
+	leaving.end();
+	for (let i = 0; i < 100 && existsSync(path.join(dir, "home", "host-registry", ".lock")); i++) await delay(50);
+	assert.equal(existsSync(path.join(dir, "home", "host-registry", ".lock")), false, "the lock went with the server");
+	assert.equal(existsSync(path.join(dir, "home", "profiles", "zeta")), false);
 	// (Back to the fixture's registry for the tests after this one.)
-	writeFileSync(path.join(dir, "home", "host-registry", "beta"), `${profile("beta")}\n`);
 	for (const n of ["epsilon"]) rmSync(path.join(dir, "home", "host-registry", n), { force: true });
 	for (const n of ["gamma", "epsilon"]) rmSync(path.join(dir, "home", "profiles", n), { recursive: true, force: true });
 });

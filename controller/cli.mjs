@@ -186,7 +186,7 @@ async function cmdDesktop(s, [vm, noOpen]) {
 	const { openUrl, prepareDesktop, tunnelArgs } = await import("../core/desktop.mjs");
 	/** @type {Awaited<ReturnType<typeof prepareDesktop>>} */
 	let d;
-	try { d = await prepareDesktop(name); } catch (e) { die(/** @type {Error} */ (e).message); }
+	try { d = await prepareDesktop(name, { terminal: true }); } catch (e) { die(/** @type {Error} */ (e).message); }
 	if (d.warning) warn(d.warning);
 	say(`==> desktop for ${name} at ${d.url}  (Ctrl-C to close the tunnel)`);
 	if (noOpen !== "--no-open") setTimeout(() => void openUrl(d.url).then((ok) => { if (!ok) say(`open: ${d.url}`); }), 1500).unref();

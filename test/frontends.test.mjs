@@ -105,11 +105,12 @@ describe("front-ends", () => {
 test("agents' front ends (core, MCP, pi) never run the controller CLI", () => {
 	// The CLI (controller/) is a front end of core, never the other way round.
 	for (const dir of ["core", "mcp", "extension"]) {
-		for (const f of readdirSync(new URL(`../${dir}/`, import.meta.url))) {
-			if (!/\.(mjs|ts)$/.test(f)) continue;
+		for (const f of readdirSync(new URL(`../${dir}/`, import.meta.url), { recursive: true }).map(String)) {
+			if (!/\.(mjs|ts|sh)$/.test(f)) continue;
 			// (Code only: comments may say what the CLI does.)
 			const src = readFileSync(new URL(`../${dir}/${f}`, import.meta.url), "utf8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*\*)/.test(l)).join("\n");
-			assert.doesNotMatch(src, /controller\/(boxery|cli\.mjs)|["'`]\.\.\/controller\//, `${dir}/${f} reaches into controller/`);
+			assert.doesNotMatch(src, /controller\/(boxery|cli\.mjs)|["'`]\.\.\/controller\/|["'`]controller["'`]/, `${dir}/${f} reaches into controller/`);
+			assert.doesNotMatch(src, /\b(spawn|spawnSync|execFile|execFileSync|exec)\(\s*["'`]boxery["'`]|BOXERY_BIN/, `${dir}/${f} runs the boxery CLI`);
 		}
 	}
 });

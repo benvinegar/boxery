@@ -27,23 +27,28 @@ export async function freePort(start) {
 /**
  * Prepare VM NAME's desktop: a fresh VNC password, a free local port and the URL. warning: an image from
  * before VNC passwords (its desktop is open to this machine while the tunnel is). Throws for a headless or
- * unreachable VM. @param {string} name @returns {Promise<{ url: string, port: number, warning: string | null }>}
+ * unreachable VM, with ssh's or the VM's reason. terminal: ssh may ask (a key's passphrase), as in the CLI.
+ * @param {string} name @param {{ terminal?: boolean }} [opts] @returns {Promise<{ url: string, port: number, warning: string | null }>}
  */
-export async function prepareDesktop(name) {
+export async function prepareDesktop(name, { terminal = false } = {}) {
 	assertName(name);
-	const out = (await sshRun(name, SETUP, { timeoutMs: 60_000 })).stdout.toString("utf8").trim();
+	const { env } = await profileConfig();
+	const r = await sshRun(name, SETUP, { timeoutMs: terminal ? 0 : 60_000, env, batch: !terminal });
+	const out = r.stdout.toString("utf8").trim();
+	const why = r.stderr.trim().split("\n").slice(-3).join(" ");
 	let pw = "", warning = null;
 	if (out === "headless") throw new Error(`${name} is headless (boxery new --headless): it has no desktop`);
 	else if (out.startsWith("password ")) { pw = out.slice(9); if (!/^[A-Za-z0-9]+$/.test(pw)) throw new Error(`unexpected VNC password from ${name}`); }
 	else if (out === "nopassword") warning = `${name}'s desktop has no VNC password: its image predates it, so while this tunnel is open any process on this machine (or a web page) can use it. Rebuild the desktop base (boxery build-base) and create the VM again.`;
-	else throw new Error(`couldn't set up the desktop of ${name} (is it running? boxery ls)`);
+	else throw new Error(`couldn't set up the desktop of ${name} (is it running? boxery ls)${why ? `: ${why}` : ""}`);
 	const port = await freePort(16080);
 	return { url: `http://127.0.0.1:${port}/vnc.html?autoconnect=1&resize=remote&reconnect=1${pw ? `#password=${pw}` : ""}`, port, warning };
 }
 
-/** ssh's arguments for the tunnel to NAME's noVNC on local PORT (a connection of its own). @param {string} name @param {number} port */
-export const tunnelArgs = (name, port) => ["-F", currentHost().sshConf, "-N", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ExitOnForwardFailure=yes",
-	"-L", `127.0.0.1:${port}:127.0.0.1:6080`, `${assertName(name)}.boxery`];
+/** ssh's arguments for the tunnel to NAME's noVNC on local PORT (a connection of its own). batch: nothing may
+ *  ask (no terminal to answer in: pi). @param {string} name @param {number} port @param {{ batch?: boolean }} [opts] */
+export const tunnelArgs = (name, port, { batch = false } = {}) => ["-F", currentHost().sshConf, "-N", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ExitOnForwardFailure=yes",
+	...(batch ? ["-o", "BatchMode=yes"] : []), "-L", `127.0.0.1:${port}:127.0.0.1:6080`, `${assertName(name)}.boxery`];
 
 /** Open URL in the browser (macOS open, else xdg-open). false if neither could start. @param {string} url @returns {Promise<boolean>} */
 export function openUrl(url) {
@@ -55,24 +60,28 @@ export function openUrl(url) {
 }
 
 /**
- * For a long-lived process (pi): open NAME's desktop and keep its tunnel in the background, sharing no stdio,
- * until close() (or the tunnel ends). open: also open it in the browser once the tunnel is up.
+ * For a long-lived process (pi): open NAME's desktop and keep its tunnel in the background, sharing no stdio
+ * (ssh in batch mode: nothing can ask), until close() (or the tunnel ends). open: also open it in the browser
+ * once the tunnel is up; opened says whether that worked.
  * @param {string} name @param {{ open?: boolean }} [opts]
- * @returns {Promise<{ url: string, warning: string | null, close: () => void, ended: Promise<number> }>}
+ * @returns {Promise<{ url: string, warning: string | null, opened: boolean, close: () => void, ended: Promise<number> }>}
  */
 export async function openDesktop(name, { open = true } = {}) {
 	const { url, port, warning } = await prepareDesktop(name);
 	const { env } = await profileConfig();
-	const child = spawn("ssh", tunnelArgs(name, port), { stdio: "ignore", env });
+	const child = spawn("ssh", tunnelArgs(name, port, { batch: true }), { stdio: "ignore", env });
 	const ended = new Promise((resolve) => { child.once("error", () => resolve(127)); child.once("exit", (code) => resolve(code ?? 1)); });
-	// The tunnel is up once its port answers (or it ended: ExitOnForwardFailure).
-	const up = await Promise.race([ended.then(() => false), (async () => {
-		for (let i = 0; i < 100; i++) { if (!(await freePortAt(port))) return true; await new Promise((r) => setTimeout(r, 100)); }
-		return false;
-	})()]);
+	// Up once the port answers and our ssh is still there (another program taking the port first makes ssh
+	// exit: ExitOnForwardFailure). A slow ProxyCommand or jump host gets 30 s.
+	const alive = () => child.exitCode === null && child.signalCode === null;
+	let up = false;
+	for (let i = 0; i < 300 && alive() && !up; i++) {
+		if (!(await freePortAt(port))) { await new Promise((r) => setTimeout(r, 200)); up = alive(); }
+		else await new Promise((r) => setTimeout(r, 100));
+	}
 	if (!up) { child.kill(); throw new Error(`the tunnel to ${name}'s desktop didn't come up (is it running? boxery ls)`); }
-	if (open) await openUrl(url);
-	return { url, warning, close: () => { child.kill(); }, ended };
+	const opened = open ? await openUrl(url) : false;
+	return { url, warning, opened, close: () => { child.kill(); }, ended };
 }
 /** Is local PORT free (nothing listening)? @param {number} port */
 async function freePortAt(port) {

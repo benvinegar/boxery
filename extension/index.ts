@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 			uiCtx?.ui?.notify?.(`boxery: lost the lease on "${l.name}" (${e.message}); vm_* tools are disabled until you pick a VM`, "error");
 		},
 	});
-	let desktopProc: { close: () => void, url: string, warning: string | null } | null = null;
+	let desktopProc: { close: () => void } | null = null;
 
 	const engines = (vm: string) => {
 		const ops = fileOps(vm);
@@ -427,10 +427,15 @@ export default function (pi: ExtensionAPI) {
 							const name = arg || current?.name;
 							if (!name) throw new Error("usage: /vm desktop [NAME]");
 							desktopProc?.close();
+							desktopProc = null;
 							const { openDesktop } = await import("../core/desktop.mjs");
-							desktopProc = await openDesktop(core.assertName(name));
-							if (desktopProc.warning) say(`boxery: ${desktopProc.warning}`, "warning");
-							say(`boxery: the desktop of "${name}" is open in your browser at ${desktopProc.url.replace(/#.*/, "")} (tunnel closes when pi exits)`);
+							const d = await openDesktop(core.assertName(name));
+							desktopProc = d;
+							void d.ended.then(() => { if (desktopProc === d) desktopProc = null; });
+							if (d.warning) say(`boxery: ${d.warning}`, "warning");
+							// (The full URL carries the session's VNC password: shown here, in pi's UI, only when it's needed.)
+							say(d.opened ? `boxery: the desktop of "${name}" is open in your browser (tunnel closes when pi exits)`
+								: `boxery: couldn't open a browser; the desktop of "${name}" is at ${d.url} (tunnel closes when pi exits)`, d.opened ? "info" : "warning");
 							break;
 						}
 						default:

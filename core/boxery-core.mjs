@@ -29,7 +29,8 @@ export { q } from "./shell.mjs";
 /** @typedef {{ progress?: Progress }} ProgressOpts */
 /** @typedef {{ name: string, dir: string, default: boolean, destination: string | null, backend: string | null, same_as: string[] }} HostDescription */
 /** @typedef {{ host?: HostProfile, vm: string | null, path: string }} Loc */
-/** @typedef {{ input?: string | Buffer, signal?: AbortSignal, timeoutMs?: number, onData?: (d: Buffer) => void, maxBytes?: number, closePipes?: boolean }} SshRunOpts */
+/** env: ssh's environment (default: this process's); batch: false lets ssh ask (a terminal's passphrase).
+ *  @typedef {{ input?: string | Buffer, signal?: AbortSignal, timeoutMs?: number, onData?: (d: Buffer) => void, maxBytes?: number, closePipes?: boolean, env?: NodeJS.ProcessEnv, batch?: boolean }} SshRunOpts */
 /** @typedef {{ code: number | null, stdout: Buffer, stderr: string }} SshResult */
 /** @typedef {{ onData?: (d: Buffer) => void, signal?: AbortSignal, timeout?: number }} ExecRemoteOpts */
 /** @typedef {{ exitCode: number | null }} ExecResult */
@@ -287,8 +288,8 @@ export function sshRun(vm, script, opts = {}) {
 		const { sshConf } = currentHost();
 		if (!existsSync(sshConf)) return reject(new Error(`boxery not set up (${sshConf} missing); run: boxery setup user@host`));
 		// stdin is a pipe whenever it is used (opts.input != null).
-		const child = /** @type {ChildProcessWithoutNullStreams} */ (spawn("ssh", ["-F", sshConf, "-o", "BatchMode=yes", `${vm}.boxery`, `bash -c ${q(script)}`], {
-			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"],
+		const child = /** @type {ChildProcessWithoutNullStreams} */ (spawn("ssh", ["-F", sshConf, ...(opts.batch === false ? [] : ["-o", "BatchMode=yes"]), `${vm}.boxery`, `bash -c ${q(script)}`], {
+			stdio: [opts.input != null ? "pipe" : "ignore", "pipe", "pipe"], ...(opts.env ? { env: opts.env } : {}),
 		}));
 		/** @type {Buffer[]} */
 		const out = [];
