@@ -19,10 +19,6 @@ mkdirSync(path.join(HOME, "bin"));
 writeFileSync(path.join(HOME, "bin/ssh"), '#!/bin/sh\ncat >/dev/null\n');
 chmodSync(path.join(HOME, "bin/ssh"), 0o755);
 process.env.PATH = `${HOME}/bin:${process.env.PATH}`;
-// Controller operations run in-process against the stub host; the CLI must never be spawned.
-process.env.BOXERY_BIN = path.join(HOME, "boxery");
-writeFileSync(process.env.BOXERY_BIN, "#!/bin/sh\necho \"spawned the controller CLI: $*\" >&2\nexit 99\n");
-chmodSync(process.env.BOXERY_BIN, 0o755);
 // The stub host's calls, as "HOST: ARGS" (feature probes left out).
 const hostName = (/** @type {string} */ dir) => (dir === BETA ? "beta" : dir === HOME ? "test" : dir);
 const calls = () => hostCalls(HOME).map((l) => { const i = l.indexOf(": "); return `${hostName(l.slice(0, i))}: ${l.slice(i + 2)}`; }).filter((l) => !l.endsWith(": help"));

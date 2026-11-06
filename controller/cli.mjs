@@ -14,7 +14,7 @@ import { refreshSshConfig } from "../core/profile.mjs";
 import { literal, literalArgs, remotePath } from "../core/ssh-config.mjs";
 import { controllerVersion, hostVersion, skewNote, upgradeHint } from "../core/versions.mjs";
 import { backendCommand, hostCommand, setupNamed } from "./hosts.mjs";
-import { CliError, VALID_SNAP, VALID_VM, commandLine, die, hasRawBytes, hostFailed, hostPass, needHost, needVm, note, rawTail, say, select, vmSsh, vmSshCapture, warn } from "./lib.mjs";
+import { CliError, VALID_SNAP, VALID_VM, commandLine, die, hasRawBytes, hostFailed, hostPass, inherit, needHost, needVm, note, rawTail, say, select, vmSsh, vmSshCapture, warn } from "./lib.mjs";
 import { RUN_EXAMPLES, USAGE } from "./usage.mjs";
 /** @import { Selected } from "./lib.mjs" */
 
@@ -180,45 +180,17 @@ async function cmdAttach(s, [name = "", tool = "pi", sess = tool]) {
 	if (rc) throw new CliError("", rc);
 }
 
-/** The first free local TCP port from START. @param {number} start */
-async function freePort(start) {
-	const net = await import("node:net");
-	for (let p = start; p < start + 1000; p++) {
-		const free = await new Promise((resolve) => {
-			const sock = net.connect({ port: p, host: "127.0.0.1" });
-			sock.once("connect", () => { sock.destroy(); resolve(false); });
-			sock.once("error", () => resolve(true));
-		});
-		if (free) return p;
-	}
-	return die(`no free local port from ${start}`);
-}
-/** @param {string} url */
-function openUrl(url) {
-	const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-	const child = spawn(cmd, [url], { stdio: "ignore", detached: true });
-	child.on("error", () => say(`open: ${url}`));
-	child.unref();
-}
-
-// The VM's VNC server asks for a password (image/layers/desktop.sh): each session sets a fresh one and hands
-// it to noVNC in the URL fragment, which the browser never sends, so it stays out of logs. It replaces the
-// previous session's for new logins; connections already open stay.
-/** desktop NAME [--no-open] @param {Selected} s @param {string[]} args @returns {Promise<void>} */
+/** desktop NAME [--no-open]: core/desktop.mjs's session, its tunnel in this terminal. @param {Selected} s @param {string[]} args @returns {Promise<void>} */
 async function cmdDesktop(s, [vm, noOpen]) {
 	const name = needVm(vm);
-	const setup = 'if test -e /etc/boxery/headless; then echo headless\nelif command -v boxery-vnc-password >/dev/null; then p=$(boxery-vnc-password --new) && echo "password $p"\nelse echo nopassword; fi';
-	const out = (await vmSshCapture(s, [`${name}.boxery`, setup])).stdout.trim();
-	let pw = "";
-	if (out === "headless") die(`${name} is headless (boxery new --headless): it has no desktop`);
-	else if (out.startsWith("password ")) { pw = out.slice(9); if (!/^[A-Za-z0-9]+$/.test(pw)) die(`unexpected VNC password from ${name}`); }
-	else if (out === "nopassword") warn(`${name}'s desktop has no VNC password: its image predates it, so while this tunnel is open any process on this machine (or a web page) can use it. Rebuild the desktop base (boxery build-base) and create the VM again.`);
-	else die(`couldn't set up the desktop of ${name} (is it running? boxery ls)`);
-	const port = await freePort(16080);
-	const url = `http://127.0.0.1:${port}/vnc.html?autoconnect=1&resize=remote&reconnect=1${pw ? `#password=${pw}` : ""}`;
-	say(`==> desktop for ${name} at ${url}  (Ctrl-C to close the tunnel)`);
-	if (noOpen !== "--no-open") setTimeout(() => openUrl(url), 1500).unref();
-	await exitWith(vmSsh(s, ["-N", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:6080`, `${name}.boxery`]));
+	const { openUrl, prepareDesktop, tunnelArgs } = await import("../core/desktop.mjs");
+	/** @type {Awaited<ReturnType<typeof prepareDesktop>>} */
+	let d;
+	try { d = await prepareDesktop(name); } catch (e) { die(/** @type {Error} */ (e).message); }
+	if (d.warning) warn(d.warning);
+	say(`==> desktop for ${name} at ${d.url}  (Ctrl-C to close the tunnel)`);
+	if (noOpen !== "--no-open") setTimeout(() => void openUrl(d.url).then((ok) => { if (!ok) say(`open: ${d.url}`); }), 1500).unref();
+	await exitWith(inherit("ssh", tunnelArgs(name, d.port), { env: s.config.env }));
 }
 
 /** forward NAME PORT [LOCALPORT] @param {Selected} s @param {string[]} args @returns {Promise<void>} */

@@ -28,7 +28,7 @@ function fixture() {
 		writeFileSync(path.join(d, "ssh_config"), "# fake\n");
 	}
 	writeFileSync(pointer, `${profile}\n`);
-	const env = { ...process.env, HOME: path.join(dir, "home"), BOXERY_HOME: home, BOXERY_BIN: CLI };
+	const env = { ...process.env, HOME: path.join(dir, "home"), BOXERY_HOME: home };
 	const run = (bin, args) => {
 		const r = spawnSync(bin, args, { env, encoding: "utf8", timeout: 3000 });
 		assert.ifError(r.error); // A blocked read (e.g. FIFO) is not a successful rejection.

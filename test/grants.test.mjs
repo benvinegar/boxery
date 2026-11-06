@@ -21,10 +21,6 @@ writeFileSync(path.join(root, "grant-host"), hostScript);
 writeFileSync(path.join(bin, "ssh"), `#!/bin/sh\nfor a; do [ "$a" != -O ] || exit 0; done\ncat > '${root}/apply.script'\n`);
 chmodSync(path.join(bin, "ssh"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
-// Any accidental CLI spawn from grantRequest must fail, including read/list/apply calls.
-process.env.BOXERY_BIN = path.join(bin, "forbidden-cli");
-writeFileSync(process.env.BOXERY_BIN, `#!/bin/sh\necho spawned > '${root}/spawned'\nexit 99\n`);
-chmodSync(process.env.BOXERY_BIN, 0o755);
 const core = await import("../core/boxery-core.mjs");
 const grants = await import("../core/grants.mjs");
 const cli = path.resolve(import.meta.dirname, "../controller/boxery");
@@ -51,7 +47,6 @@ beforeEach(() => {
 	writeFileSync(path.join(registryRoot, "host-registry/local"), `${profile}\n`);
 	writeFileSync(path.join(root, "inventory.json"), '[\n{"name":"demo"}\n]\n');
 	writeFileSync(path.join(root, "inventory.txt"), 'NAME STATE\ndemo running\n');
-	rmSync(path.join(root, "spawned"), { force: true });
 	rmSync(path.join(root, "host.calls"), { force: true });
 });
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -122,7 +117,6 @@ test("vm_grant approval applies in-process; decline changes nothing; no CLI spaw
 	assert.match(yes.text, /The user approved/);
 	assert.match(readFileSync(store, "utf8"), /^env\tGRANT_TEST_VALUE\t/m);
 	assert.match(readFileSync(path.join(root, "apply.script"), "utf8"), /put_env 'GRANT_TEST_VALUE' /);
-	assert.equal(existsSync(path.join(root, "spawned")), false);
 	const before = readFileSync(store, "utf8");
 	await core.grantRequest("demo", { spec: "ssh-agent" }, { approve: async () => "decline" });
 	assert.equal(readFileSync(store, "utf8"), before);

@@ -183,40 +183,34 @@ export function describeHosts() {
 	}));
 }
 /**
- * `boxery host add NAME DEST [--backend B | --profile P]`: register a host (and with backend, create a
- * new profile for it on DEST). Only the default key and host executable: no --key, --host-bin or
- * --config-dir, which name local files (an imported config is shell code). Becomes the default only
- * when there is none.
+ * Register a host, as `boxery host add NAME DEST [--backend B | --profile P]` does (core/registry.mjs, in
+ * process; with backend, a new profile is made on DEST). Only the default key and host executable: no key,
+ * host-bin or config-dir, which name local files (an imported config is shell code). Becomes the default
+ * only when there is none. Nothing can be asked (ssh runs in batch mode); the answer is what setup said.
  * @param {{ name: string, dest: string, backend?: string | null, profile?: string | null }} host @param {ProgressOpts} [opts]
+ * @returns {Promise<string>}
  */
-export function addHost({ name, dest, backend, profile }, { progress } = {}) {
+export async function addHost({ name, dest, backend, profile }, { progress } = {}) {
 	assertHost(name);
 	if (typeof dest !== "string" || !VALID_DEST.test(dest)) throw new Error(`invalid destination "${dest ?? ""}" (local, or an ssh destination such as user@host)`);
 	if (backend != null && !VALID_HOST.test(backend)) throw new Error(`invalid backend "${backend}"`);
 	if (profile != null && !VALID_HOST.test(profile)) throw new Error(`invalid host profile "${profile}"`);
-	return registryCli(["host", "add", name, dest, ...(backend ? ["--backend", backend] : []), ...(profile ? ["--profile", profile] : [])], 600_000, { progress });
+	const registry = await import("./registry.mjs");
+	const { io, text } = registry.textIO(progress);
+	try {
+		await registry.withRegistryLock(() => registry.addHostLocked(name, { dest, ...(backend ? { backend } : {}), ...(profile ? { hostProfile: profile } : {}) }, io));
+	} catch (e) { throw new Error([`host add ${name}: ${/** @type {Error} */ (e).message}`, text()].filter(Boolean).join("\n")); }
+	return text();
 }
-/** `boxery host rm NAME`: forget the registration only (refuses the CLI default; profile data, VMs and grants stay). @param {string} name */
-export function removeHost(name) {
+/** Forget a host's registration, as `boxery host rm NAME` (the CLI default can't be; profile data, VMs and
+ *  grants stay). @param {string} name @returns {Promise<string>} */
+export async function removeHost(name) {
 	assertHost(name);
-	return registryCli(["host", "rm", name], 60_000);
-}
-// Registry commands act on BOXERY_HOME itself, never on the selected host's profile.
-/** @param {string[]} args @param {number} timeout @param {ProgressOpts} [opts] @returns {Promise<string>} */
-function registryCli(args, timeout, { progress } = {}) {
-	return new Promise((resolve, reject) => {
-		const child = execFile(BOXERY, args, { env: { ...process.env, BOXERY_HOME }, timeout, maxBuffer: 10 * 1024 * 1024 }, (e, stdout, stderr) => {
-			if (e) reject(new Error(`boxery ${args.join(" ")}: ${(stderr || e.message).trim()}`));
-			else resolve(`${stdout}${stderr}`.trim());
-		});
-		if (progress) for (const st of [child.stdout, child.stderr]) st?.on("data", (d) => lastLine(d) && progress(lastLine(d)));
-	});
-}
-/** @param {string[]} args */
-export function controllerCommand(args) {
-	const host = currentHost();
-	// Bind the resolved directory, not a registry entry that could change during this call.
-	return { args: ["--host", host.name, "--profile-dir", host.dir, ...args], env: process.env };
+	const registry = await import("./registry.mjs");
+	const { io, text } = registry.textIO();
+	try { await registry.withRegistryLock(async () => registry.removeHostLocked(name, io)); }
+	catch (e) { throw new Error(`host rm ${name}: ${/** @type {Error} */ (e).message}`); }
+	return text();
 }
 export const REMOTE_HOME = linux.home;
 export const PROJECT = linux.project;
@@ -225,16 +219,6 @@ export const VALID_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export const MAX_BYTES = 50 * 1024;
 export const MAX_CAPTURE = 64 * 1024 * 1024; // hard cap on bytes buffered from one remote command
 export const MAX_LINES = 2000;
-
-export function controllerPath() {
-	if (process.env.BOXERY_BIN) return process.env.BOXERY_BIN;
-	try {
-		const p = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../controller/boxery");
-		if (existsSync(p)) return p;
-	} catch {}
-	return "boxery";
-}
-export const BOXERY = controllerPath();
 
 export const sleep = (/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms));
 export const newName = () => `pi-${randomBytes(3).toString("hex")}`;

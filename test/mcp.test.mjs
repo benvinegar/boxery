@@ -1,5 +1,5 @@
 // MCP server protocol tests with a fake VM: an `ssh` stub on PATH runs the remote script locally
-// (in a temp "VM home"), and BOXERY_BIN points at a stub controller.
+// (in a temp "VM home"), and a stub boxery-host answers controller operations.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -73,7 +73,7 @@ cd "${vmroot}" && HOME="${vmroot}" PATH="${bin}:$PATH" exec bash -c "$cmd"
 	writeFileSync(path.join(bin, "boxery"), "#!/bin/sh\necho \"spawned the controller CLI: $*\" >&2\nexit 99\n");
 	chmodSync(path.join(bin, "ssh"), 0o755);
 	chmodSync(path.join(bin, "boxery"), 0o755);
-	env = /** @type {NodeJS.ProcessEnv} */ ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home"), BOXERY_BIN: path.join(bin, "boxery") });
+	env = /** @type {NodeJS.ProcessEnv} */ ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, BOXERY_HOME: path.join(dir, "home") });
 	env.VMROOT = vmroot;
 	env.BOXERY_RUNTIME_DIR = path.join(dir, "runtime");
 	mkdirSync(env.BOXERY_RUNTIME_DIR);

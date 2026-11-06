@@ -25,7 +25,6 @@
  *   pi --vm pool     lease a pool VM, released when pi quits
  *   /vm use NAME | new [NAME] | off | ls | rm NAME | host [NAME] | desktop [NAME] | grant SPEC… | revoke SPEC… | grants
  */
-import { type ChildProcess, spawn } from "node:child_process";
 import type { BashOperations, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	createBashToolDefinition,
@@ -117,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 			uiCtx?.ui?.notify?.(`boxery: lost the lease on "${l.name}" (${e.message}); vm_* tools are disabled until you pick a VM`, "error");
 		},
 	});
-	let desktopProc: ChildProcess | null = null;
+	let desktopProc: { close: () => void, url: string, warning: string | null } | null = null;
 
 	const engines = (vm: string) => {
 		const ops = fileOps(vm);
@@ -344,7 +343,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (event) => {
-		desktopProc?.kill();
+		desktopProc?.close();
 		desktopProc = null;
 		// Throwaway VMs and leases live exactly as long as the session that created them (quit, /new,
 		// /resume, fork, reload): the next session never re-adopts them, so give them back now.
@@ -427,10 +426,11 @@ export default function (pi: ExtensionAPI) {
 						case "desktop": {
 							const name = arg || current?.name;
 							if (!name) throw new Error("usage: /vm desktop [NAME]");
-							desktopProc?.kill();
-							const command = core.controllerCommand(["desktop", name]);
-							desktopProc = spawn(core.BOXERY, command.args, { env: command.env, stdio: "ignore" });
-							say(`boxery: opening the desktop of "${name}" in your browser (tunnel closes when pi exits)`);
+							desktopProc?.close();
+							const { openDesktop } = await import("../core/desktop.mjs");
+							desktopProc = await openDesktop(core.assertName(name));
+							if (desktopProc.warning) say(`boxery: ${desktopProc.warning}`, "warning");
+							say(`boxery: the desktop of "${name}" is open in your browser at ${desktopProc.url.replace(/#.*/, "")} (tunnel closes when pi exits)`);
 							break;
 						}
 						default:

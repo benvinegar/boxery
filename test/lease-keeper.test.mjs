@@ -17,9 +17,6 @@ writeFileSync(path.join(dir, "bin/ssh"), "#!/bin/sh\nexit 0\n"); // -O exit: no 
 chmodSync(path.join(dir, "bin/ssh"), 0o755);
 process.env.PATH = `${path.join(dir, "bin")}:${process.env.PATH}`;
 process.env.BOXERY_HOME = home;
-process.env.BOXERY_BIN = path.join(dir, "forbidden-cli"); // leases never spawn the controller CLI
-writeFileSync(process.env.BOXERY_BIN, "#!/bin/sh\necho 'spawned the CLI' >&2\nexit 99\n");
-chmodSync(process.env.BOXERY_BIN, 0o755);
 const core = await import("../core/boxery-core.mjs");
 
 const log = () => hostCalls(dir).map((l) => l.slice(l.indexOf(": ") + 2)).filter((c) => c !== "help"); // (help: the --json probe)
