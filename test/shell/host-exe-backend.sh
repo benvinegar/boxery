@@ -151,6 +151,7 @@ up=$(grep -F '/etc/boxery/proxy-upstream' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' 
 [[ $up == "TCP:127.0.0.1:18088" ]] && ok "guest proxy upstream is the tunnel's -R end" || bad "upstream: $up"
 grep -F 'systemd-machine-id-setup' "$I" >/dev/null && grep -F 'ssh-keygen -A' "$I" >/dev/null && grep -F 'echo v1 >/etc/boxery/hostname' "$I" >/dev/null && ok "fresh machine-id, host keys, hostname" || bad "identity"
 grep -F 'boxery-novnc' "$I" >/dev/null && grep -F 'git init -q' "$I" >/dev/null && ok "runcmd steps: desktop services, ~/project" || bad "runcmd"
+grep -F "sudo -u agent bash -lc 'cd && git config --global user.name agent;" "$I" >/dev/null && ok "agent's git config runs from agent's home (exeuntu's /home/exedev/.git is unreadable)" || bad "git config cwd"
 hk=$(grep -F '"/etc/ssh/boxery_host_ed25519_key.pub"' "$I" | grep -o 'echo [A-Za-z0-9+/=]*' | head -1 | cut -c6- | base64 -d 2>/dev/null || true)
 [[ -n $hk && "v1.boxery $hk" == "$(cat "$BOXERY_CONF/host-keys/v1")" ]] && grep -F '"/etc/ssh/sshd_config.d/05-boxery-hostkey.conf"' "$I" >/dev/null &&
 	ok "pinned host key (#70): the seeded key is written and is the one boxery-host recorded" || bad "pinned key: $hk / $(cat "$BOXERY_CONF/host-keys/v1" 2>&1)"
