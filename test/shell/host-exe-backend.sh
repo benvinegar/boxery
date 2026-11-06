@@ -372,6 +372,14 @@ PROXY_PORT=9999
 p1=$(unset BOXERY_EXE_PREFIX; BOXERY_EXE_DIR=$tmp/fresh; . "$ROOT/host/backends/exe.sh"; backend_init; echo "$EXE_PREFIX")
 p2=$(unset BOXERY_EXE_PREFIX; BOXERY_EXE_DIR=$tmp/fresh; . "$ROOT/host/backends/exe.sh"; echo "$EXE_PREFIX")
 [[ $p1 =~ ^bx[0-9a-f]{6}-$ && $p1 == "$p2" ]] && ok "init generates a prefix once and keeps it" || bad "prefix: $p1 / $p2"
+# init warns on a host with a battery (#42): macOS via pmset, Linux via sysfs; quiet otherwise
+initlog() { (BOXERY_EXE_DIR=$tmp/fresh; . "$ROOT/host/backends/exe.sh"; log() { echo "$*"; }; "$@"; backend_init) 2>&1; }
+mkdir -p "$tmp/ps/AC" "$tmp/ps/BAT0"; echo Mains >"$tmp/ps/AC/type"; echo Battery >"$tmp/ps/BAT0/type"
+[[ $(initlog eval 'uname() { echo Linux; }; EXE_POWER_SUPPLY=$tmp/ps') == *"has a battery"*"always-on machine"* ]] && ok "init warns on a Linux host with a battery" || bad "linux battery: $(initlog eval 'uname() { echo Linux; }; EXE_POWER_SUPPLY=$tmp/ps')"
+rm -r "$tmp/ps/BAT0"
+[[ -z $(initlog eval 'uname() { echo Linux; }; EXE_POWER_SUPPLY=$tmp/ps') && -z $(initlog eval 'uname() { echo Linux; }; EXE_POWER_SUPPLY=$tmp/none') ]] && ok "… and not on one without" || bad "linux mains: $(initlog eval 'uname() { echo Linux; }; EXE_POWER_SUPPLY=$tmp/ps')"
+[[ $(initlog eval 'uname() { echo Darwin; }; pmset() { echo " -InternalBattery-0 (id=1)	84%; discharging"; }') == *"has a battery"* ]] && ok "init warns on a Mac laptop (pmset)" || bad "mac battery"
+[[ -z $(initlog eval 'uname() { echo Darwin; }; pmset() { echo "Now drawing from '"'AC Power'"'"; }') ]] && ok "… and not on a Mac without a battery" || bad "mac desktop: $(initlog eval 'uname() { echo Darwin; }; pmset() { echo AC; }')"
 e=$( (UNREGISTERED=1 backend_check) 2>&1 ) && bad "unregistered key accepted" || { [[ $e == *"ssh exe.dev"* ]] && ok "unregistered key: says how to register" || bad "check: $e"; }
 [[ $(SSH_USER_MODE=1 exe_dest bxtest-base) == "-l vm+bxtest-base vm.exe.xyz" ]] && ok "ssh_user routing (vm+NAME@vm.exe.xyz) is honoured" || bad "dest: $(SSH_USER_MODE=1 exe_dest bxtest-base)"
 : >"$CALLS"

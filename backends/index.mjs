@@ -55,7 +55,8 @@ export const BACKENDS = {
 		id: "exe", stability: "experimental", supported: both,
 		// Live provider validation is documented, but no host OS/arch was recorded. Do not infer it.
 		tested: [], runtime: { location: "remote", default: "exe.dev", options: ["exe.dev"] },
-		requirements: [...tools(["ssh", "jq", "nc", "node", "openssl"]), manual("exe.dev account with registered SSH key (ssh exe.dev, or BOXERY_EXE_KEY)")],
+		requirements: [...tools(["ssh", "jq", "nc", "node", "openssl"]), manual("exe.dev account with registered SSH key (ssh exe.dev, or BOXERY_EXE_KEY)"),
+			manual("Always-on boxery-host (a server or a desktop that doesn't sleep; laptops as controllers): VMs reach the LLM proxy only through its tunnels")],
 		capabilities: capabilities(),
 	},
 	openshell: {
