@@ -37,6 +37,9 @@ EXE_POOL=${BOXERY_EXE_POOL:-}                    # exe.dev pool for new VMs (Wor
 EXE_MAX_CPUS=${BOXERY_EXE_MAX_CPUS:-}            # a VM's largest size; default: the account's (exe_limits)
 EXE_MAX_MEM=${BOXERY_EXE_MAX_MEM:-}              # MiB
 EXE_MAX_DISK=""                                  # GB, the account's
+EXE_DEFAULT_CPUS=2                               # the largest VM when exe.dev can't say (the smallest plan)
+EXE_DEFAULT_MEM=4096                             # MiB
+EXE_LIMIT_SANE=100000                            # a plan field at or above this is garbage, not a limit
 EXE_BASE_DISK=20                                 # GB, the base VM's disk (copies grow from it)
 EXE_SUPERVISOR=${BOXERY_EXE_SUPERVISOR:-$([[ $(uname) == Darwin ]] && echo launchd || echo systemd)}
 EXE_POLL=${BOXERY_EXE_POLL:-15}                  # seconds between build-base progress checks
@@ -126,8 +129,8 @@ exe_edge() { # VM COMMAND (stdin: passed through)
 }
 # The largest VM the account allows, from `billing plan` (Personal: its capacity, which all VMs share;
 # one VM may use all of it). BOXERY_EXE_MAX_CPUS/MEM override it (pools: a pool's size). The last answer
-# is kept in $EXE_DIR/plan.json for when exe.dev can't be asked; without one, 2 vCPU / 4 GB (the smallest
-# plan). Call it in the function that creates or resizes, not in a $(subshell).
+# is kept in $EXE_DIR/plan.json for when exe.dev can't be asked; without one, EXE_DEFAULT_CPUS/MEM.
+# Call it in the function that creates or resizes, not in a $(subshell).
 exe_limits() {
 	[[ -z $EXE_MAX_CPUS || -z $EXE_MAX_MEM || -z $EXE_MAX_DISK ]] || return 0
 	local j f=$EXE_DIR/plan.json c m k
@@ -138,20 +141,24 @@ exe_limits() {
 	elif [[ -f $f ]]; then
 		j=$(cat "$f"); log "couldn't read the exe.dev account's limits; using the last ones ($f)"
 	else
-		j='{}'; log "couldn't read the exe.dev account's limits; assuming 2 vCPU / 4 GB (BOXERY_EXE_MAX_CPUS/MEM set them)"
+		j='{}'; log "couldn't read the exe.dev account's limits; assuming $EXE_DEFAULT_CPUS vCPU / $((EXE_DEFAULT_MEM / 1024)) GB (BOXERY_EXE_MAX_CPUS/MEM set them)"
 	fi
-	read -r c m k <<<"$(jq -r 'def n: if type == "number" and . >= 1 and . < 100000 then floor else empty end;
-		"\(.max_cpus | n // 2) \(.max_memory_gb | n // 4) \(.max_disk_gb | n // "")"' <<<"$j" 2>/dev/null)"
-	[[ -n $EXE_MAX_CPUS ]] || EXE_MAX_CPUS=${c:-2}
-	[[ -n $EXE_MAX_MEM ]] || EXE_MAX_MEM=$((${m:-4} * 1024))
-	[[ -n $EXE_MAX_DISK ]] || EXE_MAX_DISK=${k:-}
+	# "-" for a missing or odd field, so read keeps the columns
+	read -r c m k <<<"$(jq -r --argjson max "$EXE_LIMIT_SANE" 'def n: if type == "number" and . >= 1 and . < $max then floor else "-" end;
+		"\(.max_cpus | n) \(.max_memory_gb | n) \(.max_disk_gb | n)"' <<<"$j" 2>/dev/null)"
+	[[ $c =~ ^[0-9]+$ ]] || c=$EXE_DEFAULT_CPUS
+	if [[ $m =~ ^[0-9]+$ ]]; then m=$((m * 1024)); else m=$EXE_DEFAULT_MEM; fi
+	[[ $k =~ ^[0-9]+$ ]] || k=""
+	[[ -n $EXE_MAX_CPUS ]] || EXE_MAX_CPUS=$c
+	[[ -n $EXE_MAX_MEM ]] || EXE_MAX_MEM=$m
+	[[ -n $EXE_MAX_DISK ]] || EXE_MAX_DISK=$k
 }
 # CPUS MEM_MIB → "CPUS MEM_MIB" as exe.dev will size the VM: capped to the largest VM the account allows
 # (exe_limits), memory in whole GB. VMs share the account's capacity, so several may add up to more.
 exe_cap() {
-	local c=$1 m=$2
-	if ((c > ${EXE_MAX_CPUS:-2})); then log "capping to ${EXE_MAX_CPUS:-2} vCPU, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_CPUS)"; c=${EXE_MAX_CPUS:-2}; fi
-	if ((m > ${EXE_MAX_MEM:-4096})); then log "capping to ${EXE_MAX_MEM:-4096} MiB, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_MEM)"; m=${EXE_MAX_MEM:-4096}; fi
+	local c=$1 m=$2 maxc=${EXE_MAX_CPUS:-$EXE_DEFAULT_CPUS} maxm=${EXE_MAX_MEM:-$EXE_DEFAULT_MEM}
+	if ((c > maxc)); then log "capping to $maxc vCPU, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_CPUS)"; c=$maxc; fi
+	if ((m > maxm)); then log "capping to $maxm MiB, the largest VM this exe.dev account allows (BOXERY_EXE_MAX_MEM)"; m=$maxm; fi
 	echo "$c $((((m + 1023) / 1024) * 1024))"
 }
 exe_disk_ok() { [[ -z $EXE_MAX_DISK ]] || (($1 <= EXE_MAX_DISK)) || die "exe.dev disks are at most ${EXE_MAX_DISK} GB on this account (asked for $1)"; }   # GB
